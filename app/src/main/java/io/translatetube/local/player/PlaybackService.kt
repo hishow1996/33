@@ -2246,6 +2246,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun refreshPlaybackHint() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            processingNotificationHandler.post { refreshPlaybackHint() }
+            return
+        }
         if (!playerReady || !::pm.isInitialized) return
         val state = ui.value
         val player = pm.player
@@ -3520,6 +3524,21 @@ class PlaybackService : MediaSessionService() {
         precomputedLocalMediaIdentityKey: String? = null,
         localIdentityResolutionToken: Long? = null,
     ) {
+        val incomingSessionKey = ui.value.key
+        if (incomingSessionKey != key) {
+            playbackRecoveryInProgress = false
+            playbackRecoveryMessage = null
+            playbackRecoveryFailure = null
+            expiredAddressRecoveryAttempted = false
+            playbackRecoveryWasPlayerVisible = false
+            playbackRestoreRequested = false
+            playbackHintShownAtMs = 0L
+            noFrameWaitStartedAtMs = 0L
+            noFrameWaitSessionKey = key
+            idleRecoveryAttemptedKey = ""
+            lastObservedSourceGeneration = -1L
+            _playbackHint.value = null
+        }
         if (precomputedLocalMediaIdentityKey == null) {
             val identityToken = localMediaIdentityResolutionGeneration.incrementAndGet()
             if (localUri != null) {
@@ -3778,23 +3797,8 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
-        val previousSessionKey = ui.value.key
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.activeLocalMediaIdentityKey = localMediaIdentityKey
-        if (previousSessionKey != key) {
-            playbackRecoveryInProgress = false
-            playbackRecoveryMessage = null
-            playbackRecoveryFailure = null
-            expiredAddressRecoveryAttempted = false
-            playbackRecoveryWasPlayerVisible = false
-            playbackRestoreRequested = false
-            playbackHintShownAtMs = 0L
-            noFrameWaitStartedAtMs = 0L
-            noFrameWaitSessionKey = key
-            idleRecoveryAttemptedKey = ""
-            lastObservedSourceGeneration = -1L
-            _playbackHint.value = null
-        }
         this.remoteMediaUrl = remoteMediaUrl
         this.remoteMediaTitle = remoteMediaTitle
         this.remoteMediaReferrer = remoteMediaReferrer
@@ -9200,8 +9204,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 playbackRecoveryMessage = null
                 playbackRecoveryFailure = null
                 playbackRestoreRequested = false
-                playbackRecoveryWasPlayerVisible = false
-                expiredAddressRecoveryAttempted = false
+                // Keep the one-attempt guard until normal playback actually renders and starts.
+                // A source replacement being accepted does not prove the signed URL is valid.
                 refreshPlaybackHint()
             }
         } catch (e: kotlinx.coroutines.CancellationException) {

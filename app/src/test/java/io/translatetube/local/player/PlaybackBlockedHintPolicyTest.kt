@@ -88,6 +88,6 @@ class PlaybackBlockedHintPolicyTest {
     @Test
     fun blankEngineNameFallsBackToAGenericLabel() {
         val h = hint(waitingDubbing = true, engine = "  ")!!
-        assertEquals(true, h.message.contains("配音引擎 还没准备好"))
+        assertEquals(true, h.message.contains("配音引擎 还在准备中"))
     }
 }
