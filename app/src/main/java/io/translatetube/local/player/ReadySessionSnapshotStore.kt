@@ -49,6 +49,10 @@ internal object ReadySessionSnapshotStore {
         val expectedIdentityHash = keyHash(identityKey)
         // The fingerprint and transcription-ignore flag are part of the file name; probe no more
         // than two exact candidates instead of parsing all prior snapshots on the calling thread.
+        // Both variants may be valid for legacy sessions; prefer the most recently completed success
+        // instead of always preferring the snapshot that ignores ASR settings.
+        var bestMatch: ReadyPlaybackSessionSnapshot? = null
+        var bestFile: File? = null
         for (ignoreTranscription in listOf(true, false)) {
             val currentFingerprint = runCatching {
                 fingerprintFor(ignoreTranscription)
@@ -79,8 +83,7 @@ internal object ReadySessionSnapshotStore {
                 )
             ) continue
             val savedAt = root.optLong("savedAt", file.lastModified()).coerceAtLeast(0L)
-            runCatching { file.setLastModified(System.currentTimeMillis()) }
-            return ReadyPlaybackSessionSnapshot(
+            val candidate = ReadyPlaybackSessionSnapshot(
                 fingerprint = currentFingerprint,
                 ignoreTranscription = ignoreTranscription,
                 state = state,
@@ -89,8 +92,13 @@ internal object ReadySessionSnapshotStore {
                 translationFingerprint = root.optString("translationFingerprint"),
                 dubbingFingerprint = root.optString("dubbingFingerprint"),
             )
+            if (bestMatch == null || candidate.savedAt > bestMatch.savedAt) {
+                bestMatch = candidate
+                bestFile = file
+            }
         }
-        return null
+        runCatching { bestFile?.setLastModified(System.currentTimeMillis()) }
+        return bestMatch
     }
 
     /**
