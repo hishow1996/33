@@ -11,6 +11,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import android.content.pm.ServiceInfo
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -1809,7 +1811,14 @@ class PlaybackService : MediaSessionService() {
                     "提交线程" to Thread.currentThread().name,
                 ),
             )
-            startForeground(1001, boot)
+            // The bootstrap notice only starts the media service. Do not implicitly activate
+            // every declared foreground-service type before a processing task actually begins.
+            ServiceCompat.startForeground(
+                this,
+                1001,
+                boot,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            )
             rememberNotificationAudit("AFTER startForeground id=1001 returned")
             io.translatetube.local.util.AppLogStore.info(
                 this,
@@ -2363,10 +2372,30 @@ class PlaybackService : MediaSessionService() {
         reason: String,
     ) {
         try {
-            // PlaybackService is already declared as a mediaPlayback foreground service in the
-            // manifest. Using the processing notification here prevents background demotion while
-            // downloading/extracting an audio track or advancing the remaining parse stages.
-            startForeground(PROCESSING_NOTIFICATION_ID, notification)
+            // API translation is a long-running data operation, not media playback itself.
+            // Declare/use dataSync while processing so background API requests remain covered by
+            // the proper foreground-service type. Include mediaPlayback only while playback is
+            // actually active (or still requested and not ended).
+            val playerNeedsForeground = if (playerReady && ::pm.isInitialized) {
+                val player = pm.player
+                player.playWhenReady &&
+                    player.playbackState != androidx.media3.common.Player.STATE_IDLE &&
+                    player.playbackState != androidx.media3.common.Player.STATE_ENDED
+            } else {
+                state.isPlaying
+            }
+            val foregroundServiceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+                (if (playerNeedsForeground) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                } else {
+                    0
+                })
+            ServiceCompat.startForeground(
+                this,
+                PROCESSING_NOTIFICATION_ID,
+                notification,
+                foregroundServiceTypes,
+            )
             processingForegroundActive = true
             lastProcessingForegroundFailureKey = null
         } catch (failure: Throwable) {
@@ -2389,7 +2418,7 @@ class PlaybackService : MediaSessionService() {
                         "调用位置" to reason,
                         "当前处理阶段" to state.phase.name,
                         "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
-                        "服务类型" to "mediaPlayback",
+                        "服务类型" to "dataSync" + if (state.isPlaying) "+mediaPlayback" else "",
                         "异常类型" to failure.javaClass.name,
                     ),
                     issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
