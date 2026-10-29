@@ -358,8 +358,6 @@ class DubbingEngine(
         // Keep a diagnostic reason only for rows that cannot become speech; this avoids allocating
         // a second per-line object for every valid cue while preserving the original translation.
         val translationDiagnostics = HashMap<Int, DubbingTranslationResolution>()
-        // Cue times before gap borrowing: chunking needs the speaker's real pauses between cues.
-        var cuesBeforeGapBorrowing: List<SubLine> = emptyList()
         // Validate every incoming resource and timeline before publishing state. Even an over-limit
         // import must release the TTS instance it handed to this engine.
         val preparedState = try {
@@ -378,7 +376,6 @@ class DubbingEngine(
             // 译文常比原文长：让每句配音在不碰到下一条字幕的前提下借用后面的静音空隙，
             // 播放窗口、合成限速、超长截断都按这个窗口算；字幕显示/导出仍用原始时间。
             val windowed = DubbingTiming.extendCueWindows(normalized)
-            cuesBeforeGapBorrowing = normalized
             windowed to DubbingTimeline(windowed)
         } catch (error: Exception) {
             logDubbingError(
@@ -472,7 +469,7 @@ class DubbingEngine(
                 chunkTextByFirst.clear()
                 chunkRedirect.clear()
                 chunkWindowEndByFirst.clear()
-                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines, cuesBeforeGapBorrowing)) {
+                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines)) {
                     chunkTextByFirst[chunk.firstIndex] = chunk.text
                     chunkWindowEndByFirst[chunk.firstIndex] = chunk.windowEndMs
                     for (secondary in chunk.lineIndices.drop(1)) {
