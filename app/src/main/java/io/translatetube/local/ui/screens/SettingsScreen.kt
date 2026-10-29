@@ -77,9 +77,10 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
         )
     }
     var ttsEngine by remember {
-        val storedEngine = prefs.getString("tts_engine", "edge") ?: "edge"
+        val storedEngine = prefs.getString("tts_engine", "edge")
         // Retire the removed Web TTS option for existing installs; use the current online default.
-        val supportedEngine = if (storedEngine == "web") "edge" else storedEngine
+        val supportedEngine = io.translatetube.local.player.DubbingConfigPreferencePolicy
+            .normalizeEngineId(storedEngine)
         if (supportedEngine != storedEngine) {
             prefs.edit().putString("tts_engine", supportedEngine).apply()
         }
