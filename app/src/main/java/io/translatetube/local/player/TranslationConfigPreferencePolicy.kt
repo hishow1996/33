@@ -50,20 +50,8 @@ internal object TranslationConfigPreferencePolicy {
      * Keep it out of the active identity for Google/Microsoft/Baidu/DeepL, free models and local
      * models; changes to an inactive profile must not invalidate their current translation result.
      */
+    // EngineFactory reserves negative IDs for built-in translators; Room API-profile IDs are
+    // generated as non-negative values. This also covers future built-in engines without a list.
     private fun usesApiProfile(activeTranslationId: Long): Boolean =
-        when (activeTranslationId) {
-            EngineFactory.ID_GOOGLE,
-            EngineFactory.ID_GOOGLE_ALT,
-            EngineFactory.ID_MICROSOFT,
-            EngineFactory.ID_BAIDU,
-            EngineFactory.ID_DEEPL,
-            EngineFactory.ID_FREE_GEMINI,
-            EngineFactory.ID_FREE_DEEPSEEK,
-            EngineFactory.ID_LOCAL_MLKIT,
-            EngineFactory.ID_LOCAL_OPUS,
-            EngineFactory.ID_LOCAL_SMALL100,
-            EngineFactory.ID_LOCAL_SINGLE_PAIR,
-            -> false
-            else -> true
-        }
+        activeTranslationId >= 0L
 }
