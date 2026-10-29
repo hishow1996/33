@@ -1120,8 +1120,11 @@ class PlaybackService : MediaSessionService() {
         Phase.TRANSLATING, Phase.SYNTHESIZING,
     )
 
-    private fun isProcessingEnginePreferenceKey(key: String): Boolean =
-        ReadyHistorySessionConfigStore.isRelevantPreferenceKey(key)
+    private fun isProcessingEnginePreferenceKey(key: String): Boolean {
+        val selectedTtsEngine = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("tts_engine", "edge") ?: "edge"
+        return ReadyHistorySessionConfigStore.isRelevantPreferenceKey(key, selectedTtsEngine)
+    }
 
     /**
      * Hash only the settings that influence transcription, translation or synthesis.
