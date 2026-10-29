@@ -3481,9 +3481,16 @@ class PlaybackService : MediaSessionService() {
                                     "恢复原文检测语言" to detectedLanguage.orEmpty().ifBlank { "未知" },
                                     "恢复结果语言标签" to savedLanguage.orEmpty().ifBlank { "未知" },
                                     "原处理流程" to restoredFlow,
+                                    "已清理同一来源失效快照数" to removedStaleSnapshotCount.toString(),
                                 ),
                             )
-                            ReadySessionSnapshotStore.remove(this@PlaybackService, key)
+                            val removedStaleSnapshotCount =
+                                ReadySessionSnapshotStore.removeMatchingYouTubeCaptionSource(
+                                    context = this@PlaybackService,
+                                    videoKey = key,
+                                    identityKey = readySnapshotIdentityKey,
+                                    invalidState = pipelineResumeState,
+                                )
                             // Switch the active run to a fresh parse before touching the cache so a
                             // storage error cannot silently continue with the stale ready snapshot.
                             pipelineResumeState = null

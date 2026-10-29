@@ -208,6 +208,50 @@ internal object ReadySessionSnapshotStore {
         }.getOrDefault(false)
     }
 
+    /**
+     * Invalidates only snapshots that contain the exact stale YouTube caption timeline.
+     * Other tracks and imported-subtitle results for this video remain available for config rollback.
+     */
+    fun removeMatchingYouTubeCaptionSource(
+        context: Context,
+        videoKey: String,
+        identityKey: String,
+        invalidState: PlayerUiState,
+    ): Int {
+        if (!isSupportedVideoKey(videoKey) ||
+            !ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(invalidState.processingFlow)
+        ) return 0
+        val expectedKeyHash = keyHash(videoKey)
+        val expectedIdentityHash = keyHash(identityKey)
+        val candidates = directory(context).listFiles { _, name ->
+            name.startsWith(filePrefix(videoKey)) && name.endsWith(".json")
+        } ?: return 0
+        var removed = 0
+        for (file in candidates) {
+            if (!file.isFile || file.length() !in 1L..MAX_SNAPSHOT_BYTES) continue
+            val root = readRoot(file) ?: continue
+            if (root.optInt("version", -1) != SNAPSHOT_VERSION ||
+                root.optString("keyHash") != expectedKeyHash ||
+                root.optString("identityHash", expectedKeyHash) != expectedIdentityHash
+            ) continue
+            val fingerprint = root.optString("fingerprint")
+            if (!fingerprintPattern.matches(fingerprint)) continue
+            val ignoreTranscription = root.optBoolean("ignoreTranscription", false)
+            if (file.name != snapshotFileName(expectedKeyHash, expectedIdentityHash, fingerprint, ignoreTranscription)) {
+                continue
+            }
+            val stateObject = root.optJSONObject("state") ?: continue
+            val savedState = decodeState(videoKey, stateObject) ?: continue
+            if (!ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(savedState, invalidState)) {
+                continue
+            }
+            if (runCatching { AtomicFile(file).delete() }.getOrDefault(false)) {
+                removed += 1
+            }
+        }
+        return removed
+    }
+
     fun remove(context: Context, videoKey: String) {
         if (!isSupportedVideoKey(videoKey)) return
         val prefix = filePrefix(videoKey)
