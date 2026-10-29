@@ -2474,14 +2474,24 @@ class PlaybackService : MediaSessionService() {
             PlaybackHintAction.OPEN_SETTINGS -> Unit
             PlaybackHintAction.PLAY_ORIGINAL_ONLY -> playOriginalOnly()
             PlaybackHintAction.REPARSE -> {
-                expiredAddressRecoveryAttempted = false
+                val failure = pm.playbackFailure.value
                 playbackRecoveryFailure = null
-                playbackRecoveryInProgress = false
-                startExpiredAddressRecovery(
-                    sessionKey = ui.value.key,
-                    originalError = pm.playbackFailure.value?.message ?: "用户请求重新获取视频地址",
-                    pipelineGeneration = activePipelineGeneration,
-                )
+                if (failure?.isExpiredAddress == true) {
+                    expiredAddressRecoveryAttempted = false
+                    playbackRecoveryInProgress = false
+                    startExpiredAddressRecovery(
+                        sessionKey = ui.value.key,
+                        originalError = failure.message,
+                        pipelineGeneration = activePipelineGeneration,
+                    )
+                } else {
+                    // Generic stream recovery failed; restart the source-processing route instead
+                    // of falsely labeling every playback failure as an expired signed URL.
+                    playbackRecoveryInProgress = true
+                    playbackRecoveryMessage = "正在重新获取视频资源…"
+                    playbackRecoveryWasPlayerVisible = ui.value.phase in setOf(Phase.READY, Phase.SYNTHESIZING)
+                    reparseCurrentPlayback()
+                }
             }
             PlaybackHintAction.RETRY, PlaybackHintAction.RELOAD -> {
                 playbackRecoveryFailure = null
