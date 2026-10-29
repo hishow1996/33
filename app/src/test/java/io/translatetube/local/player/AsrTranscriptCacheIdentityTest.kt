@@ -11,7 +11,10 @@ class AsrTranscriptCacheIdentityTest {
         model: String = "whisper-base",
         language: String = "auto",
         config: String = "0123456789abcdef01234567",
-    ) = AsrTranscriptCacheIdentity.key(provider, model, language, config)
+        modelFingerprint: String = "",
+    ) = AsrTranscriptCacheIdentity.key(
+        provider, model, language, config, modelFingerprint,
+    )
 
     @Test
     fun identicalEffectiveConfigurationProducesStableIdentity() {
@@ -31,6 +34,22 @@ class AsrTranscriptCacheIdentityTest {
         assertNotEquals(
             baseline,
             key(provider = "cartesia", language = "en", config = "fedcba9876543210fedcba98"),
+        )
+    }
+
+    @Test
+    fun localModelFileUpdateChangesTranscriptCacheIdentity() {
+        assertNotEquals(
+            key(modelFingerprint = "model-files-version-a"),
+            key(modelFingerprint = "model-files-version-b"),
+        )
+    }
+
+    @Test
+    fun cloudCacheIdentityDoesNotDependOnLocalModelFiles() {
+        assertEquals(
+            key(provider = "cartesia", language = "en", modelFingerprint = ""),
+            key(provider = "cartesia", language = "en", modelFingerprint = "local-files-version"),
         )
     }
 
