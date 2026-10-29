@@ -5723,7 +5723,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 isYouTubeCaptionSource = initialYouTubeCaptionSource,
                 asrCacheIdentity = asrCacheIdentity,
             )
-            var translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+            var translationCacheKey = if (
+                videoId != null && sourceImportedLines.isNullOrEmpty() && initialYouTubeCaptionSource
+            ) {
                 "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
             } else {
                 baseModeAwareTranslationCacheKey
@@ -6110,8 +6112,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     isYouTubeCaptionSource = isResolvedYouTubeCaptionSource,
                     asrCacheIdentity = asrCacheIdentity,
                 )
-                translationCacheKey =
-                    "${resolvedBaseModeAwareTranslationCacheKey}|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+                val resolvedModeSuffix = if (isResolvedYouTubeCaptionSource) {
+                    "|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+                } else {
+                    ""
+                }
+                translationCacheKey = resolvedBaseModeAwareTranslationCacheKey + resolvedModeSuffix
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(translationCacheKey = translationCacheKey)
                 }
@@ -7128,7 +7134,11 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     ui.value.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES,
                 asrCacheIdentity = asrCacheIdentity,
             )
-            val latestTranslationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+            val latestTranslationCacheKey = if (
+                videoId != null &&
+                sourceImportedLines.isNullOrEmpty() &&
+                ui.value.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+            ) {
                 "$latestBaseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
             } else {
                 latestBaseModeAwareTranslationCacheKey
