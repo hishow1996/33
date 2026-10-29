@@ -26,6 +26,28 @@ class DubbingCacheFreshnessPolicyTest {
     }
 
     @Test
+    fun forcedSynthesisCanUseMatchingCurrentMemoryWhenDiskWriteFailed() {
+        assertTrue(
+            DubbingCacheFreshnessPolicy.canReadCache(
+                forceFreshSynthesis = true,
+                wasWrittenByCurrentRun = false,
+                hasMatchingCurrentMemoryEntry = true,
+            ),
+        )
+    }
+
+    @Test
+    fun oldDiskCacheStillCannotBypassForcedSynthesisWhenMemoryIsAbsent() {
+        assertFalse(
+            DubbingCacheFreshnessPolicy.canReadCache(
+                forceFreshSynthesis = true,
+                wasWrittenByCurrentRun = false,
+                hasMatchingCurrentMemoryEntry = false,
+            ),
+        )
+    }
+
+    @Test
     fun forcedSynthesisCanReadPcmAfterCurrentRunPublishesIt() {
         assertTrue(
             DubbingCacheFreshnessPolicy.canReadCache(
