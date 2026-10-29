@@ -16,11 +16,10 @@ internal object TranslationConfigPreferencePolicy {
         key: String,
         activeTranslationId: Long,
     ): Boolean {
-        if (
-            key == "active_api_id" ||
-            key == ACTIVE_PROFILE_FINGERPRINT_KEY ||
-            key == "translation_source_language"
-        ) return true
+        if (key == "active_api_id" || key == "translation_source_language") return true
+        if (key == ACTIVE_PROFILE_FINGERPRINT_KEY) {
+            return usesApiProfile(activeTranslationId)
+        }
 
         return when {
             key.startsWith("free_gemini_") ->
@@ -45,4 +44,26 @@ internal object TranslationConfigPreferencePolicy {
             else -> true
         }
     }
+
+    /**
+     * The profile fingerprint describes Room-backed API profiles, not built-in translators.
+     * Keep it out of the active identity for Google/Microsoft/Baidu/DeepL, free models and local
+     * models; changes to an inactive profile must not invalidate their current translation result.
+     */
+    private fun usesApiProfile(activeTranslationId: Long): Boolean =
+        when (activeTranslationId) {
+            EngineFactory.ID_GOOGLE,
+            EngineFactory.ID_GOOGLE_ALT,
+            EngineFactory.ID_MICROSOFT,
+            EngineFactory.ID_BAIDU,
+            EngineFactory.ID_DEEPL,
+            EngineFactory.ID_FREE_GEMINI,
+            EngineFactory.ID_FREE_DEEPSEEK,
+            EngineFactory.ID_LOCAL_MLKIT,
+            EngineFactory.ID_LOCAL_OPUS,
+            EngineFactory.ID_LOCAL_SMALL100,
+            EngineFactory.ID_LOCAL_SINGLE_PAIR,
+            -> false
+            else -> true
+        }
 }
