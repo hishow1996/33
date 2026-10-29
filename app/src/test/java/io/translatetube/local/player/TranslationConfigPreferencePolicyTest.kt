@@ -51,17 +51,43 @@ class TranslationConfigPreferencePolicyTest {
     }
 
     @Test
-    fun activeProfileAndCommonTranslationPreferencesAlwaysRemainRelevant() {
-        assertTrue(
-            TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
-                "active_api_id",
-                EngineFactory.ID_LOCAL_OPUS,
-            ),
-        )
+    fun activeProfileFingerprintIsRelevantOnlyForProfileBackedEngines() {
         assertTrue(
             TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
                 TranslationConfigPreferencePolicy.ACTIVE_PROFILE_FINGERPRINT_KEY,
                 123L,
+            ),
+        )
+        val builtInIds = listOf(
+            EngineFactory.ID_GOOGLE,
+            EngineFactory.ID_GOOGLE_ALT,
+            EngineFactory.ID_MICROSOFT,
+            EngineFactory.ID_BAIDU,
+            EngineFactory.ID_DEEPL,
+            EngineFactory.ID_FREE_GEMINI,
+            EngineFactory.ID_FREE_DEEPSEEK,
+            EngineFactory.ID_LOCAL_MLKIT,
+            EngineFactory.ID_LOCAL_OPUS,
+            EngineFactory.ID_LOCAL_SMALL100,
+            EngineFactory.ID_LOCAL_SINGLE_PAIR,
+        )
+        builtInIds.forEach { activeId ->
+            assertFalse(
+                "built-in translator $activeId must ignore the API-profile fingerprint",
+                TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                    TranslationConfigPreferencePolicy.ACTIVE_PROFILE_FINGERPRINT_KEY,
+                    activeId,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun activeEngineAndCommonTranslationPreferencesAlwaysRemainRelevant() {
+        assertTrue(
+            TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                "active_api_id",
+                EngineFactory.ID_LOCAL_OPUS,
             ),
         )
         assertTrue(
