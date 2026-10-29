@@ -128,6 +128,18 @@ jobs:
       - name: Run JVM unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
 
+      # This repository intentionally ignores local keystores. Generate an ephemeral CI-only
+      # debug keystore so the debug APK remains installable without storing signing keys in Git.
+      - name: Generate CI debug keystore
+        run: |
+          keytool -genkeypair -noprompt -storetype JKS \
+            -keystore debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
       - name: Build debug and release APKs
         run: ./gradlew --no-daemon assembleDebug assembleRelease
 
