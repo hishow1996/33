@@ -19,8 +19,37 @@ internal object ReadySessionSnapshotReusePolicy {
         forceYouTubeSubtitleRefresh: Boolean,
     ): Boolean = matchingSuccessfulSnapshot && !forceYouTubeSubtitleRefresh
 
+    /** A comparable latest success with no affected stage can be restored as a complete result. */
+    fun canRestoreComparableFallbackSnapshot(
+        fallbackSnapshotAvailable: Boolean,
+        fallbackConfigComparable: Boolean,
+        fallbackRestartStage: EngineRestartStage?,
+    ): Boolean =
+        fallbackSnapshotAvailable && fallbackConfigComparable && fallbackRestartStage == null
+
     /**
-     * Engine rollback must keep the source-processing path that produced the active result.
+     * A global preference fingerprint can change even when the selected flow does not consume that
+     * setting (for example, translation settings with already-translated imported subtitles).
+     * Only relevant restart stages should force regeneration when a comparable snapshot exists.
+     */
+    fun shouldRegenerateDubbingForFallback(
+        forceRegenerateDubbing: Boolean,
+        restoreReadySnapshot: Boolean,
+        hasReusableSnapshot: Boolean,
+        fallbackSnapshotAvailable: Boolean,
+        fallbackConfigComparable: Boolean,
+        fallbackRestartStage: EngineRestartStage?,
+        engineConfigChangedSinceLastSuccess: Boolean,
+    ): Boolean {
+        if (forceRegenerateDubbing) return true
+        if (restoreReadySnapshot || hasReusableSnapshot) return false
+        return fallbackRestartStage != null ||
+            (fallbackSnapshotAvailable && !fallbackConfigComparable) ||
+            (!fallbackSnapshotAvailable && engineConfigChangedSinceLastSuccess)
+    }
+
+    /**
+     * Keep the source-processing path that produced the active result.
      * Two flows can share the same video/config fingerprint while having different subtitle inputs.
      */
     fun isSnapshotFlowCompatible(
