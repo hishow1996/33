@@ -35,6 +35,22 @@ internal class DubbingReadiness {
     fun isSilent(index: Int): Boolean = index >= 0 && states[index] == false
 }
 
+/**
+ * Maps cache readiness invalidation to the whole merged speech chunk.
+ * chunkRedirect stores secondary index -> first index.
+ */
+internal object DubbingChunkReadinessPolicy {
+    fun affectedIndexes(index: Int, chunkRedirect: Map<Int, Int>): List<Int> {
+        if (index < 0) return emptyList()
+        val firstIndex = chunkRedirect[index] ?: index
+        val affected = linkedSetOf(firstIndex)
+        chunkRedirect.forEach { (secondaryIndex, ownerIndex) ->
+            if (ownerIndex == firstIndex) affected.add(secondaryIndex)
+        }
+        return affected.toList()
+    }
+}
+
 internal data class DubbingReadinessProgressSnapshot(
     val preparedUntil: Int,
     val preparedCount: Int,
@@ -83,10 +99,24 @@ internal class DubbingReadinessProgress(
         index: Int,
         totalLines: Int,
         publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
+    ): DubbingReadinessProgressSnapshot =
+        markPendingGroup(listOf(index), totalLines, publish)
+
+    /** Invalidate a merged cue atomically so no secondary row remains falsely ready. */
+    fun markPendingGroup(
+        indexes: Iterable<Int>,
+        totalLines: Int,
+        publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
     ): DubbingReadinessProgressSnapshot = synchronized(lock) {
         val limit = totalLines.coerceAtLeast(0)
-        readiness.markPending(index)
-        if (index in 0 until limit && index < preparedUntil) preparedUntil = index
+        var earliestInvalidated = limit
+        indexes.toSet().forEach { index ->
+            readiness.markPending(index)
+            if (index in 0 until limit && index < earliestInvalidated) {
+                earliestInvalidated = index
+            }
+        }
+        if (earliestInvalidated < preparedUntil) preparedUntil = earliestInvalidated
         snapshot(limit).also(publish)
     }
 

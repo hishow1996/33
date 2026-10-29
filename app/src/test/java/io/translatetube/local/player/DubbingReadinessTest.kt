@@ -85,6 +85,35 @@ class DubbingReadinessTest {
     }
 
     @Test
+    fun mergedChunkInvalidationMarksFirstAndAllSecondaryRowsPendingAtomically() {
+        val readiness = DubbingReadiness()
+        val progress = DubbingReadinessProgress(readiness)
+        progress.clear(6)
+        repeat(6) { progress.markPrepared(it, hasAudio = true, totalLines = 6) }
+
+        val redirects = linkedMapOf(3 to 2, 4 to 2, 5 to 1)
+        val affected = DubbingChunkReadinessPolicy.affectedIndexes(4, redirects)
+        assertEquals(listOf(2, 3, 4), affected)
+
+        val snapshot = progress.markPendingGroup(affected, 6)
+        assertEquals(DubbingReadinessProgressSnapshot(2, 3), snapshot)
+        assertFalse(readiness.isReady(2))
+        assertFalse(readiness.isReady(3))
+        assertFalse(readiness.isReady(4))
+        assertTrue(readiness.isPrepared(1))
+        assertTrue(readiness.isPrepared(5))
+    }
+
+    @Test
+    fun invalidatingAnySecondaryRowResolvesItsWholeChunk() {
+        val redirects = linkedMapOf(3 to 2, 4 to 2, 7 to 6)
+        assertEquals(listOf(2, 3, 4), DubbingChunkReadinessPolicy.affectedIndexes(3, redirects))
+        assertEquals(listOf(6, 7), DubbingChunkReadinessPolicy.affectedIndexes(7, redirects))
+        assertEquals(listOf(5), DubbingChunkReadinessPolicy.affectedIndexes(5, redirects))
+        assertEquals(emptyList<Int>(), DubbingChunkReadinessPolicy.affectedIndexes(-1, redirects))
+    }
+
+    @Test
     fun reattachClearsAllReadinessFromPreviousSubtitleSession() {
         val readiness = DubbingReadiness()
         readiness.markPrepared(0, hasAudio = true)

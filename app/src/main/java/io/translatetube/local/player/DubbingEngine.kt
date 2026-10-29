@@ -1717,7 +1717,9 @@ class DubbingEngine(
     }
 
     private fun markCuePending(idx: Int) {
-        readinessProgress.markPending(idx, lines.size, ::publishReadinessProgress)
+        val affected = DubbingChunkReadinessPolicy.affectedIndexes(idx, chunkRedirect)
+        readinessProgress.markPendingGroup(affected, lines.size, ::publishReadinessProgress)
+        affected.forEach(silentCueReasonsByIndex::remove)
     }
 
     private fun bumpPrepared() {
@@ -1949,14 +1951,15 @@ class DubbingEngine(
      * where it has polled an empty queue but has not yet completed its Job.
      */
     private fun queueSynthesisRetry(idx: Int) {
-        if (released || idx !in lines.indices) return
+        val retryIndex = resolveChunkIndex(idx)
+        if (released || retryIndex !in lines.indices) return
         var ensureExistingQueueWorker = false
         val shouldScheduleWorker = synchronized(pending) {
             when (
                 DubbingRetryQueuePolicy.decide(
-                    index = idx,
+                    index = retryIndex,
                     activeIndex = activeSynthesisIndex,
-                    alreadyQueued = pending.contains(idx),
+                    alreadyQueued = pending.contains(retryIndex),
                 )
             ) {
                 DubbingRetryQueueDecision.IGNORE -> false
@@ -1969,7 +1972,7 @@ class DubbingEngine(
                     false
                 }
                 DubbingRetryQueueDecision.ENQUEUE -> {
-                    pending.offerFirst(idx)
+                    pending.offerFirst(retryIndex)
                     true
                 }
             }
@@ -2150,8 +2153,10 @@ class DubbingEngine(
             // A corrupt cache is recoverable too. Roll back displayed progress and leave the cue
             // pending so it can be synthesized again instead of being treated as permanently silent.
             deleteCacheIfUnchanged(f, cacheStamp)
-            markCuePending(idx)
-            queueSynthesisRetry(idx)
+            // The file was resolved through the merged chunk's first row. Invalidate and
+            // requeue that same canonical owner, not the secondary row that requested playback.
+            markCuePending(playIdx)
+            queueSynthesisRetry(playIdx)
             null
         }
     }
