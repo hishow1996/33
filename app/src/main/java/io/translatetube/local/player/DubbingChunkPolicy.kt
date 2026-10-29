@@ -77,6 +77,9 @@ internal object DubbingChunkPolicy {
             val next = lines.getOrNull(i + 1)
             val mergeCandidate = next != null &&
                 DubbingTimeline.isPlayableCue(next!!) &&
+                // A merged PCM block is synthesized with the first cue's voice only. Never merge
+                // across speaker assignments, otherwise the second cue silently loses its voice.
+                next.speakerId == line.speakerId &&
                 (next.startMs - line.endMs) < MAX_BORROW_MS
 
             if (est > singleWindow && mergeCandidate) {
