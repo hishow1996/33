@@ -57,4 +57,43 @@ class AsrCredentialFingerprintPolicyTest {
         )
         assertNotEquals(first, second)
     }
+
+    @Test
+    fun sameBuiltinTranslationCredentialHasStableFingerprintAcrossRandomizedCiphertexts() {
+        val decoded = mapOf(
+            "TTENC1:gemini-random-iv-a" to "same-gemini-key",
+            "TTENC1:gemini-random-iv-b" to "same-gemini-key",
+            "TTENC1:deepseek-random-iv-a" to "same-deepseek-key",
+            "TTENC1:deepseek-random-iv-b" to "same-deepseek-key",
+        )
+        for (credentialName in listOf("free_gemini_key", "free_deepseek_key")) {
+            val prefix = if (credentialName == "free_gemini_key") "TTENC1:gemini-" else "TTENC1:deepseek-"
+            val first = AsrCredentialFingerprintPolicy.canonicalValue(
+                credentialName,
+                prefix + "random-iv-a",
+                decoded::getValue,
+            )
+            val second = AsrCredentialFingerprintPolicy.canonicalValue(
+                credentialName,
+                prefix + "random-iv-b",
+                decoded::getValue,
+            )
+            assertEquals("credential=$credentialName", first, second)
+            assertFalse(first.contains("same-"))
+        }
+    }
+
+    @Test
+    fun changedBuiltinGeminiCredentialChangesFingerprintWithoutExposingSecret() {
+        val first = AsrCredentialFingerprintPolicy.canonicalValue(
+            "free_gemini_key", "encrypted-a", { "gemini-secret-a" },
+        )
+        val second = AsrCredentialFingerprintPolicy.canonicalValue(
+            "free_gemini_key", "encrypted-b", { "gemini-secret-b" },
+        )
+        assertNotEquals(first, second)
+        assertFalse(first.contains("gemini-secret-a"))
+        assertFalse(second.contains("gemini-secret-b"))
+    }
+
 }
