@@ -853,7 +853,10 @@ class PlaybackService : MediaSessionService() {
             localMediaIdentityKey = currentLocalIdentity,
         )
         val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(
-            this, key, identityKey = currentRemoteSnapshotIdentityKey,
+            this,
+            key,
+            identityKey = currentRemoteSnapshotIdentityKey,
+            expectedProcessingFlow = state.processingFlow,
         ) { ignore ->
             ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
         }
@@ -1285,6 +1288,7 @@ class PlaybackService : MediaSessionService() {
                                 this@PlaybackService,
                                 sessionKey,
                                 identityKey = liveSnapshotIdentityKey,
+                                expectedProcessingFlow = state.processingFlow,
                             ) { ignore ->
                                 ReadyHistorySessionConfigStore.fingerprint(
                                     this@PlaybackService,
