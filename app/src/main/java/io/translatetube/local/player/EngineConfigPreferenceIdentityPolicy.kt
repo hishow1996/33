@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
+import io.translatetube.local.tts.GeminiTtsVoices
 
 /**
  * Runtime-discovered catalog data is not a user engine preference. System TTS still includes the
@@ -9,7 +10,8 @@ import io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
  */
 internal object EngineConfigPreferenceIdentityPolicy {
     fun isFingerprintRelevant(key: String): Boolean =
-        key != SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY
+        key != SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY &&
+            key != GeminiTtsVoices.PREF_API_KEY_MIGRATION_DONE
 
     /**
      * A shared Gemini key belongs to whichever active consumer uses it.
