@@ -73,7 +73,9 @@ internal object ReadySessionSnapshotStore {
             val state = decodeState(videoKey, stateObject) ?: continue
             if (!ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                     snapshotFlow = state.processingFlow,
+                    snapshotIgnoresTranscription = ignoreTranscription,
                     expectedFlow = expectedProcessingFlow,
+                    isYouTube = videoKey.startsWith("youtube:", ignoreCase = true),
                 )
             ) continue
             val savedAt = root.optLong("savedAt", file.lastModified()).coerceAtLeast(0L)
