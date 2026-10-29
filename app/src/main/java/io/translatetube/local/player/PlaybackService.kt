@@ -3160,16 +3160,19 @@ class PlaybackService : MediaSessionService() {
                 setOf(
                     ProcessingFlow.YOUTUBE_SUBTITLES,
                     ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                    ProcessingFlow.AUTO,
                     ProcessingFlow.IMPORTED_SUBTITLES,
                     ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
                 )
             remoteMediaUrl != null -> setOf(
                 ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                ProcessingFlow.AUTO,
                 ProcessingFlow.IMPORTED_SUBTITLES,
                 ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
             )
             localUri != null -> setOf(
                 ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                ProcessingFlow.AUTO,
                 ProcessingFlow.IMPORTED_SUBTITLES,
                 ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
             )
