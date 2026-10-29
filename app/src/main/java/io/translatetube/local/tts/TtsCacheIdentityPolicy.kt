@@ -15,18 +15,6 @@ internal object TtsCacheIdentityPolicy {
         return digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
-    /**
-     * Mirrors the API-profile fallback used by Gemini TTS into a non-secret preference.
-     * A separately configured Gemini key takes precedence and makes profile changes irrelevant.
-     */
-    fun geminiFallbackCredentialFingerprint(
-        freeGeminiApiKey: String,
-        fallbackProfileApiKey: String,
-    ): String {
-        if (freeGeminiApiKey.isNotBlank() || fallbackProfileApiKey.isBlank()) return ""
-        return credentialFingerprint(fallbackProfileApiKey)
-    }
-
     // Retain the shipped Edge cache identity while this exact voice order is active. Any
     // changed name or order receives a deterministic suffix so speakerId-to-voice remapping
     // cannot silently reuse a cache synthesized with another voice.
