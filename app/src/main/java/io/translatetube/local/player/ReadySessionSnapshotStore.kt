@@ -245,9 +245,11 @@ internal object ReadySessionSnapshotStore {
             if (!ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(savedState, invalidState)) {
                 continue
             }
-            if (runCatching { AtomicFile(file).delete() }.getOrDefault(false)) {
-                removed += 1
-            }
+            val deleted = runCatching {
+                AtomicFile(file).delete()
+                true
+            }.getOrDefault(false)
+            if (deleted) removed += 1
         }
         return removed
     }
