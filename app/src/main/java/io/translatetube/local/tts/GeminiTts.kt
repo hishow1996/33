@@ -90,6 +90,9 @@ internal class GeminiTts(
     override val name: String = "Gemini TTS"
 
     private val closed = AtomicBoolean(false)
+    private val resolvedApiKey: String by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        GeminiTtsVoices.resolveApiKey(appCtx)
+    }
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -104,7 +107,10 @@ internal class GeminiTts(
     }
 
     override val cacheKey: String
-        get() = "gemini-tts-v2-${configuredDefaultVoice()}"
+        get() = TtsCacheIdentityPolicy.geminiCacheKey(
+            voiceName = configuredDefaultVoice(),
+            apiKey = resolvedApiKey,
+        )
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
         synthCancellable(text, speed, speakerId) {}
@@ -117,7 +123,7 @@ internal class GeminiTts(
     ): TtsAudio {
         checkOpen()
         checkActive()
-        val apiKey = GeminiTtsVoices.resolveApiKey(appCtx)
+        val apiKey = resolvedApiKey
         if (apiKey.isBlank()) {
             throw IllegalStateException("Gemini TTS 需要 API Key，请在「设置 → 配音设置」或「API 管理」中填入 Google Gemini API Key")
         }

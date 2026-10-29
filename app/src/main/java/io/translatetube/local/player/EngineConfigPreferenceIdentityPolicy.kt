@@ -10,4 +10,21 @@ import io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
 internal object EngineConfigPreferenceIdentityPolicy {
     fun isFingerprintRelevant(key: String): Boolean =
         key != SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY
+
+    /**
+     * A shared Gemini key belongs to whichever active consumer uses it.
+     * It must not disappear just because the other consumer selects another engine.
+     */
+    fun isRelevantForSelectedEngines(
+        key: String,
+        selectedTtsEngine: String?,
+        activeTranslationId: Long,
+    ): Boolean {
+        if (!isFingerprintRelevant(key)) return false
+        if (key == "free_gemini_key") {
+            return TranslationConfigPreferencePolicy.isRelevantForActiveEngine(key, activeTranslationId) ||
+                DubbingConfigPreferencePolicy.isRelevantForActiveEngine(key, selectedTtsEngine)
+        }
+        return DubbingConfigPreferencePolicy.isRelevantForActiveEngine(key, selectedTtsEngine)
+    }
 }

@@ -89,9 +89,16 @@ private object ReadyHistorySessionConfigStore {
     private const val ACTIVE_API_PROFILE_FINGERPRINT_KEY =
         TranslationConfigPreferencePolicy.ACTIVE_PROFILE_FINGERPRINT_KEY
 
-    fun isRelevantPreferenceKey(key: String, selectedTtsEngine: String): Boolean =
-        EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant(key) &&
-            DubbingConfigPreferencePolicy.isRelevantForActiveEngine(key, selectedTtsEngine) && (
+    fun isRelevantPreferenceKey(
+        key: String,
+        selectedTtsEngine: String,
+        activeTranslationId: Long,
+    ): Boolean =
+        EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
+            key = key,
+            selectedTtsEngine = selectedTtsEngine,
+            activeTranslationId = activeTranslationId,
+        ) && (
             key == "active_api_id" ||
                 key == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
                 // ASR provider/model choices, including local and cloud implementations.
@@ -161,13 +168,18 @@ private object ReadyHistorySessionConfigStore {
                     belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION)
                 val isTranslationPreference =
                     belongsToDomain(entry.key, EngineConfigDomain.TRANSLATION)
-                isRelevantPreferenceKey(entry.key, activeTtsEngine) &&
+                isRelevantPreferenceKey(entry.key, activeTtsEngine, activeTranslationId) &&
                     entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
                     (!isTranslationPreference ||
                         TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
                             entry.key,
                             activeTranslationId,
-                        )) &&
+                        ) ||
+                        (belongsToDomain(entry.key, EngineConfigDomain.DUBBING) &&
+                            DubbingConfigPreferencePolicy.isRelevantForActiveEngine(
+                                entry.key,
+                                activeTtsEngine,
+                            ))) &&
                     !(ignoreTranscription && isTranscriptionPreference) &&
                     (ignoreTranscription || !isTranscriptionPreference ||
                         AsrConfigPreferencePolicy.isRelevantForActiveProvider(
@@ -360,17 +372,7 @@ private object ReadyHistorySessionConfigStore {
                     key.contains("translate", ignoreCase = true) ||
                     key.contains("translation", ignoreCase = true)
             EngineConfigDomain.DUBBING ->
-                key.startsWith("tts_") ||
-                    key.startsWith("edge_tts_") ||
-                    key.startsWith("web_tts_") ||
-                    key.startsWith("google_tts_") ||
-                    key.startsWith("gemini_tts_") ||
-                    key.startsWith("online_tts_") ||
-                    key.startsWith("cloud_tts_") ||
-                    key.startsWith("local_tts_") ||
-                    key.startsWith("piper_") ||
-                    key.startsWith("kokoro_") ||
-                    key.startsWith("system_tts_")
+                DubbingConfigPreferencePolicy.isDubbingPreferenceKey(key)
         }
     }
     fun save(
@@ -1127,7 +1129,13 @@ class PlaybackService : MediaSessionService() {
     private fun isProcessingEnginePreferenceKey(key: String): Boolean {
         val selectedTtsEngine = getSharedPreferences("settings", MODE_PRIVATE)
             .getString("tts_engine", "edge") ?: "edge"
-        return ReadyHistorySessionConfigStore.isRelevantPreferenceKey(key, selectedTtsEngine)
+        val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
+            .getLong("active_api_id", -1L)
+        return ReadyHistorySessionConfigStore.isRelevantPreferenceKey(
+            key,
+            selectedTtsEngine,
+            activeTranslationId,
+        )
     }
 
     /**

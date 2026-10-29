@@ -166,6 +166,46 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun geminiCredentialChangeResumesAtDubbingAcrossAllVideoSources() {
+        val flows = listOf(
+            ProcessingFlow.YOUTUBE_SUBTITLES,
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ProcessingFlow.IMPORTED_SUBTITLES,
+            ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+        )
+        for (flow in flows) {
+            val current = changed(dubbing = "gemini-key-b")
+            val ignoreTranscription = flow == ProcessingFlow.YOUTUBE_SUBTITLES ||
+                flow == ProcessingFlow.IMPORTED_SUBTITLES ||
+                flow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+            assertEquals(
+                "config change should be relevant for $flow",
+                true,
+                EngineRestartStagePolicy.hasRelevantConfigChange(
+                    previous = oldConfig,
+                    current = current,
+                    processingFlow = flow,
+                    ignoreTranscription = ignoreTranscription,
+                ),
+            )
+            assertEquals(
+                "flow=$flow",
+                EngineRestartStage.DUBBING,
+                EngineRestartStagePolicy.choose(
+                    previous = oldConfig,
+                    current = current,
+                    processingFlow = flow,
+                    ignoreTranscription = ignoreTranscription,
+                    hasLines = true,
+                    sourceLanguageIsChinese = true,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun importedTranslatedSubtitlesIgnoreTranscriptionChanges() {
         assertNull(
             EngineRestartStagePolicy.choose(

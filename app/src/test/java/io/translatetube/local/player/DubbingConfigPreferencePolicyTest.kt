@@ -57,6 +57,23 @@ class DubbingConfigPreferencePolicyTest {
     }
 
     @Test
+    fun freeGeminiKeyBelongsToDubbingDomainButOnlyGeminiTtsConsumesIt() {
+        assertTrue(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("free_gemini_key"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "gemini"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "edge"))
+    }
+
+    @Test
+    fun legacyOnlineAndCloudSettingsDoNotRestartGoogleOrGeminiTts() {
+        for (engine in listOf("google", "gemini")) {
+            assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", engine))
+            assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("cloud_tts_voice", engine))
+        }
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", "edge"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("cloud_tts_voice", "web"))
+    }
+
+    @Test
     fun genericAndUnknownPreferencesStayRelevant() {
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("tts_engine", "edge"))
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("tts_speed", "edge"))
