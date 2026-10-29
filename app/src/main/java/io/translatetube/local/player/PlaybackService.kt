@@ -5638,6 +5638,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     updateUiForSession(key, pipelineGeneration) { it.copy(title = title, durationMs = dur) }
                 }
             }
+            }
 
             resolveMetadataStage()
 
