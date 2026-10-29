@@ -162,7 +162,9 @@ internal object PlaybackHintPolicy {
         elapsedSinceCurrentMs: Long,
     ): Boolean {
         if (current == null || elapsedSinceCurrentMs >= MIN_HINT_DURATION_MS) return false
-        if (next != null && next.priority > current.priority) return false
+        // Only failures/recovery transitions may pre-empt the 1.5s dwell; ordinary loading
+        // changes (for example, loading -> slow network) must not make the overlay flicker.
+        if (next != null && next.priority >= 90 && next.priority > current.priority) return false
         return true
     }
 
