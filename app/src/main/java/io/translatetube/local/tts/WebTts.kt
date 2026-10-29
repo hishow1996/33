@@ -23,6 +23,7 @@ internal class WebTts : TtsEngine {
 
     override val name: String = "在线语音"
     override val cacheKey: String = "web-v1"
+    override val speakerIdAffectsOutput: Boolean = false
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)

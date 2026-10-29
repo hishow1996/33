@@ -20,6 +20,7 @@ internal class GoogleTts : TtsEngine {
 
     override val name: String = "谷歌在线语音"
     override val cacheKey: String = "google-tts-v2"
+    override val speakerIdAffectsOutput: Boolean = false
 
     private val closed = AtomicBoolean(false)
 

@@ -16,6 +16,8 @@ interface TtsEngine {
     val name: String
     /** Stable synthesis configuration identity, used to avoid stale PCM cache hits. */
     val cacheKey: String get() = name
+    /** Whether speakerId can change the actual generated voice/audio for this engine. */
+    val speakerIdAffectsOutput: Boolean get() = true
     fun synth(text: String, speed: Float = 1.0f, speakerId: Int = -1): TtsAudio
 
     /** Cancellation-aware path for post-processing work after a provider returns PCM. */

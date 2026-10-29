@@ -1837,8 +1837,15 @@ class DubbingEngine(
 
     private fun cacheFile(idx: Int, cacheSpeed: Float = speed): File {
         val line = lines.getOrNull(idx)
-        // 块首行缓存的是"合并后的整块 PCM"：身份必须由合并后的文本和块窗口决定，
-        // 这样合并伙伴（下一句译文/时间）变化时旧缓存不会被误用。
+        // Read engine identity and speaker behavior from the same engine snapshot. Some providers
+        // have a single fixed voice and ignore speakerId; in that case, speaker relabeling must not
+        // make otherwise identical PCM unusable.
+        val activeTts = tts
+        val cacheSpeakerId = DubbingCacheSpeakerIdentityPolicy.cacheSpeakerId(
+            speakerId = line?.speakerId ?: -1,
+            speakerAffectsOutput = activeTts?.speakerIdAffectsOutput ?: true,
+        )
+        // Chunk-first lines cache the merged text/window, so a changed merge partner invalidates PCM.
         val translated = line?.zh
         val identityText = if (translated.isNullOrBlank()) {
             ""
@@ -1851,8 +1858,8 @@ class DubbingEngine(
             cacheDir,
             DubbingCacheIdentity.fileName(
                 lineIndex = idx,
-                speakerId = line?.speakerId ?: -1,
-                engineKey = tts?.cacheKey ?: tts?.name ?: "unknown",
+                speakerId = cacheSpeakerId,
+                engineKey = activeTts?.cacheKey ?: activeTts?.name ?: "unknown",
                 text = identityText,
                 speed = cacheSpeed,
                 cueDurationMs = cueDurationMs,
