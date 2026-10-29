@@ -997,7 +997,9 @@ class PlaybackService : MediaSessionService() {
                 requestToken = requestToken,
                 reuseMountedMediaForRestart = true,
                 forceRegenerateDubbing = true,
-                reuseMatchingDubbingCache = true,
+                reuseMatchingDubbingCache = previousDomains?.let { previous ->
+                    EngineRestartStagePolicy.canReuseMatchingDubbingCache(previous, currentDomains)
+                } == true,
             )
             return true
         }
@@ -1560,7 +1562,11 @@ class PlaybackService : MediaSessionService() {
                                 requestToken = restartRequestToken,
                                 reuseMountedMediaForRestart = canResumeAtStage,
                                 forceRegenerateDubbing = true,
-                                reuseMatchingDubbingCache = true,
+                                reuseMatchingDubbingCache = previousDomains?.let { previous ->
+                                    currentDomains?.let { current ->
+                                        EngineRestartStagePolicy.canReuseMatchingDubbingCache(previous, current)
+                                    }
+                                } == true,
                                 forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                             )
                         }
@@ -7850,7 +7856,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         io.translatetube.local.util.AppLogStore.warning(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            "配音配置切换后清零历史续播位置失败",
+                            "重置本轮续播位置失败",
                             error,
                             diagnosticContext = mapOf(
                                 "视频来源" to diagnosticMediaSourceType(ui.value),
@@ -7878,7 +7884,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            "配音配置切换后从视频开头起播",
+                            "本轮处理后从视频开头起播",
                             diagnosticContext = mapOf(
                                 "视频来源" to when {
                                     key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
@@ -7904,7 +7910,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            "配音配置变更后的起播位置检查完成",
+                            "本轮起播位置检查完成",
                             diagnosticContext = mapOf(
                                 "视频来源" to diagnosticMediaSourceType(ui.value),
                                 "请求起播位置 ms" to "0",

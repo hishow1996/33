@@ -75,6 +75,19 @@ internal object EngineRestartStagePolicy {
         return previous.translation != current.translation || previous.dubbing != current.dubbing
     }
 
+    /**
+     * Existing synthesized PCM may be reused only when source text/timing and translation remain
+     * authoritative. A dubbing-only change has a different voice/engine cache identity; cache hits
+     * therefore mean the exact target voice/text/speed/window was already synthesized successfully.
+     */
+    fun canReuseMatchingDubbingCache(
+        previous: EngineConfigFingerprints,
+        current: EngineConfigFingerprints,
+    ): Boolean =
+        previous.transcription == current.transcription &&
+            previous.translation == current.translation &&
+            previous.dubbing != current.dubbing
+
     fun hasRelevantConfigChange(
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,

@@ -18,6 +18,35 @@ class EngineRestartStagePolicyTest {
     ) = EngineConfigFingerprints(transcription, translation, dubbing)
 
     @Test
+    fun matchingDubbingCacheIsReusableOnlyForDubbingOnlyChanges() {
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                oldConfig,
+                changed(dubbing = "gemini-tts-v3-puck"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                oldConfig,
+                changed(translation = "translation-model-b", dubbing = "gemini-tts-v3-puck"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                oldConfig,
+                changed(transcription = "asr-b", dubbing = "gemini-tts-v3-puck"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(oldConfig, oldConfig),
+        )
+    }
+
+    @Test
     fun switchingApiModelsRestartsAtTranslationForYoutubeWebAndLocalFlows() {
         val flows = listOf(
             ProcessingFlow.YOUTUBE_SUBTITLES,
