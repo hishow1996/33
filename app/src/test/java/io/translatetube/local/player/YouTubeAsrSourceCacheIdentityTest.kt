@@ -35,19 +35,25 @@ class YouTubeAsrSourceCacheIdentityTest {
     }
 
     @Test
-    fun legacyKeysCoverPriorStableVersionAndBothFormerCaptionModes() {
+    fun legacyKeysCoverOlderVersionsAndBothFormerCaptionModesWithoutDuplicates() {
+        val keys = YouTubeAsrSourceCacheIdentity.legacyKeys(
+            videoKey = "youtube:abc123",
+            legacySourceCacheVersions = 8..9,
+            subtitleModes = listOf("english", "original", "english"),
+            asrCacheIdentity = "asr-a",
+        )
         assertEquals(
             listOf(
+                "youtube:abc123|source|youtube-asr-v8|asr-a",
                 "youtube:abc123|source|youtube-asr-v9|asr-a",
+                "youtube:abc123|source|youtube-v8-subtitle-english|asr-a",
+                "youtube:abc123|source|youtube-v8-subtitle-original|asr-a",
                 "youtube:abc123|source|youtube-v9-subtitle-english|asr-a",
                 "youtube:abc123|source|youtube-v9-subtitle-original|asr-a",
             ),
-            YouTubeAsrSourceCacheIdentity.legacyKeys(
-                videoKey = "youtube:abc123",
-                sourceCacheVersion = 9,
-                subtitleModes = listOf("english", "original", "english"),
-                asrCacheIdentity = "asr-a",
-            ),
+            keys,
         )
+        assertEquals(keys.size, keys.distinct().size)
+        assertTrue(keys.none { it == YouTubeAsrSourceCacheIdentity.key("youtube:abc123", "asr-a") })
     }
 }
