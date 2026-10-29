@@ -111,7 +111,7 @@ fun HomeScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    painter = painterResource(id = io.translatetube.local.R.drawable.elephant_figure),
+                    painter = painterResource(id = io.translatetube.local.R.drawable.elephant_logo),
                     contentDescription = "小象",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
