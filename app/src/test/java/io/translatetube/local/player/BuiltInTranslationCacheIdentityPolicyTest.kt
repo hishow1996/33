@@ -100,7 +100,18 @@ class BuiltInTranslationCacheIdentityPolicyTest {
                 deepSeekApiKey = "",
             ),
         )
-        assertEquals(FreeModelDefaults.GEMINI_MODEL, FreeModelDefaults.GEMINI_MODEL.trim())
+        assertEquals(
+            fingerprint(),
+            fingerprint(geminiModel = FreeModelDefaults.GEMINI_MODEL),
+        )
+        assertEquals(
+            fingerprint(activeId = EngineFactory.ID_FREE_DEEPSEEK),
+            fingerprint(
+                activeId = EngineFactory.ID_FREE_DEEPSEEK,
+                deepSeekModel = FreeModelDefaults.DEEPSEEK_MODEL,
+                deepSeekBaseUrl = FreeModelDefaults.DEEPSEEK_BASE_URL,
+            ),
+        )
     }
 
     @Test
