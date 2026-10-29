@@ -9,7 +9,6 @@ import io.translatetube.local.util.CrashGuard
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.translate.Crypto
 import io.translatetube.local.tts.GeminiTtsVoices
-import kotlinx.coroutines.flow.firstOrNull
 
 class TranslateTubeApp : Application() {
     companion object {
