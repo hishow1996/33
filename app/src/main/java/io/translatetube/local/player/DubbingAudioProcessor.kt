@@ -92,7 +92,7 @@ class DubbingAudioProcessor(
         activeBufferTimeUs = INVALID_TIME_US
         framesConsumedFromBuffer = 0L
         consumedFramesTotal = 0L
-        appliedOriginalGain = originalGain.coerceIn(0f, 1f)
+        appliedOriginalGain = DubbingGainPolicy.sanitizeGain(originalGain)
         firstInputLogged = false
         timestampFallbackLogged = false
     }
@@ -104,7 +104,7 @@ class DubbingAudioProcessor(
         activeBufferTimeUs = INVALID_TIME_US
         framesConsumedFromBuffer = 0L
         consumedFramesTotal = 0L
-        appliedOriginalGain = originalGain.coerceIn(0f, 1f)
+        appliedOriginalGain = DubbingGainPolicy.sanitizeGain(originalGain)
         voiceScratch = FloatArray(0)
         firstInputLogged = false
         timestampFallbackLogged = false
@@ -205,15 +205,15 @@ class DubbingAudioProcessor(
         val sourceAttack = smoothingFactor(sampleRate, SOURCE_ATTACK_MS)
         val sourceRelease = smoothingFactor(sampleRate, SOURCE_RELEASE_MS)
         val output = replaceOutputBuffer(remaining)
-        val requestedOriginalGain = originalGain.coerceIn(0f, 1f)
-        val requestedDubbingGain = dubbingGain.coerceIn(0f, 1f)
+        val requestedOriginalGain = DubbingGainPolicy.sanitizeGain(originalGain)
+        val requestedDubbingGain = DubbingGainPolicy.sanitizeGain(dubbingGain)
         val isFloat = encoding == C.ENCODING_PCM_FLOAT
 
         // Do not run source separation or auto-ducking: the source track should retain its
         // original sound and be affected only by its own gain slider.
         var frame = 0
         while (frame < frames) {
-            val voiceSample = voiceScratch[frame] * requestedDubbingGain
+            val voiceSample = DubbingGainPolicy.sanitizePcmSample(voiceScratch[frame]) * requestedDubbingGain
             appliedOriginalGain += (requestedOriginalGain - appliedOriginalGain) *
                 if (requestedOriginalGain < appliedOriginalGain) sourceAttack else sourceRelease
             val sourceGain = appliedOriginalGain
@@ -240,7 +240,13 @@ class DubbingAudioProcessor(
         }
 
     private fun writeSample(output: ByteBuffer, isFloat: Boolean, mixed: Float, voiceSample: Float) {
-        val limited = if (abs(voiceSample) > 1e-6f || abs(mixed) > 1f) softLimit(mixed) else mixed
+        val safeMixed = DubbingGainPolicy.sanitizePcmSample(mixed)
+        val safeVoice = DubbingGainPolicy.sanitizePcmSample(voiceSample)
+        val limited = if (abs(safeVoice) > 1e-6f || abs(safeMixed) > 1f) {
+            softLimit(safeMixed)
+        } else {
+            safeMixed
+        }
         if (isFloat) {
             output.putFloat(limited)
         } else {
