@@ -1293,8 +1293,9 @@ class PlaybackService : MediaSessionService() {
                                 )
                             }
                         if (
+                            matchingSuccessfulSnapshot != null &&
                             ReadySessionSnapshotReusePolicy.canRestoreMatchingHistoricalSnapshot(
-                                matchingSuccessfulSnapshot = matchingSuccessfulSnapshot != null,
+                                matchingSuccessfulSnapshot = true,
                                 forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                             )
                         ) {
