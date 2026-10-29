@@ -40,7 +40,7 @@ internal object ReadySessionSnapshotStore {
         context: Context,
         videoKey: String,
         identityKey: String = videoKey,
-        expectedProcessingFlow: ProcessingFlow? = null,
+        expectedProcessingFlows: Set<ProcessingFlow>? = null,
         fingerprintFor: (ignoreTranscription: Boolean) -> String,
     ): ReadyPlaybackSessionSnapshot? {
         if (!isSupportedVideoKey(videoKey)) return null
@@ -78,7 +78,7 @@ internal object ReadySessionSnapshotStore {
             if (!ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                     snapshotFlow = state.processingFlow,
                     snapshotIgnoresTranscription = ignoreTranscription,
-                    expectedFlow = expectedProcessingFlow,
+                    expectedFlows = expectedProcessingFlows,
                     isYouTube = videoKey.startsWith("youtube:", ignoreCase = true),
                 )
             ) continue
@@ -124,6 +124,7 @@ internal object ReadySessionSnapshotStore {
         context: Context,
         videoKey: String,
         identityKey: String = videoKey,
+        expectedProcessingFlows: Set<ProcessingFlow>? = null,
     ): ReadyPlaybackSessionSnapshot? {
         if (!isSupportedVideoKey(videoKey)) return null
         val expectedKeyHash = keyHash(videoKey)
@@ -150,6 +151,13 @@ internal object ReadySessionSnapshotStore {
 
             val stateObject = root.optJSONObject("state") ?: return@mapNotNull null
             val state = decodeState(videoKey, stateObject) ?: return@mapNotNull null
+            if (!ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                    snapshotFlow = state.processingFlow,
+                    snapshotIgnoresTranscription = ignoreTranscription,
+                    expectedFlows = expectedProcessingFlows,
+                    isYouTube = videoKey.startsWith("youtube:", ignoreCase = true),
+                )
+            ) return@mapNotNull null
             ReadyPlaybackSessionSnapshot(
                 fingerprint = fingerprint,
                 ignoreTranscription = ignoreTranscription,
