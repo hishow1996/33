@@ -39,6 +39,53 @@ class DubbingCachePolicyTest {
         assertTrue(DubbingCachePolicy.filesToEvict(entries, 50L).isEmpty())
     }
     @Test
+    fun evictsOtherVideosBeforeOldVoiceVariantsOfTheCurrentVideo() {
+        val otherVideo = DubbingCacheEntry(
+            path = "other-video",
+            bytes = 80L,
+            lastModified = 1L,
+            isCurrentSessionFile = false,
+            isCurrentVideoFile = false,
+        )
+        val oldVoiceForCurrentVideo = DubbingCacheEntry(
+            path = "current-video-old-voice",
+            bytes = 10L,
+            lastModified = 2L,
+            isCurrentSessionFile = false,
+            isCurrentVideoFile = true,
+        )
+        val currentVoice = DubbingCacheEntry(
+            path = "current-video-current-voice",
+            bytes = 20L,
+            lastModified = 3L,
+            isCurrentSessionFile = true,
+            isCurrentVideoFile = true,
+        )
+
+        // Removing the unrelated video is enough to meet the budget, so preserve the cache
+        // needed if the user switches back to the previous voice.
+        assertEquals(
+            listOf(otherVideo),
+            DubbingCachePolicy.filesToEvict(
+                listOf(oldVoiceForCurrentVideo, currentVoice, otherVideo),
+                30L,
+            ),
+        )
+    }
+
+    @Test
+    fun oldVoiceVariantsRemainEvictableAfterOtherVideoCachesAreExhausted() {
+        val otherVideo = DubbingCacheEntry("other", 60L, 1L, false, false)
+        val oldVoice = DubbingCacheEntry("old-voice", 60L, 2L, false, true)
+        val currentVoice = DubbingCacheEntry("current-voice", 60L, 3L, true, true)
+
+        assertEquals(
+            listOf(otherVideo, oldVoice),
+            DubbingCachePolicy.filesToEvict(listOf(oldVoice, currentVoice, otherVideo), 80L),
+        )
+    }
+
+    @Test
     fun oldVoiceCacheForSameVideoCanBeEvictedButCurrentVoiceCacheIsProtected() {
         val oldVoice = DubbingCacheEntry("same-video-old-voice", 80L, 10L, false)
         val currentVoice = DubbingCacheEntry("same-video-current-voice", 80L, 20L, true)

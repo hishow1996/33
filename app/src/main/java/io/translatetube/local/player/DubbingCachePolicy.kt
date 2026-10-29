@@ -8,6 +8,8 @@ internal data class DubbingCacheEntry(
     val bytes: Long,
     val lastModified: Long,
     val isCurrentSessionFile: Boolean,
+    /** A cached voice/model variant belonging to the video currently open in the player. */
+    val isCurrentVideoFile: Boolean = false,
 )
 
 internal object DubbingCachePolicy {
@@ -26,7 +28,16 @@ internal object DubbingCachePolicy {
         if (totalBytes <= budget) return emptyList()
 
         val evicted = mutableListOf<DubbingCacheEntry>()
-        for (entry in valid.asSequence().filterNot { it.isCurrentSessionFile }.sortedBy { it.lastModified }) {
+        // Preserve old voice/model variants for the active video as long as unrelated videos
+        // can be evicted first. If the active video's variants alone exceed the budget, they remain
+        // eligible after inactive-video caches are exhausted; the exact active session is protected.
+        val evictionOrder = valid.asSequence()
+            .filterNot { it.isCurrentSessionFile }
+            .sortedWith(
+                compareBy<DubbingCacheEntry> { it.isCurrentVideoFile }
+                    .thenBy { it.lastModified },
+            )
+        for (entry in evictionOrder) {
             if (totalBytes <= budget) break
             evicted += entry
             totalBytes = totalBytes.subtract(BigInteger.valueOf(entry.bytes)).max(BigInteger.ZERO)

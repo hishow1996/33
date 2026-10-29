@@ -1815,15 +1815,15 @@ class DubbingEngine(
                 .filter { it.isFile && it.name.endsWith(".pcm") }
                 .toList()
             val entries = pcmFiles.map { file ->
+                val isCurrentVideoFile = file.parentFile?.absolutePath == cacheDir.absolutePath
                 DubbingCacheEntry(
                     path = file.absolutePath,
                     bytes = file.length(),
                     lastModified = file.lastModified(),
-                    // Only protect files expected by this engine. Old voice/model variants for
-                    // the same video stay reusable below budget, but become LRU-evictable if the
-                    // global cache grows too large.
-                    isCurrentSessionFile = file.parentFile?.absolutePath == cacheDir.absolutePath &&
-                        file.name in currentSessionCacheNames,
+                    // Protect exact files required by this engine; treat older variants for this
+                    // same video as a lower-priority eviction target than unrelated videos.
+                    isCurrentSessionFile = isCurrentVideoFile && file.name in currentSessionCacheNames,
+                    isCurrentVideoFile = isCurrentVideoFile,
                 )
             }
             for (entry in DubbingCachePolicy.filesToEvict(entries)) {
