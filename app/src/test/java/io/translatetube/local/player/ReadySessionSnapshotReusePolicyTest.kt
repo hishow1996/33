@@ -113,6 +113,86 @@ class ReadySessionSnapshotReusePolicyTest {
     }
 
     @Test
+    fun importedTranslatedSubtitleSnapshotSurvivesIrrelevantTranslationConfigChange() {
+        val previous = EngineConfigFingerprints(
+            transcription = "asr-a",
+            translation = "translator-a",
+            dubbing = "tts-a",
+        )
+        val current = EngineConfigFingerprints(
+            transcription = "asr-a",
+            translation = "translator-b",
+            dubbing = "tts-a",
+        )
+        val restartStage = EngineRestartStagePolicy.choose(
+            previous = previous,
+            current = current,
+            processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            ignoreTranscription = true,
+            hasLines = true,
+            sourceLanguageIsChinese = false,
+        )
+
+        assertTrue(restartStage == null)
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.canRestoreComparableFallbackSnapshot(
+                fallbackSnapshotAvailable = true,
+                fallbackConfigComparable = true,
+                fallbackRestartStage = restartStage,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.shouldRegenerateDubbingForFallback(
+                forceRegenerateDubbing = false,
+                restoreReadySnapshot = false,
+                hasReusableSnapshot = false,
+                fallbackSnapshotAvailable = true,
+                fallbackConfigComparable = true,
+                fallbackRestartStage = restartStage,
+                engineConfigChangedSinceLastSuccess = true,
+            ),
+        )
+    }
+
+    @Test
+    fun actualDubbingConfigChangeStillRegeneratesFallbackSpeech() {
+        val previous = EngineConfigFingerprints(
+            transcription = "asr-a",
+            translation = "translator-a",
+            dubbing = "tts-a",
+        )
+        val current = previous.copy(dubbing = "tts-b")
+        val restartStage = EngineRestartStagePolicy.choose(
+            previous = previous,
+            current = current,
+            processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            ignoreTranscription = true,
+            hasLines = true,
+            sourceLanguageIsChinese = true,
+        )
+
+        assertTrue(restartStage == EngineRestartStage.DUBBING)
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.canRestoreComparableFallbackSnapshot(
+                fallbackSnapshotAvailable = true,
+                fallbackConfigComparable = true,
+                fallbackRestartStage = restartStage,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.shouldRegenerateDubbingForFallback(
+                forceRegenerateDubbing = false,
+                restoreReadySnapshot = false,
+                hasReusableSnapshot = false,
+                fallbackSnapshotAvailable = true,
+                fallbackConfigComparable = true,
+                fallbackRestartStage = restartStage,
+                engineConfigChangedSinceLastSuccess = true,
+            ),
+        )
+    }
+
+    @Test
     fun reopeningLocalVideoCanRestoreItsSuccessfulImportedSubtitleResult() {
         assertTrue(
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
