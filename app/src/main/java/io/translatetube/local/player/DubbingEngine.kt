@@ -10,6 +10,7 @@ import android.os.Looper
 import android.media.PlaybackParams
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.tts.TtsEngine
+import io.translatetube.local.tts.GeminiTtsQuotaException
 import io.translatetube.local.tts.TimelineTtsPlayback
 import io.translatetube.local.tts.TtsInputLimitException
 import kotlinx.coroutines.CoroutineScope
@@ -183,6 +184,8 @@ class DubbingEngine(
     @Volatile private var released = false
     /** A fatal synthesis OOM disables this engine's queue until the service retires it. */
     @Volatile private var synthesisMemoryFailure = false
+    /** HTTP 429 pauses the provider queue so every pending cue does not repeat the same quota failure. */
+    @Volatile private var providerRateLimitBlocked = false
     /** AudioTrack 操作专用单线程：write(MODE_STATIC) 数据拷贝耗时，绝不放主线程 */
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "tt-audio").apply { priority = Thread.MAX_PRIORITY }
@@ -291,7 +294,7 @@ class DubbingEngine(
 
     /** Cache validation or synthesis is still running even after playback has entered READY. */
     val isPreparing: Boolean
-        get() = !released && (
+        get() = !released && !providerRateLimitBlocked && (
             cacheInitJob?.isActive == true ||
                 synthJob?.isActive == true ||
                 pending.isNotEmpty()
@@ -456,6 +459,7 @@ class DubbingEngine(
                 ttsInstances.add(tts)
                 ttsPublished = true
                 fallbackRequested.set(false)
+                providerRateLimitBlocked = false
                 this.lines = preparedLines
                 this.inputLinesForDiagnostics = lines
                 this.sourceLanguageForDiagnostics = sourceLanguage
@@ -849,14 +853,14 @@ class DubbingEngine(
             (!backgroundSynthesisRequested || backgroundSynthesisUnavailable || synthesisTts == null || synthesisTts === tts)
         ) return
         // Do not continually launch empty workers from the high-frequency player ticker.
-        if (pending.isEmpty()) return
+        if (providerRateLimitBlocked || pending.isEmpty()) return
         // Queue recovery and cache initialization can request startup concurrently. Serialize
         // the check-and-launch pair; otherwise both callers could observe an idle worker and
         // invoke the same native TTS engine concurrently.
         synchronized(synthStartLock) {
             // Never cancel an active provider call just to restart queue processing: many TTS
             // providers perform blocking native work and cancellation cannot stop it immediately.
-            if (released || synthesisMemoryFailure || synthJob?.isActive == true) return
+            if (released || synthesisMemoryFailure || providerRateLimitBlocked || synthJob?.isActive == true) return
             val workerCacheGeneration = synchronized(cacheConfigurationLock) {
                 cacheInitGeneration.get()
             }
@@ -1050,7 +1054,9 @@ class DubbingEngine(
                             lastFailure = e
                             // The same text/provider cannot benefit from another synthesis pass
                             // when its result already exceeds the hard per-cue PCM cap.
-                            if (e is DubbingPcmLimitException || e is TtsInputLimitException) break
+                            if (e is DubbingPcmLimitException || e is TtsInputLimitException ||
+                                e is GeminiTtsQuotaException
+                            ) break
                             if (attempt == 0 && !released) {
                                 android.util.Log.w(
                                     "DubbingEngine",
@@ -1354,11 +1360,60 @@ class DubbingEngine(
                     if (!isWorkerTaskCurrent()) {
                         throw kotlinx.coroutines.CancellationException("配音任务配置已变化，忽略旧引擎结果")
                     }
-                    // After one retry, publish the failure and allow video playback to continue.
                     val detail = e.message ?: e.javaClass.simpleName
+                    android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
+
+                    // A Gemini HTTP 429 is shared by the active key/project's quota and should not
+                    // be retried for every remaining subtitle. Keep this cue at the queue head,
+                    // preserve all successful PCM/cache entries, and leave the unfinished cues pending.
+                    if (e is GeminiTtsQuotaException) {
+                        val dailyQuotaExhausted =
+                            detail.contains("per day", ignoreCase = true) ||
+                                detail.contains("limit: 0", ignoreCase = true) ||
+                                detail.contains("check your plan and billing", ignoreCase = true)
+                        val pauseMessage = if (dailyQuotaExhausted) {
+                            "Gemini TTS API 配额不足，已暂停剩余配音。已合成音频和未完成字幕均已保留；请检查 Google AI 配额/账单，或切换配音引擎后继续。"
+                        } else {
+                            "Gemini TTS 触发 HTTP 429 限流，已暂停剩余配音并保留未完成字幕。请稍后重新进入配音流程，或切换配音引擎继续。"
+                        }
+                        val pauseApplied = synchronized(cacheConfigurationLock) {
+                            if (!isWorkerGenerationCurrent(workerCacheGeneration)) {
+                                false
+                            } else {
+                                providerRateLimitBlocked = true
+                                markCuePending(idx)
+                                synchronized(pending) {
+                                    if (!pending.contains(idx)) pending.offerFirst(idx)
+                                }
+                                true
+                            }
+                        }
+                        if (!pauseApplied) {
+                            throw kotlinx.coroutines.CancellationException("配音配置已变化，忽略旧的 Gemini 配额错误")
+                        }
+                        bumpPrepared()
+                        logDubbingError(
+                            "Gemini TTS 遇到 HTTP 429，已暂停待合成队列并保留未完成字幕",
+                            e,
+                            diagnosticContext = mapOf(
+                                "字幕行号" to "${idx + 1}/${lines.size}",
+                                "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                                "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                                "错误分类" to if (dailyQuotaExhausted) "每日配额/可用额度不足" else "请求频率受限",
+                                "当前句已重新放回队列" to "true",
+                                "其余未完成句是否保留" to "true",
+                                "已合成 PCM 是否保留" to "true",
+                                "恢复策略" to "本次会话不再重试同 Key 的 Gemini 请求；重新绑定配音会话或切换引擎后继续",
+                                "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                            ),
+                        )
+                        reportSynthesisError(pauseMessage)
+                        break
+                    }
+
+                    // Non-quota failures retain the existing per-cue recovery behavior.
                     silentCueReasonsByIndex[idx] =
                         "配音合成/缓存处理失败：${e.javaClass.name}: ${detail.take(320)}"
-                    android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
                     // A playback cache miss may have already requested a retry while this cue
                     // was being synthesized. Defer terminal error reporting until that queued
                     // attempt has run, otherwise a successful immediate retry leaves a false warning.
@@ -1559,7 +1614,8 @@ class DubbingEngine(
             val completedWorker = kotlinx.coroutines.currentCoroutineContext()[Job]
             val shouldRestart = synchronized(synthStartLock) {
                 if (synthJob === completedWorker) synthJob = null
-                !released && !synthesisMemoryFailure && !fallbackRequested.get() && pending.isNotEmpty()
+                !released && !synthesisMemoryFailure && !providerRateLimitBlocked &&
+                    !fallbackRequested.get() && pending.isNotEmpty()
             }
             if (shouldRestart) startSynthLoop()
             }
