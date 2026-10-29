@@ -5886,26 +5886,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     db.subtitleCacheDao().get(oldKey)
                 }
                 val latestLegacy = legacyEntries.maxByOrNull { it.updatedAt } ?: return null
-                val migrated = latestLegacy.copy(
-                    cacheKey = sourceSubtitleCacheKey,
-                    updatedAt = System.currentTimeMillis(),
-                    videoKey = key,
-                )
-                val migrationSucceeded = runCatching {
-                    db.subtitleCacheDao().put(migrated)
-                }.isSuccess
-                if (migrationSucceeded) {
-                    // Delete only old ASR-key variants for this exact engine identity. Caption
-                    // entries have their own captions-v1/v2 keys and are deliberately untouched.
-                    legacyYouTubeAsrSourceCacheKeys.forEach { oldKey ->
-                        db.subtitleCacheDao().delete(oldKey)
-                        db.subtitleCacheDao().deleteByCacheKeyPrefix("$oldKey|asr-progress-v2")
-                    }
-                    sourceCachedKey = sourceSubtitleCacheKey
-                    return migrated
-                }
-
-                // A failed migration must not discard a usable legacy result.
+                // Do not migrate/delete until JSON, timeline and language validation have passed.
+                // The caller keeps this exact old key until that validation finishes.
                 sourceCachedKey = latestLegacy.cacheKey
                 return latestLegacy
             }
@@ -6022,6 +6004,34 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     cachedContentLanguage == "en"
                 ) {
                     restoredSourceLang = "en"
+                }
+            }
+
+            if (
+                videoId != null &&
+                sourceCached != null &&
+                restoredSourceLines != null &&
+                sourceCachedKey != null &&
+                legacyYouTubeAsrSourceCacheKeys.contains(sourceCachedKey)
+            ) {
+                // The old ASR cache is now known to contain a valid timeline and passed the
+                // source-language checks above. Only now promote it to the stable mode-independent
+                // key and remove the redundant old variants/checkpoints.
+                val migrated = sourceCached.copy(
+                    cacheKey = sourceSubtitleCacheKey,
+                    updatedAt = System.currentTimeMillis(),
+                    videoKey = key,
+                )
+                val migrationSucceeded = runCatching {
+                    db.subtitleCacheDao().put(migrated)
+                }.isSuccess
+                if (migrationSucceeded) {
+                    legacyYouTubeAsrSourceCacheKeys.forEach { oldKey ->
+                        db.subtitleCacheDao().delete(oldKey)
+                        db.subtitleCacheDao().deleteByCacheKeyPrefix("$oldKey|asr-progress-v2")
+                    }
+                    sourceCached = migrated
+                    sourceCachedKey = sourceSubtitleCacheKey
                 }
             }
 
