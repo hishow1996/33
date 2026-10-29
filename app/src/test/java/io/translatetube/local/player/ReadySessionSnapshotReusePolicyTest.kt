@@ -101,6 +101,30 @@ class ReadySessionSnapshotReusePolicyTest {
     }
 
     @Test
+    fun genericHistoryLookupRejectsAsrSnapshotThatIgnoredTranscriptionConfig() {
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                snapshotIgnoresTranscription = true,
+                expectedFlows = null,
+                isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
+    fun genericHistoryLookupRejectsYoutubeCaptionSnapshotWithAsrBoundFingerprint() {
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                snapshotIgnoresTranscription = false,
+                expectedFlows = null,
+                isYouTube = true,
+            ),
+        )
+    }
+
+    @Test
     fun localAsrFlowCannotRestoreSnapshotThatIgnoredAsr() {
         assertFalse(
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
