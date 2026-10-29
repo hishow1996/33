@@ -26,6 +26,26 @@ internal object TtsCacheIdentityPolicy {
         return credentialFingerprint(fallbackProfileApiKey)
     }
 
-    fun geminiCacheKey(voiceName: String, apiKey: String): String =
-        "gemini-tts-v3-${voiceName.trim().lowercase(Locale.ROOT)}-${credentialFingerprint(apiKey)}"
+    // Keep the historical cache identity for the shipped model order so previously
+    // synthesized, successful PCM remains reusable. Any changed candidate or priority order
+    // receives a distinct identity automatically rather than relying on a manual version bump.
+    private val legacyGeminiModelCandidates = listOf(
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-pro-preview-tts",
+    )
+
+    fun geminiCacheKey(
+        voiceName: String,
+        apiKey: String,
+        modelCandidates: List<String> = legacyGeminiModelCandidates,
+    ): String {
+        val base = "gemini-tts-v3-${voiceName.trim().lowercase(Locale.ROOT)}-${credentialFingerprint(apiKey)}"
+        val normalizedCandidates = modelCandidates.map { it.trim() }.filter { it.isNotEmpty() }
+        if (normalizedCandidates == legacyGeminiModelCandidates) return base
+        val modelFingerprint = MessageDigest.getInstance("SHA-256")
+            .digest(normalizedCandidates.joinToString("\n").toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return "$base-models-$modelFingerprint"
+    }
 }

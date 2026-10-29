@@ -110,6 +110,7 @@ internal class GeminiTts(
         get() = TtsCacheIdentityPolicy.geminiCacheKey(
             voiceName = configuredDefaultVoice(),
             apiKey = resolvedApiKey,
+            modelCandidates = CANDIDATE_MODELS,
         )
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
