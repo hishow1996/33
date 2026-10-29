@@ -3400,7 +3400,7 @@ class PlaybackService : MediaSessionService() {
         // serve different private media to different cookie sessions or page origins.
         val cacheKeyBase = when {
             remoteMediaUrl != null ->
-                MediaUrlCacheIdentity.remoteSessionKey(remoteMediaUrl, remoteMediaReferrer, remoteMediaCookie)
+                MediaUrlCacheIdentity.remoteSessionKey(requireNotNull(remoteMediaUrl), remoteMediaReferrer, remoteMediaCookie)
             localMediaIdentityKey != null -> localMediaIdentityKey
             else -> key
         }
@@ -5516,7 +5516,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
             } else if (videoId != null) {
                 awaitProcessingResumed(key, pipelineGeneration)
-                val requestedId = videoId
+                val requestedId = requireNotNull(videoId)
                 try {
                     val m = NewPipeRepo.resolve(requestedId)
                     awaitProcessingResumed(key, pipelineGeneration)
@@ -5647,7 +5647,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 try {
                     awaitProcessingResumed(key, pipelineGeneration)
                     updateUiForSession(key, pipelineGeneration) { it.copy(progress = "正在查找可用字幕轨…") }
-                    val tracks = NewPipeRepo.subtitleTracks(videoId)
+                    val tracks = NewPipeRepo.subtitleTracks(requireNotNull(videoId))
                     awaitProcessingResumed(key, pipelineGeneration)
                     updateUiForSession(key, pipelineGeneration) {
                         it.copy(
@@ -5681,7 +5681,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // serve different private media to different cookie sessions or page origins.
             val cacheKeyBase = when {
                 remoteMediaUrl != null ->
-                    MediaUrlCacheIdentity.remoteSessionKey(remoteMediaUrl, remoteMediaReferrer, remoteMediaCookie)
+                    MediaUrlCacheIdentity.remoteSessionKey(requireNotNull(remoteMediaUrl), remoteMediaReferrer, remoteMediaCookie)
                 localUri != null ->
                     requestedLocalMediaIdentityKey
                         ?: LocalMediaCacheIdentity.identityKey(this@PlaybackService, localUri)
@@ -5975,7 +5975,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // the spoken language. Validate each cache according to its actual origin.
             if (videoId != null && sourceCached != null && restoredSourceLines != null) {
                 val originalAudioLanguage = try {
-                    io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(videoId)
+                    io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(requireNotNull(videoId))
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     throw cancelled
                 } catch (failure: Exception) {
@@ -6224,7 +6224,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val kawaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_kawa_language", "auto") ?: "auto"
                 val youtubeAudioLanguage = if (videoId != null) {
                     try {
-                        io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(videoId)
+                        io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(requireNotNull(videoId))
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         throw cancelled
                     } catch (failure: Exception) {
@@ -6271,11 +6271,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，正在提取视频音频…") }
                 val audioFile: Any = when {
                     videoId != null -> obtainAsrAudioFile(
-                        videoId, key, "复用已下载音频，避免重复下载…",
+                        requireNotNull(videoId), key, "复用已下载音频，避免重复下载…",
                         pipelineGeneration = pipelineGeneration,
                     )
                     remoteMediaUrl != null -> obtainRemoteMediaAsrFile(
-                        remoteMediaUrl,
+                        requireNotNull(remoteMediaUrl),
                         remoteMediaReferrer,
                         remoteMediaCookie,
                         key,
@@ -7467,7 +7467,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 val importedTranslatedFlow =
                     resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
                 val calibratedLines = if (videoId != null && !importedTranslatedFlow) {
-                    calibrateYouTubeFirstCue(videoId, baseLines)
+                    calibrateYouTubeFirstCue(requireNotNull(videoId), baseLines)
                 } else {
                     baseLines
                 }
@@ -7489,7 +7489,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 // ---- 4. 流装配 ----
                 if (!reuseMountedMedia) {
                 if (videoId != null) {
-                    val streamInfo = NewPipeRepo.streams(videoId)
+                    val streamInfo = NewPipeRepo.streams(requireNotNull(videoId))
                     ensureCurrentSession(key, pipelineGeneration)
                     val choices = buildYouTubeStreamChoices(streamInfo)
                     val candidates = choices.sources
