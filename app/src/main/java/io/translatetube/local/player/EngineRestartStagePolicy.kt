@@ -37,13 +37,18 @@ internal object EngineRestartStagePolicy {
     fun canResumeFromSourcePreparation(
         phase: Phase,
         processingFlow: ProcessingFlow,
-    ): Boolean =
+    ): Boolean = when {
+        // Before YouTube chooses between captions and ASR, translation/TTS changes still do not
+        // affect metadata or caption discovery. Caption-mode changes are handled separately.
+        phase == Phase.PARSING && processingFlow == ProcessingFlow.AUTO -> true
         phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING) &&
             processingFlow in setOf(
                 ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
                 ProcessingFlow.WEB_SPEECH_RECOGNITION,
                 ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
-            )
+            ) -> true
+        else -> false
+    }
 
     /**
      * A downstream translation/TTS change does not invalidate in-flight audio preparation or ASR.

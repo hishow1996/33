@@ -136,6 +136,24 @@ class EngineRestartStagePolicyTest {
                 ),
             )
         }
+        assertEquals(
+            "YouTube AUTO flow can defer downstream changes only during parsing",
+            true,
+            EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                Phase.PARSING,
+                ProcessingFlow.AUTO,
+            ),
+        )
+        for (phase in listOf(Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING)) {
+            assertEquals(
+                "AUTO must have selected a concrete source path before $phase",
+                false,
+                EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                    phase,
+                    ProcessingFlow.AUTO,
+                ),
+            )
+        }
     }
 
     @Test
@@ -419,6 +437,37 @@ class EngineRestartStagePolicyTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun youtubeAutoParsingCanDeferOnlyDownstreamEngineChanges() {
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.PARSING,
+                ProcessingFlow.AUTO,
+                oldConfig,
+                changed(translation = "translation-model-b"),
+            ),
+        )
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.PARSING,
+                ProcessingFlow.AUTO,
+                oldConfig,
+                changed(dubbing = "tts-b"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.PARSING,
+                ProcessingFlow.AUTO,
+                oldConfig,
+                changed(transcription = "asr-b", translation = "translation-model-b"),
+            ),
+        )
     }
 
     @Test
