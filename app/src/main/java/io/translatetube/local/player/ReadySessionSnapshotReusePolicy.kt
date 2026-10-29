@@ -25,6 +25,16 @@ internal object ReadySessionSnapshotReusePolicy {
      */
     fun isSnapshotFlowCompatible(
         snapshotFlow: ProcessingFlow,
+        snapshotIgnoresTranscription: Boolean,
         expectedFlow: ProcessingFlow?,
-    ): Boolean = expectedFlow == null || snapshotFlow == expectedFlow
+        isYouTube: Boolean,
+    ): Boolean {
+        if (expectedFlow == null) return true
+        if (snapshotFlow != expectedFlow) return false
+        val expectedIgnoreTranscription = EngineRestartStagePolicy.ignoresTranscriptionConfig(
+            processingFlow = expectedFlow,
+            isYouTube = isYouTube,
+        )
+        return snapshotIgnoresTranscription == expectedIgnoreTranscription
+    }
 }
