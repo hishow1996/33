@@ -1336,7 +1336,7 @@ private fun FreeModelConfigDialog(
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
 
     val isGemini = type == "GEMINI"
-    val title = if (isGemini) "Google Gemini 翻译配置" else "DeepSeek 配置"
+    val title = if (isGemini) "Google Gemini 配置" else "DeepSeek 配置"
     val defaultModel = if (isGemini) FreeModelDefaults.GEMINI_MODEL else FreeModelDefaults.DEEPSEEK_MODEL
 
     val initialEncKey = remember {
@@ -1391,7 +1391,7 @@ private fun FreeModelConfigDialog(
             Box(Modifier.fillMaxWidth().height(1.dp).background(OutlineSoft))
 
             // API Key
-            Labeled(if (isGemini) "Gemini 翻译 API Key（可选）" else "私有 API Key（可选，覆盖默认配置）") {
+            Labeled("私有 API Key（可选，覆盖默认配置）") {
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
@@ -1404,7 +1404,7 @@ private fun FreeModelConfigDialog(
                         }
                     },
                     placeholder = {
-                        Text(if (isGemini) "填入 Gemini 翻译 API Key" else "填入 DeepSeek API Key")
+                        Text(if (isGemini) "填入 Google AI Studio API Key" else "填入 DeepSeek API Key")
                     },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = BrandBright,
