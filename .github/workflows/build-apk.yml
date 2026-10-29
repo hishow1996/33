@@ -234,3 +234,5 @@ jobs:
 # Explicit user-requested APK build trigger (2026-10-28 18:30 Asia/Tokyo).
 
 # Retry APK build after fixing PlaybackService stale-handler returns (2026-10-28).
+
+# Explicit one-time APK build request (2026-10-29).
