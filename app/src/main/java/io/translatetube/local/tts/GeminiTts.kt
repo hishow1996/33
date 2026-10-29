@@ -19,6 +19,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
+ * Gemini 返回 HTTP 429 时使用独立异常类型向上游传递。
+ * 这类失败不能当作普通模型故障继续尝试候选模型；同一项目/Key 的配额限制不会因换模型自动消失。
+ */
+internal class GeminiTtsQuotaException(message: String) : IllegalStateException(message)
+
+/**
  * Google Gemini 原生语音合成引擎（Gemini TTS）：
  * 使用独立的 Gemini 配音 API Key，和翻译 API 配置完全分离。
  */
@@ -205,6 +211,10 @@ internal class GeminiTts(
                 return callGeminiAudio(apiKey, model, text, voiceName, speed, checkActive)
             } catch (cancelled: java.util.concurrent.CancellationException) {
                 throw cancelled
+            } catch (quota: GeminiTtsQuotaException) {
+                // HTTP 429 is an API quota/rate-limit condition, not a model-specific render error.
+                // Fail fast instead of sending another request to the next candidate model.
+                throw quota
             } catch (e: Throwable) {
                 lastError = e
                 val msg = e.message.orEmpty()
@@ -280,6 +290,9 @@ internal class GeminiTts(
                 val errDetail = runCatching {
                     JSONObject(raw).optJSONObject("error")?.optString("message").orEmpty()
                 }.getOrDefault("").ifBlank { raw.take(160) }
+                if (resp.code == 429) {
+                    throw GeminiTtsQuotaException("HTTP 429: $errDetail")
+                }
                 throw IllegalStateException("HTTP ${resp.code}: $errDetail")
             }
             raw
