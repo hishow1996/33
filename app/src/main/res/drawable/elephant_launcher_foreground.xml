@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Use the same isolated 3D elephant as splash and Home. Keep the original aspect ratio
-         and leave enough safe space for circular, squircle, and other launcher masks. -->
+    <!-- Keep the complete mascot inside the adaptive-icon safe area, without a rounded-square image background. -->
     <item
-        android:drawable="@drawable/elephant_figure"
-        android:width="80dp"
-        android:height="69dp"
+        android:drawable="@drawable/elephant_mascot_cutout"
+        android:width="70dp"
+        android:height="70dp"
         android:gravity="center" />
 </layer-list>

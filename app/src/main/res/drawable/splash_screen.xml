@@ -2,8 +2,8 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@android:color/white" />
     <item
-        android:drawable="@drawable/elephant_figure"
+        android:drawable="@drawable/elephant_mascot_cutout"
         android:width="196dp"
-        android:height="169dp"
+        android:height="196dp"
         android:gravity="center" />
 </layer-list>
