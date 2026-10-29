@@ -3157,9 +3157,22 @@ class PlaybackService : MediaSessionService() {
         // YouTube may legitimately use either captions or ASR; webpage/local media use their own ASR flow.
         val expectedSnapshotFlows = when {
             videoId != null || key.startsWith("youtube:", ignoreCase = true) ->
-                setOf(ProcessingFlow.YOUTUBE_SUBTITLES, ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION)
-            remoteMediaUrl != null -> setOf(ProcessingFlow.WEB_SPEECH_RECOGNITION)
-            localUri != null -> setOf(ProcessingFlow.LOCAL_SPEECH_RECOGNITION)
+                setOf(
+                    ProcessingFlow.YOUTUBE_SUBTITLES,
+                    ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                    ProcessingFlow.IMPORTED_SUBTITLES,
+                    ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                )
+            remoteMediaUrl != null -> setOf(
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                ProcessingFlow.IMPORTED_SUBTITLES,
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            )
+            localUri != null -> setOf(
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                ProcessingFlow.IMPORTED_SUBTITLES,
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            )
             else -> null
         }
         // A matching snapshot may belong to an older run of the current configuration. Compare
