@@ -1719,7 +1719,7 @@ class DubbingEngine(
     private fun markCuePending(idx: Int) {
         val affected = DubbingChunkReadinessPolicy.affectedIndexes(idx, chunkRedirect)
         readinessProgress.markPendingGroup(affected, lines.size, ::publishReadinessProgress)
-        affected.forEach(silentCueReasonsByIndex::remove)
+        affected.forEach { silentCueReasonsByIndex.remove(it) }
     }
 
     private fun bumpPrepared() {
@@ -1964,7 +1964,7 @@ class DubbingEngine(
             ) {
                 DubbingRetryQueueDecision.IGNORE -> false
                 DubbingRetryQueueDecision.DEFER_UNTIL_ACTIVE_CUE_FINISHES -> {
-                    retryAfterActiveSynthesis.add(idx)
+                    retryAfterActiveSynthesis.add(retryIndex)
                     false
                 }
                 DubbingRetryQueueDecision.ENSURE_WORKER -> {
