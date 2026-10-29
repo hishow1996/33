@@ -13,6 +13,11 @@ class EngineConfigPreferenceIdentityPolicyTest {
                 SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
             ),
         )
+        assertFalse(
+            EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant(
+                io.translatetube.local.tts.GeminiTtsVoices.PREF_API_KEY_MIGRATION_DONE,
+            ),
+        )
     }
 
     @Test
