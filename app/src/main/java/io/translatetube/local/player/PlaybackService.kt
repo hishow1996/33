@@ -5733,9 +5733,24 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             // Downloaded captions live in their own mode-specific cache. These keys are for ASR
             // transcripts, so every ASR-based source cache must use the same full config identity.
+            // ASR transcripts are produced from the audio, so caption-language preference must
+            // not split their cache. Keep old mode-scoped keys available for one-time migration.
+            val legacyYouTubeAsrSourceCacheKeys = if (videoId != null) {
+                YouTubeAsrSourceCacheIdentity.legacyKeys(
+                    videoKey = key,
+                    sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                    subtitleModes = io.translatetube.local.yt.YouTubeSubtitleLanguageMode.values()
+                        .map { it.preferenceValue },
+                    asrCacheIdentity = asrCacheIdentity,
+                )
+            } else emptyList()
             val sourceSubtitleCacheKey = when {
                 videoId != null ->
-                    "$key|source|youtube-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION}-subtitle-${youtubeSubtitleMode.preferenceValue}|asr-$asrCacheIdentity"
+                    YouTubeAsrSourceCacheIdentity.key(
+                        videoKey = key,
+                        sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                        asrCacheIdentity = asrCacheIdentity,
+                    )
                 remoteMediaUrl != null ->
                     "$cacheKeyBase|source|remote-asr-$asrCacheIdentity-timed-v5"
                 localUri != null ->
@@ -5859,6 +5874,42 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 return (fetchedLines to lang).also { fetchedSourceCacheResult = it }
             }
 
+            suspend fun loadCachedAsrSourceLines(): io.translatetube.local.data.SubtitleCacheEntity? {
+                val current = db.subtitleCacheDao().get(sourceSubtitleCacheKey)
+                if (current != null) {
+                    sourceCachedKey = sourceSubtitleCacheKey
+                    return current
+                }
+                if (legacyYouTubeAsrSourceCacheKeys.isEmpty()) return null
+
+                val legacyEntries = legacyYouTubeAsrSourceCacheKeys.mapNotNull { oldKey ->
+                    db.subtitleCacheDao().get(oldKey)
+                }
+                val latestLegacy = legacyEntries.maxByOrNull { it.updatedAt } ?: return null
+                val migrated = latestLegacy.copy(
+                    cacheKey = sourceSubtitleCacheKey,
+                    updatedAt = System.currentTimeMillis(),
+                    videoKey = key,
+                )
+                val migrationSucceeded = runCatching {
+                    db.subtitleCacheDao().put(migrated)
+                }.isSuccess
+                if (migrationSucceeded) {
+                    // Delete only old ASR-key variants for this exact engine identity. Caption
+                    // entries have their own captions-v1/v2 keys and are deliberately untouched.
+                    legacyYouTubeAsrSourceCacheKeys.forEach { oldKey ->
+                        db.subtitleCacheDao().delete(oldKey)
+                        db.subtitleCacheDao().deleteByCacheKeyPrefix("$oldKey|asr-progress-v2")
+                    }
+                    sourceCachedKey = sourceSubtitleCacheKey
+                    return migrated
+                }
+
+                // A failed migration must not discard a usable legacy result.
+                sourceCachedKey = latestLegacy.cacheKey
+                return latestLegacy
+            }
+
             var sourceCached = if (
                 resumeState == null && (videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()
             ) {
@@ -5877,17 +5928,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         sourceCachedKey = captionCache.cacheKey
                         captionCache
                     } else {
-                        db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
-                            sourceCachedKey = sourceSubtitleCacheKey
-                        }
+                        loadCachedAsrSourceLines()
                     }
                 } else if (captionCache != null) {
                     sourceCachedKey = captionCache.cacheKey
                     captionCache
                 } else {
-                    db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
-                        sourceCachedKey = sourceSubtitleCacheKey
-                    }
+                    loadCachedAsrSourceLines()
                 }
             } else null
             var restoredSourceLines: List<SubLine>? = sourceCached?.let { source ->
@@ -6089,7 +6136,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey) ->
                     ProcessingFlow.YOUTUBE_SUBTITLES
                 videoId != null && restoredSourceLines != null &&
-                    sourceCachedKey == sourceSubtitleCacheKey ->
+                    (sourceCachedKey == sourceSubtitleCacheKey ||
+                        legacyYouTubeAsrSourceCacheKeys.contains(sourceCachedKey)) ->
                     ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
                 videoId != null && restoredSourceLines != null ->
                     ReadyHistorySessionConfigStore.savedProcessingFlow(this@PlaybackService, key)
@@ -6249,7 +6297,17 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     )
                     return
                 } else {
-                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
+                val stablePartialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
+                val hasStablePartialAsrCache = db.subtitleCacheDao().get(stablePartialAsrCacheKey) != null
+                val legacyPartialAsrCacheKey = if (
+                    videoId != null && !hasStablePartialAsrCache
+                ) {
+                    legacyYouTubeAsrSourceCacheKeys.mapNotNull { oldSourceKey ->
+                        val partialKey = "$oldSourceKey|asr-progress-v2"
+                        db.subtitleCacheDao().get(partialKey)?.let { partialKey to it.updatedAt }
+                    }.maxByOrNull { it.second }?.first
+                } else null
+                val partialAsrCacheKey = legacyPartialAsrCacheKey ?: stablePartialAsrCacheKey
 
                 val asrLines: List<Triple<Long, Long, String>>
                 val detectedAsrLang: String
