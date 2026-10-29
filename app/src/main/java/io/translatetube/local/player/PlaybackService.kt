@@ -5712,10 +5712,15 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             )
             // Use the same source-aware key policy during initial lookup and configuration refresh.
             // YouTube caption rows are validated separately; web/local ASR keys include the full ASR identity.
+            // When opening a new YouTube video, the source type is not known until we inspect
+            // caption caches/discovery. Use the ASR-bound key provisionally and defer its lookup
+            // until resolvedProcessingFlow is known; otherwise an ASR-generated translation can
+            // be reused as if it came from YouTube captions.
+            val initialYouTubeCaptionSource = resumeState?.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
             val baseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
                 baseTranslationCacheKey = baseTranslationCacheKey,
                 hasImportedLines = !sourceImportedLines.isNullOrEmpty(),
-                isYouTubeCaptionSource = videoId != null,
+                isYouTubeCaptionSource = initialYouTubeCaptionSource,
                 asrCacheIdentity = asrCacheIdentity,
             )
             var translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
@@ -5776,8 +5781,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     )
                 }
             }
-            // 先读本地缓存，再决定是否请求 YouTube 字幕，避免重试重复下载。
-            val storedTranslationCache = if (resumeState == null) db.subtitleCacheDao().get(translationCacheKey) else null
+            // YouTube caption and ASR flows share a video ID but must not share translation cache
+            // entries. Defer the YouTube lookup until the source cache/discovery identifies the flow.
+            val deferYouTubeTranslationCacheLookup =
+                resumeState == null && videoId != null && sourceImportedLines.isNullOrEmpty()
+            var storedTranslationCache = if (resumeState == null && !deferYouTubeTranslationCacheLookup) {
+                db.subtitleCacheDao().get(translationCacheKey)
+            } else null
             // Older builds may have persisted a progress placeholder (for example, "正在翻译")
             // as every row's Chinese text. Never trust such cache entries: retranslate from the
             // cached original subtitles instead of displaying the placeholder as completed output.
@@ -6090,6 +6100,35 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 else -> ProcessingFlow.AUTO
             }
             updateUiForSession(key, pipelineGeneration) { it.copy(processingFlow = resolvedProcessingFlow) }
+
+            if (deferYouTubeTranslationCacheLookup) {
+                val isResolvedYouTubeCaptionSource =
+                    resolvedProcessingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+                val resolvedBaseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
+                    baseTranslationCacheKey = baseTranslationCacheKey,
+                    hasImportedLines = false,
+                    isYouTubeCaptionSource = isResolvedYouTubeCaptionSource,
+                    asrCacheIdentity = asrCacheIdentity,
+                )
+                translationCacheKey =
+                    "${resolvedBaseModeAwareTranslationCacheKey}|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(translationCacheKey = translationCacheKey)
+                }
+                storedTranslationCache = db.subtitleCacheDao().get(translationCacheKey)
+                cached = if (manualTranslationRequestedKeys.contains(key)) {
+                    null
+                } else {
+                    storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                }
+                if (storedTranslationCache != null && cached == null) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Ignoring invalid/stale YouTube translation cache for $key; will translate the source subtitles again",
+                    )
+                    db.subtitleCacheDao().delete(translationCacheKey)
+                }
+            }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
@@ -7085,7 +7124,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             val latestBaseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
                 baseTranslationCacheKey = latestBaseTranslationCacheKey,
                 hasImportedLines = !sourceImportedLines.isNullOrEmpty(),
-                isYouTubeCaptionSource = videoId != null,
+                isYouTubeCaptionSource =
+                    ui.value.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES,
                 asrCacheIdentity = asrCacheIdentity,
             )
             val latestTranslationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
