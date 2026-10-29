@@ -5538,11 +5538,20 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // still separate from the extracted-audio cache so a configuration switch can reuse audio.
             val transcriptionConfigFingerprint =
                 ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService).transcription
+            val localAsrModelFingerprint = if (asrProvider == "local") {
+                io.translatetube.local.data.ModelFiles.asrCacheSignature(
+                    this@PlaybackService,
+                    localAsrModelId,
+                )
+            } else {
+                ""
+            }
             val asrCacheIdentity = AsrTranscriptCacheIdentity.key(
                 provider = asrProvider,
                 localModelId = localAsrModelId,
                 language = cloudAsrLanguageIdentity,
                 configFingerprint = transcriptionConfigFingerprint,
+                modelFingerprint = localAsrModelFingerprint,
             )
             val baseTranslationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,

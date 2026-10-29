@@ -155,6 +155,36 @@ object ModelFiles {
         if (selectedLocalAsrModelId(ctx) == "sensevoice") senseVoiceReady(ctx)
         else whisperReady(ctx)
 
+    /**
+     * Stable local-ASR cache identity based on the exact model files and shared VAD metadata
+     * used by the recognizer. This catches a model re-download/update even when the selected model
+     * ID remains unchanged, without hashing hundreds of megabytes on a mobile device.
+     */
+    fun asrCacheSignature(ctx: Context, modelId: String): String {
+        val normalized = if (modelId == "sensevoice") "sensevoice" else "whisper"
+        val modelDir = if (normalized == "sensevoice") senseVoiceDir(ctx) else asrDir(ctx)
+        val names = if (normalized == "sensevoice") {
+            listOf("model.int8.onnx", "tokens.txt")
+        } else {
+            listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx", "base-tokens.txt")
+        }
+        val files = names.map { name -> File(modelDir, name) } +
+            File(asrDir(ctx), "silero_vad.onnx")
+        val identities = files.associate { file ->
+            val relativeName = if (file.parentFile == senseVoiceDir(ctx)) {
+                "sensevoice/${file.name}"
+            } else {
+                "whisper/${file.name}"
+            }
+            relativeName to if (file.isFile) {
+                "${file.length()}:${file.lastModified()}"
+            } else {
+                "missing"
+            }
+        }
+        return AsrModelCacheSignaturePolicy.fingerprint(normalized, identities)
+    }
+
     /** Exact size on disk of the selected ASR model and its required shared VAD file. */
     fun installedAsrModelBytes(ctx: Context, modelId: String): Long? {
         val normalized = if (modelId == "sensevoice") "sensevoice" else "whisper"

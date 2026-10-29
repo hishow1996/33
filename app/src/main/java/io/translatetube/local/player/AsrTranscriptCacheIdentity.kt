@@ -17,13 +17,19 @@ internal object AsrTranscriptCacheIdentity {
         localModelId: String,
         language: String,
         configFingerprint: String,
+        modelFingerprint: String = "",
     ): String {
         val normalizedProvider = token(provider)
         val model = if (normalizedProvider == "local") token(localModelId) else "cloud"
         val languagePart = if (normalizedProvider == "local") "auto" else token(language).ifBlank { "auto" }
-        val configPart = configFingerprint.lowercase(Locale.ROOT)
-            .takeIf(configFingerprintPattern::matches)
-            ?: sha256(configFingerprint).take(24)
+        val effectiveConfig = if (normalizedProvider == "local") {
+            "$configFingerprint\nmodel=$modelFingerprint"
+        } else {
+            configFingerprint
+        }
+        val configPart = effectiveConfig.lowercase(Locale.ROOT)
+            .takeIf { configFingerprintPattern.matches(it) }
+            ?: sha256(effectiveConfig).take(24)
         return "$normalizedProvider-$model-$languagePart-cfg-$configPart"
     }
 
