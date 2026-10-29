@@ -997,6 +997,7 @@ class PlaybackService : MediaSessionService() {
                 requestToken = requestToken,
                 reuseMountedMediaForRestart = true,
                 forceRegenerateDubbing = true,
+                reuseMatchingDubbingCache = true,
             )
             return true
         }
@@ -1559,6 +1560,7 @@ class PlaybackService : MediaSessionService() {
                                 requestToken = restartRequestToken,
                                 reuseMountedMediaForRestart = canResumeAtStage,
                                 forceRegenerateDubbing = true,
+                                reuseMatchingDubbingCache = true,
                                 forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                             )
                         }
@@ -3111,6 +3113,7 @@ class PlaybackService : MediaSessionService() {
         reuseMountedMediaForRestart: Boolean = false,
         restoreReadySnapshot: Boolean = false,
         forceRegenerateDubbing: Boolean = false,
+        reuseMatchingDubbingCache: Boolean = false,
         forceYouTubeSubtitleRefresh: Boolean = false,
         precomputedLocalMediaIdentityKey: String? = null,
         localIdentityResolutionToken: Long? = null,
@@ -3184,6 +3187,7 @@ class PlaybackService : MediaSessionService() {
                             reuseMountedMediaForRestart = reuseMountedMediaForRestart,
                             restoreReadySnapshot = restoreReadySnapshot,
                             forceRegenerateDubbing = forceRegenerateDubbing,
+                            reuseMatchingDubbingCache = reuseMatchingDubbingCache,
                             forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                             precomputedLocalMediaIdentityKey = identity,
                             localIdentityResolutionToken = identityToken,
@@ -3660,6 +3664,7 @@ class PlaybackService : MediaSessionService() {
                     reuseMountedMedia = reuseMountedMedia,
                     restoreCompletedSnapshot = pipelineRestoresCompleteSnapshot,
                     forceRegenerateDubbing = pipelineMustRegenerateDubbing,
+                    reuseMatchingDubbingCache = reuseMatchingDubbingCache,
                     forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                 )
                 ensureCurrentSession(key, pipelineGeneration)
@@ -5462,6 +5467,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         reuseMountedMedia: Boolean = false,
         restoreCompletedSnapshot: Boolean = false,
         forceRegenerateDubbing: Boolean = false,
+        reuseMatchingDubbingCache: Boolean = false,
         forceYouTubeSubtitleRefresh: Boolean = false,
     ) {
         // The NewPipe path remains preferred. If YouTube explicitly blocks anonymous watch access,
@@ -5472,9 +5478,15 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         var remoteMediaReferrer = requestedRemoteMediaReferrer
         var remoteMediaCookie = requestedRemoteMediaCookie
 
-        // A newly imported external translation is a new synthesis request even when its text
-        // matches an older cache. Keep this flag through attach and initial playback.
-        var forceFreshDubbingForThisRun = forceRegenerateDubbing
+        // Restarting playback at 0 and forcing new PCM are separate decisions. Engine/voice changes
+        // may reuse only a cache with the exact active synthesis identity; imported external
+        // translations still force fresh PCM even when their text happens to match an old cache.
+        var restartPlaybackFromBeginningForThisRun = forceRegenerateDubbing
+        var forceFreshPcmSynthesisForThisRun =
+            DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
+                forceRegenerateDubbing = forceRegenerateDubbing,
+                reuseMatchingDubbingCache = reuseMatchingDubbingCache,
+            )
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
@@ -7358,7 +7370,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     )
                     if (manualRestoredLines != null) {
                         lines = manualRestoredLines
-                        forceFreshDubbingForThisRun = true
+                        restartPlaybackFromBeginningForThisRun = true
+                        forceFreshPcmSynthesisForThisRun = true
                     } else if (!isChineseLanguage(srcLang) && restored.any { line ->
                         needsSubtitleTranslation(line, srcLang)
                     }) {
@@ -7416,7 +7429,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         )
                         if (externalTranslatedLines != null) {
                             translatedLines = externalTranslatedLines
-                            forceFreshDubbingForThisRun = true
+                            restartPlaybackFromBeginningForThisRun = true
+                        forceFreshPcmSynthesisForThisRun = true
                         } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                             val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
                             if (needsTranslation) {
@@ -7617,7 +7631,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             tts,
                             finalLines,
                             sourceLanguage = srcLang,
-                            forceRegenerateDubbing = forceFreshDubbingForThisRun,
+                            forceRegenerateDubbing = forceFreshPcmSynthesisForThisRun,
                         )
                             } catch (e: Exception) {
                                 retireDubbing(d)
@@ -7826,7 +7840,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     db.videoDao().byKey(key)?.watchedSec ?: 0L
                 } catch (_: Exception) { 0L }
                 val totalMs = meta.durationSec * 1000
-                if (forceFreshDubbingForThisRun) {
+                if (restartPlaybackFromBeginningForThisRun) {
                     // Do not leave the prior run's watch position as the history resume point after
                     // changing engines or importing an external translation. The new subtitle/voice
                     // timeline is about to start at zero.
@@ -7836,7 +7850,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         io.translatetube.local.util.AppLogStore.warning(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            "重新合成配音后清零历史续播位置失败",
+                            "配音配置切换后清零历史续播位置失败",
                             error,
                             diagnosticContext = mapOf(
                                 "视频来源" to diagnosticMediaSourceType(ui.value),
@@ -7847,7 +7861,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     }
                 }
                 if (
-                    !forceFreshDubbingForThisRun &&
+                    !restartPlaybackFromBeginningForThisRun &&
                     resumeSec > 10 &&
                     (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)
                 ) {
@@ -7859,12 +7873,12 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         }
                     }
                 } else {
-                    val startPositionMs = if (forceFreshDubbingForThisRun) 0L else null
-                    if (forceFreshDubbingForThisRun) {
+                    val startPositionMs = if (restartPlaybackFromBeginningForThisRun) 0L else null
+                    if (restartPlaybackFromBeginningForThisRun) {
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            "引擎切换后的配音已重新生成，视频从开头起播",
+                            "配音配置切换后从视频开头起播",
                             diagnosticContext = mapOf(
                                 "视频来源" to when {
                                     key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
@@ -7874,7 +7888,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                 },
                                 "本次起播位置" to "0 ms（视频开头）",
                                 "忽略的历史续播位置秒" to resumeSec.toString(),
-                                "强制重新合成配音" to "true",
+                                "本轮从头开始处理" to "true",
                             ),
                         )
                     }
@@ -7885,19 +7899,19 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             ensureCurrentSession(key, pipelineGeneration)
                         }
                     }
-                    if (forceFreshDubbingForThisRun) {
+                    if (restartPlaybackFromBeginningForThisRun) {
                         val actualStartPositionMs = runCatching { pm.position() }.getOrDefault(-1L)
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            "重新合成后的起播位置检查完成",
+                            "配音配置变更后的起播位置检查完成",
                             diagnosticContext = mapOf(
                                 "视频来源" to diagnosticMediaSourceType(ui.value),
                                 "请求起播位置 ms" to "0",
                                 "起播调用后播放器位置 ms" to actualStartPositionMs.toString(),
                                 "播放器播放意图" to runCatching { pm.player.playWhenReady.toString() }.getOrDefault("读取失败"),
                                 "播放器实际状态" to runCatching { pm.player.isPlaying.toString() }.getOrDefault("读取失败"),
-                                "是否重新合成配音" to "true",
+                                "是否从头起播" to "true",
                             ),
                         )
                     }

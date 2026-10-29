@@ -47,6 +47,19 @@ class DubbingCacheIdentityTest {
     }
 
     @Test
+    fun switchingAwayAndBackRestoresTheOriginalVoiceCacheIdentity() {
+        val voiceA = "gemini-tts-v3-kore-credential-a"
+        val voiceB = "gemini-tts-v3-puck-credential-a"
+
+        val original = key(engineKey = voiceA)
+        val switched = key(engineKey = voiceB)
+        val switchedBack = key(engineKey = voiceA)
+
+        assertNotEquals(original, switched)
+        assertEquals(original, switchedBack)
+    }
+
+    @Test
     fun identicalSynthesisInputsHaveDeterministicCacheNames() {
         assertEquals(key(), key())
     }

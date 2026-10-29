@@ -41,6 +41,24 @@ class EngineConfigPreferenceIdentityPolicyTest {
     }
 
     @Test
+    fun geminiVoiceSelectionOnlyAffectsDubbingWhenGeminiIsSelected() {
+        assertTrue(
+            EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
+                "gemini_tts_voice",
+                selectedTtsEngine = "gemini",
+                activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK.toLong(),
+            ),
+        )
+        assertFalse(
+            EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
+                "gemini_tts_voice",
+                selectedTtsEngine = "google",
+                activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK.toLong(),
+            ),
+        )
+    }
+
+    @Test
     fun actualSystemTtsSelectionPreferencesRemainFingerprintRelevant() {
         assertTrue(
             EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant("system_tts_voice_name"),

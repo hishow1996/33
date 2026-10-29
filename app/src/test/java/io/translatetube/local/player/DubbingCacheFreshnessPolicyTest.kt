@@ -6,6 +6,44 @@ import org.junit.Test
 
 class DubbingCacheFreshnessPolicyTest {
     @Test
+    fun engineOrVoiceRestartCanReuseAnExactSuccessfulCache() {
+        assertFalse(
+            DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
+                forceRegenerateDubbing = true,
+                reuseMatchingDubbingCache = true,
+            ),
+        )
+        assertTrue(
+            DubbingCacheFreshnessPolicy.canReadCache(
+                forceFreshSynthesis = DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
+                    forceRegenerateDubbing = true,
+                    reuseMatchingDubbingCache = true,
+                ),
+                wasWrittenByCurrentRun = false,
+            ),
+        )
+    }
+
+    @Test
+    fun explicitFreshSynthesisStillBypassesOldCache() {
+        assertTrue(
+            DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
+                forceRegenerateDubbing = true,
+                reuseMatchingDubbingCache = false,
+            ),
+        )
+        assertFalse(
+            DubbingCacheFreshnessPolicy.canReadCache(
+                forceFreshSynthesis = DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
+                    forceRegenerateDubbing = true,
+                    reuseMatchingDubbingCache = false,
+                ),
+                wasWrittenByCurrentRun = false,
+            ),
+        )
+    }
+
+    @Test
     fun normalPlaybackKeepsReuseOfPreviouslySuccessfulCache() {
         assertTrue(
             DubbingCacheFreshnessPolicy.canReadCache(
