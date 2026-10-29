@@ -108,15 +108,16 @@ class DubbingTrackBusTest {
     @Test
     fun rewindingTheReadHeadLetsStartupCuesKeepTheirOwnTimeAndSurviveTheFlush() {
         val bus = newBus()
-        val generation = bus.generationToken()
+        val firstGeneration = bus.generationToken()
         // 播放器预读阶段已经读到 700ms：此后挂载的开场句会被顶到读头之后
         bus.readMixWindow(0L, 700)
-        assertEquals(ms(800), bus.feedSequenced("stale", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+        assertEquals(ms(800), bus.feedSequenced("stale", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, firstGeneration))
         bus.removeCuesWithPrefix("stale")
+        val generationAfterRemoval = bus.generationToken()
 
-        // 开播前归零读头：同一句按自己的期望时间 200ms 开口，已挂载的句子不会被清掉
+        // 开播前归零读头：同一句按自己的期望时间 200ms 开口，清理前的提交代次已经失效。
         bus.rewindReadHead()
-        assertEquals(ms(200), bus.feedSequenced("first", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+        assertEquals(ms(200), bus.feedSequenced("first", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, generationAfterRemoval))
         assertTrue(bus.hasCue("first"))
         // 播放器 flush 后从头重读：开头这句能混进去
         val mixed = bus.readMixWindow(0L, 400)
@@ -194,10 +195,14 @@ class DubbingTrackBusTest {
         bus.feedSequenced("8:1", ms(2_000), 0L, FloatArray(100) { 0.7f }, 1000, generation)
 
         bus.removeCuesWithPrefix("7:")
+        val nextGeneration = bus.generationToken()
 
         assertFalse(bus.hasCue("7:1"))
         assertFalse(bus.hasCue("7:2"))
         assertTrue(bus.hasCue("8:1"))
+        // The unrelated installed cue remains audible, but its future refeed must use the new token.
+        assertEquals(-1L, bus.feedSequenced("8:2", ms(2_000), 0L, FloatArray(10) { 0.2f }, 1000, generation))
+        assertTrue(bus.feedSequenced("8:2", ms(2_000), 0L, FloatArray(10) { 0.2f }, 1000, nextGeneration) >= 0L)
         val mixed = bus.readMixWindow(0L, 3000)
         assertEquals(0f, mixed[50], 0f)
         assertEquals(0f, mixed[1050], 0f)
@@ -210,9 +215,11 @@ class DubbingTrackBusTest {
         val generation = bus.generationToken()
         bus.feedSequenced("long", 0L, 0L, FloatArray(800) { 0.5f }, 1000, generation)
         assertEquals(ms(920), bus.feedSequenced("next", ms(300), 0L, FloatArray(100) { 0.5f }, 1000, generation))
-        // 把前一句换成短版本：后一句应回到自己的时间
+        // 把前一句换成短版本：后一句应回到自己的时间。清理同时使旧提交代次失效。
         bus.removeCuesWithPrefix("long")
-        assertEquals(ms(300), bus.feedSequenced("next", ms(300), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+        assertEquals(-1L, bus.feedSequenced("next", ms(300), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+        val nextGeneration = bus.generationToken()
+        assertEquals(ms(300), bus.feedSequenced("next", ms(300), 0L, FloatArray(100) { 0.5f }, 1000, nextGeneration))
     }
 
     @Test
@@ -227,6 +234,29 @@ class DubbingTrackBusTest {
         assertEquals(1f, mixed[50], 0.0001f)
         assertEquals(1f, mixed[87], 0.0001f)
         assertEquals(1f / 12f, mixed[99], 0.0001f)
+    }
+
+    @Test
+    fun prefixRemovalInvalidatesInFlightFeedEvenWhenNoMatchingCueWasInstalledYet() {
+        val bus = newBus()
+        val staleGeneration = bus.generationToken()
+
+        // Simulate an async prefeed still resampling when cleanup runs; no block existed yet.
+        bus.removeCuesWithPrefix("old-engine:")
+
+        assertTrue(bus.generationToken() > staleGeneration)
+        assertEquals(
+            -1L,
+            bus.feedSequenced(
+                "old-engine:1",
+                0L,
+                0L,
+                FloatArray(20) { 0.5f },
+                1000,
+                staleGeneration,
+            ),
+        )
+        assertFalse(bus.hasCue("old-engine:1"))
     }
 
     @Test

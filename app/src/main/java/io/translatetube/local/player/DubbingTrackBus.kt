@@ -281,6 +281,10 @@ class DubbingTrackBus {
     fun removeCuesWithPrefix(prefix: String) {
         if (prefix.isEmpty()) return
         synchronized(stateLock) {
+            // Removing blocks must also invalidate publishers that took a generation snapshot
+            // before this cleanup. Without advancing the token, a late prefeed can reinstall a
+            // cue after the prefix was removed (notably during playback-start remount or release).
+            contentGeneration += 1L
             val kept = installed.filter { it.cueKey?.startsWith(prefix) != true }
             if (kept.size != installed.size) installed = kept.toTypedArray()
         }
