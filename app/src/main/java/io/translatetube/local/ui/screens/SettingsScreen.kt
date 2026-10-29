@@ -829,7 +829,7 @@ Section(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("Gemini 配音 API Key", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Text("Gemini API Key", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                         Text(
                             if (geminiTtsApiKey.isNotBlank()) "已配置" else "未配置",
                             color = if (geminiTtsApiKey.isNotBlank()) BrandBright else SubText,
@@ -849,8 +849,8 @@ Section(
                         },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        label = { Text("Gemini 配音 API Key") },
-                        placeholder = { Text("填入独立的 Gemini 配音 API Key") },
+                        label = { Text("Gemini API Key") },
+                        placeholder = { Text("粘贴 AIza 开头的 Gemini API Key") },
                         visualTransformation = PasswordVisualTransformation(),
                     )
                     Row(
