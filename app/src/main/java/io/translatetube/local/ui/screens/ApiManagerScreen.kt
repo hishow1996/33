@@ -70,12 +70,14 @@ import io.translatetube.local.translate.GeminiEngine
 import io.translatetube.local.translate.OpenAiCompatEngine
 import io.translatetube.local.translate.encodeApiProfileExtraCredential
 import io.translatetube.local.translate.readApiProfileCredential
+import io.translatetube.local.tts.TtsCacheIdentityPolicy
 import android.view.WindowManager
 import android.widget.Toast
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.withContext
 
 private const val PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT = "translation_active_api_profile_fingerprint"
+private const val PREF_GEMINI_TTS_PROFILE_KEY_FINGERPRINT = "gemini_tts_profile_key_fingerprint"
 
 /**
  * Keep the selected API model in the settings fingerprint watched by PlaybackService.
@@ -382,6 +384,37 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 if (prefs.getString(PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT, null) != activeProfileFingerprint) {
                     prefs.edit()
                         .putString(PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT, activeProfileFingerprint)
+                        .apply()
+                }
+                // Gemini TTS falls back to the first enabled Gemini profile when its dedicated
+                // free_gemini_key setting is empty. Mirror that effective credential as a hash so
+                // imported-translated-subtitle sessions also detect a TTS-only credential change.
+                val effectiveFreeGeminiKey = runCatching {
+                    Crypto.decrypt(prefs.getString("free_gemini_key", "").orEmpty())
+                }.getOrDefault("").trim()
+                val fallbackGeminiKey = if (effectiveFreeGeminiKey.isBlank()) {
+                    runCatching {
+                        db.apiProfileDao().enabled()
+                            .firstOrNull {
+                                it.type.equals("GEMINI", ignoreCase = true) && it.apiKey.isNotBlank()
+                            }
+                            ?.apiKey
+                            ?.let { encrypted ->
+                                runCatching { Crypto.decrypt(encrypted) }.getOrElse { encrypted }
+                            }
+                            .orEmpty()
+                    }.getOrNull().orEmpty().trim()
+                } else {
+                    ""
+                }
+                val geminiTtsProfileKeyFingerprint =
+                    TtsCacheIdentityPolicy.geminiFallbackCredentialFingerprint(
+                        freeGeminiApiKey = effectiveFreeGeminiKey,
+                        fallbackProfileApiKey = fallbackGeminiKey,
+                    )
+                if (prefs.getString(PREF_GEMINI_TTS_PROFILE_KEY_FINGERPRINT, null) != geminiTtsProfileKeyFingerprint) {
+                    prefs.edit()
+                        .putString(PREF_GEMINI_TTS_PROFILE_KEY_FINGERPRINT, geminiTtsProfileKeyFingerprint)
                         .apply()
                 }
                 // 已删除、停用或已移除的引擎不能继续作为当前引擎，自动回退到本地引擎。

@@ -14,6 +14,18 @@ internal object TtsCacheIdentityPolicy {
         return digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
+    /**
+     * Mirrors the API-profile fallback used by Gemini TTS into a non-secret preference.
+     * A separately configured Gemini key takes precedence and makes profile changes irrelevant.
+     */
+    fun geminiFallbackCredentialFingerprint(
+        freeGeminiApiKey: String,
+        fallbackProfileApiKey: String,
+    ): String {
+        if (freeGeminiApiKey.isNotBlank() || fallbackProfileApiKey.isBlank()) return ""
+        return credentialFingerprint(fallbackProfileApiKey)
+    }
+
     fun geminiCacheKey(voiceName: String, apiKey: String): String =
         "gemini-tts-v3-${voiceName.trim().lowercase(Locale.ROOT)}-${credentialFingerprint(apiKey)}"
 }
