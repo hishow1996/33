@@ -5995,15 +5995,16 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         db.subtitleCacheDao().delete(translationCacheKey)
                         cached = null
                     }
-                } else if (expectedContentLanguage != null && detectedCacheLanguageCode == expectedContentLanguage) {
-                    // The cache's language label may be stale even when its text is correct.
-                    // Use the verified text language for the next translation pass.
-                    restoredSourceLang = expectedContentLanguage
-                } else if (
-                    youtubeSubtitleMode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH &&
-                    cachedContentLanguage == "en"
-                ) {
-                    restoredSourceLang = "en"
+                } else {
+                    // Use the validated text language when it is stronger than cached metadata.
+                    // This also prevents a temporary failure to read the audio-language hint from
+                    // carrying a stale "auto"/old language label into the translation stage.
+                    YouTubeAsrSourceCacheValidationPolicy.resolvedCachedLanguage(
+                        expectedSourceLanguage = expectedContentLanguage,
+                        detectedTextLanguage = detectedCacheLanguageCode,
+                        savedSourceLanguage = sourceCached.srcLang,
+                        isCaptionCache = isCachedCaption,
+                    )?.let { restoredSourceLang = it }
                 }
             }
 
