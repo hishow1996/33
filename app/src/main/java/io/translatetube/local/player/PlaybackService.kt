@@ -86,7 +86,8 @@ private enum class EngineConfigDomain {
 private object ReadyHistorySessionConfigStore {
     private const val PREFS_NAME = "ready_history_session_config"
     private const val KEY_PREFIX = "video_"
-    private const val ACTIVE_API_PROFILE_FINGERPRINT_KEY = "translation_active_api_profile_fingerprint"
+    private const val ACTIVE_API_PROFILE_FINGERPRINT_KEY =
+        TranslationConfigPreferencePolicy.ACTIVE_PROFILE_FINGERPRINT_KEY
 
     fun isRelevantPreferenceKey(key: String): Boolean =
         key == "active_api_id" ||
@@ -147,12 +148,20 @@ private object ReadyHistorySessionConfigStore {
         val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
             settings.getString("asr_provider", "local"),
         )
+        val activeTranslationId = settings.getLong("active_api_id", -1L)
         val relevant = settings.all.entries
             .filter { entry ->
                 val isTranscriptionPreference =
                     belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION)
+                val isTranslationPreference =
+                    belongsToDomain(entry.key, EngineConfigDomain.TRANSLATION)
                 isRelevantPreferenceKey(entry.key) &&
                     entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
+                    (!isTranslationPreference ||
+                        TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                            entry.key,
+                            activeTranslationId,
+                        )) &&
                     !(ignoreTranscription && isTranscriptionPreference) &&
                     (ignoreTranscription || !isTranscriptionPreference ||
                         AsrConfigPreferencePolicy.isRelevantForActiveProvider(
@@ -265,6 +274,7 @@ private object ReadyHistorySessionConfigStore {
         val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
             settings.getString("asr_provider", "local"),
         )
+        val activeTranslationId = settings.getLong("active_api_id", -1L)
         val entries = settings.all.entries
             .filter { entry ->
                 belongsToDomain(entry.key, domain) &&
@@ -272,6 +282,11 @@ private object ReadyHistorySessionConfigStore {
                         AsrConfigPreferencePolicy.isRelevantForActiveProvider(
                             entry.key,
                             activeAsrProvider,
+                        )) &&
+                    (domain != EngineConfigDomain.TRANSLATION ||
+                        TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                            entry.key,
+                            activeTranslationId,
                         ))
             }
             .sortedBy { it.key }
