@@ -1,23 +1,28 @@
 package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class YouTubeAsrSourceCacheIdentityTest {
     @Test
-    fun activeAsrSourceKeyDoesNotDependOnCaptionMode() {
-        val englishMode = YouTubeAsrSourceCacheIdentity.key(
+    fun activeAsrSourceKeyDoesNotEncodeCaptionMode() {
+        val stableKey = YouTubeAsrSourceCacheIdentity.key(
             videoKey = "youtube:abc123",
             sourceCacheVersion = 9,
             asrCacheIdentity = "asr-provider-a-config-a",
         )
-        val originalMode = YouTubeAsrSourceCacheIdentity.key(
+        val legacyKeys = YouTubeAsrSourceCacheIdentity.legacyKeys(
             videoKey = "youtube:abc123",
             sourceCacheVersion = 9,
+            subtitleModes = listOf("english", "original"),
             asrCacheIdentity = "asr-provider-a-config-a",
         )
-        assertEquals(englishMode, originalMode)
+
+        assertFalse(stableKey.contains("subtitle-english"))
+        assertFalse(stableKey.contains("subtitle-original"))
+        assertNotEquals(legacyKeys[0], legacyKeys[1])
     }
 
     @Test
