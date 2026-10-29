@@ -5738,7 +5738,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val legacyYouTubeAsrSourceCacheKeys = if (videoId != null) {
                 YouTubeAsrSourceCacheIdentity.legacyKeys(
                     videoKey = key,
-                    sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                    legacySourceCacheVersions = 1..io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
                     subtitleModes = io.translatetube.local.yt.YouTubeSubtitleLanguageMode.values()
                         .map { it.preferenceValue },
                     asrCacheIdentity = asrCacheIdentity,
@@ -5881,10 +5881,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
                 if (legacyYouTubeAsrSourceCacheKeys.isEmpty()) return null
 
-                val legacyEntries = legacyYouTubeAsrSourceCacheKeys.mapNotNull { oldKey ->
-                    db.subtitleCacheDao().get(oldKey)
-                }
-                val latestLegacy = legacyEntries.maxByOrNull { it.updatedAt } ?: return null
+                val latestLegacy = db.subtitleCacheDao()
+                    .getLatestByCacheKeys(legacyYouTubeAsrSourceCacheKeys) ?: return null
                 // Do not migrate/delete until JSON, timeline and language validation have passed.
                 // The caller keeps this exact old key until that validation finishes.
                 sourceCachedKey = latestLegacy.cacheKey
@@ -6311,10 +6309,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val legacyPartialAsrCacheKey = if (
                     videoId != null && !hasStablePartialAsrCache
                 ) {
-                    legacyYouTubeAsrSourceCacheKeys.mapNotNull { oldSourceKey ->
-                        val partialKey = "$oldSourceKey|asr-progress-v2"
-                        db.subtitleCacheDao().get(partialKey)?.let { partialKey to it.updatedAt }
-                    }.maxByOrNull { it.second }?.first
+                    db.subtitleCacheDao()
+                        .getLatestByCacheKeys(
+                            legacyYouTubeAsrSourceCacheKeys.map { "$it|asr-progress-v2" },
+                        )
+                        ?.cacheKey
                 } else null
                 val partialAsrCacheKey = legacyPartialAsrCacheKey ?: stablePartialAsrCacheKey
 
