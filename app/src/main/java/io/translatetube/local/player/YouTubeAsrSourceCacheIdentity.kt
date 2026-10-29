@@ -28,13 +28,13 @@ internal object YouTubeAsrSourceCacheIdentity {
         legacySourceCacheVersions.distinct()
             .filter { it > 0 && it != CACHE_VERSION }
             .forEach { version ->
-                add("$videoKey|source|youtube-asr-v$version|asr-$asrCacheIdentity")
+                add("$videoKey|source|youtube-asr-v$version|$asrCacheIdentity")
             }
         legacySourceCacheVersions.distinct()
             .filter { it > 0 }
             .forEach { version ->
                 subtitleModes.distinct().forEach { mode ->
-                    add("$videoKey|source|youtube-v$version-subtitle-$mode|asr-$asrCacheIdentity")
+                    add("$videoKey|source|youtube-v$version-subtitle-$mode|$asrCacheIdentity")
                 }
             }
     }.distinct()
