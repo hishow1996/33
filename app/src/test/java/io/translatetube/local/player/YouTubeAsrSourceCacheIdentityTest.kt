@@ -16,10 +16,13 @@ class YouTubeAsrSourceCacheIdentityTest {
 
         assertFalse(stableKey.contains("subtitle-english"))
         assertFalse(stableKey.contains("subtitle-original"))
-        assertTrue(stableKey.contains("|source|youtube-asr-v${YouTubeAsrSourceCacheIdentity.CACHE_VERSION}|"))
+        assertEquals(
+            "youtube:abc123|source|youtube-asr-v1|asr-asr-provider-a-config-a",
+            stableKey,
+        )
         assertNotEquals(
-            YouTubeAsrSourceCacheIdentity.CACHE_VERSION,
-            9,
+            "youtube:abc123|source|youtube-asr-v9|asr-asr-provider-a-config-a",
+            stableKey,
         )
     }
 
