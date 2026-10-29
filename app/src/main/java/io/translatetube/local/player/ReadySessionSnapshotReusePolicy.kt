@@ -60,6 +60,9 @@ internal object ReadySessionSnapshotReusePolicy {
     ): Boolean {
         if (expectedFlows == null) return true
         if (snapshotFlow !in expectedFlows) return false
+        // AUTO is the legacy value for snapshots saved before the source flow was persisted.
+        // It is safe to reuse only when that snapshot included the ASR fingerprint.
+        if (snapshotFlow == ProcessingFlow.AUTO) return !snapshotIgnoresTranscription
         val expectedIgnoreTranscription = EngineRestartStagePolicy.ignoresTranscriptionConfig(
             processingFlow = snapshotFlow,
             isYouTube = isYouTube,
