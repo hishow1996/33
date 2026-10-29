@@ -1291,7 +1291,6 @@ class PlaybackService : MediaSessionService() {
                         val restartRemoteCookie = remoteMediaCookie
                         val restartRemoteUserAgent = remoteMediaUserAgent
 
-                        val restartVideoId = restartVideoIdCandidate
                         if (pendingSubtitleModeRefresh) pendingYouTubeSubtitleRefreshKey = null
 
                         // If this exact engine combination has completed successfully before, restore
