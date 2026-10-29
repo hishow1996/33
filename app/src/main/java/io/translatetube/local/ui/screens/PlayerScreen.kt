@@ -3161,57 +3161,62 @@ private fun PlaybackHintOverlay(
     val mainActionLabel = hint.actionLabel
     val secondaryAction = hint.secondaryAction
     val secondaryActionLabel = hint.secondaryActionLabel
-    Surface(
+    val hintTextShadow = androidx.compose.ui.graphics.Shadow(
+        color = Color.Black.copy(alpha = 0.92f),
+        offset = Offset(0f, 1.5f),
+        blurRadius = 3f,
+    )
+    Column(
         modifier = modifier.fillMaxWidth(0.94f),
-        shape = RoundedCornerShape(14.dp),
-        color = Color(0xE8172033),
-        shadowElevation = 8.dp,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                if (hint.showSpinner) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp,
-                    )
-                    Spacer(Modifier.width(9.dp))
-                }
-                Text(
-                    text = hint.message,
+            if (hint.showSpinner) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
                     color = Color.White,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
+                    strokeWidth = 2.dp,
                 )
+                Spacer(Modifier.width(9.dp))
             }
-            if (mainAction != null && !mainActionLabel.isNullOrBlank()) {
-                Spacer(Modifier.height(3.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            Text(
+                text = hint.message,
+                color = Color.White,
+                style = MaterialTheme.typography.bodySmall.copy(shadow = hintTextShadow),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+        }
+        if (mainAction != null && !mainActionLabel.isNullOrBlank()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = { onAction(mainAction) },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 ) {
+                    Text(
+                        mainActionLabel,
+                        color = Color(0xFF9DC3FF),
+                        style = MaterialTheme.typography.labelLarge.copy(shadow = hintTextShadow),
+                    )
+                }
+                if (secondaryAction != null && !secondaryActionLabel.isNullOrBlank()) {
                     TextButton(
-                        onClick = { onAction(mainAction) },
+                        onClick = { onAction(secondaryAction) },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                     ) {
-                        Text(mainActionLabel, color = Color(0xFF9DC3FF))
-                    }
-                    if (secondaryAction != null && !secondaryActionLabel.isNullOrBlank()) {
-                        TextButton(
-                            onClick = { onAction(secondaryAction) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                        ) {
-                            Text(secondaryActionLabel, color = Color.White)
-                        }
+                        Text(
+                            secondaryActionLabel,
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelLarge.copy(shadow = hintTextShadow),
+                        )
                     }
                 }
             }
