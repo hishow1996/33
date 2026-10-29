@@ -18,6 +18,56 @@ class EngineRestartStagePolicyTest {
     ) = EngineConfigFingerprints(transcription, translation, dubbing)
 
     @Test
+    fun switchingVoicesWithinTheSameEngineRestartsOnlyDubbingAndCanReuseOnReturn() {
+        val voiceA = EngineConfigFingerprints(
+            transcription = "asr-a",
+            translation = "translation-a",
+            dubbing = "gemini|voice=kore|credential=key-a",
+        )
+        val voiceB = voiceA.copy(dubbing = "gemini|voice=puck|credential=key-a")
+
+        assertEquals(
+            EngineRestartStage.DUBBING,
+            EngineRestartStagePolicy.choose(
+                previous = voiceA,
+                current = voiceB,
+                processingFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                ignoreTranscription = false,
+                hasLines = true,
+                sourceLanguageIsChinese = false,
+            ),
+        )
+        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(voiceA, voiceB))
+        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(voiceB, voiceA))
+    }
+
+    @Test
+    fun switchingBetweenEnginesRestartsOnlyDubbingAndCanReuseEachEngineOnReturn() {
+        val googleVoice = EngineConfigFingerprints(
+            transcription = "asr-a",
+            translation = "translation-a",
+            dubbing = "google|default-voice|google-tts-v2",
+        )
+        val geminiVoice = googleVoice.copy(
+            dubbing = "gemini|voice=kore|credential=key-a",
+        )
+
+        assertEquals(
+            EngineRestartStage.DUBBING,
+            EngineRestartStagePolicy.choose(
+                previous = googleVoice,
+                current = geminiVoice,
+                processingFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                ignoreTranscription = false,
+                hasLines = true,
+                sourceLanguageIsChinese = false,
+            ),
+        )
+        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(googleVoice, geminiVoice))
+        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(geminiVoice, googleVoice))
+    }
+
+    @Test
     fun matchingDubbingCacheIsReusableOnlyForDubbingOnlyChanges() {
         assertEquals(
             true,

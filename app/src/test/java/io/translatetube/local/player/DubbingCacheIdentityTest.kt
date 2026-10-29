@@ -47,6 +47,26 @@ class DubbingCacheIdentityTest {
     }
 
     @Test
+    fun changingVoiceInsideOneEngineProducesSeparateCacheAndSwitchingBackMatches() {
+        val voiceKore = key(engineKey = "gemini-tts-v3-kore-credential-a")
+        val voicePuck = key(engineKey = "gemini-tts-v3-puck-credential-a")
+        val returnedToKore = key(engineKey = "gemini-tts-v3-kore-credential-a")
+
+        assertNotEquals(voiceKore, voicePuck)
+        assertEquals(voiceKore, returnedToKore)
+    }
+
+    @Test
+    fun changingEngineAndVoiceProducesSeparateCacheAndSwitchingBackMatches() {
+        val google = key(engineKey = "google-tts-v2")
+        val gemini = key(engineKey = "gemini-tts-v3-kore-credential-a")
+        val returnedToGoogle = key(engineKey = "google-tts-v2")
+
+        assertNotEquals(google, gemini)
+        assertEquals(google, returnedToGoogle)
+    }
+
+    @Test
     fun switchingAwayAndBackRestoresTheOriginalVoiceCacheIdentity() {
         val voiceA = "gemini-tts-v3-kore-credential-a"
         val voiceB = "gemini-tts-v3-puck-credential-a"
