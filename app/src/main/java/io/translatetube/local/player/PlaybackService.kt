@@ -5662,14 +5662,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
                 ),
             )
-            val baseModeAwareTranslationCacheKey = when {
-                !sourceImportedLines.isNullOrEmpty() -> baseTranslationCacheKey
-                // YouTube caption translation is independent of ASR configuration. Its mode-specific
-                // cache is reused only after the source cue text/timeline is validated below; if this
-                // video falls back to ASR, the current ASR source cache supplies that validation.
-                videoId != null -> baseTranslationCacheKey
-                else -> "$baseTranslationCacheKey|asr-$asrCacheIdentity-timeline-v5"
-            }
+            // Use the same source-aware key policy during initial lookup and configuration refresh.
+            // YouTube caption rows are validated separately; web/local ASR keys include the full ASR identity.
+            val baseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
+                baseTranslationCacheKey = baseTranslationCacheKey,
+                hasImportedLines = !sourceImportedLines.isNullOrEmpty(),
+                isYouTubeCaptionSource = videoId != null,
+                asrCacheIdentity = asrCacheIdentity,
+            )
             var translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
                 "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
             } else {
@@ -7033,11 +7033,13 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 previousKey = resumeState?.translationCacheKey,
                 providerFingerprint = latestProviderFingerprint,
             )
-            val latestBaseModeAwareTranslationCacheKey = when {
-                !sourceImportedLines.isNullOrEmpty() -> latestBaseTranslationCacheKey
-                asrProvider == "local" -> "$latestBaseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
-                else -> "$latestBaseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
-            }
+            // Keep refresh-time identity exactly aligned with the initial cache lookup above.
+            val latestBaseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
+                baseTranslationCacheKey = latestBaseTranslationCacheKey,
+                hasImportedLines = !sourceImportedLines.isNullOrEmpty(),
+                isYouTubeCaptionSource = videoId != null,
+                asrCacheIdentity = asrCacheIdentity,
+            )
             val latestTranslationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
                 "$latestBaseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
             } else {
