@@ -37,9 +37,33 @@ class DubbingRetryQueuePolicyTest {
     }
 
     @Test
-    fun synthesisFailureKeepsCuePendingOnlyWhenActivePlaybackRequestedRetry() {
+    fun transientSynthesisFailureKeepsCuePendingOnlyWhenActivePlaybackRequestedRetry() {
         assertEquals(true, DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(true))
         assertEquals(false, DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(false))
+    }
+
+    @Test
+    fun deterministicSynthesisFailureDoesNotOverrideTheNoRetryRule() {
+        assertEquals(
+            false,
+            DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(
+                retryRequestedWhileActive = true,
+                deterministicFailure = true,
+            ),
+        )
+        assertEquals(
+            false,
+            DubbingRetryQueuePolicy.shouldRequeueAfterActiveSynthesis(
+                retryRequested = true,
+                translatedCue = true,
+                hasReusableAudio = false,
+                workerActive = true,
+                released = false,
+                fallbackRequested = false,
+                alreadyQueued = false,
+                deterministicFailure = true,
+            ),
+        )
     }
 
     @Test
