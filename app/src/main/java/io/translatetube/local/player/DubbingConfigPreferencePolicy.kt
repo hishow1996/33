@@ -32,7 +32,7 @@ internal object DubbingConfigPreferencePolicy {
             key.startsWith("web_tts_") -> engine == "web"
             key.startsWith("google_tts_") -> engine == "google"
             key.startsWith("gemini_tts_") -> engine == "gemini"
-            key == "free_gemini_key" -> engine == "gemini"
+            key == "free_gemini_key" -> false // Translation-only key; never invalidate dubbing.
             // These legacy options belong to Edge/Web; Google/Gemini use their own configuration.
             key.startsWith("online_tts_") -> engine == "edge" || engine == "web"
             key.startsWith("cloud_tts_") -> engine == "edge" || engine == "web"
