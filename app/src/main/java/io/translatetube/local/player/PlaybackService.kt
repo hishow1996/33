@@ -5257,6 +5257,29 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
 
     /** Snapshot all fields that can change translation output, without exposing the API key in cache names. */
     private suspend fun translationProviderFingerprint(activeId: Long): String {
+        val settings = getSharedPreferences("settings", MODE_PRIVATE)
+        val sourceLanguageMode = settings.getString("translation_source_language", "auto")
+            .orEmpty()
+            .ifBlank { "auto" }
+
+        // Free Gemini/DeepSeek settings live in SharedPreferences rather than Room. Their
+        // translation cache identity must include the effective model and endpoint, otherwise a
+        // model switch restarts stage 3 but can still restore translations cached for the old model.
+        fun decryptedSetting(key: String): String {
+            val stored = settings.getString(key, "").orEmpty()
+            if (stored.isBlank()) return ""
+            return runCatching { Crypto.decrypt(stored) }.getOrElse { stored }
+        }
+        BuiltInTranslationCacheIdentityPolicy.fingerprint(
+            activeId = activeId,
+            sourceLanguageMode = sourceLanguageMode,
+            geminiModel = settings.getString("free_gemini_model", null),
+            geminiApiKey = decryptedSetting("free_gemini_key"),
+            deepSeekModel = settings.getString("free_deepseek_model", null),
+            deepSeekBaseUrl = settings.getString("free_deepseek_base_url", null),
+            deepSeekApiKey = decryptedSetting("free_deepseek_key"),
+        )?.let { return it }
+
         val profiles = AppDatabase.get(this).apiProfileDao().enabled()
         val active = profiles.firstOrNull { it.id == activeId }
         val providerKind = when (activeId) {
@@ -5275,10 +5298,6 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 else -> "unregistered-engine-$activeId"
             }
         }
-        val sourceLanguageMode = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("translation_source_language", "auto")
-            .orEmpty()
-            .ifBlank { "auto" }
         val cacheScopedProviderKind = if (SourceLanguagePolicy.isUndetermined(sourceLanguageMode)) {
             providerKind
         } else {
