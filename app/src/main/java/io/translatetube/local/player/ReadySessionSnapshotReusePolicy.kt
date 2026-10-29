@@ -18,4 +18,13 @@ internal object ReadySessionSnapshotReusePolicy {
         matchingSuccessfulSnapshot: Boolean,
         forceYouTubeSubtitleRefresh: Boolean,
     ): Boolean = matchingSuccessfulSnapshot && !forceYouTubeSubtitleRefresh
+
+    /**
+     * Engine rollback must keep the source-processing path that produced the active result.
+     * Two flows can share the same video/config fingerprint while having different subtitle inputs.
+     */
+    fun isSnapshotFlowCompatible(
+        snapshotFlow: ProcessingFlow,
+        expectedFlow: ProcessingFlow?,
+    ): Boolean = expectedFlow == null || snapshotFlow == expectedFlow
 }
