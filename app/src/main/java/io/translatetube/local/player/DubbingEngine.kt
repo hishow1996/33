@@ -200,6 +200,32 @@ class DubbingEngine(
                 playbackIsCurrent = !released,
             )
         }
+
+    private fun isWorkerGenerationCurrent(expectedGeneration: Int): Boolean =
+        !released && cacheInitGeneration.get() == expectedGeneration
+
+    private fun markCuePreparedForGeneration(
+        index: Int,
+        hasAudio: Boolean,
+        expectedGeneration: Int,
+    ): Boolean = synchronized(cacheConfigurationLock) {
+        if (!isWorkerGenerationCurrent(expectedGeneration)) {
+            false
+        } else {
+            markCuePrepared(index, hasAudio)
+            true
+        }
+    }
+
+    private fun markCuePendingForGeneration(index: Int, expectedGeneration: Int): Boolean =
+        synchronized(cacheConfigurationLock) {
+            if (!isWorkerGenerationCurrent(expectedGeneration)) {
+                false
+            } else {
+                markCuePending(index)
+                true
+            }
+        }
     private val cacheWriterId = nextCacheWriterId.incrementAndGet()
     private val ttsCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     // Completes only after every queued AudioTrack operation and the final track cleanup have drained.
@@ -828,13 +854,27 @@ class DubbingEngine(
             // Never cancel an active provider call just to restart queue processing: many TTS
             // providers perform blocking native work and cancellation cannot stop it immediately.
             if (released || synthesisMemoryFailure || synthJob?.isActive == true) return
+            val workerCacheGeneration = synchronized(cacheConfigurationLock) {
+                cacheInitGeneration.get()
+            }
             synthJob = scope.launch(Dispatchers.Default) {
+            val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            fun isWorkerTaskCurrent(): Boolean =
+                DubbingSynthesisGenerationPolicy.canContinue(
+                    expectedGeneration = workerCacheGeneration,
+                    currentGeneration = cacheInitGeneration.get(),
+                    taskActive = workerJob?.isActive == true,
+                    engineReleased = released,
+                )
             try {
             // Poll under the same lock used by prioritizeAround(). Do not inspect isEmpty()
             // outside the lock: queue reordering temporarily drains the deque, and a separate
             // isEmpty() check could let this worker exit before the reordered work is restored.
             while (!released) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (!isWorkerTaskCurrent()) {
+                    throw kotlinx.coroutines.CancellationException("配音合成配置已变化")
+                }
                 // A fallback request stops this worker at a line boundary. The service waits for
                 // it to unwind before swapping engines, preventing old TTS PCM from being written
                 // into the new engine's cache namespace.
@@ -846,29 +886,25 @@ class DubbingEngine(
                 } ?: break
                 // Keep the worker identity visible to finally: cancelled/reconfigured workers
                 // must clear their active slot but must not repopulate the replacement queue.
-                val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 try {
                 val line = lines.getOrNull(idx) ?: continue
                 if (!DubbingTimeline.isPlayableCue(line)) {
-                    markCuePrepared(idx, hasAudio = false)
+                    markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                     bumpPrepared()
                     continue
                 }
                 fun checkSynthesisActive() {
-                    if (released || workerJob?.isActive == false) {
-                        throw kotlinx.coroutines.CancellationException("配音缓存写入已取消")
+                    if (!isWorkerTaskCurrent()) {
+                        throw kotlinx.coroutines.CancellationException("配音缓存写入已取消或配置代次已过期")
                     }
                 }
-                val cachedAudioState = cached(idx) {
-                    if (released || workerJob?.isActive == false) {
-                        throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
-                    }
-                }
+                val cachedAudioState = cached(idx, ::checkSynthesisActive)
+                checkSynthesisActive()
                 if (cachedAudioState != null) {
                     synthesisRecoveryRetryCounts.remove(idx)
                     // A cache file is usable only after its header and exact payload length are
                     // validated. Preserve empty failure markers separately from corrupt entries.
-                    markCuePrepared(idx, hasAudio = cachedAudioState)
+                    markCuePreparedForGeneration(idx, hasAudio = cachedAudioState, expectedGeneration = workerCacheGeneration)
                     if (!released && cachedAudioState && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
                             val audioFromMemory = memoryAudio(idx)
@@ -927,8 +963,8 @@ class DubbingEngine(
                 val redirectFirstIndex = chunkRedirect[idx]
                 if (redirectFirstIndex != null) {
                     when {
-                        readiness.isPrepared(redirectFirstIndex) -> markCuePrepared(idx, hasAudio = true)
-                        readiness.isSilent(redirectFirstIndex) -> markCuePrepared(idx, hasAudio = false)
+                        readiness.isPrepared(redirectFirstIndex) -> markCuePreparedForGeneration(idx, hasAudio = true, expectedGeneration = workerCacheGeneration)
+                        readiness.isSilent(redirectFirstIndex) -> markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                         else -> Unit // 等首行完成时统一补标
                     }
                     bumpPrepared()
@@ -959,7 +995,7 @@ class DubbingEngine(
                             e,
                         )
                     }
-                    markCuePrepared(idx, hasAudio = false)
+                    markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                     bumpPrepared()
                     continue
                 }
@@ -990,9 +1026,7 @@ class DubbingEngine(
                                     generated.sampleRate,
                                     generated.samples,
                                     checkActive = {
-                                        if (released || workerJob?.isActive == false) {
-                                            throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
-                                        }
+                                        checkSynthesisActive()
                                     },
                                 )
                             ) {
@@ -1061,9 +1095,7 @@ class DubbingEngine(
                                 rawCandidate.sampleRate,
                                 rawCandidate.samples,
                                 checkActive = {
-                                    if (released || workerJob?.isActive == false) {
-                                        throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
-                                    }
+                                    checkSynthesisActive()
                                 },
                             )
                             // 与首次合成一致：按去掉首尾静音后的真实说话时长比较和缓存。
@@ -1275,13 +1307,13 @@ class DubbingEngine(
                             "音频已合成，但磁盘缓存写入失败且内存缓存无法容纳该句：${cacheFailure.message.orEmpty()}"
                         recordDubbingFailure(idx, "音频缓存", cacheFailure)
                         reportSynthesisError(cacheFailure.message ?: "配音音频缓存失败")
-                        markCuePrepared(idx, hasAudio = false)
+                        markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                         bumpPrepared()
                         continue
                     }
                     synthesisRecoveryRetryCounts.remove(idx)
                     silentCueReasonsByIndex.remove(idx)
-                    markCuePrepared(idx, hasAudio = true)
+                    markCuePreparedForGeneration(idx, hasAudio = true, expectedGeneration = workerCacheGeneration)
                     if (!released && firstSynthesisReported.compareAndSet(false, true)) {
                         logDubbingInfo(
                             "首条中文配音 PCM 合成成功",
@@ -1313,8 +1345,11 @@ class DubbingEngine(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // A released session must never write a failure marker into a newer session's cache.
-                    if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
+                    // Blocking providers may throw ordinary exceptions after cancellation. Reject
+                    // that stale failure before it can mark a new configuration silent or enqueue work.
+                    if (!isWorkerTaskCurrent()) {
+                        throw kotlinx.coroutines.CancellationException("配音任务配置已变化，忽略旧引擎结果")
+                    }
                     // After one retry, publish the failure and allow video playback to continue.
                     val detail = e.message ?: e.javaClass.simpleName
                     silentCueReasonsByIndex[idx] =
@@ -1347,14 +1382,14 @@ class DubbingEngine(
                     if (DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(retryRequestedWhileActive)) {
                         // The queued retry is real work, not terminal silence. Keeping readiness
                         // pending prevents tick() from showing a false silent-cue/error state.
-                        markCuePending(idx)
+                        markCuePendingForGeneration(idx, expectedGeneration = workerCacheGeneration)
                         bumpPrepared()
                         continue
                     }
                     if (requestTtsFallback(idx, detail)) {
                         // The asynchronous service callback will install the fallback and requeue
                         // this cue. Stop before synthesizing another line with the failed engine.
-                        markCuePrepared(idx, hasAudio = false)
+                        markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                         bumpPrepared()
                         continue
                     }
@@ -1367,7 +1402,7 @@ class DubbingEngine(
                         )
                     ) {
                         synthesisRecoveryRetryCounts[idx] = retriesAlreadyScheduled + 1
-                        markCuePending(idx)
+                        markCuePendingForGeneration(idx, expectedGeneration = workerCacheGeneration)
                         bumpPrepared()
                         android.util.Log.w(
                             "DubbingEngine",
@@ -1377,9 +1412,11 @@ class DubbingEngine(
                         )
                         scope.launch {
                             kotlinx.coroutines.delay(DubbingSynthesisFailureRecoveryPolicy.RETRY_DELAY_MS)
-                            if (released) return@launch
+                            if (!isWorkerGenerationCurrent(workerCacheGeneration)) return@launch
                             val enqueued = synchronized(pending) {
-                                if (released || pending.contains(idx) || readiness.isReady(idx)) {
+                                if (!isWorkerGenerationCurrent(workerCacheGeneration) ||
+                                    pending.contains(idx) || readiness.isReady(idx)
+                                ) {
                                     false
                                 } else {
                                     pending.offerLast(idx)
@@ -1393,7 +1430,7 @@ class DubbingEngine(
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：$detail")
                     // Do not persist a zero-sample marker for a failed synthesis. A transient
                     // service/voice failure should be retried in a future session, not cached as silence.
-                    markCuePrepared(idx, hasAudio = false)
+                    markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                     bumpPrepared()
                 }
                 } finally {
@@ -1410,11 +1447,11 @@ class DubbingEngine(
                         retryAfterActiveSynthesis.contains(idx)
                     }
                     var hasReusableAudio = false
-                    if (retryInitiallyRequested && translatedCue && !released && workerJob?.isActive != false) {
+                    if (retryInitiallyRequested && translatedCue && isWorkerTaskCurrent()) {
                         try {
                             hasReusableAudio = cached(idx) {
-                                if (released || workerJob?.isActive == false) {
-                                    throw kotlinx.coroutines.CancellationException("配音重试状态检查已取消")
+                                if (!isWorkerTaskCurrent()) {
+                                    throw kotlinx.coroutines.CancellationException("配音重试状态检查已取消或配置代次已过期")
                                 }
                             } == true
                         } catch (_: kotlinx.coroutines.CancellationException) {
@@ -1432,7 +1469,7 @@ class DubbingEngine(
                                 retryRequested = retryWasRequested,
                                 translatedCue = translatedCue,
                                 hasReusableAudio = hasReusableAudio,
-                                workerActive = workerJob?.isActive == true,
+                                workerActive = isWorkerTaskCurrent(),
                                 released = released,
                                 fallbackRequested = fallbackRequested.get(),
                                 alreadyQueued = pending.contains(idx),
@@ -3685,12 +3722,13 @@ class DubbingEngine(
         restartSynthesisForCurrentConfiguration(next)
     }
 
-    private fun restartSynthesisForCurrentConfiguration(nextSpeed: Float) {
+    private fun restartSynthesisForCurrentConfiguration(nextSpeed: Float? = null) {
         val generation = synchronized(cacheConfigurationLock) {
-            if (released || nextSpeed == speed) return
+            if (released || (nextSpeed != null && nextSpeed == speed)) return
             // Publish the new rate and generation atomically so readers cannot pair the new
-            // rate with the prior generation during rapid successive changes.
-            speed = nextSpeed
+            // rate with the prior generation during rapid successive changes. A no-argument call
+            // forces a fresh pass after the active TTS implementation itself has changed.
+            if (nextSpeed != null) speed = nextSpeed
             cacheInitGeneration.incrementAndGet()
         }
         val oldCacheInit = cacheInitJob
