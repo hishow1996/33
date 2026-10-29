@@ -143,12 +143,19 @@ fun PlayerScreen(
         }
         "piper" -> emptyList()
         "web" -> listOf(-1 to "在线语音 · 默认音色")
+        "google" -> listOf(-1 to "谷歌在线语音 · 默认音色")
+        "gemini" -> buildList {
+            add(-1 to "Gemini 默认音色")
+            io.translatetube.local.tts.GeminiTtsVoices.ALL.forEachIndexed { index, voice ->
+                add(index to "Gemini · ${voice.label}")
+            }
+        }
         else -> buildList {
             add(-1 to "Kokoro 默认音色")
             (0..53).forEach { add(it to "Kokoro 音色 $it") }
         }
     }
-    val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "web" && voiceOptions.size > 1
+    val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "web" && selectedTtsEngine != "google" && voiceOptions.size > 1
     val state by PlaybackService.ui.collectAsState()
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }

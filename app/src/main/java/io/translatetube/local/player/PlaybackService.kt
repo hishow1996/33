@@ -123,6 +123,8 @@ private object ReadyHistorySessionConfigStore {
                 key.startsWith("tts_") ||
                 key.startsWith("edge_tts_") ||
                 key.startsWith("web_tts_") ||
+                key.startsWith("google_tts_") ||
+                key.startsWith("gemini_tts_") ||
                 key.startsWith("online_tts_") ||
                 key.startsWith("cloud_tts_") ||
                 key.startsWith("local_tts_") ||
@@ -361,6 +363,8 @@ private object ReadyHistorySessionConfigStore {
                 key.startsWith("tts_") ||
                     key.startsWith("edge_tts_") ||
                     key.startsWith("web_tts_") ||
+                    key.startsWith("google_tts_") ||
+                    key.startsWith("gemini_tts_") ||
                     key.startsWith("online_tts_") ||
                     key.startsWith("cloud_tts_") ||
                     key.startsWith("local_tts_") ||
@@ -5038,6 +5042,8 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                     "piper" -> piperModelReadyForChinese()
                     "web" -> true
                     "edge" -> true
+                    "google" -> true
+                    "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
                     else -> selectedImportTts == "system"
                 }
                 if (!importEngineReady) {
@@ -5081,6 +5087,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                     else -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
                                 }
                             }
+                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key。"
                             else -> "所选配音引擎「$unavailableEngineName」尚未就绪，请先检查设置和引擎配置。"
                         }
                         it.copy(
@@ -7563,6 +7570,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         "system" -> true
                         "web" -> true
                         "edge" -> true
+                        "google" -> true
+                        "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
                         "kokoro" -> kokoroRuntimeReady()
                         "piper" -> piperModelReadyForChinese()
                         else -> false
@@ -7675,6 +7684,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                         "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
                                         "edge" -> "微软 Edge TTS 初始化失败：$reason。请检查网络连接后重试。"
                                         "web" -> "在线语音引擎初始化失败：$reason。请检查网络连接后重试。"
+                                        "google" -> "谷歌在线语音初始化失败：$reason。请检查网络连接后重试。"
+                                        "gemini" -> "Gemini TTS 初始化失败：$reason。请检查设置中的 Gemini API Key 和网络连接后重试。"
                                         else -> "所选配音引擎「$selectedTtsName」初始化失败：$reason。请检查对应引擎配置后重试。"
                                     },
                                     waitingForTranscriptionEngine = false,
@@ -7703,7 +7714,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                     else -> "Piper 中文配音初始化失败，请检查模型文件后重试。"
                                 }
                             }
-                            else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro、Piper 或系统 TTS。应用不会擅自切换引擎。"
+                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key 后再试。"
+                            else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择配音引擎。应用不会擅自切换引擎。"
                         }
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
@@ -9816,6 +9828,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         "system" -> "系统 TTS"
         "edge" -> "微软 Edge TTS"
         "web" -> "在线语音"
+        "google" -> "谷歌在线语音"
+        "gemini" -> "Gemini TTS"
         "kokoro" -> "Kokoro"
         "piper" -> {
             val prefs = getSharedPreferences("settings", MODE_PRIVATE)
@@ -9864,6 +9878,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             "edge" -> io.translatetube.local.tts.EdgeTts()
             "web" -> io.translatetube.local.tts.WebTts()
+            "google" -> io.translatetube.local.tts.GoogleTts()
+            "gemini" -> io.translatetube.local.tts.GeminiTts(this)
             else -> throw IllegalStateException("未知配音引擎「$selected」，请在设置中重新选择")
         }
     }

@@ -77,6 +77,20 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
         )
     }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "edge") ?: "edge") }
+    var geminiTtsVoice by remember {
+        mutableStateOf(
+            prefs.getString(
+                io.translatetube.local.tts.GeminiTtsVoices.PREF_VOICE_KEY,
+                io.translatetube.local.tts.GeminiTtsVoices.DEFAULT_VOICE,
+            ) ?: io.translatetube.local.tts.GeminiTtsVoices.DEFAULT_VOICE,
+        )
+    }
+    var geminiTtsVoiceMenuExpanded by remember { mutableStateOf(false) }
+    var geminiTtsApiKey by remember {
+        mutableStateOf(Crypto.decrypt(prefs.getString("free_gemini_key", "").orEmpty()))
+    }
+    var geminiTtsConfigExpanded by remember { mutableStateOf(false) }
+    var geminiTtsSavedMessage by remember { mutableStateOf<String?>(null) }
     var systemTtsMode by remember { mutableStateOf(prefs.getString("system_tts_mode", "generated") ?: "generated") }
     var systemTtsVoiceName by remember { mutableStateOf(prefs.getString("system_tts_voice_name", "").orEmpty()) }
     var systemTtsVoiceCatalog by remember {
@@ -727,6 +741,28 @@ Section(
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
+            EngineOption("google", "谷歌在线语音（需联网）", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "Settings",
+                        "切换配音引擎：$ttsEngine -> $e",
+                    )
+                }
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
+            }
+            EngineOption("gemini", "Gemini TTS（需联网）", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "Settings",
+                        "切换配音引擎：$ttsEngine -> $e",
+                    )
+                }
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
+            }
             EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
@@ -737,6 +773,105 @@ Section(
                 }
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
+            }
+            if (ttsEngine == "gemini") {
+                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("默认音色", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            io.translatetube.local.tts.GeminiTtsVoices.labelFor(geminiTtsVoice),
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Box {
+                        TextButton(onClick = { geminiTtsVoiceMenuExpanded = true }) {
+                            Text("选择音色")
+                        }
+                        DropdownMenu(
+                            expanded = geminiTtsVoiceMenuExpanded,
+                            onDismissRequest = { geminiTtsVoiceMenuExpanded = false },
+                        ) {
+                            io.translatetube.local.tts.GeminiTtsVoices.ALL.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        geminiTtsVoice = option.id
+                                        prefs.edit()
+                                            .putString(io.translatetube.local.tts.GeminiTtsVoices.PREF_VOICE_KEY, option.id)
+                                            .apply()
+                                        geminiTtsVoiceMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Gemini API Key", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (geminiTtsApiKey.isNotBlank()) "已配置（与 Gemini 翻译通用）" else "未配置 API Key",
+                            color = if (geminiTtsApiKey.isNotBlank()) BrandBright else SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    TextButton(onClick = { geminiTtsConfigExpanded = !geminiTtsConfigExpanded }) {
+                        Text(if (geminiTtsConfigExpanded) "收起" else if (geminiTtsApiKey.isNotBlank()) "修改 Key" else "填入 Key")
+                    }
+                }
+                if (geminiTtsConfigExpanded) {
+                    OutlinedTextField(
+                        value = geminiTtsApiKey,
+                        onValueChange = {
+                            geminiTtsApiKey = it
+                            geminiTtsSavedMessage = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Gemini API Key") },
+                        placeholder = { Text("粘贴 AIza 开头的 Gemini API Key") },
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        geminiTtsSavedMessage?.let {
+                            Text(
+                                it,
+                                color = BrandBright,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                val trimmed = geminiTtsApiKey.trim()
+                                prefs.edit()
+                                    .putString("free_gemini_key", if (trimmed.isEmpty()) "" else Crypto.encrypt(trimmed))
+                                    .apply()
+                                geminiTtsSavedMessage = "已保存"
+                                geminiTtsConfigExpanded = false
+                            },
+                            enabled = geminiTtsApiKey.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text("保存")
+                        }
+                    }
+                }
             }
             if (ttsEngine == "system") {
                 HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))

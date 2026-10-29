@@ -18,6 +18,10 @@ internal object TtsFailureAdvice {
                 "请检查 Kokoro 配音模型文件是否完整，必要时在设置中重新准备模型。"
             normalized.contains("piper") ->
                 "请确认设置中选择了中文 Piper 模型，并检查模型、词典和发音规则文件是否完整。"
+            normalized.contains("gemini") ->
+                "请检查网络连接，以及设置中的 Gemini API Key 是否有效、额度是否充足。"
+            normalized.contains("google") || normalized.contains("谷歌") ->
+                "请检查网络连接是否正常，谷歌在线语音需要联网访问。"
             else ->
                 "请检查当前选择的配音引擎是否初始化成功，以及它是否能生成有效音频。"
         }

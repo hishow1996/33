@@ -17,8 +17,11 @@ internal object DubbingConfigPreferencePolicy {
             key.startsWith("kokoro_") -> engine == "kokoro"
             key.startsWith("edge_tts_") -> engine == "edge"
             key.startsWith("web_tts_") -> engine == "web"
-            key.startsWith("online_tts_") -> engine == "edge" || engine == "web"
-            key.startsWith("cloud_tts_") -> engine == "edge" || engine == "web"
+            key.startsWith("google_tts_") -> engine == "google"
+            key.startsWith("gemini_tts_") -> engine == "gemini"
+            key == "free_gemini_key" -> engine == "gemini"
+            key.startsWith("online_tts_") -> engine == "edge" || engine == "web" || engine == "google" || engine == "gemini"
+            key.startsWith("cloud_tts_") -> engine == "edge" || engine == "web" || engine == "google" || engine == "gemini"
             key.startsWith("local_tts_") -> engine == "system" || engine == "piper" || engine == "kokoro"
             // Generic TTS options and unclassified legacy preferences may affect more than one engine.
             else -> true
