@@ -17,7 +17,7 @@ class PiperTtsCacheIdentityPolicyTest {
             val first = PiperTtsCacheIdentityPolicy.espeakDataSignature(root)
             val second = PiperTtsCacheIdentityPolicy.espeakDataSignature(root)
             assertEquals(first, second)
-            assertEquals(24, first.length())
+            assertEquals(24, first.length)
         } finally {
             root.deleteRecursively()
         }
