@@ -69,7 +69,9 @@ class ReadySessionSnapshotReusePolicyTest {
         assertFalse(
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                snapshotIgnoresTranscription = true,
                 expectedFlow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                isYouTube = true,
             ),
         )
     }
@@ -79,7 +81,9 @@ class ReadySessionSnapshotReusePolicyTest {
         assertTrue(
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                snapshotIgnoresTranscription = false,
                 expectedFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                isYouTube = false,
             ),
         )
     }
@@ -89,7 +93,41 @@ class ReadySessionSnapshotReusePolicyTest {
         assertTrue(
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                snapshotIgnoresTranscription = false,
                 expectedFlow = null,
+                isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
+    fun localAsrFlowCannotRestoreSnapshotThatIgnoredAsr() {
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                snapshotIgnoresTranscription = true,
+                expectedFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
+    fun youtubeCaptionFlowRequiresAsrIgnoredSnapshot() {
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                snapshotIgnoresTranscription = true,
+                expectedFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                isYouTube = true,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                snapshotIgnoresTranscription = false,
+                expectedFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                isYouTube = true,
             ),
         )
     }
