@@ -886,6 +886,7 @@ class DubbingEngine(
                 } ?: break
                 // Keep the worker identity visible to finally: cancelled/reconfigured workers
                 // must clear their active slot but must not repopulate the replacement queue.
+                var deterministicFailureInThisCue = false
                 try {
                 val line = lines.getOrNull(idx) ?: continue
                 if (!DubbingTimeline.isPlayableCue(line)) {
@@ -1358,6 +1359,8 @@ class DubbingEngine(
                     // A playback cache miss may have already requested a retry while this cue
                     // was being synthesized. Defer terminal error reporting until that queued
                     // attempt has run, otherwise a successful immediate retry leaves a false warning.
+                    val deterministicFailure = e is DubbingPcmLimitException || e is TtsInputLimitException
+                    deterministicFailureInThisCue = deterministicFailure
                     val retryRequestedWhileActive = synchronized(pending) {
                         retryAfterActiveSynthesis.contains(idx)
                     }
@@ -1379,7 +1382,11 @@ class DubbingEngine(
                             "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
                         ),
                     )
-                    if (DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(retryRequestedWhileActive)) {
+                    if (DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(
+                            retryRequestedWhileActive = retryRequestedWhileActive,
+                            deterministicFailure = deterministicFailure,
+                        )
+                    ) {
                         // The queued retry is real work, not terminal silence. Keeping readiness
                         // pending prevents tick() from showing a false silent-cue/error state.
                         markCuePendingForGeneration(idx, expectedGeneration = workerCacheGeneration)
@@ -1394,7 +1401,6 @@ class DubbingEngine(
                         continue
                     }
                     val retriesAlreadyScheduled = synthesisRecoveryRetryCounts[idx] ?: 0
-                    val deterministicFailure = e is DubbingPcmLimitException || e is TtsInputLimitException
                     if (DubbingSynthesisFailureRecoveryPolicy.shouldScheduleRetry(
                             retriesAlreadyScheduled = retriesAlreadyScheduled,
                             deterministicFailure = deterministicFailure,
@@ -1488,6 +1494,7 @@ class DubbingEngine(
                                     released = released,
                                     fallbackRequested = fallbackRequested.get(),
                                     alreadyQueued = pending.contains(idx),
+                                    deterministicFailure = deterministicFailureInThisCue,
                                 )
                             ) {
                                 pending.offerFirst(idx)
