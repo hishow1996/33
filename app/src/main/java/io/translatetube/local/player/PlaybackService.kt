@@ -5748,7 +5748,6 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 videoId != null ->
                     YouTubeAsrSourceCacheIdentity.key(
                         videoKey = key,
-                        sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
                         asrCacheIdentity = asrCacheIdentity,
                     )
                 remoteMediaUrl != null ->
