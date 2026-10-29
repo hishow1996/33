@@ -1,3 +1,4 @@
+# Explicit retry build after fixing legacy YouTube ASR cache key migration test (2026-10-29).
 # Explicit retry build after making captured media IDs explicitly non-null (2026-10-29).
 # Explicit retry build after correcting PlaybackService stage scope (2026-10-29).
 # Explicit one-time APK build requested after PlaybackService method-size fix (2026-10-29).
