@@ -5,19 +5,18 @@ import org.junit.Test
 
 class DubbingSourceVolumePolicyTest {
     @Test
-    fun sourceIsMutedOnlyAfterAudibleDubbingActuallyStarts() {
-        assertEquals(1f, DubbingSourceVolumePolicy.sourceGain(1f, 1f, true, false), 0f)
-        assertEquals(0f, DubbingSourceVolumePolicy.sourceGain(1f, 1f, true, true), 0f)
+    fun originalAudioContinuesWhileDubbingPlays() {
+        assertEquals(1f, DubbingSourceVolumePolicy.sourceGain(1f, 1f, true, true), 0f)
     }
 
     @Test
-    fun sourceReturnsAfterDubbingStopsOrIsDisabled() {
+    fun originalAudioRemainsAvailableBeforeDubbingStartsOrWhenDubbingIsDisabled() {
         assertEquals(1f, DubbingSourceVolumePolicy.sourceGain(1f, 1f, false, true), 0f)
         assertEquals(1f, DubbingSourceVolumePolicy.sourceGain(1f, 1f, true, false), 0f)
     }
 
     @Test
-    fun zeroDubbingVolumeDoesNotMuteTheOnlyAudibleNarration() {
+    fun zeroDubbingVolumeDoesNotAlterOriginalAudioGain() {
         assertEquals(1f, DubbingSourceVolumePolicy.sourceGain(1f, 0f, true, true), 0f)
     }
 
@@ -28,8 +27,8 @@ class DubbingSourceVolumePolicyTest {
     }
 
     @Test
-    fun invalidVolumeInputsFailSafeWithoutLeakingSourceAudioDuringSpeech() {
+    fun invalidOriginalVolumeMutesSourceButInvalidDubbingVolumeDoesNot() {
         assertEquals(0f, DubbingSourceVolumePolicy.sourceGain(Float.NaN, 1f, true, true), 0f)
-        assertEquals(0f, DubbingSourceVolumePolicy.sourceGain(1f, Float.NaN, true, true), 0f)
+        assertEquals(1f, DubbingSourceVolumePolicy.sourceGain(1f, Float.NaN, true, true), 0f)
     }
 }

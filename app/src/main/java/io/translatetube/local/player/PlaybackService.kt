@@ -10206,9 +10206,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     }
 
     /**
-     * Keep source audio muted only while audible Chinese speech has actually started.
-     * Tick callbacks run repeatedly, so restoring the user's source gain unconditionally in an
-     * active cue would undo the one-shot playback-start mute on the very next tick.
+     * Preserve the user's original-audio gain independently of whether Chinese speech has started.
+     * Playback ticks may reapply this gain throughout a cue; only the user's own mute setting
+     * should silence the source track while dubbing is playing.
      */
     private fun syncOriginalVolumeWithDubbing(
         engine: DubbingEngine,
@@ -10573,7 +10573,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // Finish the current sentence without pausing video. Captions crossed meanwhile
                 // stay in the ordered catch-up queue instead of being skipped.
                 d.updatePlayerSpeed(pm.playbackSpeed())
-                // Voice volume is independent of source-audio state: never mix the two narrations.
+                // Voice and source use independent gains; both may remain audible at the same time.
                 d.updateVolume(st.dubbingVolume)
                 syncOriginalVolumeWithDubbing(d, st, "continuing a dubbed cue")
                 d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
@@ -10652,7 +10652,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                 } else {
                     d.updatePlayerSpeed(pm.playbackSpeed())
-                    // Voice volume is independent of source-audio state: never mix the two narrations.
+                    // Voice and source use independent gains; both may remain audible at the same time.
                     d.updateVolume(st.dubbingVolume)
                 }
                 syncOriginalVolumeWithDubbing(d, st, "dubbing cue playback")
