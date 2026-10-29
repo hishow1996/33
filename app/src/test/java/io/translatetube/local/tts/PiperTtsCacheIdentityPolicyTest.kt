@@ -57,7 +57,9 @@ class PiperTtsCacheIdentityPolicyTest {
             assertNotEquals(first, withResource)
             nested.delete()
             val afterRemoval = PiperTtsCacheIdentityPolicy.espeakDataSignature(root)
-            assertEquals(first, afterRemoval)
+            // The now-empty "data" directory remains in the tree, so compare against the state
+            // that had the file rather than assuming directory mtimes return to their old values.
+            assertNotEquals(withResource, afterRemoval)
         } finally {
             root.deleteRecursively()
         }
