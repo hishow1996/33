@@ -237,7 +237,7 @@ internal class GeminiTts(
         val promptText = if (isDedicatedTts) {
             "请以$paceInstruction、清晰自然的方式逐字朗读以下文本。只朗读文本本身，不要添加、删减或改写内容：\n$text"
         } else {
-            "请直接用$paceInstruction的中文朗读以下内容，只输出原文朗读语音，不要添加、删减或改写任何词语：\n$text"
+            "请直接用${paceInstruction}的中文朗读以下内容，只输出原文朗读语音，不要添加、删减或改写任何词语：\n$text"
         }
 
         val bodyJson = JSONObject().apply {

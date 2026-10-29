@@ -32,6 +32,6 @@ internal object TtsProviderSpeedPolicy {
             requested <= 1.75f -> "以较快语速、保持清晰地"
             else -> "以尽可能快但每个字仍清晰的语速"
         }
-        return "$pace朗读，目标速度约为正常语速的 ${rate} 倍"
+        return "${pace}朗读，目标速度约为正常语速的 ${rate} 倍"
     }
 }
