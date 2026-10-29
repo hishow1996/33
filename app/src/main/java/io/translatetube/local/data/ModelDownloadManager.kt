@@ -1,5 +1,7 @@
 package io.translatetube.local.data
 
+import io.translatetube.local.player.AsrModelCacheSignaturePolicy
+
 import io.translatetube.local.util.HttpDownloadResponsePolicy
 import io.translatetube.local.util.HttpDownloadSpeedPolicy
 import io.translatetube.local.util.SlowDownloadSourceException
