@@ -1974,15 +1974,19 @@ class DubbingEngine(
         checkActive: () -> Unit = {},
     ): Boolean? {
         val file = cacheFile(idx)
+        // Memory entries have already been checked against the active engine/text/speaker/speed
+        // identity. A fresh in-memory result remains usable even if its disk write failed.
+        val inMemory = memoryAudio(idx)
         if (!DubbingCacheFreshnessPolicy.canReadCache(
                 forceFreshSynthesis = forceRegeneratePcmForAttach,
                 wasWrittenByCurrentRun = file.name in freshlySynthesizedCacheFiles,
+                hasMatchingCurrentMemoryEntry = inMemory != null,
             )
         ) {
             checkActive()
             return null
         }
-        if (memoryAudio(idx) != null) {
+        if (inMemory != null) {
             checkActive()
             return true
         }
@@ -2122,11 +2126,13 @@ class DubbingEngine(
         if (!isReadCurrent()) return null
         val playIdx = resolveChunkIndex(idx)
         val f = cacheFile(playIdx)
-        // load() is also called directly from playback and can race with a cache-init pass.
-        // Do not let an undeleted or late old cache bypass the forced-synthesis queue.
+        val inMemory = memoryAudio(playIdx)
+        // Disk hits must belong to this forced run. A matching current memory entry is fresh
+        // independently: it can be the only usable copy after a disk-write failure.
         if (!DubbingCacheFreshnessPolicy.canReadCache(
                 forceFreshSynthesis = forceRegeneratePcmForAttach,
                 wasWrittenByCurrentRun = f.name in freshlySynthesizedCacheFiles,
+                hasMatchingCurrentMemoryEntry = inMemory != null,
             )
         ) {
             if (!isReadCurrent()) return null
@@ -2134,7 +2140,6 @@ class DubbingEngine(
             queueSynthesisRetry(playIdx)
             return null
         }
-        val inMemory = memoryAudio(playIdx)
         if (inMemory != null) {
             if (!isReadCurrent()) return null
             // Media3's LRU evictor tracks actual cache touches. Keep our file-backed cache's
