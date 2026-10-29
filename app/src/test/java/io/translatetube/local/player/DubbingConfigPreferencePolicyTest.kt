@@ -1,13 +1,24 @@
 package io.translatetube.local.player
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DubbingConfigPreferencePolicyTest {
     @Test
+    fun removedWebEngineNormalizesToEdgeForLegacyInstalls() {
+        assertEquals("edge", DubbingConfigPreferencePolicy.normalizeEngineId("web"))
+        assertEquals("edge", DubbingConfigPreferencePolicy.normalizeEngineId(" WEB "))
+        assertEquals("edge", DubbingConfigPreferencePolicy.normalizeEngineId(null))
+        assertEquals("edge", DubbingConfigPreferencePolicy.normalizeEngineId(" "))
+        assertEquals("google", DubbingConfigPreferencePolicy.normalizeEngineId("Google"))
+        assertEquals("kokoro", DubbingConfigPreferencePolicy.normalizeEngineId("kokoro"))
+    }
+
+    @Test
     fun engineSelectorIsAlwaysRelevant() {
-        listOf("edge", "web", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
+        listOf("edge", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
             assertTrue(
                 DubbingConfigPreferencePolicy.isRelevantForActiveEngine("tts_engine", engine),
             )
@@ -37,13 +48,17 @@ class DubbingConfigPreferencePolicyTest {
     }
 
     @Test
-    fun edgeAndWebProviderSettingsAreSeparated() {
+    fun edgeSettingsAreScopedToTheNormalizedEdgeEngine() {
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("edge_tts_voice", "edge"))
-        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("edge_tts_voice", "web"))
-        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("web_tts_voice", "web"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("edge_tts_voice", "web"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("edge_tts_voice", "google"))
+    }
+
+    @Test
+    fun removedWebTtsPreferencesAreIgnored() {
+        assertFalse(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("web_tts_voice"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("web_tts_voice", "web"))
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("web_tts_voice", "edge"))
-        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", "web"))
-        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", "piper"))
     }
 
     @Test
@@ -59,18 +74,19 @@ class DubbingConfigPreferencePolicyTest {
     @Test
     fun translationGeminiKeyNeverInvalidatesDubbingConfiguration() {
         assertFalse(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("free_gemini_key"))
-        listOf("edge", "web", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
+        listOf("edge", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
             assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", engine))
         }
     }
 
     @Test
-    fun legacyOnlineAndCloudSettingsDoNotRestartGoogleOrGeminiTts() {
-        for (engine in listOf("google", "gemini")) {
+    fun legacyOnlineAndCloudSettingsBelongOnlyToEdgeTts() {
+        for (engine in listOf("google", "gemini", "piper", "system")) {
             assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", engine))
             assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("cloud_tts_voice", engine))
         }
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", "edge"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("cloud_tts_voice", "edge"))
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("cloud_tts_voice", "web"))
     }
 
