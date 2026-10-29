@@ -871,6 +871,10 @@ Section(
                                 val trimmed = geminiTtsApiKey.trim()
                                 prefs.edit()
                                     .putString(io.translatetube.local.tts.GeminiTtsVoices.PREF_API_KEY, if (trimmed.isEmpty()) "" else Crypto.encrypt(trimmed))
+                                    .putString(
+                                        "gemini_tts_profile_key_fingerprint",
+                                        io.translatetube.local.tts.TtsCacheIdentityPolicy.credentialFingerprint(trimmed),
+                                    )
                                     .apply()
                                 geminiTtsSavedMessage = "已保存"
                                 geminiTtsConfigExpanded = false
