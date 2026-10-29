@@ -3477,6 +3477,13 @@ class PlaybackService : MediaSessionService() {
                         ) {
                             val restoredFlow = pipelineResumeState.processingFlow.name
                             val staleTranslationCacheKey = pipelineResumeState.translationCacheKey
+                            val removedStaleSnapshotCount =
+                                ReadySessionSnapshotStore.removeMatchingYouTubeCaptionSource(
+                                    context = this@PlaybackService,
+                                    videoKey = key,
+                                    identityKey = readySnapshotIdentityKey,
+                                    invalidState = pipelineResumeState,
+                                )
                             io.translatetube.local.util.AppLogStore.warning(
                                 this@PlaybackService,
                                 "PlaybackFlow",
@@ -3490,13 +3497,6 @@ class PlaybackService : MediaSessionService() {
                                     "已清理同一来源失效快照数" to removedStaleSnapshotCount.toString(),
                                 ),
                             )
-                            val removedStaleSnapshotCount =
-                                ReadySessionSnapshotStore.removeMatchingYouTubeCaptionSource(
-                                    context = this@PlaybackService,
-                                    videoKey = key,
-                                    identityKey = readySnapshotIdentityKey,
-                                    invalidState = pipelineResumeState,
-                                )
                             // Switch the active run to a fresh parse before touching the cache so a
                             // storage error cannot silently continue with the stale ready snapshot.
                             pipelineResumeState = null
