@@ -118,6 +118,16 @@ import kotlin.math.roundToInt
 
 private enum class SubtitleExportFormat { CHINESE_SRT, BILINGUAL_SRT, BILINGUAL_VTT }
 
+private fun edgeVoiceDisplayName(voiceName: String): String = when (voiceName) {
+    "zh-CN-XiaoxiaoNeural" -> "晓晓"
+    "zh-CN-YunxiNeural" -> "云希"
+    "zh-CN-XiaoyiNeural" -> "晓伊"
+    "zh-CN-YunyangNeural" -> "云扬"
+    "zh-CN-XiaohanNeural" -> "晓涵"
+    "zh-CN-XiaomengNeural" -> "晓梦"
+    else -> voiceName
+}
+
 @Composable
 fun PlayerScreen(
     videoId: String?,
@@ -145,6 +155,12 @@ fun PlayerScreen(
             systemVoiceCatalog.drop(1).forEachIndexed { index, voiceName -> add(index to voiceName) }
         }
         "piper" -> emptyList()
+        "edge" -> buildList {
+            add(-1 to "晓晓（默认）")
+            io.translatetube.local.tts.EdgeTts.VOICES.drop(1).forEachIndexed { index, voice ->
+                add(index + 1 to edgeVoiceDisplayName(voice))
+            }
+        }
         "google" -> listOf(-1 to "谷歌在线语音 · 默认音色")
         "gemini" -> buildList {
             add(-1 to "Gemini 默认音色")
@@ -157,7 +173,7 @@ fun PlayerScreen(
             (0..53).forEach { add(it to "Kokoro 音色 $it") }
         }
     }
-    val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "web" && selectedTtsEngine != "google" && voiceOptions.size > 1
+    val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "google" && voiceOptions.size > 1
     val state by PlaybackService.ui.collectAsState()
     val playbackHint by PlaybackService.playbackHint.collectAsState()
     val listState = rememberLazyListState()
