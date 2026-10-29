@@ -386,32 +386,12 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         .putString(PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT, activeProfileFingerprint)
                         .apply()
                 }
-                // Gemini TTS falls back to the first enabled Gemini profile when its dedicated
-                // free_gemini_key setting is empty. Mirror that effective credential as a hash so
-                // imported-translated-subtitle sessions also detect a TTS-only credential change.
-                val effectiveFreeGeminiKey = runCatching {
-                    Crypto.decrypt(prefs.getString("free_gemini_key", "").orEmpty())
+                // 跟踪独立的 Gemini 配音密钥；翻译 API 配置变化不再影响配音缓存身份。
+                val geminiTtsApiKey = runCatching {
+                    Crypto.decrypt(prefs.getString("gemini_tts_api_key", "").orEmpty())
                 }.getOrDefault("").trim()
-                val fallbackGeminiKey = if (effectiveFreeGeminiKey.isBlank()) {
-                    runCatching {
-                        db.apiProfileDao().enabled()
-                            .firstOrNull {
-                                it.type.equals("GEMINI", ignoreCase = true) && it.apiKey.isNotBlank()
-                            }
-                            ?.apiKey
-                            ?.let { encrypted ->
-                                runCatching { Crypto.decrypt(encrypted) }.getOrElse { encrypted }
-                            }
-                            .orEmpty()
-                    }.getOrNull().orEmpty().trim()
-                } else {
-                    ""
-                }
                 val geminiTtsProfileKeyFingerprint =
-                    TtsCacheIdentityPolicy.geminiFallbackCredentialFingerprint(
-                        freeGeminiApiKey = effectiveFreeGeminiKey,
-                        fallbackProfileApiKey = fallbackGeminiKey,
-                    )
+                    TtsCacheIdentityPolicy.credentialFingerprint(geminiTtsApiKey)
                 if (prefs.getString(PREF_GEMINI_TTS_PROFILE_KEY_FINGERPRINT, null) != geminiTtsProfileKeyFingerprint) {
                     prefs.edit()
                         .putString(PREF_GEMINI_TTS_PROFILE_KEY_FINGERPRINT, geminiTtsProfileKeyFingerprint)
