@@ -64,4 +64,34 @@ class ReadySessionSnapshotReusePolicyTest {
         )
     }
 
+    @Test
+    fun engineRollbackCannotReuseSnapshotFromDifferentProcessingFlow() {
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                expectedFlow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ),
+        )
+    }
+
+    @Test
+    fun matchingProcessingFlowCanReuseItsHistoricalSnapshot() {
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                expectedFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ),
+        )
+    }
+
+    @Test
+    fun genericHistoryLookupMayAcceptTheSnapshotOwnFlow() {
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                expectedFlow = null,
+            ),
+        )
+    }
+
 }
