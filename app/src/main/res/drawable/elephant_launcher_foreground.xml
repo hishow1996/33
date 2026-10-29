@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Keep the complete mascot inside the adaptive-icon safe area, without a rounded-square image background. -->
+    <!-- Keep the full mascot inside Android's adaptive-icon safe zone to prevent the trunk and feet from being clipped. -->
     <item
         android:drawable="@drawable/elephant_mascot_cutout"
-        android:width="70dp"
-        android:height="70dp"
+        android:width="56dp"
+        android:height="56dp"
         android:gravity="center" />
 </layer-list>
