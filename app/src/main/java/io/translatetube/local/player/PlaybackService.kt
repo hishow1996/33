@@ -3150,7 +3150,10 @@ class PlaybackService : MediaSessionService() {
             ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
         // A matching snapshot may be from a configuration used before the latest run. It is still
         // reusable when the user switches back to that exact successful engine combination.
-        val reusableSnapshot = if (canRestoreStoredResult) {
+        val reusableSnapshot = if (ReadySessionSnapshotReusePolicy.canReuseExactSnapshot(
+            canRestoreStoredResult = canRestoreStoredResult,
+            forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+        )) {
             ReadySessionSnapshotStore.findForCurrentConfig(
                 this, key, identityKey = readySnapshotIdentityKey,
             ) { ignore ->
