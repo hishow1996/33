@@ -4,7 +4,8 @@ import java.security.MessageDigest
 import java.util.Locale
 
 /**
- * Isolates cached PCM by Gemini voice and credential without exposing API keys in cache names.
+ * Builds stable TTS cache identities from voices, model policies, and credentials without
+ * exposing API keys in cache names.
  */
 internal object TtsCacheIdentityPolicy {
     fun credentialFingerprint(apiKey: String): String {
@@ -24,6 +25,28 @@ internal object TtsCacheIdentityPolicy {
     ): String {
         if (freeGeminiApiKey.isNotBlank() || fallbackProfileApiKey.isBlank()) return ""
         return credentialFingerprint(fallbackProfileApiKey)
+    }
+
+    // Retain the shipped Edge cache identity while this exact voice order is active. Any
+    // changed name or order receives a deterministic suffix so speakerId-to-voice remapping
+    // cannot silently reuse a cache synthesized with another voice.
+    private val legacyEdgeVoiceCatalog = listOf(
+        "zh-CN-XiaoxiaoNeural",
+        "zh-CN-YunxiNeural",
+        "zh-CN-XiaoyiNeural",
+        "zh-CN-YunyangNeural",
+        "zh-CN-XiaohanNeural",
+        "zh-CN-XiaomengNeural",
+    )
+
+    fun edgeCacheKey(voiceCatalog: List<String>): String {
+        val normalizedCatalog = voiceCatalog.map { it.trim() }
+        if (normalizedCatalog == legacyEdgeVoiceCatalog) return "edge-readaloud-v2|zh-neural"
+        val voiceFingerprint = MessageDigest.getInstance("SHA-256")
+            .digest(normalizedCatalog.joinToString("\n").toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return "edge-readaloud-v2|zh-neural|voices-$voiceFingerprint"
     }
 
     // Keep the historical cache identity for the shipped model order so previously

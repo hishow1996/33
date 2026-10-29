@@ -59,6 +59,36 @@ class TtsCacheIdentityPolicyTest {
     }
 
     @Test
+    fun edgeVoiceCatalogChangesCacheIdentityWithoutInvalidatingTheShippedCatalog() {
+        val shippedCatalog = listOf(
+            "zh-CN-XiaoxiaoNeural",
+            "zh-CN-YunxiNeural",
+            "zh-CN-XiaoyiNeural",
+            "zh-CN-YunyangNeural",
+            "zh-CN-XiaohanNeural",
+            "zh-CN-XiaomengNeural",
+        )
+        val baseline = TtsCacheIdentityPolicy.edgeCacheKey(shippedCatalog)
+
+        assertEquals("edge-readaloud-v2|zh-neural", baseline)
+        assertEquals(baseline, TtsCacheIdentityPolicy.edgeCacheKey(shippedCatalog.toList()))
+        assertFalse(
+            baseline == TtsCacheIdentityPolicy.edgeCacheKey(
+                shippedCatalog.toMutableList().apply { this[0] = "zh-CN-NewVoiceNeural" },
+            ),
+        )
+        assertFalse(
+            baseline == TtsCacheIdentityPolicy.edgeCacheKey(
+                listOf(shippedCatalog[1], shippedCatalog[0]) + shippedCatalog.drop(2),
+            ),
+        )
+        assertEquals(
+            TtsCacheIdentityPolicy.edgeCacheKey(shippedCatalog.drop(1)),
+            TtsCacheIdentityPolicy.edgeCacheKey(shippedCatalog.drop(1)),
+        )
+    }
+
+    @Test
     fun cacheKeyDoesNotContainTheRawApiKey() {
         val key = TtsCacheIdentityPolicy.geminiCacheKey("Kore", "AIza-example-secret")
         assertFalse(key.contains("AIza-example-secret"))

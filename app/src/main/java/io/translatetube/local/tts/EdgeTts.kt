@@ -38,7 +38,8 @@ internal class EdgeTts : TtsEngine {
         .retryOnConnectionFailure(true)
         .build()
 
-    override val cacheKey: String get() = "$name|edge-readaloud-v2|zh-neural"
+    override val cacheKey: String
+        get() = "$name|${TtsCacheIdentityPolicy.edgeCacheKey(VOICES.toList())}"
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
         synthInternal(text, speed, speakerId) {}
