@@ -110,37 +110,32 @@ class EngineRestartStagePolicyTest {
             ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
         )
         for (flow in flows) {
+            for (phase in listOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING)) {
+                assertEquals(
+                    "source preparation should be resumable for $flow at $phase",
+                    true,
+                    EngineRestartStagePolicy.canResumeFromSourcePreparation(phase, flow),
+                )
+            }
+        }
+        for (phase in listOf(Phase.PARSING, Phase.TRANSCRIBING)) {
             assertEquals(
-                "audio extraction should be resumable for $flow",
-                true,
+                "YouTube caption flow must not use speech-source deferral at $phase",
+                false,
                 EngineRestartStagePolicy.canResumeFromSourcePreparation(
-                    Phase.DOWNLOADING_AUDIO,
-                    flow,
+                    phase,
+                    ProcessingFlow.YOUTUBE_SUBTITLES,
                 ),
             )
             assertEquals(
-                "transcription should be resumable for $flow",
-                true,
+                "imported translated subtitles must not use speech-source deferral at $phase",
+                false,
                 EngineRestartStagePolicy.canResumeFromSourcePreparation(
-                    Phase.TRANSCRIBING,
-                    flow,
+                    phase,
+                    ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
                 ),
             )
         }
-        assertEquals(
-            false,
-            EngineRestartStagePolicy.canResumeFromSourcePreparation(
-                Phase.TRANSCRIBING,
-                ProcessingFlow.YOUTUBE_SUBTITLES,
-            ),
-        )
-        assertEquals(
-            false,
-            EngineRestartStagePolicy.canResumeFromSourcePreparation(
-                Phase.TRANSCRIBING,
-                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
-            ),
-        )
     }
 
     @Test
@@ -401,7 +396,7 @@ class EngineRestartStagePolicyTest {
             ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
         )
         for (flow in flows) {
-            for (phase in listOf(Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING)) {
+            for (phase in listOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING)) {
                 assertEquals(
                     "translation change should not cancel active source work: flow=$flow phase=$phase",
                     true,
@@ -440,7 +435,25 @@ class EngineRestartStagePolicyTest {
         assertEquals(
             false,
             EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.PARSING,
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                oldConfig,
+                changed(transcription = "asr-b", dubbing = "tts-b"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
                 Phase.TRANSCRIBING,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+                oldConfig,
+                changed(translation = "translation-model-b"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.PARSING,
                 ProcessingFlow.YOUTUBE_SUBTITLES,
                 oldConfig,
                 changed(translation = "translation-model-b"),

@@ -38,7 +38,7 @@ internal object EngineRestartStagePolicy {
         phase: Phase,
         processingFlow: ProcessingFlow,
     ): Boolean =
-        phase in setOf(Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING) &&
+        phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING) &&
             processingFlow in setOf(
                 ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
                 ProcessingFlow.WEB_SPEECH_RECOGNITION,
