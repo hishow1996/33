@@ -23,6 +23,17 @@ class TranslationCacheModePolicyTest {
     }
 
     @Test
+    fun youtubeSpeechRecognitionTranslationCacheIncludesAsrIdentityButCaptionsDoNot() {
+        val captionA = key(youtube = true, asr = "asr-a")
+        val captionB = key(youtube = true, asr = "asr-b")
+        assertEquals(captionA, captionB)
+
+        val transcriptA = key(youtube = false, asr = "asr-a")
+        val transcriptB = key(youtube = false, asr = "asr-b")
+        assertNotEquals(transcriptA, transcriptB)
+    }
+
+    @Test
     fun importedSubtitleTranslationDoesNotDependOnAsrConfiguration() {
         assertEquals(key(imported = true, asr = "asr-a"), key(imported = true, asr = "asr-b"))
     }
