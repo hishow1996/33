@@ -3595,7 +3595,6 @@ class PlaybackService : MediaSessionService() {
                         )
                     } else {
                         val translationsComplete = ReadySessionCompletionPolicy.hasCompleteTranslations(
-                            sourceLanguageIsChinese = isChineseLanguage(finishedState.sourceLang),
                             hasUntranslatedLines = finishedState.lines.any {
                                 needsSubtitleTranslation(it, finishedState.sourceLang)
                             },

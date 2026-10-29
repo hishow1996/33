@@ -5,10 +5,7 @@ package io.translatetube.local.player
  * translations and dubbing output are complete. READY alone can also mean a partial fallback.
  */
 internal object ReadySessionCompletionPolicy {
-    fun hasCompleteTranslations(
-        sourceLanguageIsChinese: Boolean,
-        hasUntranslatedLines: Boolean,
-    ): Boolean = sourceLanguageIsChinese || !hasUntranslatedLines
+    fun hasCompleteTranslations(hasUntranslatedLines: Boolean): Boolean = !hasUntranslatedLines
 
     fun canRegisterSuccessfulResult(
         phase: Phase,

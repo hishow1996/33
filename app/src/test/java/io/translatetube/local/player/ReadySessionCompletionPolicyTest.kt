@@ -24,13 +24,9 @@ class ReadySessionCompletionPolicyTest {
     )
 
     @Test
-    fun chineseSourceDoesNotRequireTranslation() {
-        assertTrue(
-            ReadySessionCompletionPolicy.hasCompleteTranslations(
-                sourceLanguageIsChinese = true,
-                hasUntranslatedLines = true,
-            ),
-        )
+    fun completeChineseSourceRowsAreAcceptedButMissingRowsAreNot() {
+        assertTrue(ReadySessionCompletionPolicy.hasCompleteTranslations(hasUntranslatedLines = false))
+        assertFalse(ReadySessionCompletionPolicy.hasCompleteTranslations(hasUntranslatedLines = true))
     }
 
     @Test

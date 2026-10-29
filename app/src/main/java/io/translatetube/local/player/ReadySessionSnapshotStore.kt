@@ -161,6 +161,7 @@ internal object ReadySessionSnapshotStore {
             !fingerprintPattern.matches(fingerprint) ||
             state.lines.isEmpty() ||
             state.lines.size > MAX_SNAPSHOT_LINES ||
+            state.lines.any { it.zh.isNullOrBlank() } ||
             state.phase != Phase.READY ||
             !state.dubbingOn ||
             state.dubbingHasErrors ||
