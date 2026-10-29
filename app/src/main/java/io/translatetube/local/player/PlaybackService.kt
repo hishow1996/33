@@ -9875,18 +9875,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
      * active cue would undo the one-shot playback-start mute on the very next tick.
      */
     private fun syncOriginalVolumeWithDubbing(
-        engine: DubbingEngine?,
-        state: PlayerUiState,
+        engine: DubbingEngine,
+        observedState: PlayerUiState,
         source: String,
     ) {
-        val index = engine?.currentLineIdx() ?: -1
-        val speechStarted = engine != null &&
-            index >= 0 &&
-            engine.hasStartedPlaybackFor(index)
+        // A player tick can carry a stale snapshot for one frame after a slider/mode/session change.
+        // Use current settings and decline ownership changes rather than restoring stale source gain.
+        val latest = ui.value
+        if (
+            latest.key != observedState.key ||
+            videoKey != latest.key ||
+            dubbing !== engine
+        ) return
+
+        val index = engine.currentLineIdx()
+        val speechStarted = index >= 0 && engine.hasStartedPlaybackFor(index)
         val sourceGain = DubbingSourceVolumePolicy.sourceGain(
-            originalVolume = state.originalVolume,
-            dubbingVolume = state.dubbingVolume,
-            dubbingEnabled = state.dubbingOn,
+            originalVolume = latest.originalVolume,
+            dubbingVolume = latest.dubbingVolume,
+            dubbingEnabled = latest.dubbingOn,
             dubbingStarted = speechStarted,
         )
         safelySetOriginalVolume(sourceGain, source)
@@ -9897,11 +9904,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (playerReady && ::pm.isInitialized) {
                 // Each path has its own user gain. Live System TTS must not force source audio to zero.
                 val state = ui.value
-                pm.originalVolume = if (state.originalVolume <= 0f) {
-                    0f
-                } else {
-                    state.originalVolume.coerceIn(0f, 1f) * volume.coerceIn(0f, 1f)
-                }
+                val configuredGain = state.originalVolume
+                    .takeIf { it.isFinite() }
+                    ?.coerceIn(0f, 1f)
+                    ?: 0f
+                val requestedGain = volume
+                    .takeIf { it.isFinite() }
+                    ?.coerceIn(0f, 1f)
+                    ?: 0f
+                pm.originalVolume = configuredGain * requestedGain
             }
         } catch (error: Exception) {
             io.translatetube.local.util.AppLogStore.warning(
