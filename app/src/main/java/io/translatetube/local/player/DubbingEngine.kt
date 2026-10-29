@@ -189,6 +189,17 @@ class DubbingEngine(
     }
     /** Serializes cache publication with release so a cancelled old run cannot install stale PCM. */
     private val cacheWriteLock = Any()
+    /** Keeps PCM cache-generation reads atomic with synthesis-rate configuration updates. */
+    private val cacheConfigurationLock = Any()
+
+    private fun isCacheConfigurationCurrent(expectedGeneration: Int): Boolean =
+        synchronized(cacheConfigurationLock) {
+            DubbingCacheReadGenerationPolicy.canContinue(
+                expectedGeneration = expectedGeneration,
+                currentGeneration = cacheInitGeneration.get(),
+                playbackIsCurrent = !released,
+            )
+        }
     private val cacheWriterId = nextCacheWriterId.incrementAndGet()
     private val ttsCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     // Completes only after every queued AudioTrack operation and the final track cleanup have drained.
@@ -487,7 +498,9 @@ class DubbingEngine(
                 ),
             )
             cacheInitJob?.cancel()
-            val generation = cacheInitGeneration.incrementAndGet()
+            val generation = synchronized(cacheConfigurationLock) {
+                cacheInitGeneration.incrementAndGet()
+            }
             // 清内存缓存：防止旧会话同 idx 行的音频串台。
             synchronized(mem) { mem.clear() }
 
@@ -2037,7 +2050,13 @@ class DubbingEngine(
         idx: Int,
         isCurrent: () -> Boolean = { true },
     ): Pair<FloatArray, Int>? {
-        if (!isCurrent()) return null
+        val expectedCacheGeneration = synchronized(cacheConfigurationLock) {
+            cacheInitGeneration.get()
+        }
+        fun isReadCurrent(): Boolean =
+            isCurrent() && isCacheConfigurationCurrent(expectedCacheGeneration)
+
+        if (!isReadCurrent()) return null
         val playIdx = resolveChunkIndex(idx)
         val f = cacheFile(playIdx)
         // load() is also called directly from playback and can race with a cache-init pass.
@@ -2047,14 +2066,14 @@ class DubbingEngine(
                 wasWrittenByCurrentRun = f.name in freshlySynthesizedCacheFiles,
             )
         ) {
-            if (!isCurrent()) return null
+            if (!isReadCurrent()) return null
             markCuePending(playIdx)
             queueSynthesisRetry(playIdx)
             return null
         }
         val inMemory = memoryAudio(playIdx)
         if (inMemory != null) {
-            if (!isCurrent()) return null
+            if (!isReadCurrent()) return null
             // Media3's LRU evictor tracks actual cache touches. Keep our file-backed cache's
             // mtime aligned when playback hits memory so frequently reused PCM isn't evicted as
             // if it had not been used since the original synthesis.
@@ -2064,7 +2083,7 @@ class DubbingEngine(
         val cacheStamp = DubbingCacheFileStamp.capture(f)
         if (!validCache(f)) {
             // A newer seek/session owns the player now; do not delete or requeue a cache on its behalf.
-            if (!isCurrent()) return null
+            if (!isReadCurrent()) return null
             // Cache files can disappear after attach() validates them. Treat this as recoverable
             // pending work, not a permanent silent cue; keep source audio audible while regenerating.
             deleteCacheIfUnchanged(f, cacheStamp)
@@ -2082,13 +2101,13 @@ class DubbingEngine(
                 }
                 // A seek/session replacement may happen while opening and validating the
                 // cache header. Recheck before reserving up to 64 MB for stale PCM.
-                if (!isCurrent()) return null
+                if (!isReadCurrent()) return null
                 val samples = FloatArray(n)
                 var hasAudibleSample = false
                 for (sampleIndex in 0 until n) {
                     // PCM may contain millions of samples. Cancel stale playback loads in bounded
                     // chunks so a seek doesn't wait for an entire large file to be materialized.
-                    if ((sampleIndex and 0x1fff) == 0 && !isCurrent()) return null
+                    if ((sampleIndex and 0x1fff) == 0 && !isReadCurrent()) return null
                     val sample = d.readFloat()
                     if (!sample.isFinite()) throw java.io.IOException("PCM 缓存包含无效采样值")
                     if (!hasAudibleSample && DubbingPcmValidation.isAudibleSample(sample)) {
@@ -2096,7 +2115,7 @@ class DubbingEngine(
                     }
                     samples[sampleIndex] = sample
                 }
-                if (!isCurrent()) return null
+                if (!isReadCurrent()) return null
                 if (n > 0 && !hasAudibleSample) {
                     throw java.io.IOException("PCM 缓存包含静音音频")
                 }
@@ -2127,7 +2146,7 @@ class DubbingEngine(
         } catch (e: Exception) {
             // A seek can invalidate the reader while the file is being read. That is not cache
             // corruption; leave the file untouched and let the next playAt() load its own cue.
-            if (!isCurrent()) return null
+            if (!isReadCurrent()) return null
             // A corrupt cache is recoverable too. Roll back displayed progress and leave the cue
             // pending so it can be synthesized again instead of being treated as permanently silent.
             deleteCacheIfUnchanged(f, cacheStamp)
@@ -2905,27 +2924,33 @@ class DubbingEngine(
                 if (!prefedCueKeys.add(key)) null
                 else kotlinx.coroutines.CompletableDeferred<Boolean>().also { prefeedCompletions[key] = it }
             } ?: continue
+            val cacheGenerationAtRequest = synchronized(cacheConfigurationLock) {
+                cacheInitGeneration.get()
+            }
+            fun isPrefeedCurrent(): Boolean =
+                !released &&
+                    outputBus.generationToken() == busGeneration &&
+                    isCacheConfigurationCurrent(cacheGenerationAtRequest)
             try {
                 audioExec.execute {
                     var published = false
                     try {
-                        if (released || outputBus.generationToken() != busGeneration) return@execute
-                        val loaded = load(index) {
-                            !released && outputBus.generationToken() == busGeneration
-                        } ?: return@execute
+                        if (!isPrefeedCurrent()) return@execute
+                        val loaded = load(index) { isPrefeedCurrent() } ?: return@execute
                         val output = DubbingOutputPcmPolicy.normalize(loaded.first, loaded.second) {
-                            if (released || outputBus.generationToken() != busGeneration) {
+                            if (!isPrefeedCurrent()) {
                                 throw kotlinx.coroutines.CancellationException("Prefetched PCM is stale")
                             }
                         }
                         if (output.samples.isEmpty()) return@execute
                         if (lines.getOrNull(resolveChunkIndex(index)) == null) return@execute
+                        if (!isPrefeedCurrent()) return@execute
                         published = publishCueToBus(
                             index = index,
                             samples = output.samples,
                             sampleRate = output.sampleRate,
                             busGeneration = busGeneration,
-                        ) { !released && outputBus.generationToken() == busGeneration } >= 0L
+                        ) { isPrefeedCurrent() } >= 0L
                     } catch (_: kotlinx.coroutines.CancellationException) {
                         // Seek, mode change or engine replacement invalidated the asynchronous task.
                     } catch (error: Exception) {
@@ -3164,6 +3189,9 @@ class DubbingEngine(
         if (!DubbingTimeline.isPlayableCue(line)) return
         // PCM cues follow Media3's media clock; reject in-flight feed after a seek or mode change.
         val busGenerationAtRequest = outputBus.generationToken()
+        val cacheGenerationAtRequest = synchronized(cacheConfigurationLock) {
+            cacheInitGeneration.get()
+        }
         stop()
         activeVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
         // Seed the asynchronous startup with the current ExoPlayer speed; ticker updates can
@@ -3413,6 +3441,11 @@ class DubbingEngine(
         try {
             audioExec.execute {
                 try {
+                    // An in-flight PCM read must not outlive the TTS configuration that requested it.
+                    if (!isCacheConfigurationCurrent(cacheGenerationAtRequest)) {
+                        clearUnstartedLineIfCurrent(idx, generation)
+                        return@execute
+                    }
                     // 混流总线架构：配音 PCM 挂到块首媒体时间，由 ExoPlayer 音频渲染
                     // 管线里的 DubbingAudioProcessor 与原声逐样本相加——与视频同一播放
                     // 时钟（seek/暂停/倍速天然跟随），句间停顿与超窗截断由总线时间窗
@@ -3424,6 +3457,7 @@ class DubbingEngine(
                         val alreadyMounted = synchronized(playbackControlLock) {
                             val current = !released && playbackGeneration.get() == generation &&
                                 _currentLine.value == idx && isActivePlaybackAllowedLocked() &&
+                                isCacheConfigurationCurrent(cacheGenerationAtRequest) &&
                                 outputBus.generationToken() == busGenerationAtRequest
                             if (current) {
                                 lastFedLine = idx
@@ -3440,15 +3474,23 @@ class DubbingEngine(
                         return@execute
                     }
                     val loaded = load(idx) {
-                        !released && playbackGeneration.get() == generation
+                        !released && playbackGeneration.get() == generation &&
+                            isCacheConfigurationCurrent(cacheGenerationAtRequest)
                     } ?: run {
                         // A missing/corrupt cache is queued for re-synthesis by load().
                         clearUnstartedLineIfCurrent(idx, generation)
                         return@execute
                     }
-                    if (released || playbackGeneration.get() != generation) return@execute
+                    if (released || playbackGeneration.get() != generation ||
+                        !isCacheConfigurationCurrent(cacheGenerationAtRequest)
+                    ) {
+                        clearUnstartedLineIfCurrent(idx, generation)
+                        return@execute
+                    }
                     val outputPcm = DubbingOutputPcmPolicy.normalize(loaded.first, loaded.second) {
-                        if (released || playbackGeneration.get() != generation) {
+                        if (released || playbackGeneration.get() != generation ||
+                            !isCacheConfigurationCurrent(cacheGenerationAtRequest)
+                        ) {
                             throw kotlinx.coroutines.CancellationException("配音输出准备已过期")
                         }
                     }
@@ -3458,7 +3500,8 @@ class DubbingEngine(
                     }
                     val canFeed = synchronized(playbackControlLock) {
                         !released && playbackGeneration.get() == generation &&
-                            _currentLine.value == idx && isActivePlaybackAllowedLocked()
+                            _currentLine.value == idx && isActivePlaybackAllowedLocked() &&
+                            isCacheConfigurationCurrent(cacheGenerationAtRequest)
                     }
                     if (!canFeed) return@execute
                     val acceptedFeed = publishCueToBus(
@@ -3467,7 +3510,9 @@ class DubbingEngine(
                         sampleRate = outputPcm.sampleRate,
                         busGeneration = busGenerationAtRequest,
                     ) {
-                        !released && playbackGeneration.get() == generation && _currentLine.value == idx
+                        !released && playbackGeneration.get() == generation &&
+                            _currentLine.value == idx &&
+                            isCacheConfigurationCurrent(cacheGenerationAtRequest)
                     } >= 0L
                     if (!acceptedFeed) {
                         clearUnstartedLineIfCurrent(idx, generation)
@@ -3476,6 +3521,7 @@ class DubbingEngine(
                     val ownsCue = synchronized(playbackControlLock) {
                         val current = !released && playbackGeneration.get() == generation &&
                             _currentLine.value == idx && isActivePlaybackAllowedLocked() &&
+                            isCacheConfigurationCurrent(cacheGenerationAtRequest) &&
                             outputBus.generationToken() == busGenerationAtRequest
                         if (current) {
                             lastFedLine = idx
@@ -3631,13 +3677,17 @@ class DubbingEngine(
     fun setSpeed(s: Float) {
         val next = io.translatetube.local.tts.TtsSpeechRatePolicy.normalize(s)
         if (next == speed || released) return
-        speed = next
-        restartSynthesisForCurrentConfiguration()
+        restartSynthesisForCurrentConfiguration(next)
     }
 
-    private fun restartSynthesisForCurrentConfiguration() {
-        if (released) return
-        val generation = cacheInitGeneration.incrementAndGet()
+    private fun restartSynthesisForCurrentConfiguration(nextSpeed: Float) {
+        val generation = synchronized(cacheConfigurationLock) {
+            if (released || nextSpeed == speed) return
+            // Publish the new rate and generation atomically so readers cannot pair the new
+            // rate with the prior generation during rapid successive changes.
+            speed = nextSpeed
+            cacheInitGeneration.incrementAndGet()
+        }
         val oldCacheInit = cacheInitJob
         val oldSynthesis = synchronized(synthStartLock) { synthJob }
         oldCacheInit?.cancel()
