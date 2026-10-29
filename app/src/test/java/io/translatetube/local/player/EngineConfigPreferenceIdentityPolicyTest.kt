@@ -16,7 +16,7 @@ class EngineConfigPreferenceIdentityPolicyTest {
     }
 
     @Test
-    fun sharedGeminiKeyIsRelevantToEitherActiveConsumer() {
+    fun translationGeminiKeyOnlyAffectsTheSelectedTranslationEngine() {
         assertTrue(
             EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
                 "free_gemini_key",
@@ -24,18 +24,29 @@ class EngineConfigPreferenceIdentityPolicyTest {
                 activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_GEMINI.toLong(),
             ),
         )
-        assertTrue(
+        assertFalse(
             EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
                 "free_gemini_key",
                 selectedTtsEngine = "gemini",
                 activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK.toLong(),
             ),
         )
+    }
+
+    @Test
+    fun geminiDubbingKeyOnlyAffectsGeminiDubbing() {
+        assertTrue(
+            EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
+                "gemini_tts_api_key",
+                selectedTtsEngine = "gemini",
+                activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK.toLong(),
+            ),
+        )
         assertFalse(
             EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
-                "free_gemini_key",
+                "gemini_tts_api_key",
                 selectedTtsEngine = "edge",
-                activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK.toLong(),
+                activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_GEMINI.toLong(),
             ),
         )
     }
