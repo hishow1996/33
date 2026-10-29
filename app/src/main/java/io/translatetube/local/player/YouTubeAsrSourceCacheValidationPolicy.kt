@@ -16,8 +16,8 @@ internal object YouTubeAsrSourceCacheValidationPolicy {
         isCaptionCache: Boolean,
     ): Boolean {
         if (!isCaptionCache && YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(expectedSourceLanguage) == null) {
-            // An unknown hint is not evidence that an ASR transcript is wrong. A known, conflicting
-            // language still invalidates it below.
+            // An unknown hint is not evidence that an ASR transcript is wrong. Preserve the cache;
+            // resolve its language from the text when possible rather than re-transcribing audio.
             return false
         }
         return YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(
@@ -26,5 +26,27 @@ internal object YouTubeAsrSourceCacheValidationPolicy {
             savedSourceLanguage = savedSourceLanguage,
             allowSubtitleLanguageFallback = isCaptionCache,
         )
+    }
+
+    /**
+     * After the cache passes validation, prefer detectable language from its actual text. This
+     * avoids carrying a stale or generic saved language such as "auto" when the source-language
+     * endpoint was unavailable, while still honoring a verified language when detection is weak.
+     */
+    fun resolvedCachedLanguage(
+        expectedSourceLanguage: String?,
+        detectedTextLanguage: String?,
+        savedSourceLanguage: String?,
+        isCaptionCache: Boolean,
+    ): String? {
+        val expected = YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(expectedSourceLanguage)
+        val detected = YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(detectedTextLanguage)
+        val saved = YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(savedSourceLanguage)
+        return when {
+            detected != null && (isCaptionCache || expected == null || detected == expected) -> detected
+            saved != null -> saved
+            expected != null -> expected
+            else -> detected
+        }
     }
 }
