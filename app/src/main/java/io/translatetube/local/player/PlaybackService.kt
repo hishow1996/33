@@ -9869,6 +9869,29 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
     }
 
+    /**
+     * Keep source audio muted only while audible Chinese speech has actually started.
+     * Tick callbacks run repeatedly, so restoring the user's source gain unconditionally in an
+     * active cue would undo the one-shot playback-start mute on the very next tick.
+     */
+    private fun syncOriginalVolumeWithDubbing(
+        engine: DubbingEngine?,
+        state: PlayerUiState,
+        source: String,
+    ) {
+        val index = engine?.currentLineIdx() ?: -1
+        val speechStarted = engine != null &&
+            index >= 0 &&
+            engine.hasStartedPlaybackFor(index)
+        val sourceGain = DubbingSourceVolumePolicy.sourceGain(
+            originalVolume = state.originalVolume,
+            dubbingVolume = state.dubbingVolume,
+            dubbingEnabled = state.dubbingOn,
+            dubbingStarted = speechStarted,
+        )
+        safelySetOriginalVolume(sourceGain, source)
+    }
+
     private fun safelySetOriginalVolume(volume: Float, source: String) {
         try {
             if (playerReady && ::pm.isInitialized) {
@@ -10205,7 +10228,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 d.updatePlayerSpeed(pm.playbackSpeed())
                 // Voice volume is independent of source-audio state: never mix the two narrations.
                 d.updateVolume(st.dubbingVolume)
-                safelySetOriginalVolume(if (st.originalVolume <= 0f) 0f else 1f, "continuing a dubbed cue")
+                syncOriginalVolumeWithDubbing(d, st, "continuing a dubbed cue")
                 d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
             } else if (queuedHead != null) {
                 // Live System TTS stays serialized; generated PCM playback is scheduled by bus timestamps.
@@ -10243,7 +10266,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }
                     }
                 }
-                safelySetOriginalVolume(if (st.originalVolume <= 0f) 0f else 1f, "catch-up dubbing playback")
+                syncOriginalVolumeWithDubbing(d, st, "catch-up dubbing playback")
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 d.logSilentCueFallback(dubLine)
                 if (d.currentLineIdx() >= 0) d.stop()
@@ -10285,7 +10308,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     // Voice volume is independent of source-audio state: never mix the two narrations.
                     d.updateVolume(st.dubbingVolume)
                 }
-                safelySetOriginalVolume(if (st.originalVolume <= 0f) 0f else 1f, "dubbing cue playback")
+                syncOriginalVolumeWithDubbing(d, st, "dubbing cue playback")
             } else if (dubLine >= 0) {
                 // If generation is falling behind real time, continuously enlarge the look-ahead
                 // priority window so the single TTS worker prepares more upcoming cues first.
