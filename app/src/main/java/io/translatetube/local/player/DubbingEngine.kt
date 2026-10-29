@@ -882,6 +882,8 @@ class DubbingEngine(
                 if (!isWorkerTaskCurrent()) {
                     throw kotlinx.coroutines.CancellationException("配音合成配置已变化")
                 }
+                // Stop immediately if another path has already paused this provider queue.
+                if (providerRateLimitBlocked) break
                 // A fallback request stops this worker at a line boundary. The service waits for
                 // it to unwind before swapping engines, preventing old TTS PCM from being written
                 // into the new engine's cache namespace.
@@ -1407,6 +1409,9 @@ class DubbingEngine(
                                 "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
                             ),
                         )
+                        // Make this actionable provider-quota failure replace any earlier generic
+                        // one-shot synthesis warning from the same attached session.
+                        synthesisErrorReported.set(false)
                         reportSynthesisError(pauseMessage)
                         break
                     }
