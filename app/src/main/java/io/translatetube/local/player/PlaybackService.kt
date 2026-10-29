@@ -5561,6 +5561,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             )
             val baseModeAwareTranslationCacheKey = when {
                 !sourceImportedLines.isNullOrEmpty() -> baseTranslationCacheKey
+                // YouTube caption translation is independent of ASR configuration. Its mode-specific
+                // cache is reused only after the source cue text/timeline is validated below; if this
+                // video falls back to ASR, the current ASR source cache supplies that validation.
+                videoId != null -> baseTranslationCacheKey
                 else -> "$baseTranslationCacheKey|asr-$asrCacheIdentity-timeline-v5"
             }
             var translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
