@@ -70,7 +70,7 @@ class ReadySessionSnapshotReusePolicyTest {
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
                 snapshotIgnoresTranscription = true,
-                expectedFlow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                expectedFlows = setOf(ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION),
                 isYouTube = true,
             ),
         )
@@ -82,7 +82,7 @@ class ReadySessionSnapshotReusePolicyTest {
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
                 snapshotIgnoresTranscription = false,
-                expectedFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                expectedFlows = setOf(ProcessingFlow.LOCAL_SPEECH_RECOGNITION),
                 isYouTube = false,
             ),
         )
@@ -94,7 +94,7 @@ class ReadySessionSnapshotReusePolicyTest {
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
                 snapshotIgnoresTranscription = false,
-                expectedFlow = null,
+                expectedFlows = null,
                 isYouTube = false,
             ),
         )
@@ -106,8 +106,46 @@ class ReadySessionSnapshotReusePolicyTest {
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
                 snapshotIgnoresTranscription = true,
-                expectedFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                expectedFlows = setOf(ProcessingFlow.LOCAL_SPEECH_RECOGNITION),
                 isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
+    fun sourceFlowFilteringRejectsAWebSnapshotWhenOpeningLocalVideo() {
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                snapshotIgnoresTranscription = false,
+                expectedFlows = setOf(ProcessingFlow.LOCAL_SPEECH_RECOGNITION),
+                isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
+    fun YouTubeCanRestoreEitherCaptionOrSpeechRecognitionFlowWhenItsMarkerMatches() {
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                snapshotIgnoresTranscription = false,
+                expectedFlows = setOf(
+                    ProcessingFlow.YOUTUBE_SUBTITLES,
+                    ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                ),
+                isYouTube = true,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                snapshotIgnoresTranscription = true,
+                expectedFlows = setOf(
+                    ProcessingFlow.YOUTUBE_SUBTITLES,
+                    ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                ),
+                isYouTube = true,
             ),
         )
     }
@@ -118,7 +156,7 @@ class ReadySessionSnapshotReusePolicyTest {
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
                 snapshotIgnoresTranscription = true,
-                expectedFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                expectedFlows = setOf(ProcessingFlow.YOUTUBE_SUBTITLES),
                 isYouTube = true,
             ),
         )
@@ -126,7 +164,7 @@ class ReadySessionSnapshotReusePolicyTest {
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                 snapshotFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
                 snapshotIgnoresTranscription = false,
-                expectedFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                expectedFlows = setOf(ProcessingFlow.YOUTUBE_SUBTITLES),
                 isYouTube = true,
             ),
         )
