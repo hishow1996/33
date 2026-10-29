@@ -5,9 +5,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Base64
-import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.translate.Crypto
-import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,8 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Google Gemini 原生语音合成引擎（Gemini TTS）：
- * 使用 Gemini 2.5 Flash / Pro Preview TTS 的 AUDIO 模态输出高自然度中文配音，
- * 自动复用应用中已配置的 Gemini API Key，并支持多角色音色切换。
+ * 使用独立的 Gemini 配音 API Key，和翻译 API 配置完全分离。
  */
 internal object GeminiTtsVoices {
     data class VoiceSpec(val id: String, val label: String)
@@ -41,6 +38,8 @@ internal object GeminiTtsVoices {
 
     const val DEFAULT_VOICE = "Kore"
     const val PREF_VOICE_KEY = "gemini_tts_voice"
+    const val PREF_API_KEY = "gemini_tts_api_key"
+    const val PREF_API_KEY_MIGRATION_DONE = "gemini_tts_api_key_split_v1"
 
     fun normalizeVoice(voiceName: String?): String {
         val trimmed = voiceName?.trim().orEmpty()
@@ -60,25 +59,10 @@ internal object GeminiTtsVoices {
     }
 
     fun resolveApiKey(context: Context): String {
-        val appCtx = context.applicationContext
-        val prefs = appCtx.getSharedPreferences("settings", Context.MODE_PRIVATE)
-        val freeEncrypted = prefs.getString("free_gemini_key", "").orEmpty().trim()
-        if (freeEncrypted.isNotBlank()) {
-            val decrypted = runCatching { Crypto.decrypt(freeEncrypted) }.getOrDefault("").trim()
-            if (decrypted.isNotBlank()) return decrypted
-        }
-        val profileKey = runCatching {
-            runBlocking {
-                AppDatabase.get(appCtx).apiProfileDao().enabled()
-                    .firstOrNull { it.type.equals("GEMINI", ignoreCase = true) && it.apiKey.isNotBlank() }
-                    ?.apiKey
-            }
-        }.getOrNull().orEmpty().trim()
-        if (profileKey.isNotBlank()) {
-            val decrypted = runCatching { Crypto.decrypt(profileKey) }.getOrDefault("").trim()
-            if (decrypted.isNotBlank()) return decrypted
-        }
-        return ""
+        val prefs = context.applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val encrypted = prefs.getString(PREF_API_KEY, "").orEmpty().trim()
+        if (encrypted.isBlank()) return ""
+        return Crypto.decrypt(encrypted).trim()
     }
 }
 
