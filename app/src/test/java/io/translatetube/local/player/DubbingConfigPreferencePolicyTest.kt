@@ -52,15 +52,16 @@ class DubbingConfigPreferencePolicyTest {
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("google_tts_voice", "gemini"))
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("gemini_tts_voice", "gemini"))
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("gemini_tts_voice", "google"))
-        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "gemini"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "gemini"))
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "google"))
     }
 
     @Test
-    fun freeGeminiKeyBelongsToDubbingDomainButOnlyGeminiTtsConsumesIt() {
-        assertTrue(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("free_gemini_key"))
-        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "gemini"))
-        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "edge"))
+    fun translationGeminiKeyNeverInvalidatesDubbingConfiguration() {
+        assertFalse(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("free_gemini_key"))
+        listOf("edge", "web", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
+            assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", engine))
+        }
     }
 
     @Test
