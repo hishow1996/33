@@ -113,11 +113,16 @@ internal object OpusMtCt2Runtime {
     suspend fun release(source: String? = null) = lock.withLock {
         val current = loaded ?: return@withLock
         if (source != null && current.source != source) return@withLock
-        runCatching { OpusMtCt2Native.nativeFree(current.handle) }
+        if (OpusMtCt2Native.isAvailable) {
+            runCatching { OpusMtCt2Native.nativeFree(current.handle) }
+        }
         loaded = null
     }
 
     private fun loadLocked(context: Context, source: String): Loaded {
+        if (!OpusMtCt2Native.isAvailable) {
+            throw IOException("当前运行环境未包含 CTranslate2 原生库 (libopusmtct2.so)。")
+        }
         val dir = OpusMtAdditionalModelManager.modelDirectory(context, source)
         val required = listOf("config.json", "model.bin", "shared_vocabulary.json", "source.spm", "target.spm").map { File(dir, it) }
         val missing = required.filterNot { it.isFile && it.length() > 0L }
@@ -138,7 +143,12 @@ internal object OpusMtCt2Runtime {
 }
 
 internal object OpusMtCt2Native {
-    init { System.loadLibrary("opusmtct2") }
+    val isAvailable: Boolean = try {
+        System.loadLibrary("opusmtct2")
+        true
+    } catch (_: Throwable) {
+        false
+    }
 
     external fun nativeLoad(modelDirectory: String, sourceSentencePiecePath: String, targetSentencePiecePath: String, threads: Int): Long
     external fun nativeFree(handle: Long)

@@ -58,6 +58,12 @@ android {
     }
 
     signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         if (releaseSigningReady) {
             create("release") {
                 storeFile = file(requireNotNull(releaseStorePath))
@@ -70,8 +76,7 @@ android {
 
     buildTypes {
         debug {
-            // Use the Android Gradle Plugin's standard debug key; CI creates it automatically.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("debugConfig")
         }
         release {
             isMinifyEnabled = false
@@ -104,6 +109,13 @@ android {
 val buildOpusMtCt2 by tasks.registering(Exec::class) {
     inputs.files(fileTree(opusMtCt2SourceDir))
     outputs.dir(opusMtCt2JniLibs)
+    onlyIf {
+        val androidHome = System.getenv("ANDROID_HOME").orEmpty()
+        val configuredNdk = System.getenv("ANDROID_NDK")
+            ?: System.getenv("ANDROID_NDK_HOME")
+            ?: File(androidHome, "ndk/29.0.14206865").absolutePath
+        File(configuredNdk, "build/cmake/android.toolchain.cmake").isFile
+    }
     doFirst {
         val androidHome = System.getenv("ANDROID_HOME").orEmpty()
         val configuredNdk = System.getenv("ANDROID_NDK")
