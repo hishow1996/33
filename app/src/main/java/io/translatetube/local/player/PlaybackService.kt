@@ -5972,13 +5972,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(sourceCached.srcLang)
                 val expectedContentLanguage =
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(originalAudioLanguage)
+                val isCachedCaption =
+                    YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey)
                 if (
-                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(
+                    YouTubeAsrSourceCacheValidationPolicy.shouldInvalidate(
                         expectedSourceLanguage = expectedContentLanguage,
                         detectedTextLanguage = detectedCacheLanguageCode,
                         savedSourceLanguage = sourceCached.srcLang,
-                        allowSubtitleLanguageFallback =
-                            YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey),
+                        isCaptionCache = isCachedCaption,
                     )
                 ) {
                     android.util.Log.w(
