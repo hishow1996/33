@@ -3249,17 +3249,23 @@ class PlaybackService : MediaSessionService() {
         val effectiveResumeState = requestedResumeState ?: reusableSnapshot?.state ?: fallbackResumeState
         val restoreCompletedSnapshot = (restoreReadySnapshot && !localMediaChangedForActiveSession) ||
             reusableSnapshot != null ||
-            (!engineConfigChangedSinceLastSuccess &&
-                fallbackSnapshot != null && fallbackCanBeCompared && fallbackRestartStage == null)
+            ReadySessionSnapshotReusePolicy.canRestoreComparableFallbackSnapshot(
+                fallbackSnapshotAvailable = fallbackSnapshot != null,
+                fallbackConfigComparable = fallbackCanBeCompared,
+                fallbackRestartStage = fallbackRestartStage,
+            )
         // Freshly process a genuinely new configuration. If this is an exact historical success,
         // reuse that configuration's own speech cache instead; restoreReadySnapshot also marks
         // callers that explicitly hand in a verified, exact-match success snapshot.
-        val regenerateDubbingThisRun = forceRegenerateDubbing ||
-            (!restoreReadySnapshot && reusableSnapshot == null && (
-                fallbackRestartStage != null ||
-                    engineConfigChangedSinceLastSuccess ||
-                    (fallbackSnapshot != null && !fallbackCanBeCompared)
-                ))
+        val regenerateDubbingThisRun = ReadySessionSnapshotReusePolicy.shouldRegenerateDubbingForFallback(
+            forceRegenerateDubbing = forceRegenerateDubbing,
+            restoreReadySnapshot = restoreReadySnapshot,
+            hasReusableSnapshot = reusableSnapshot != null,
+            fallbackSnapshotAvailable = fallbackSnapshot != null,
+            fallbackConfigComparable = fallbackCanBeCompared,
+            fallbackRestartStage = fallbackRestartStage,
+            engineConfigChangedSinceLastSuccess = engineConfigChangedSinceLastSuccess,
+        )
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
         val reuseMountedMedia = !localMediaChangedForActiveSession &&
