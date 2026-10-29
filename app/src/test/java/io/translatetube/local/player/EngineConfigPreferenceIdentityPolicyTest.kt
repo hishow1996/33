@@ -31,6 +31,12 @@ class EngineConfigPreferenceIdentityPolicyTest {
                 activeTranslationId = io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK.toLong(),
             ),
         )
+        assertFalse(
+            DubbingConfigPreferencePolicy.isRelevantForActiveEngine(
+                "free_gemini_key",
+                selectedTtsEngine = "gemini",
+            ),
+        )
     }
 
     @Test
