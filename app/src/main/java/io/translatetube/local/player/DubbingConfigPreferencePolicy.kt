@@ -6,8 +6,7 @@ package io.translatetube.local.player
  */
 internal object DubbingConfigPreferencePolicy {
     fun isDubbingPreferenceKey(key: String): Boolean =
-        key == "free_gemini_key" ||
-            key.startsWith("tts_") ||
+        key.startsWith("tts_") ||
             key.startsWith("edge_tts_") ||
             key.startsWith("web_tts_") ||
             key.startsWith("google_tts_") ||
