@@ -76,7 +76,15 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
             ),
         )
     }
-    var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "edge") ?: "edge") }
+    var ttsEngine by remember {
+        val storedEngine = prefs.getString("tts_engine", "edge") ?: "edge"
+        // Retire the removed Web TTS option for existing installs; use the current online default.
+        val supportedEngine = if (storedEngine == "web") "edge" else storedEngine
+        if (supportedEngine != storedEngine) {
+            prefs.edit().putString("tts_engine", supportedEngine).apply()
+        }
+        mutableStateOf(supportedEngine)
+    }
     var geminiTtsVoice by remember {
         mutableStateOf(
             prefs.getString(
@@ -280,7 +288,6 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
         val ttsLabel = when (ttsEngine) {
             "system" -> "系统 TTS"
             "piper" -> "Piper 多语种"
-            "web" -> "在线语音"
             "edge" -> "微软 Edge TTS"
             "google" -> "谷歌在线语音"
             "gemini" -> "Gemini TTS 配音"
@@ -722,17 +729,6 @@ Section(
                 prefs.edit().putString("tts_engine", e).apply()
             }
             EngineOption("piper", "Piper", ttsEngine) { e ->
-                if (e != ttsEngine) {
-                    io.translatetube.local.util.AppLogStore.info(
-                        ctx,
-                        "Settings",
-                        "切换配音引擎：$ttsEngine -> $e",
-                    )
-                }
-                ttsEngine = e
-                prefs.edit().putString("tts_engine", e).apply()
-            }
-            EngineOption("web", "在线语音（需联网）", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
                         ctx,
