@@ -7,7 +7,7 @@ import org.junit.Test
 class DubbingConfigPreferencePolicyTest {
     @Test
     fun engineSelectorIsAlwaysRelevant() {
-        listOf("edge", "web", "system", "kokoro", "piper").forEach { engine ->
+        listOf("edge", "web", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
             assertTrue(
                 DubbingConfigPreferencePolicy.isRelevantForActiveEngine("tts_engine", engine),
             )
@@ -44,6 +44,16 @@ class DubbingConfigPreferencePolicyTest {
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("web_tts_voice", "edge"))
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", "web"))
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("online_tts_voice", "piper"))
+    }
+
+    @Test
+    fun googleAndGeminiSettingsAreScopedToTheirSelectedEngine() {
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("google_tts_voice", "google"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("google_tts_voice", "gemini"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("gemini_tts_voice", "gemini"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("gemini_tts_voice", "google"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "gemini"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", "google"))
     }
 
     @Test

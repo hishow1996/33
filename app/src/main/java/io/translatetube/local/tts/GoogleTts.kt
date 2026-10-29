@@ -3,6 +3,7 @@ package io.translatetube.local.tts
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import io.translatetube.local.player.Wsola
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URLEncoder
@@ -18,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class GoogleTts : TtsEngine {
 
     override val name: String = "谷歌在线语音"
-    override val cacheKey: String = "google-tts-v1"
+    override val cacheKey: String = "google-tts-v2"
 
     private val closed = AtomicBoolean(false)
 
@@ -45,34 +46,43 @@ internal class GoogleTts : TtsEngine {
             return TtsAudio(FloatArray(0), TARGET_RATE_HZ)
         }
         TtsTextPolicy.validate(spoken)
+        val normalizedSpeed = TtsProviderSpeedPolicy.normalize(speed)
         val chunks = splitForRequest(spoken)
-        var samples = FloatArray(0)
-        var rate = TARGET_RATE_HZ
+        val pcmChunks = ArrayList<FloatArray>()
+        var totalSamples = 0
+        var sampleRate = TARGET_RATE_HZ
         for (chunk in chunks) {
             checkOpen()
             checkActive()
-            val mp3 = fetchWithFallback(chunk)
-            checkOpen()
-            checkActive()
-            val decoded = decodeMp3(mp3, checkActive)
+            val decoded = fetchAndDecodeWithFallback(chunk, normalizedSpeed, checkActive)
             if (decoded.second <= 0 || decoded.first.isEmpty()) continue
-            if (samples.isEmpty()) {
-                samples = decoded.first
-                rate = decoded.second
-            } else if (decoded.second == rate) {
-                samples += decoded.first
+            if (pcmChunks.isEmpty()) sampleRate = decoded.second
+            val normalizedSamples = if (decoded.second == sampleRate) {
+                decoded.first
             } else {
-                samples += resampleTo(decoded.first, decoded.second, rate)
+                resampleTo(decoded.first, decoded.second, sampleRate)
             }
+            pcmChunks.add(normalizedSamples)
+            totalSamples += normalizedSamples.size
         }
-        if (samples.isEmpty()) {
+        if (totalSamples <= 0) {
             throw IllegalStateException("谷歌在线语音未返回有效音频，请检查网络连接或切换其他配音引擎")
         }
-        if (rate != TARGET_RATE_HZ) {
-            samples = resampleTo(samples, rate, TARGET_RATE_HZ)
-            rate = TARGET_RATE_HZ
+        var samples = FloatArray(totalSamples)
+        var cursor = 0
+        for ((index, chunkSamples) in pcmChunks.withIndex()) {
+            if (index % 8 == 0) {
+                checkOpen()
+                checkActive()
+            }
+            System.arraycopy(chunkSamples, 0, samples, cursor, chunkSamples.size)
+            cursor += chunkSamples.size
         }
-        return TtsAudio(samples, rate)
+        if (sampleRate != TARGET_RATE_HZ) {
+            samples = resampleTo(samples, sampleRate, TARGET_RATE_HZ)
+            sampleRate = TARGET_RATE_HZ
+        }
+        return TtsAudio(samples, sampleRate)
     }
 
     override fun close() {
@@ -106,25 +116,48 @@ internal class GoogleTts : TtsEngine {
         return out.filter { it.isNotBlank() }.ifEmpty { listOf(text.take(MAX_QUERY_CHARS)) }
     }
 
-    private fun fetchWithFallback(text: String): ByteArray {
+    private fun fetchAndDecodeWithFallback(
+        text: String,
+        requestedSpeed: Float,
+        checkActive: () -> Unit,
+    ): Pair<FloatArray, Int> {
+        val normalizedSpeed = TtsProviderSpeedPolicy.normalize(requestedSpeed)
+        val nativeSpeed = TtsProviderSpeedPolicy.googleNativeSpeed(normalizedSpeed)
         val encoded = URLEncoder.encode(text, "UTF-8")
         val urls = listOf(
-            "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=zh-CN&ttsspeed=1&q=$encoded",
-            "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=zh-CN&ttsspeed=1&q=$encoded",
-            "https://translate.google.com/translate_tts?ie=UTF-8&client=dict-chrome-ex&tl=zh-CN&q=$encoded",
+            "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=zh-CN&ttsspeed=$nativeSpeed&q=$encoded",
+            "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=zh-CN&ttsspeed=$nativeSpeed&q=$encoded",
+            "https://translate.google.com/translate_tts?ie=UTF-8&client=dict-chrome-ex&tl=zh-CN&ttsspeed=$nativeSpeed&q=$encoded",
         )
         var lastError: Throwable? = null
         for (url in urls) {
             checkOpen()
+            checkActive()
             try {
-                return httpGet(url)
-            } catch (e: Throwable) {
+                val bytes = httpGet(url)
+                checkOpen()
+                checkActive()
+                val decoded = decodeMp3(bytes, checkActive)
+                checkOpen()
+                checkActive()
+                val postStretchRatio = TtsProviderSpeedPolicy.googlePostStretchRatio(normalizedSpeed)
+                val samples = if (postStretchRatio < 0.999f) {
+                    Wsola.stretch(decoded.first, postStretchRatio)
+                } else {
+                    decoded.first
+                }
+                checkOpen()
+                checkActive()
+                return samples to decoded.second
+            } catch (cancelled: java.util.concurrent.CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
                 lastError = e
                 android.util.Log.w(TAG, "Google TTS endpoint failed: ${e.message}")
             }
         }
         throw IllegalStateException(
-            "谷歌在线语音连接失败（${lastError?.message ?: "网络不可达"}），请检查网络或切换其他配音引擎",
+            "谷歌在线语音请求或解码失败（${lastError?.message ?: "网络不可达"}），请检查网络或切换其他配音引擎",
             lastError,
         )
     }
@@ -241,6 +274,9 @@ internal class GoogleTts : TtsEngine {
                         channelCount = runCatching { outFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(channelCount).coerceAtLeast(1)
                     }
                 }
+            }
+            if (!outputEos) {
+                throw IllegalStateException("谷歌在线语音解码超时，未取得完整音频")
             }
             if (totalSamples == 0) {
                 throw IllegalStateException("谷歌在线语音解码结果为空")

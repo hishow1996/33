@@ -54,8 +54,9 @@ internal object GeminiTtsVoices {
 
     fun voiceForSpeaker(speakerId: Int, defaultVoice: String): String {
         val canonicalDefault = normalizeVoice(defaultVoice)
-        if (speakerId < 0) return canonicalDefault
-        return ALL[Math.floorMod(speakerId, ALL.size)].id
+        if (speakerId <= 0) return canonicalDefault
+        val alternatives = ALL.filterNot { it.id == canonicalDefault }
+        return alternatives[Math.floorMod(speakerId - 1, alternatives.size)].id
     }
 
     fun resolveApiKey(context: Context): String {
@@ -103,7 +104,7 @@ internal class GeminiTts(
     }
 
     override val cacheKey: String
-        get() = "gemini-tts-v1-${configuredDefaultVoice()}"
+        get() = "gemini-tts-v2-${configuredDefaultVoice()}"
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
         synthCancellable(text, speed, speakerId) {}
@@ -125,33 +126,46 @@ internal class GeminiTts(
             return TtsAudio(FloatArray(0), TARGET_RATE_HZ)
         }
         TtsTextPolicy.validate(spoken)
+        val normalizedSpeed = TtsProviderSpeedPolicy.normalize(speed)
         val voiceName = GeminiTtsVoices.voiceForSpeaker(speakerId, configuredDefaultVoice())
         val chunks = splitForRequest(spoken)
-        var samples = FloatArray(0)
-        var rate = TARGET_RATE_HZ
+        val pcmChunks = ArrayList<FloatArray>()
+        var totalSamples = 0
+        var sampleRate = TARGET_RATE_HZ
 
         for (chunk in chunks) {
             checkOpen()
             checkActive()
-            val (chunkSamples, chunkRate) = synthesizeChunk(apiKey, chunk, voiceName, checkActive)
+            val (chunkSamples, chunkRate) =
+                synthesizeChunk(apiKey, chunk, voiceName, normalizedSpeed, checkActive)
             if (chunkRate <= 0 || chunkSamples.isEmpty()) continue
-            if (samples.isEmpty()) {
-                samples = chunkSamples
-                rate = chunkRate
-            } else if (chunkRate == rate) {
-                samples += chunkSamples
+            if (pcmChunks.isEmpty()) sampleRate = chunkRate
+            val normalizedSamples = if (chunkRate == sampleRate) {
+                chunkSamples
             } else {
-                samples += resampleTo(chunkSamples, chunkRate, rate)
+                resampleTo(chunkSamples, chunkRate, sampleRate)
             }
+            pcmChunks.add(normalizedSamples)
+            totalSamples += normalizedSamples.size
         }
-        if (samples.isEmpty()) {
+        if (totalSamples <= 0) {
             throw IllegalStateException("Gemini TTS 未返回可播放的音频，请检查网络或 API Key 配额")
         }
-        if (rate != TARGET_RATE_HZ) {
-            samples = resampleTo(samples, rate, TARGET_RATE_HZ)
-            rate = TARGET_RATE_HZ
+        var samples = FloatArray(totalSamples)
+        var cursor = 0
+        for ((index, chunkSamples) in pcmChunks.withIndex()) {
+            if (index % 8 == 0) {
+                checkOpen()
+                checkActive()
+            }
+            System.arraycopy(chunkSamples, 0, samples, cursor, chunkSamples.size)
+            cursor += chunkSamples.size
         }
-        return TtsAudio(samples, rate)
+        if (sampleRate != TARGET_RATE_HZ) {
+            samples = resampleTo(samples, sampleRate, TARGET_RATE_HZ)
+            sampleRate = TARGET_RATE_HZ
+        }
+        return TtsAudio(samples, sampleRate)
     }
 
     override fun close() {
@@ -189,6 +203,7 @@ internal class GeminiTts(
         apiKey: String,
         text: String,
         voiceName: String,
+        speed: Float,
         checkActive: () -> Unit,
     ): Pair<FloatArray, Int> {
         var lastError: Throwable? = null
@@ -196,7 +211,7 @@ internal class GeminiTts(
             checkOpen()
             checkActive()
             try {
-                return callGeminiAudio(apiKey, model, text, voiceName, checkActive)
+                return callGeminiAudio(apiKey, model, text, voiceName, speed, checkActive)
             } catch (cancelled: java.util.concurrent.CancellationException) {
                 throw cancelled
             } catch (e: Throwable) {
@@ -223,13 +238,15 @@ internal class GeminiTts(
         model: String,
         text: String,
         voiceName: String,
+        speed: Float,
         checkActive: () -> Unit,
     ): Pair<FloatArray, Int> {
         val isDedicatedTts = model.contains("tts", ignoreCase = true)
+        val paceInstruction = TtsProviderSpeedPolicy.geminiPaceInstruction(speed)
         val promptText = if (isDedicatedTts) {
-            text
+            "请以$paceInstruction、清晰自然的方式逐字朗读以下文本。只朗读文本本身，不要添加、删减或改写内容：\n$text"
         } else {
-            "请直接用自然流畅的中文朗读以下内容，只输出朗读语音，不要添加任何额外词语：\n$text"
+            "请直接用$paceInstruction的中文朗读以下内容，只输出原文朗读语音，不要添加、删减或改写任何词语：\n$text"
         }
 
         val bodyJson = JSONObject().apply {
@@ -454,6 +471,12 @@ internal class GeminiTts(
                         sampleRate = codec.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     }
                 }
+            }
+            if (!outputEos) {
+                throw IllegalStateException("Gemini 音频解码超时，未取得完整音频")
+            }
+            if (totalSamples <= 0) {
+                throw IllegalStateException("Gemini 音频解码结果为空")
             }
             val merged = FloatArray(totalSamples)
             var cursor = 0
