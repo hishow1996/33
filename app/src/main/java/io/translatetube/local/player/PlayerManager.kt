@@ -153,9 +153,15 @@ class PlayerManager(private val ctx: Context) {
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
-    /** 播放器正在加载/缓冲（含首次加载、拖动进度后的重新加载）：界面据此显示转圈，而不是黑屏。 */
+    /** 播放器正在加载/缓冲（含首次加载、拖动进度后的重新加载）。 */
     private val _isBuffering = MutableStateFlow(false)
     val isBuffering: StateFlow<Boolean> = _isBuffering
+    private val _hasRenderedFirstFrame = MutableStateFlow(false)
+    internal val hasRenderedFirstFrame: StateFlow<Boolean> = _hasRenderedFirstFrame
+    private val _playbackFailure = MutableStateFlow<PlaybackFailure?>(null)
+    internal val playbackFailure: StateFlow<PlaybackFailure?> = _playbackFailure
+    private val _sourceGeneration = MutableStateFlow(0L)
+    internal val sourceGeneration: StateFlow<Long> = _sourceGeneration
 
     /**
      * 本次加载中，网络请求失败后播放器自动重试的次数（来自 ExoPlayer 的真实加载错误回调）。
@@ -166,7 +172,22 @@ class PlayerManager(private val ctx: Context) {
 
     /** 播放头之前方已经缓冲到的时长（毫秒），必须在主线程读取。 */
     fun bufferedAheadMs(): Long = runCatching { player.totalBufferedDuration }.getOrDefault(0L).coerceAtLeast(0L)
+    internal fun bufferingDurationMs(): Long =
+        if (bufferingStartedAtMs <= 0L) 0L
+        else (android.os.SystemClock.elapsedRealtime() - bufferingStartedAtMs).coerceAtLeast(0L)
+
     val errorSink = MutableStateFlow<String?>(null)
+
+    private fun resetPlaybackStatusForNewSource() {
+        _hasRenderedFirstFrame.value = false
+        _playbackFailure.value = null
+        _sourceGeneration.value += 1L
+        _loadRetryCount.value = 0
+        bufferingStartedAtMs = 0L
+        errorSink.value = null
+    }
+
+    private fun resetPlaybackStatusForRetry() = resetPlaybackStatusForNewSource()
 
     var onTick: ((ms: Long) -> Unit)? = null
         set(value) {
@@ -302,6 +323,7 @@ class PlayerManager(private val ctx: Context) {
 
     init {
         player.volume = 1f
+        resetPlaybackStatusForNewSource()
         // 音频焦点：耳机拔出/来电/其他应用播放时自动暂停或压低
         player.setAudioAttributes(
             androidx.media3.common.AudioAttributes.Builder()
@@ -360,6 +382,9 @@ class PlayerManager(private val ctx: Context) {
                 }
             }
             override fun onRenderedFirstFrame() {
+                _hasRenderedFirstFrame.value = true
+                _playbackFailure.value = null
+                errorSink.value = null
                 val size = player.videoSize
                 logPlayerDiagnostic(
                     isWarning = false,
@@ -387,23 +412,38 @@ class PlayerManager(private val ctx: Context) {
                     cause = cause.cause
                 }
                 val code = error.errorCodeName
-                val friendly = when (error.errorCode) {
-                    PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
-                    PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
-                    PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
-                    PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ->
-                        "视频地址返回的内容无法播放（常见原因：站点防护拦截了 App 的访问，或视频地址已过期）。请回到「网页视频」页重新检测，或稍后在网络环境变化后重试。"
-                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
-                        "网络连接失败或超时，请检查网络后重试。"
-                    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
-                        "视频地址被站点拒绝（HTTP 状态异常），站点防护可能已更新，请重新从网页检测。"
-                    PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
+                val httpStatusCode = generateSequence<Throwable>(error) { it.cause }
+                    .take(8)
+                    .firstNotNullOfOrNull {
+                        (it as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
+                    }
+                val networkFailure =
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+                val friendly = when {
+                    httpStatusCode == 403 || httpStatusCode == 410 -> "视频地址已失效"
+                    error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ->
+                        "视频地址返回的内容无法播放，请重新获取视频地址。"
+                    networkFailure -> "网络连接失败，请检查网络"
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+                        "视频地址被站点拒绝，HTTP 状态异常。"
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
                         "没有权限访问该视频地址。"
                     else -> null
                 }
-                errorSink.value = friendly
+                val failureMessage = friendly
                     ?: "播放失败（$code）：${detail ?: error.message ?: "播放器无法读取该视频流"}"
+                _playbackFailure.value = PlaybackFailure(
+                    errorCode = error.errorCode,
+                    errorCodeName = code,
+                    httpStatusCode = httpStatusCode,
+                    message = failureMessage,
+                    isNetworkFailure = networkFailure,
+                )
+                errorSink.value = failureMessage
             }
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                 // 竖屏/方形视频自适应宽高比，避免黑边或裁切
@@ -525,7 +565,7 @@ class PlayerManager(private val ctx: Context) {
     /** Clear stale playback before switching; a failed new source must not leave the old video running. */
     private fun clearPreviousYouTubeSource() {
         clearVideoQualityOverrides()
-        errorSink.value = null
+        resetPlaybackStatusForNewSource()
         player.pause()
         player.stop()
         player.clearMediaItems()
@@ -607,7 +647,7 @@ class PlayerManager(private val ctx: Context) {
         userAgent: String? = null,
     ) {
         clearVideoQualityOverrides()
-        errorSink.value = null
+        resetPlaybackStatusForNewSource()
         val item = MediaItem.Builder()
             .setUri(uri)
             .setMediaMetadata(buildMetadata(title, artist, artworkUrl))
@@ -724,6 +764,7 @@ class PlayerManager(private val ctx: Context) {
 
     /** 点播放被上面的门拦住时回调（主线程），由 PlaybackService 在页面上显示具体原因。 */
     @Volatile var onPlayBlocked: (() -> Unit)? = null
+    @Volatile var onPlaybackRestoreRequested: (() -> Unit)? = null
 
     /**
      * 播放器处于空闲（IDLE，例如后台期间被停止或出错后）但还挂着视频时，play() 本身不会重新加载，
@@ -731,8 +772,63 @@ class PlayerManager(private val ctx: Context) {
      */
     private fun ensurePreparedForPlay() {
         if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
-            errorSink.value = null
+            resetPlaybackStatusForRetry()
             player.prepare()
+        }
+    }
+
+    /** 用户点击重试/重新加载时重新准备当前媒体，并恢复播放意图。 */
+    fun retryPlayback(): Boolean {
+        if (released || player.mediaItemCount <= 0) return false
+        return try {
+            val position = runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+            resetPlaybackStatusForRetry()
+            player.prepare()
+            if (position > 0L) player.seekTo(position)
+            if (isPlaybackAllowed()) {
+                player.play()
+            } else {
+                player.pause()
+                runCatching { onPlayBlocked?.invoke() }
+            }
+            true
+        } catch (error: Exception) {
+            if (!released) android.util.Log.e("PlayerManager", "Unable to retry playback", error)
+            _playbackFailure.value = PlaybackFailure(
+                errorCode = -1,
+                errorCodeName = "PLAYBACK_RETRY_FAILED",
+                httpStatusCode = null,
+                message = "无法重新加载视频：${error.message ?: error.javaClass.simpleName}",
+                isNetworkFailure = false,
+            )
+            true
+        }
+    }
+
+    /** 后台停止后发现 IDLE 且媒体仍挂载时自动 prepare。 */
+    fun prepareIfIdle(autoPlay: Boolean): Boolean {
+        if (released || player.playbackState != Player.STATE_IDLE || player.mediaItemCount <= 0) return false
+        return try {
+            resetPlaybackStatusForRetry()
+            player.prepare()
+            if (autoPlay) {
+                if (isPlaybackAllowed()) player.play()
+                else {
+                    player.pause()
+                    runCatching { onPlayBlocked?.invoke() }
+                }
+            }
+            true
+        } catch (error: Exception) {
+            if (!released) android.util.Log.e("PlayerManager", "Unable to recover an idle media item", error)
+            _playbackFailure.value = PlaybackFailure(
+                errorCode = -1,
+                errorCodeName = "PLAYBACK_IDLE_RECOVERY_FAILED",
+                httpStatusCode = null,
+                message = "无法恢复播放：${error.message ?: error.javaClass.simpleName}",
+                isNetworkFailure = false,
+            )
+            false
         }
     }
 
@@ -751,10 +847,20 @@ class PlayerManager(private val ctx: Context) {
                 runCatching { onPlayBlocked?.invoke() }
                 return
             }
+            if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
+                runCatching { onPlaybackRestoreRequested?.invoke() }
+            }
             ensurePreparedForPlay()
             player.play()
         } catch (error: Exception) {
             if (!released) android.util.Log.e("PlayerManager", "Unable to start playback", error)
+            _playbackFailure.value = PlaybackFailure(
+                errorCode = -1,
+                errorCodeName = "PLAYBACK_START_FAILED",
+                httpStatusCode = null,
+                message = "无法开始播放：${error.message ?: error.javaClass.simpleName}",
+                isNetworkFailure = false,
+            )
         }
     }
 

@@ -48,14 +48,14 @@ class PlaybackBlockedHintPolicyTest {
     @Test
     fun dubbingFailureIncludesTheReasonAndOffersOriginalOnly() {
         val h = hint(hasErrors = true, detail = "系统 TTS 合成失败：没有中文语音数据")!!
-        assertTrue(h.message.startsWith("配音合成出错，视频已暂停：系统 TTS 合成失败"))
+        assertTrue(h.message.startsWith("配音语音失败：系统 TTS 合成失败"))
         assertTrue(h.offersOriginalOnly)
     }
 
     @Test
     fun dubbingFailureWithoutDetailStillReadsNaturally() {
         val h = hint(hasErrors = true, detail = "  ")!!
-        assertTrue(h.message.startsWith("配音合成出错，视频已暂停。"))
+        assertTrue(h.message.startsWith("配音语音失败：所选配音引擎无法生成语音"))
     }
 
     @Test

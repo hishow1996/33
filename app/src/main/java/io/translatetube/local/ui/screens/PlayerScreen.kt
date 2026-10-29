@@ -93,6 +93,8 @@ import io.translatetube.local.floating.FloatingHostLayout
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.floating.FloatingOverlayLifecycleOwner
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.PlaybackHint
+import io.translatetube.local.player.PlaybackHintAction
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
 import io.translatetube.local.player.VideoSourceKind
@@ -157,6 +159,7 @@ fun PlayerScreen(
     }
     val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "web" && selectedTtsEngine != "google" && voiceOptions.size > 1
     val state by PlaybackService.ui.collectAsState()
+    val playbackHint by PlaybackService.playbackHint.collectAsState()
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
     var advancedMenuExpanded by remember { mutableStateOf(false) }
@@ -681,19 +684,25 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     // A failed YouTube seek may trigger one bounded stream-refresh attempt. Keep the player
     // visible during those two explicitly-labelled recovery steps instead of showing the parser.
     val playbackRecoveryInProgress = state.key == requestKey && (
-        state.progress.startsWith("YouTube 视频流加载失败，正在刷新播放地址") ||
+        playbackHint?.keepPlayerVisible == true ||
+            state.progress.startsWith("YouTube 视频流加载失败，正在刷新播放地址") ||
+            state.progress.startsWith("视频地址已失效，正在重新获取") ||
             state.progress.startsWith("正在尝试兼容清晰度 ")
         )
-    val showProcessingPage = VideoProcessingFlowPolicy.shouldShowProcessingPage(
-        phase = state.phase,
-        waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
-        waitingForDubbingEngine = state.waitingForDubbingEngine,
-        playerIsPlaying = state.isPlaying,
-        progressiveTtsPlayback = progressiveTtsPlayback,
-        dubbingPreparationIncomplete = dubbingPreparationIncomplete,
-        playbackHasStarted = playbackHasStarted,
-        playbackRecoveryInProgress = playbackRecoveryInProgress,
-    )
+    val showProcessingPage = if (playbackHint?.keepPlayerVisible == true) {
+        false
+    } else {
+        VideoProcessingFlowPolicy.shouldShowProcessingPage(
+            phase = state.phase,
+            waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
+            waitingForDubbingEngine = state.waitingForDubbingEngine,
+            playerIsPlaying = state.isPlaying,
+            progressiveTtsPlayback = progressiveTtsPlayback,
+            dubbingPreparationIncomplete = dubbingPreparationIncomplete,
+            playbackHasStarted = playbackHasStarted,
+            playbackRecoveryInProgress = playbackRecoveryInProgress,
+        )
+    }
 
     Box(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
@@ -981,6 +990,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 if (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING) {
                     VideoOverlayControls(
                         state = state,
+                        playbackHint = playbackHint,
                         isFloating = isFloating,
                         onStartFloat = { startFloatingWindow() },
                         onExitFloat = { exitFloating() },
@@ -1025,7 +1035,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             )
                         }
                     }
-                } else if (phase != Phase.READY && phase != Phase.SYNTHESIZING) {
+                } else if (phase != Phase.READY && phase != Phase.SYNTHESIZING && playbackHint == null) {
                     Box(Modifier.fillMaxSize().background(Color(0xD9F4F8FF)), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                             if (phase == Phase.ERROR) {
@@ -1042,12 +1052,40 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         }
                     }
                 }
+                playbackHint?.let { hint ->
+                    PlaybackHintOverlay(
+                        hint = hint,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 58.dp, start = 12.dp, end = 12.dp),
+                        onAction = { action ->
+                            when (action) {
+                                PlaybackHintAction.OPEN_SETTINGS -> onGoSettings()
+                                else -> {
+                                    val activeService = PlaybackService.instance
+                                    if (activeService?.isReady == true) {
+                                        activeService.performPlaybackHintAction(action)
+                                    } else if (action in setOf(
+                                            PlaybackHintAction.RETRY,
+                                            PlaybackHintAction.RELOAD,
+                                            PlaybackHintAction.REPARSE,
+                                        )
+                                    ) {
+                                        retryCurrentTask()
+                                    }
+                                }
+                            }
+                        },
+                    )
+                }
             }
 
             Spacer(Modifier.height(6.dp))
 
             // 模型/配音问题提示可以单独关闭；关闭只隐藏提示，不会改变播放状态。
-            (state.noModelHint?.takeIf { state.key == requestKey && it != dismissedNoModelHint })?.let { hint ->
+            (state.noModelHint?.takeIf {
+                state.key == requestKey && it != dismissedNoModelHint && playbackHint == null
+            })?.let { hint ->
                 Surface(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(0.dp)),
                     color = Color(0xFFFFF8E1),
@@ -1088,63 +1126,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 Spacer(Modifier.height(5.dp))
             }
 
-            // 点了播放却被拦住（配音/转写引擎没就绪、配音出错等）：显示真实原因，不再是"点了没反应"。
-            (state.playBlockedHint?.takeIf { state.key == requestKey && !state.isPlaying })?.let { blockedHint ->
-                Surface(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(0.dp)),
-                    color = Color(0xFFFFF8E1),
-                ) {
-                    Box(Modifier.fillMaxWidth()) {
-                        Column(
-                            Modifier.fillMaxWidth().padding(start = 10.dp, end = 42.dp, top = 10.dp, bottom = 10.dp),
-                        ) {
-                            Row(verticalAlignment = androidx.compose.ui.Alignment.Top) {
-                                Text("⚠️", color = WarnYellow)
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    blockedHint,
-                                    color = Color(0xFF5D4037),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                            Row(
-                                Modifier.padding(top = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            ) {
-                                if (state.playBlockedOffersOriginalOnly) {
-                                    Text(
-                                        "仅播放原声",
-                                        color = AccentBlue,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        modifier = Modifier.clickable {
-                                            PlaybackService.instance?.playOriginalOnly()
-                                        },
-                                    )
-                                }
-                                Text(
-                                    "去设置 →",
-                                    color = AccentBlue,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    modifier = Modifier.clickable(onClick = onGoSettings),
-                                )
-                            }
-                        }
-                        IconButton(
-                            onClick = { PlaybackService.instance?.dismissPlayBlockedHint() },
-                            modifier = Modifier.align(Alignment.TopEnd).size(34.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = "关闭提示",
-                                tint = Color(0xFF7A6A45),
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(5.dp))
-            }
+            // Playback-blocked reasons are displayed only by the unified playback hint overlay.
 
             // 当前这句的中文配音还没合成好：红字提示，这句一合成好（或字幕换到别的句子）就立刻消失。
             // 判定来自配音引擎的逐句就绪状态，不用计时。
@@ -3168,9 +3150,79 @@ private fun FloatingPlayerControls(
     }
 }
 
+
+@Composable
+private fun PlaybackHintOverlay(
+    hint: PlaybackHint,
+    modifier: Modifier = Modifier,
+    onAction: (PlaybackHintAction) -> Unit,
+) {
+    val mainAction = hint.action
+    val mainActionLabel = hint.actionLabel
+    val secondaryAction = hint.secondaryAction
+    val secondaryActionLabel = hint.secondaryActionLabel
+    Surface(
+        modifier = modifier.fillMaxWidth(0.94f),
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xE8172033),
+        shadowElevation = 8.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                if (hint.showSpinner) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(9.dp))
+                }
+                Text(
+                    text = hint.message,
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
+            if (mainAction != null && !mainActionLabel.isNullOrBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = { onAction(mainAction) },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                    ) {
+                        Text(mainActionLabel, color = Color(0xFF9DC3FF))
+                    }
+                    if (secondaryAction != null && !secondaryActionLabel.isNullOrBlank()) {
+                        TextButton(
+                            onClick = { onAction(secondaryAction) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        ) {
+                            Text(secondaryActionLabel, color = Color.White)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
+    playbackHint: PlaybackHint?,
     isFloating: Boolean,
     onStartFloat: () -> Unit,
     onExitFloat: () -> Unit,
@@ -3213,45 +3265,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-    // 转圈直接反映播放器的真实加载状态（BUFFERING），文字提示来自真实数据：
-    // 网络请求失败的重试次数、已缓冲的时长；没有数据时不编造"网络慢"之类的结论。
-    if (state.isBuffering) {
-        var bufferedMs by remember(state.key) { mutableStateOf(0L) }
-        // 每 0.5 秒一格，16 格 = 加载满 8 秒才开始显示详情，避免一闪而过的正常缓冲也弹提示。
-        var loadingTicks by remember(state.key) { mutableStateOf(0) }
-        LaunchedEffect(state.key) {
-            while (true) {
-                bufferedMs = PlaybackService.instance?.bufferedAheadMs() ?: 0L
-                delay(500)
-                loadingTicks += 1
-            }
-        }
-        val statusText = when {
-            state.loadRetryCount > 0 -> "连接不稳定，正在重试（第 ${state.loadRetryCount} 次）…"
-            loadingTicks >= 16 && bufferedMs <= 0L -> "仍在加载视频，暂未收到数据…"
-            loadingTicks >= 16 -> "仍在加载视频，已缓冲 ${bufferedMs / 1000} 秒…"
-            else -> null
-        }
-        Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(40.dp),
-                    color = Color.White,
-                    strokeWidth = 3.dp,
-                )
-                if (statusText != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        statusText,
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
-    }
-
-    if (!state.isPlaying && !state.isBuffering) {
+    // All loading and playback errors are rendered from PlaybackService.playbackHint.
+    // Suppress the central fallback affordance while the actionable hint is visible.
+    if (!state.isPlaying && !state.isBuffering && playbackHint == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
             Surface(
                 // This control is only shown while isPlaying=false and the player is not loading; issue an explicit play

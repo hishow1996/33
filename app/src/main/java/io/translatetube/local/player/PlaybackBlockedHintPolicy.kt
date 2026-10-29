@@ -31,12 +31,12 @@ internal object PlaybackBlockedHintPolicy {
                 offersOriginalOnly = false,
             )
             dubbingOn && waitingForDubbingEngine -> PlaybackBlockedHint(
-                "视频暂时不能播放：$engine 还没准备好。请先在设置里检查配音引擎，或选择「仅播放原声」直接观看。",
+                "$engine 还在准备中，准备好后自动播放。也可选择「仅播放原声」直接观看。",
                 offersOriginalOnly = true,
             )
             dubbingOn && dubbingHasErrors -> PlaybackBlockedHint(
-                "配音合成出错，视频已暂停" + (detail?.let { "：$it" } ?: "") +
-                    "。可以到设置里检查配音引擎后重新处理，或选择「仅播放原声」直接观看。",
+                "配音语音失败：" + (detail ?: "所选配音引擎无法生成语音") +
+                    "。可以检查配音引擎后重试，或选择「仅播放原声」直接观看。",
                 offersOriginalOnly = true,
             )
             dubbingOn && phaseIsError -> PlaybackBlockedHint(
