@@ -134,7 +134,8 @@ fun PlayerScreen(
 ) {
     val ctx = LocalContext.current
     val settingsPrefs = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
-    val selectedTtsEngine = settingsPrefs.getString("tts_engine", "edge") ?: "edge"
+    val selectedTtsEngine = io.translatetube.local.player.DubbingConfigPreferencePolicy
+        .normalizeEngineId(settingsPrefs.getString("tts_engine", "edge"))
     val systemVoiceCatalog = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
         settingsPrefs.getString(io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY, null),
     )
@@ -144,7 +145,6 @@ fun PlayerScreen(
             systemVoiceCatalog.drop(1).forEachIndexed { index, voiceName -> add(index to voiceName) }
         }
         "piper" -> emptyList()
-        "web" -> listOf(-1 to "在线语音 · 默认音色")
         "google" -> listOf(-1 to "谷歌在线语音 · 默认音色")
         "gemini" -> buildList {
             add(-1 to "Gemini 默认音色")
