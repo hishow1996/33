@@ -113,6 +113,22 @@ class ReadySessionSnapshotReusePolicyTest {
     }
 
     @Test
+    fun reopeningLocalVideoCanRestoreItsSuccessfulImportedSubtitleResult() {
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                snapshotIgnoresTranscription = true,
+                expectedFlows = setOf(
+                    ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                    ProcessingFlow.IMPORTED_SUBTITLES,
+                    ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                ),
+                isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
     fun sourceFlowFilteringRejectsAWebSnapshotWhenOpeningLocalVideo() {
         assertFalse(
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
