@@ -6,6 +6,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import io.translatetube.local.util.CrashGuard
+import io.translatetube.local.data.AppDatabase
+import io.translatetube.local.translate.Crypto
+import io.translatetube.local.tts.GeminiTtsVoices
+import kotlinx.coroutines.flow.firstOrNull
 
 class TranslateTubeApp : Application() {
     companion object {
@@ -43,6 +47,55 @@ class TranslateTubeApp : Application() {
         registerActivityLifecycleCallbacks(lifecycleTracker)
         CrashGuard.install(this)
         super.onCreate()
+
+        // 旧版本将 Gemini 翻译密钥同时用于配音；升级时只迁移一次，之后两项配置独立保存。
+        val ttsKeyPrefs = getSharedPreferences("settings", MODE_PRIVATE)
+        if (!ttsKeyPrefs.getBoolean(GeminiTtsVoices.PREF_API_KEY_MIGRATION_DONE, false)) {
+            val currentTtsKey = ttsKeyPrefs.getString(GeminiTtsVoices.PREF_API_KEY, "").orEmpty()
+            val legacyFreeKey = ttsKeyPrefs.getString("free_gemini_key", "").orEmpty()
+            if (currentTtsKey.isNotBlank()) {
+                ttsKeyPrefs.edit()
+                    .putBoolean(GeminiTtsVoices.PREF_API_KEY_MIGRATION_DONE, true)
+                    .apply()
+            } else if (legacyFreeKey.isNotBlank()) {
+                val legacyPlainKey = Crypto.decrypt(legacyFreeKey).trim()
+                val editor = ttsKeyPrefs.edit()
+                if (legacyPlainKey.isNotBlank()) {
+                    editor.putString(GeminiTtsVoices.PREF_API_KEY, Crypto.encrypt(legacyPlainKey))
+                }
+                editor.putBoolean(GeminiTtsVoices.PREF_API_KEY_MIGRATION_DONE, true).apply()
+            } else {
+                // 旧版本也允许复用 API 管理中的 Gemini 配置；仅在升级迁移时复制一次。
+                appScope.launch {
+                    val migrationCompleted = runCatching {
+                        val legacyProfileKey = AppDatabase.get(this@TranslateTubeApp)
+                            .apiProfileDao()
+                            .enabled()
+                            .firstOrNull {
+                                it.type.equals("GEMINI", ignoreCase = true) && it.apiKey.isNotBlank()
+                            }
+                            ?.apiKey
+                            .orEmpty()
+                        val legacyPlainKey = Crypto.decrypt(legacyProfileKey).trim()
+                        if (
+                            legacyPlainKey.isNotBlank() &&
+                            ttsKeyPrefs.getString(GeminiTtsVoices.PREF_API_KEY, "").isNullOrBlank()
+                        ) {
+                            ttsKeyPrefs.edit()
+                                .putString(GeminiTtsVoices.PREF_API_KEY, Crypto.encrypt(legacyPlainKey))
+                                .apply()
+                        }
+                        true
+                    }.getOrDefault(false)
+                    if (migrationCompleted) {
+                        ttsKeyPrefs.edit()
+                            .putBoolean(GeminiTtsVoices.PREF_API_KEY_MIGRATION_DONE, true)
+                            .apply()
+                    }
+                }
+            }
+        }
+
         // Image loading is initialized lazily by the screens that need it.
         // Avoid building Coil's HTTP/cache/component pipeline on the cold-start main thread.
         // yt-dlp 规则版本检测：上午/下午/晚上各一次（时段内去重，深夜静默），
