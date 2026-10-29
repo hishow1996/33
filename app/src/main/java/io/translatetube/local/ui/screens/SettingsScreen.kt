@@ -282,6 +282,8 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             "piper" -> "Piper 多语种"
             "web" -> "在线语音"
             "edge" -> "微软 Edge TTS"
+            "google" -> "谷歌在线语音"
+            "gemini" -> "Gemini TTS 配音"
             "kokoro" -> "Kokoro 神经网络"
             else -> "未知配音引擎"
         }
