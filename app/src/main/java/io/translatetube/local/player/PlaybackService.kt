@@ -5483,6 +5483,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
 
             // ---- 1. 元信息 ----
             var srcLang = resumeState?.sourceLang.orEmpty()
+            suspend fun resolveMetadataStage() {
             if (restoreCompletedSnapshot && resumeState != null) {
                 // A complete snapshot is already translated and synthesized. Keep the playback
                 // page in READY while the media source and cached dubbing queue are reattached.
@@ -5637,6 +5638,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     updateUiForSession(key, pipelineGeneration) { it.copy(title = title, durationMs = dur) }
                 }
             }
+
+            resolveMetadataStage()
 
             // 解析视频时先列出所有字幕轨。下载是可选操作，不影响自动翻译/配音流程。
             if (videoId != null && resumeState == null) {
@@ -6214,7 +6217,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
             }
 
-            if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
+            suspend fun runTranscriptionStage(): Boolean {
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
                 val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
                 val kawaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_kawa_language", "auto") ?: "auto"
@@ -6325,7 +6328,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             "自动播放" to "禁止；设置变更后重新处理并进入第五阶段",
                         ),
                     )
-                    return
+                    return false
                 } else {
                 val stablePartialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
                 val hasStablePartialAsrCache = db.subtitleCacheDao().get(stablePartialAsrCacheKey) != null
@@ -7171,6 +7174,11 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     )
                 }
                 }
+                return true
+            }
+
+            if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
+                if (!runTranscriptionStage()) return
             }
 
             // 用户导入的字幕优先（SRT/VTT 导入入口）
@@ -7282,590 +7290,600 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 )
             }
 
-            val restoredProcessingFlow = resumeState?.processingFlow ?: ui.value.processingFlow
-            val isImportedTranslatedSnapshot =
-                restoredProcessingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+            suspend fun prepareTranslatedLines(): List<SubLine> {
+                val restoredProcessingFlow = resumeState?.processingFlow ?: ui.value.processingFlow
+                val isImportedTranslatedSnapshot =
+                    restoredProcessingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
 
-            if (cached != null && SubtitleCacheRestorePolicy.shouldUseCachedRows(
-                    hasAuthoritativeImportedTranslation = isImportedTranslatedSnapshot,
-                )
-            ) {
-                // 缓存命中：直接还原双语行
-                val arr = org.json.JSONArray(cached.linesJson)
-                val restored = ArrayList<SubLine>(arr.length())
-                for (i in 0 until arr.length()) {
-                    if ((i and 0xff) == 0) {
-                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    }
-                    val o = arr.getJSONObject(i)
-                    val originalText = o.getString("t")
-                    val cachedTranslation = o.optString("zh")
-                        .takeIf { it.isNotBlank() }
-                        ?.let { SubtitleParsers.cleanTranslatedText(it) }
-                    restored += SubLine(
-                        i, o.getLong("s"), o.getLong("e"),
-                        originalText, cachedTranslation, o.optInt("sp", -1),
+                if (cached != null && SubtitleCacheRestorePolicy.shouldUseCachedRows(
+                        hasAuthoritativeImportedTranslation = isImportedTranslatedSnapshot,
                     )
-                }
-                // A legacy cache can have a blank source-language field. Preserve a trusted
-                // language from the source cache, or re-detect from the restored original captions,
-                // rather than accidentally treating Chinese source subtitles as foreign text.
-                srcLang = cached.srcLang.takeIf { it.isNotBlank() }
-                    ?: restoredSourceLang
-                    ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(restored.asSequence().map { it.text }.asIterable())
-                // Re-check cached language against the original transcript too. Older releases
-                // may have persisted a provider's incorrect "zh" hint for non-Chinese speech.
-                srcLang = resolveSourceLanguageForCues(
-                    restored.map { it.text },
-                    io.translatetube.local.subs.SubtitleLanguageDetector
-                        .resolveTranscriptionLanguageFromCues(
-                            srcLang,
-                            restored.asSequence().map { it.text }.asIterable(),
-                        ),
-                )
-                lines = if (isChineseLanguage(srcLang)) {
-                    SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(restored)
-                } else {
-                    restored
-                }
-                val manualRestoredLines = awaitManualSubtitleTranslation(
-                    key, lines.orEmpty(), srcLang, pipelineGeneration,
-                )
-                if (manualRestoredLines != null) {
-                    lines = manualRestoredLines
-                    forceFreshDubbingForThisRun = true
-                } else if (!isChineseLanguage(srcLang) && restored.any { line ->
-                    needsSubtitleTranslation(line, srcLang)
-                }) {
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(
-                            phase = Phase.TRANSLATING,
-                            sourceLang = srcLang,
-                            progress = "继续翻译缓存中尚未完成的字幕…",
+                ) {
+                    // 缓存命中：直接还原双语行
+                    val arr = org.json.JSONArray(cached.linesJson)
+                    val restored = ArrayList<SubLine>(arr.length())
+                    for (i in 0 until arr.length()) {
+                        if ((i and 0xff) == 0) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        }
+                        val o = arr.getJSONObject(i)
+                        val originalText = o.getString("t")
+                        val cachedTranslation = o.optString("zh")
+                            .takeIf { it.isNotBlank() }
+                            ?.let { SubtitleParsers.cleanTranslatedText(it) }
+                        restored += SubLine(
+                            i, o.getLong("s"), o.getLong("e"),
+                            originalText, cachedTranslation, o.optInt("sp", -1),
                         )
                     }
-                    lines = translateLines(key, restored, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
-                }
-            } else if (lines != null) {
-                // ---- 3. 翻译 ----
-                var translatedLines = lines!!
-                if (isImportedTranslatedSnapshot) {
-                    // "导入已翻译字幕并配音" is an authoritative translated input. Do not infer
-                    // the source language from its original-language display row and send it to the
-                    // active translation engine again. Keep the imported zh text and timestamps.
-                    translatedLines = io.translatetube.local.subs.ImportedSubtitlePolicy
-                        .preserveImportedTranslations(translatedLines)
-                    srcLang = "zh"
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(
-                            phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
-                            sourceLang = "zh",
-                            translatedLineCount = translatedLines.count { line -> !line.zh.isNullOrBlank() },
-                            progress = if (restoreCompletedSnapshot) "" else "复用已导入译文，正在准备配音…",
-                        )
-                    }
-                    io.translatetube.local.util.AppLogStore.info(
-                        this@PlaybackService,
-                        "PlaybackFlow",
-                        "恢复已导入译文，跳过应用内翻译",
-                        diagnosticContext = mapOf(
-                            "字幕行数" to translatedLines.size.toString(),
-                            "复用导入译文行数" to translatedLines.count { !it.zh.isNullOrBlank() }.toString(),
-                            "恢复成功快照" to restoreCompletedSnapshot.toString(),
-                            "处理流程" to ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES.name,
-                        ),
-                    )
-                } else {
-                    // Validate the selected/source-cache language against the actual transcript before
-                    // deciding that translation can be skipped.
+                    // A legacy cache can have a blank source-language field. Preserve a trusted
+                    // language from the source cache, or re-detect from the restored original captions,
+                    // rather than accidentally treating Chinese source subtitles as foreign text.
+                    srcLang = cached.srcLang.takeIf { it.isNotBlank() }
+                        ?: restoredSourceLang
+                        ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(restored.asSequence().map { it.text }.asIterable())
+                    // Re-check cached language against the original transcript too. Older releases
+                    // may have persisted a provider's incorrect "zh" hint for non-Chinese speech.
                     srcLang = resolveSourceLanguageForCues(
-                        translatedLines.map { it.text },
+                        restored.map { it.text },
                         io.translatetube.local.subs.SubtitleLanguageDetector
                             .resolveTranscriptionLanguageFromCues(
                                 srcLang,
-                                translatedLines.asSequence().map { it.text }.asIterable(),
+                                restored.asSequence().map { it.text }.asIterable(),
                             ),
                     )
-                    val externalTranslatedLines = awaitManualSubtitleTranslation(
-                        key, translatedLines, srcLang, pipelineGeneration,
+                    lines = if (isChineseLanguage(srcLang)) {
+                        SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(restored)
+                    } else {
+                        restored
+                    }
+                    val manualRestoredLines = awaitManualSubtitleTranslation(
+                        key, lines.orEmpty(), srcLang, pipelineGeneration,
                     )
-                    if (externalTranslatedLines != null) {
-                        translatedLines = externalTranslatedLines
+                    if (manualRestoredLines != null) {
+                        lines = manualRestoredLines
                         forceFreshDubbingForThisRun = true
-                    } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
-                        val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
-                        if (needsTranslation) {
-                            updateUiForSession(key, pipelineGeneration) {
-                                it.copy(
-                                    phase = Phase.TRANSLATING,
-                                    progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…",
+                    } else if (!isChineseLanguage(srcLang) && restored.any { line ->
+                        needsSubtitleTranslation(line, srcLang)
+                    }) {
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                phase = Phase.TRANSLATING,
+                                sourceLang = srcLang,
+                                progress = "继续翻译缓存中尚未完成的字幕…",
+                            )
+                        }
+                        lines = translateLines(key, restored, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
+                    }
+                } else if (lines != null) {
+                    // ---- 3. 翻译 ----
+                    var translatedLines = lines!!
+                    if (isImportedTranslatedSnapshot) {
+                        // "导入已翻译字幕并配音" is an authoritative translated input. Do not infer
+                        // the source language from its original-language display row and send it to the
+                        // active translation engine again. Keep the imported zh text and timestamps.
+                        translatedLines = io.translatetube.local.subs.ImportedSubtitlePolicy
+                            .preserveImportedTranslations(translatedLines)
+                        srcLang = "zh"
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
+                                sourceLang = "zh",
+                                translatedLineCount = translatedLines.count { line -> !line.zh.isNullOrBlank() },
+                                progress = if (restoreCompletedSnapshot) "" else "复用已导入译文，正在准备配音…",
+                            )
+                        }
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "恢复已导入译文，跳过应用内翻译",
+                            diagnosticContext = mapOf(
+                                "字幕行数" to translatedLines.size.toString(),
+                                "复用导入译文行数" to translatedLines.count { !it.zh.isNullOrBlank() }.toString(),
+                                "恢复成功快照" to restoreCompletedSnapshot.toString(),
+                                "处理流程" to ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES.name,
+                            ),
+                        )
+                    } else {
+                        // Validate the selected/source-cache language against the actual transcript before
+                        // deciding that translation can be skipped.
+                        srcLang = resolveSourceLanguageForCues(
+                            translatedLines.map { it.text },
+                            io.translatetube.local.subs.SubtitleLanguageDetector
+                                .resolveTranscriptionLanguageFromCues(
+                                    srcLang,
+                                    translatedLines.asSequence().map { it.text }.asIterable(),
+                                ),
+                        )
+                        val externalTranslatedLines = awaitManualSubtitleTranslation(
+                            key, translatedLines, srcLang, pipelineGeneration,
+                        )
+                        if (externalTranslatedLines != null) {
+                            translatedLines = externalTranslatedLines
+                            forceFreshDubbingForThisRun = true
+                        } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
+                            val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
+                            if (needsTranslation) {
+                                updateUiForSession(key, pipelineGeneration) {
+                                    it.copy(
+                                        phase = Phase.TRANSLATING,
+                                        progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…",
+                                    )
+                                }
+                                translatedLines = translateLines(
+                                    key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration,
                                 )
                             }
-                            translatedLines = translateLines(
-                                key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration,
-                            )
+                        } else if (translatedLines.isNotEmpty()) {
+                            // Source captions are not translator output: preserve repeated words and text that
+                            // happens to resemble a progress label instead of running translation cleanup on it.
+                            translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
                         }
-                    } else if (translatedLines.isNotEmpty()) {
-                        // Source captions are not translator output: preserve repeated words and text that
-                        // happens to resemble a progress label instead of running translation cleanup on it.
-                        translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
                     }
-                }
-                lines = translatedLines
+                    lines = translatedLines
 
-                // An imported translated file is persisted as a ready-session snapshot instead of
-                // being written under the currently selected translator's cache identity.
-                if (!isImportedTranslatedSnapshot) {
-                    // Persist only when more than half of rows have usable Chinese output.
-                    ensureCurrentSession(key, pipelineGeneration)
-                    var translatedRowCount = 0
-                    for ((index, line) in translatedLines.withIndex()) {
-                        if ((index and 0xff) == 0) {
-                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                        }
-                        if (!line.zh.isNullOrEmpty()) translatedRowCount++
-                    }
-                    if (translatedRowCount > translatedLines.size / 2) {
-                        val arr = org.json.JSONArray()
-                        for ((rowIndex, line) in translatedLines.withIndex()) {
-                            if ((rowIndex and 0xff) == 0) {
+                    // An imported translated file is persisted as a ready-session snapshot instead of
+                    // being written under the currently selected translator's cache identity.
+                    if (!isImportedTranslatedSnapshot) {
+                        // Persist only when more than half of rows have usable Chinese output.
+                        ensureCurrentSession(key, pipelineGeneration)
+                        var translatedRowCount = 0
+                        for ((index, line) in translatedLines.withIndex()) {
+                            if ((index and 0xff) == 0) {
                                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             }
-                            arr.put(
-                                org.json.JSONObject()
-                                    .put("s", line.startMs)
-                                    .put("e", line.endMs)
-                                    .put("t", line.text)
-                                    .put("zh", line.zh ?: "")
+                            if (!line.zh.isNullOrEmpty()) translatedRowCount++
+                        }
+                        if (translatedRowCount > translatedLines.size / 2) {
+                            val arr = org.json.JSONArray()
+                            for ((rowIndex, line) in translatedLines.withIndex()) {
+                                if ((rowIndex and 0xff) == 0) {
+                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                }
+                                arr.put(
+                                    org.json.JSONObject()
+                                        .put("s", line.startMs)
+                                        .put("e", line.endMs)
+                                        .put("t", line.text)
+                                        .put("zh", line.zh ?: "")
+                                )
+                            }
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            ensureCurrentSession(key, pipelineGeneration)
+                            db.subtitleCacheDao().put(
+                                io.translatetube.local.data.SubtitleCacheEntity(
+                                    translationCacheKey, srcLang, arr.toString(),
+                                    System.currentTimeMillis(), videoKey = key,
+                                )
                             )
                         }
-                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                        ensureCurrentSession(key, pipelineGeneration)
-                        db.subtitleCacheDao().put(
-                            io.translatetube.local.data.SubtitleCacheEntity(
-                                translationCacheKey, srcLang, arr.toString(),
-                                System.currentTimeMillis(), videoKey = key,
-                            )
-                        )
                     }
                 }
-            }
 
-            ensureCurrentSession(key, pipelineGeneration)
-            // 仅 YouTube：把第一句起点校准到人声真正开口的时间（网页/本地不走这里）。
-            val baseLines = lines ?: emptyList()
-            val importedTranslatedFlow =
-                resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-            val calibratedLines = if (videoId != null && !importedTranslatedFlow) {
-                calibrateYouTubeFirstCue(videoId, baseLines)
-            } else {
-                baseLines
-            }
-            ensureCurrentSession(key, pipelineGeneration)
-            val finalLines = applySavedLineOverrides(calibratedLines, key)
-            updateUiForSession(key, pipelineGeneration) {
-                it.copy(
-                    lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
-                    progress = "", phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
-                )
-            }
-
-            // ---- 4. 流装配 ----
-            if (!reuseMountedMedia) {
-            if (videoId != null) {
-                val streamInfo = NewPipeRepo.streams(videoId)
                 ensureCurrentSession(key, pipelineGeneration)
-                val choices = buildYouTubeStreamChoices(streamInfo)
-                val candidates = choices.sources
-                val audioUrl = choices.audioUrl
-                val defaultQuality = choices.defaultQuality
-                qualitySources = candidates
-                qualityAudioUrl = audioUrl
+                // 仅 YouTube：把第一句起点校准到人声真正开口的时间（网页/本地不走这里）。
+                val baseLines = lines ?: emptyList()
+                val importedTranslatedFlow =
+                    resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                val calibratedLines = if (videoId != null && !importedTranslatedFlow) {
+                    calibrateYouTubeFirstCue(videoId, baseLines)
+                } else {
+                    baseLines
+                }
+                ensureCurrentSession(key, pipelineGeneration)
+                val finalLines = applySavedLineOverrides(calibratedLines, key)
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
-                        qualityOptions = candidates.map { q -> q.label },
+                        lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
+                        progress = "", phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
                     )
                 }
-                ensureCurrentSession(key, pipelineGeneration)
-                withContext(Dispatchers.Main) {
-                    ensureCurrentSession(key, pipelineGeneration)
-                    val accepted = pm.setYouTubeQuality(
-                        videoUrl = defaultQuality.url,
-                        audioUrl = audioUrl,
-                        muxed = defaultQuality.muxed,
-                        title = meta.title,
-                        artist = meta.channel,
-                        artworkUrl = meta.thumbUrl,
-                    )
-                    if (!accepted) {
-                        throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
-                    }
-                    updateUiForSession(key, pipelineGeneration) { it.copy(selectedQuality = defaultQuality.label) }
-                }
-            } else {
-                ensureCurrentSession(key, pipelineGeneration)
-                withContext(Dispatchers.Main) {
-                    ensureCurrentSession(key, pipelineGeneration)
-                    val sourceUri = remoteMediaUrl?.let(Uri::parse) ?: localUri
-                    ?: throw IllegalStateException("无可播放的视频地址")
-                val requestHeaders = buildMap {
-                    remoteMediaReferrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-                        ?.let { put("Referer", it) }
-                    remoteMediaCookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
-                }
-                pm.setUriSource(
-                    sourceUri,
-                    meta.title,
-                    if (remoteMediaUrl != null) "网页视频" else "本地视频",
-                    null,
-                    requestHeaders,
-                    userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
-                )
-                adaptiveQualitySourceReady = true
-                refreshAdaptiveVideoQualityOptions()
-                }
+
+                return finalLines
             }
-            } // Keep the existing stream for a selective stage restart.
 
-            // Drain any retired speech engine and unload the native ASR model before
-            // allocating the selected TTS runtime. Reopening a history item can reuse ASR and
-            // translation checkpoints, so it may arrive here quickly while memory is still high.
-            awaitProcessingResumed(key, pipelineGeneration)
-            awaitRetiredDubbingEngines()
-            releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
-            awaitProcessingResumed(key, pipelineGeneration)
+            val finalLines = prepareTranslatedLines()
 
-            // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
-            dubbingStageEntered = true
-            if (finalLines.isNotEmpty()) {
-                val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-                    .getString("tts_engine", "edge") ?: "edge"
-                val selectedTtsName = ttsDisplayName(selectedTts)
-                updateUiForSession(key, pipelineGeneration) { it.copy(ttsEngineName = selectedTtsName) }
-
-                val selectedEngineReady = when (selectedTts) {
-                    "system" -> true
-                    "web" -> true
-                    "edge" -> true
-                    "kokoro" -> kokoroRuntimeReady()
-                    "piper" -> piperModelReadyForChinese()
-                    else -> false
-                }
-                // Chinese source material still respects the explicitly selected TTS engine.
-                // If the selected engine is unavailable, the common waiting state below blocks
-                // playback instead of silently degrading to source-only narration.
-                if (selectedEngineReady) {
-                    try {
-                        // Pass the saved selection explicitly so a settings change during parsing
-                        // cannot cause the readiness check and actual engine to disagree.
-                        val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
-                        try {
-                            ensureCurrentSession(key, pipelineGeneration)
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            runCatching { tts.close() }
-                            throw e
-                        }
-                        val d = try {
-                            DubbingEngine(this, key, scope, pm.dubbingBus)
-                        } catch (e: Exception) {
-                            runCatching { tts.close() }
-                            throw e
-                        }
-                        try {
-                            ensureCurrentSession(key, pipelineGeneration)
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            retireDubbing(d)
-                            runCatching { tts.close() }
-                            throw e
-                        }
-                        registerDubbingFailureHandler(d, tts, key)
-                        try {
-                            d.attach(
-                        tts,
-                        finalLines,
-                        sourceLanguage = srcLang,
-                        forceRegenerateDubbing = forceFreshDubbingForThisRun,
-                    )
-                        } catch (e: Exception) {
-                            retireDubbing(d)
-                            runCatching { tts.close() }
-                            throw e
-                        }
-                        try {
-                            ensureCurrentSession(key, pipelineGeneration)
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            retireDubbing(d)
-                            throw e
-                        }
-                        if (!publishDubbingEngine(d, key, pipelineGeneration)) {
-                            retireDubbing(d)
-                            throw kotlinx.coroutines.CancellationException(
-                                "视频处理任务已被新的打开请求替代，取消旧的配音引擎初始化",
-                            )
-                        }
-                        updateUiForSession(key, pipelineGeneration) {
-                            it.copy(
-                                ttsEngineName = tts.name,
-                                dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
-                                noModelHint = null,
-                                waitingForTranscriptionEngine = false,
-                                waitingForDubbingEngine = false,
-                            )
-                        }
-                        dubCollectJob = scope.launch {
-                            kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
-                                .collect { (prefix, readyCount) ->
-                                    updateUiForCurrentDubbingEngine(d, key) {
-                                        it.copy(preparedUntil = prefix, preparedCount = readyCount)
-                                    }
-                                }
-                        }
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        val failureState = ui.value
-                        io.translatetube.local.util.AppLogStore.error(
-                            this@PlaybackService,
-                            "TTS",
-                            "所选配音引擎初始化失败：$selectedTtsName",
-                            e,
-                            diagnosticContext = mapOf(
-                                "视频来源" to when {
-                                    videoId != null -> "YouTube"
-                                    remoteMediaUrl != null -> "网页视频/远程媒体"
-                                    localUri != null -> "本地视频"
-                                    else -> "本地或已导入字幕任务"
-                                },
-                                "配音引擎 ID" to selectedTts,
-                                "配音引擎名称" to selectedTtsName,
-                                "系统 TTS 合成模式" to getSharedPreferences("settings", MODE_PRIVATE).getString("system_tts_mode", "generated").orEmpty(),
-                                "Piper 模型 ID" to getSharedPreferences("settings", MODE_PRIVATE).getString("piper_model", "未选择").orEmpty(),
-                                "当前处理阶段" to failureState.phase.name,
-                                "当前处理进度" to failureState.progress.take(180),
-                                "字幕总数" to failureState.totalLines.toString(),
-                                "当前已发布字幕行数" to failureState.lines.size.toString(),
-                                "已准备配音行数" to failureState.preparedCount.toString(),
-                                "处理代数" to pipelineGeneration.toString(),
-                            ),
+            suspend fun assembleAndPlay() {
+                // ---- 4. 流装配 ----
+                if (!reuseMountedMedia) {
+                if (videoId != null) {
+                    val streamInfo = NewPipeRepo.streams(videoId)
+                    ensureCurrentSession(key, pipelineGeneration)
+                    val choices = buildYouTubeStreamChoices(streamInfo)
+                    val candidates = choices.sources
+                    val audioUrl = choices.audioUrl
+                    val defaultQuality = choices.defaultQuality
+                    qualitySources = candidates
+                    qualityAudioUrl = audioUrl
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            qualityOptions = candidates.map { q -> q.label },
                         )
-android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
-                        val reason = e.message ?: e.javaClass.simpleName
+                    }
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        val accepted = pm.setYouTubeQuality(
+                            videoUrl = defaultQuality.url,
+                            audioUrl = audioUrl,
+                            muxed = defaultQuality.muxed,
+                            title = meta.title,
+                            artist = meta.channel,
+                            artworkUrl = meta.thumbUrl,
+                        )
+                        if (!accepted) {
+                            throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
+                        }
+                        updateUiForSession(key, pipelineGeneration) { it.copy(selectedQuality = defaultQuality.label) }
+                    }
+                } else {
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        val sourceUri = remoteMediaUrl?.let(Uri::parse) ?: localUri
+                        ?: throw IllegalStateException("无可播放的视频地址")
+                    val requestHeaders = buildMap {
+                        remoteMediaReferrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                            ?.let { put("Referer", it) }
+                        remoteMediaCookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+                    }
+                    pm.setUriSource(
+                        sourceUri,
+                        meta.title,
+                        if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                        null,
+                        requestHeaders,
+                        userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                    )
+                    adaptiveQualitySourceReady = true
+                    refreshAdaptiveVideoQualityOptions()
+                    }
+                }
+                } // Keep the existing stream for a selective stage restart.
+
+                // Drain any retired speech engine and unload the native ASR model before
+                // allocating the selected TTS runtime. Reopening a history item can reuse ASR and
+                // translation checkpoints, so it may arrive here quickly while memory is still high.
+                awaitProcessingResumed(key, pipelineGeneration)
+                awaitRetiredDubbingEngines()
+                releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
+                awaitProcessingResumed(key, pipelineGeneration)
+
+                // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
+                dubbingStageEntered = true
+                if (finalLines.isNotEmpty()) {
+                    val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
+                        .getString("tts_engine", "edge") ?: "edge"
+                    val selectedTtsName = ttsDisplayName(selectedTts)
+                    updateUiForSession(key, pipelineGeneration) { it.copy(ttsEngineName = selectedTtsName) }
+
+                    val selectedEngineReady = when (selectedTts) {
+                        "system" -> true
+                        "web" -> true
+                        "edge" -> true
+                        "kokoro" -> kokoroRuntimeReady()
+                        "piper" -> piperModelReadyForChinese()
+                        else -> false
+                    }
+                    // Chinese source material still respects the explicitly selected TTS engine.
+                    // If the selected engine is unavailable, the common waiting state below blocks
+                    // playback instead of silently degrading to source-only narration.
+                    if (selectedEngineReady) {
+                        try {
+                            // Pass the saved selection explicitly so a settings change during parsing
+                            // cannot cause the readiness check and actual engine to disagree.
+                            val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
+                            try {
+                                ensureCurrentSession(key, pipelineGeneration)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            val d = try {
+                                DubbingEngine(this, key, scope, pm.dubbingBus)
+                            } catch (e: Exception) {
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            try {
+                                ensureCurrentSession(key, pipelineGeneration)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                retireDubbing(d)
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            registerDubbingFailureHandler(d, tts, key)
+                            try {
+                                d.attach(
+                            tts,
+                            finalLines,
+                            sourceLanguage = srcLang,
+                            forceRegenerateDubbing = forceFreshDubbingForThisRun,
+                        )
+                            } catch (e: Exception) {
+                                retireDubbing(d)
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            try {
+                                ensureCurrentSession(key, pipelineGeneration)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                retireDubbing(d)
+                                throw e
+                            }
+                            if (!publishDubbingEngine(d, key, pipelineGeneration)) {
+                                retireDubbing(d)
+                                throw kotlinx.coroutines.CancellationException(
+                                    "视频处理任务已被新的打开请求替代，取消旧的配音引擎初始化",
+                                )
+                            }
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(
+                                    ttsEngineName = tts.name,
+                                    dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
+                                    noModelHint = null,
+                                    waitingForTranscriptionEngine = false,
+                                    waitingForDubbingEngine = false,
+                                )
+                            }
+                            dubCollectJob = scope.launch {
+                                kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
+                                    .collect { (prefix, readyCount) ->
+                                        updateUiForCurrentDubbingEngine(d, key) {
+                                            it.copy(preparedUntil = prefix, preparedCount = readyCount)
+                                        }
+                                    }
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            val failureState = ui.value
+                            io.translatetube.local.util.AppLogStore.error(
+                                this@PlaybackService,
+                                "TTS",
+                                "所选配音引擎初始化失败：$selectedTtsName",
+                                e,
+                                diagnosticContext = mapOf(
+                                    "视频来源" to when {
+                                        videoId != null -> "YouTube"
+                                        remoteMediaUrl != null -> "网页视频/远程媒体"
+                                        localUri != null -> "本地视频"
+                                        else -> "本地或已导入字幕任务"
+                                    },
+                                    "配音引擎 ID" to selectedTts,
+                                    "配音引擎名称" to selectedTtsName,
+                                    "系统 TTS 合成模式" to getSharedPreferences("settings", MODE_PRIVATE).getString("system_tts_mode", "generated").orEmpty(),
+                                    "Piper 模型 ID" to getSharedPreferences("settings", MODE_PRIVATE).getString("piper_model", "未选择").orEmpty(),
+                                    "当前处理阶段" to failureState.phase.name,
+                                    "当前处理进度" to failureState.progress.take(180),
+                                    "字幕总数" to failureState.totalLines.toString(),
+                                    "当前已发布字幕行数" to failureState.lines.size.toString(),
+                                    "已准备配音行数" to failureState.preparedCount.toString(),
+                                    "处理代数" to pipelineGeneration.toString(),
+                                ),
+                            )
+    android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
+                            val reason = e.message ?: e.javaClass.simpleName
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(
+                                    ttsEngineName = selectedTtsName,
+                                    dubbingStatus = "${selectedTtsName} 初始化失败",
+                                    noModelHint = when (selectedTts) {
+                                        "system" -> "系统 TTS 初始化失败：$reason。当前严格使用手机系统 TTS，未切换本地模型。请检查手机的文字转语音服务、中文语音数据和可用音色，然后重试。"
+                                        "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
+                                        "edge" -> "微软 Edge TTS 初始化失败：$reason。请检查网络连接后重试。"
+                                        "web" -> "在线语音引擎初始化失败：$reason。请检查网络连接后重试。"
+                                        else -> "所选配音引擎「$selectedTtsName」初始化失败：$reason。请检查对应引擎配置后重试。"
+                                    },
+                                    waitingForTranscriptionEngine = false,
+                                    waitingForDubbingEngine = true,
+                                    // A constructor failure means there is no dubbing output to replace
+                                    // the source track; never keep the entire video muted.
+                                    muteOriginal = false,
+                                    error = null
+                                )
+                            }
+                            withContext(Dispatchers.Main) {
+                                if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
+                            }
+                        }
+                    } else {
+                        val message = when (selectedTts) {
+                            "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。应用不会自动切换到系统 TTS；下载完整的配音模型后再试。"
+                            "piper" -> {
+                                val modelId = getSharedPreferences("settings", MODE_PRIVATE)
+                                    .getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                                val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
+                                when {
+                                    definition == null -> "当前 Piper 模型编号无效，请在设置中重新选择中文 Piper 模型。"
+                                    !definition.supportsChineseOutput -> "当前视频的配音目标是中文，所选 Piper 模型为「${definition.langLabel}」，不能用于中文配音。请在设置中选择中文 Piper 模型。"
+                                    !io.translatetube.local.tts.PiperModels.modelReady(this, modelId) -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
+                                    else -> "Piper 中文配音初始化失败，请检查模型文件后重试。"
+                                }
+                            }
+                            else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro、Piper 或系统 TTS。应用不会擅自切换引擎。"
+                        }
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
-                                ttsEngineName = selectedTtsName,
-                                dubbingStatus = "${selectedTtsName} 初始化失败",
-                                noModelHint = when (selectedTts) {
-                                    "system" -> "系统 TTS 初始化失败：$reason。当前严格使用手机系统 TTS，未切换本地模型。请检查手机的文字转语音服务、中文语音数据和可用音色，然后重试。"
-                                    "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
-                                    "edge" -> "微软 Edge TTS 初始化失败：$reason。请检查网络连接后重试。"
-                                    "web" -> "在线语音引擎初始化失败：$reason。请检查网络连接后重试。"
-                                    else -> "所选配音引擎「$selectedTtsName」初始化失败：$reason。请检查对应引擎配置后重试。"
-                                },
+                                ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
+                                dubbingStatus = "${selectedTtsName} 尚未就绪",
+                                noModelHint = message,
                                 waitingForTranscriptionEngine = false,
                                 waitingForDubbingEngine = true,
-                                // A constructor failure means there is no dubbing output to replace
-                                // the source track; never keep the entire video muted.
+                                // The selected local model is unavailable, so no voice can be heard.
+                                // Keep the selected engine unchanged but return to audible source audio.
                                 muteOriginal = false,
-                                error = null
                             )
                         }
                         withContext(Dispatchers.Main) {
                             if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
                         }
                     }
-                } else {
-                    val message = when (selectedTts) {
-                        "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。应用不会自动切换到系统 TTS；下载完整的配音模型后再试。"
-                        "piper" -> {
-                            val modelId = getSharedPreferences("settings", MODE_PRIVATE)
-                                .getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
-                            val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
-                            when {
-                                definition == null -> "当前 Piper 模型编号无效，请在设置中重新选择中文 Piper 模型。"
-                                !definition.supportsChineseOutput -> "当前视频的配音目标是中文，所选 Piper 模型为「${definition.langLabel}」，不能用于中文配音。请在设置中选择中文 Piper 模型。"
-                                !io.translatetube.local.tts.PiperModels.modelReady(this, modelId) -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
-                                else -> "Piper 中文配音初始化失败，请检查模型文件后重试。"
-                            }
-                        }
-                        else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro、Piper 或系统 TTS。应用不会擅自切换引擎。"
-                    }
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(
-                            ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
-                            dubbingStatus = "${selectedTtsName} 尚未就绪",
-                            noModelHint = message,
-                            waitingForTranscriptionEngine = false,
-                            waitingForDubbingEngine = true,
-                            // The selected local model is unavailable, so no voice can be heard.
-                            // Keep the selected engine unchanged but return to audible source audio.
-                            muteOriginal = false,
-                        )
-                    }
-                    withContext(Dispatchers.Main) {
-                        if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
-                    }
                 }
-            }
-            // Generated-PCM engines finish the entire subtitle queue before playback starts.
-            // Direct System TTS has no pre-generated PCM queue, so it keeps a bounded first-cue wait.
-            val startupDubbing = dubbing
-            if (startupDubbing != null) {
-                val immediateMode = startupDubbing.usesImmediateTimelinePlayback
-                if (!immediateMode) {
-                    awaitDubbingSynthesisBeforePlayback(
-                        sessionKey = key,
-                        pipelineGeneration = pipelineGeneration,
-                        engine = startupDubbing,
-                        lines = finalLines,
-                    )
-                } else {
-                    val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
-                    val startupBuffer = DubbingStartupBufferPolicy.plan(
-                        lines = finalLines,
-                        spokenCueIndices = startupSpeechCueIndices,
-                        immediateMode = true,
-                        synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
-                        synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
-                    )
-                    if (startupBuffer.lineIndices.isNotEmpty()) {
-                        fun cueFinished(index: Int): Boolean =
-                            startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
+                // Generated-PCM engines finish the entire subtitle queue before playback starts.
+                // Direct System TTS has no pre-generated PCM queue, so it keeps a bounded first-cue wait.
+                val startupDubbing = dubbing
+                if (startupDubbing != null) {
+                    val immediateMode = startupDubbing.usesImmediateTimelinePlayback
+                    if (!immediateMode) {
+                        awaitDubbingSynthesisBeforePlayback(
+                            sessionKey = key,
+                            pipelineGeneration = pipelineGeneration,
+                            engine = startupDubbing,
+                            lines = finalLines,
+                        )
+                    } else {
+                        val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
+                        val startupBuffer = DubbingStartupBufferPolicy.plan(
+                            lines = finalLines,
+                            spokenCueIndices = startupSpeechCueIndices,
+                            immediateMode = true,
+                            synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
+                            synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
+                        )
+                        if (startupBuffer.lineIndices.isNotEmpty()) {
+                            fun cueFinished(index: Int): Boolean =
+                                startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
 
-                        val waitStartedNs = System.nanoTime()
-                        val deadlineNs = waitStartedNs +
-                            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
-                                // 用户要求视频立即开播：首句直播缓冲最多 1 秒（原 3 秒），
-                                // 未就绪的句先原声，TTS 引擎就绪后自然接上时间轴。
-                                startupBuffer.waitTimeoutMs.coerceAtMost(1_000L),
+                            val waitStartedNs = System.nanoTime()
+                            val deadlineNs = waitStartedNs +
+                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                                    // 用户要求视频立即开播：首句直播缓冲最多 1 秒（原 3 秒），
+                                    // 未就绪的句先原声，TTS 引擎就绪后自然接上时间轴。
+                                    startupBuffer.waitTimeoutMs.coerceAtMost(1_000L),
+                                )
+                            startupDubbing.prioritizeAround(
+                                startupBuffer.lineIndices.first(),
+                                lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
                             )
-                        startupDubbing.prioritizeAround(
-                            startupBuffer.lineIndices.first(),
-                            lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
-                        )
-                        while (true) {
-                            awaitProcessingResumed(key, pipelineGeneration)
-                            ensureCurrentSession(key, pipelineGeneration)
-                            val ready = startupBuffer.lineIndices
-                                .take(startupBuffer.minimumCueCount)
-                                .all(::cueFinished)
-                            if (ready || System.nanoTime() >= deadlineNs) break
-                            kotlinx.coroutines.delay(100L)
-                        }
-                        val firstSpeechReady = startupSpeechCueIndices.firstOrNull()?.let(::cueFinished) ?: true
-                        if (!firstSpeechReady) {
-                            updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "首句系统 TTS 尚未就绪，开始播放后会按时间轴朗读")
+                            while (true) {
+                                awaitProcessingResumed(key, pipelineGeneration)
+                                ensureCurrentSession(key, pipelineGeneration)
+                                val ready = startupBuffer.lineIndices
+                                    .take(startupBuffer.minimumCueCount)
+                                    .all(::cueFinished)
+                                if (ready || System.nanoTime() >= deadlineNs) break
+                                kotlinx.coroutines.delay(100L)
+                            }
+                            val firstSpeechReady = startupSpeechCueIndices.firstOrNull()?.let(::cueFinished) ?: true
+                            if (!firstSpeechReady) {
+                                updateUiForSession(key, pipelineGeneration) {
+                                    it.copy(progress = "首句系统 TTS 尚未就绪，开始播放后会按时间轴朗读")
+                                }
                             }
                         }
                     }
                 }
-            }
-            ensureCurrentSession(key, pipelineGeneration)
-            saveHistory(meta)
-            ensureCurrentSession(key, pipelineGeneration)
-            updateUiForSession(key, pipelineGeneration) {
-                it.copy(
-                    phase = Phase.READY,
-                    engineName = it.engineName.ifEmpty { "本地引擎" },
-                    progress = VideoProcessingFlowPolicy.readyProgress(
-                        waitingForTranscriptionEngine = it.waitingForTranscriptionEngine,
-                        waitingForDubbingEngine = it.waitingForDubbingEngine,
+                ensureCurrentSession(key, pipelineGeneration)
+                saveHistory(meta)
+                ensureCurrentSession(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.READY,
+                        engineName = it.engineName.ifEmpty { "本地引擎" },
+                        progress = VideoProcessingFlowPolicy.readyProgress(
+                            waitingForTranscriptionEngine = it.waitingForTranscriptionEngine,
+                            waitingForDubbingEngine = it.waitingForDubbingEngine,
+                        ),
+                    )
+                }
+                io.translatetube.local.util.AppLogStore.resolveIssue(
+                    context = this@PlaybackService,
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
+                    message = "视频处理流程已重新成功完成",
+                    diagnosticContext = mapOf(
+                        "恢复阶段" to Phase.READY.name,
+                        "恢复证据" to "本次视频处理管线完成并进入 READY 阶段",
+                        "字幕行数" to ui.value.lines.size.toString(),
                     ),
                 )
-            }
-            io.translatetube.local.util.AppLogStore.resolveIssue(
-                context = this@PlaybackService,
-                issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
-                message = "视频处理流程已重新成功完成",
-                diagnosticContext = mapOf(
-                    "恢复阶段" to Phase.READY.name,
-                    "恢复证据" to "本次视频处理管线完成并进入 READY 阶段",
-                    "字幕行数" to ui.value.lines.size.toString(),
-                ),
-            )
-            // A changed ASR/translation/TTS configuration requires a fully fresh speech timeline.
-            // Never restore the previous watch position for that run: play the newly synthesized
-            // Chinese dubbing from the beginning, consistently for YouTube, remote web media and local files.
-            val resumeSec = try {
-                db.videoDao().byKey(key)?.watchedSec ?: 0L
-            } catch (_: Exception) { 0L }
-            val totalMs = meta.durationSec * 1000
-            if (forceFreshDubbingForThisRun) {
-                // Do not leave the prior run's watch position as the history resume point after
-                // changing engines or importing an external translation. The new subtitle/voice
-                // timeline is about to start at zero.
-                try {
-                    db.videoDao().setWatched(key, 0L)
-                } catch (error: Exception) {
-                    io.translatetube.local.util.AppLogStore.warning(
-                        this@PlaybackService,
-                        "PlaybackFlow",
-                        "重新合成配音后清零历史续播位置失败",
-                        error,
-                        diagnosticContext = mapOf(
-                            "视频来源" to diagnosticMediaSourceType(ui.value),
-                            "本次要求起播位置 ms" to "0",
-                            "保留的旧续播位置秒" to resumeSec.toString(),
-                        ),
-                    )
-                }
-            }
-            if (
-                !forceFreshDubbingForThisRun &&
-                resumeSec > 10 &&
-                (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)
-            ) {
-                ensureCurrentSession(key, pipelineGeneration)
-                withContext(Dispatchers.Main) {
-                    ensureCurrentSession(key, pipelineGeneration)
-                    startPlaybackWithMountedDubbing(resumeSec * 1000) {
-                        ensureCurrentSession(key, pipelineGeneration)
+                // A changed ASR/translation/TTS configuration requires a fully fresh speech timeline.
+                // Never restore the previous watch position for that run: play the newly synthesized
+                // Chinese dubbing from the beginning, consistently for YouTube, remote web media and local files.
+                val resumeSec = try {
+                    db.videoDao().byKey(key)?.watchedSec ?: 0L
+                } catch (_: Exception) { 0L }
+                val totalMs = meta.durationSec * 1000
+                if (forceFreshDubbingForThisRun) {
+                    // Do not leave the prior run's watch position as the history resume point after
+                    // changing engines or importing an external translation. The new subtitle/voice
+                    // timeline is about to start at zero.
+                    try {
+                        db.videoDao().setWatched(key, 0L)
+                    } catch (error: Exception) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "重新合成配音后清零历史续播位置失败",
+                            error,
+                            diagnosticContext = mapOf(
+                                "视频来源" to diagnosticMediaSourceType(ui.value),
+                                "本次要求起播位置 ms" to "0",
+                                "保留的旧续播位置秒" to resumeSec.toString(),
+                            ),
+                        )
                     }
                 }
-            } else {
-                val startPositionMs = if (forceFreshDubbingForThisRun) 0L else null
-                if (forceFreshDubbingForThisRun) {
-                    io.translatetube.local.util.AppLogStore.info(
-                        this@PlaybackService,
-                        "PlaybackFlow",
-                        "引擎切换后的配音已重新生成，视频从开头起播",
-                        diagnosticContext = mapOf(
-                            "视频来源" to when {
-                                key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
-                                key.startsWith("remote:", ignoreCase = true) -> "网页视频/远程媒体"
-                                localUri != null || key.startsWith("local:", ignoreCase = true) -> "本地视频"
-                                else -> "其他视频源"
-                            },
-                            "本次起播位置" to "0 ms（视频开头）",
-                            "忽略的历史续播位置秒" to resumeSec.toString(),
-                            "强制重新合成配音" to "true",
-                        ),
-                    )
-                }
-                ensureCurrentSession(key, pipelineGeneration)
-                withContext(Dispatchers.Main) {
+                if (
+                    !forceFreshDubbingForThisRun &&
+                    resumeSec > 10 &&
+                    (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)
+                ) {
                     ensureCurrentSession(key, pipelineGeneration)
-                    startPlaybackWithMountedDubbing(startPositionMs) {
+                    withContext(Dispatchers.Main) {
                         ensureCurrentSession(key, pipelineGeneration)
+                        startPlaybackWithMountedDubbing(resumeSec * 1000) {
+                            ensureCurrentSession(key, pipelineGeneration)
+                        }
+                    }
+                } else {
+                    val startPositionMs = if (forceFreshDubbingForThisRun) 0L else null
+                    if (forceFreshDubbingForThisRun) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "引擎切换后的配音已重新生成，视频从开头起播",
+                            diagnosticContext = mapOf(
+                                "视频来源" to when {
+                                    key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                                    key.startsWith("remote:", ignoreCase = true) -> "网页视频/远程媒体"
+                                    localUri != null || key.startsWith("local:", ignoreCase = true) -> "本地视频"
+                                    else -> "其他视频源"
+                                },
+                                "本次起播位置" to "0 ms（视频开头）",
+                                "忽略的历史续播位置秒" to resumeSec.toString(),
+                                "强制重新合成配音" to "true",
+                            ),
+                        )
+                    }
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        startPlaybackWithMountedDubbing(startPositionMs) {
+                            ensureCurrentSession(key, pipelineGeneration)
+                        }
+                    }
+                    if (forceFreshDubbingForThisRun) {
+                        val actualStartPositionMs = runCatching { pm.position() }.getOrDefault(-1L)
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "重新合成后的起播位置检查完成",
+                            diagnosticContext = mapOf(
+                                "视频来源" to diagnosticMediaSourceType(ui.value),
+                                "请求起播位置 ms" to "0",
+                                "起播调用后播放器位置 ms" to actualStartPositionMs.toString(),
+                                "播放器播放意图" to runCatching { pm.player.playWhenReady.toString() }.getOrDefault("读取失败"),
+                                "播放器实际状态" to runCatching { pm.player.isPlaying.toString() }.getOrDefault("读取失败"),
+                                "是否重新合成配音" to "true",
+                            ),
+                        )
                     }
                 }
-                if (forceFreshDubbingForThisRun) {
-                    val actualStartPositionMs = runCatching { pm.position() }.getOrDefault(-1L)
-                    io.translatetube.local.util.AppLogStore.info(
-                        this@PlaybackService,
-                        "PlaybackFlow",
-                        "重新合成后的起播位置检查完成",
-                        diagnosticContext = mapOf(
-                            "视频来源" to diagnosticMediaSourceType(ui.value),
-                            "请求起播位置 ms" to "0",
-                            "起播调用后播放器位置 ms" to actualStartPositionMs.toString(),
-                            "播放器播放意图" to runCatching { pm.player.playWhenReady.toString() }.getOrDefault("读取失败"),
-                            "播放器实际状态" to runCatching { pm.player.isPlaying.toString() }.getOrDefault("读取失败"),
-                            "是否重新合成配音" to "true",
-                        ),
-                    )
-                }
             }
+
+            assembleAndPlay()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
