@@ -110,7 +110,7 @@ internal class GeminiTts(
         checkActive()
         val apiKey = resolvedApiKey
         if (apiKey.isBlank()) {
-            throw IllegalStateException("Gemini TTS 需要 API Key，请在「设置 → 配音设置」或「API 管理」中填入 Google Gemini API Key")
+            throw IllegalStateException("Gemini TTS 需要独立的配音 API Key，请在「设置 → 配音设置」中填写 Gemini 配音 API Key")
         }
         val spoken = TtsTextPolicy.sanitizeForSpeech(text)
         if (spoken.isBlank() || !TtsTextPolicy.hasSpeakableContent(spoken)) {
