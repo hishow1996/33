@@ -3161,12 +3161,7 @@ private fun PlaybackHintOverlay(
     val mainActionLabel = hint.actionLabel
     val secondaryAction = hint.secondaryAction
     val secondaryActionLabel = hint.secondaryActionLabel
-    val hintTextShadow = androidx.compose.ui.graphics.Shadow(
-        color = Color.Black.copy(alpha = 0.92f),
-        offset = Offset(0f, 1.5f),
-        blurRadius = 3f,
-    )
-    Column(
+Column(
         modifier = modifier.fillMaxWidth(0.94f),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -3186,7 +3181,7 @@ private fun PlaybackHintOverlay(
             Text(
                 text = hint.message,
                 color = Color.White,
-                style = MaterialTheme.typography.bodySmall.copy(shadow = hintTextShadow),
+                style = MaterialTheme.typography.bodySmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
@@ -3204,7 +3199,7 @@ private fun PlaybackHintOverlay(
                     Text(
                         mainActionLabel,
                         color = Color(0xFF9DC3FF),
-                        style = MaterialTheme.typography.labelLarge.copy(shadow = hintTextShadow),
+                        style = MaterialTheme.typography.labelLarge,
                     )
                 }
                 if (secondaryAction != null && !secondaryActionLabel.isNullOrBlank()) {
@@ -3215,7 +3210,7 @@ private fun PlaybackHintOverlay(
                         Text(
                             secondaryActionLabel,
                             color = Color.White,
-                            style = MaterialTheme.typography.labelLarge.copy(shadow = hintTextShadow),
+                            style = MaterialTheme.typography.labelLarge,
                         )
                     }
                 }
