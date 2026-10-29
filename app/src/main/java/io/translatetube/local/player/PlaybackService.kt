@@ -89,8 +89,9 @@ private object ReadyHistorySessionConfigStore {
     private const val ACTIVE_API_PROFILE_FINGERPRINT_KEY =
         TranslationConfigPreferencePolicy.ACTIVE_PROFILE_FINGERPRINT_KEY
 
-    fun isRelevantPreferenceKey(key: String): Boolean =
-        EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant(key) && (
+    fun isRelevantPreferenceKey(key: String, selectedTtsEngine: String): Boolean =
+        EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant(key) &&
+            DubbingConfigPreferencePolicy.isRelevantForActiveEngine(key, selectedTtsEngine) && (
             key == "active_api_id" ||
                 key == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
                 // ASR provider/model choices, including local and cloud implementations.
@@ -151,13 +152,14 @@ private object ReadyHistorySessionConfigStore {
             settings.getString("asr_provider", "local"),
         )
         val activeTranslationId = settings.getLong("active_api_id", -1L)
+        val activeTtsEngine = settings.getString("tts_engine", "edge") ?: "edge"
         val relevant = settings.all.entries
             .filter { entry ->
                 val isTranscriptionPreference =
                     belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION)
                 val isTranslationPreference =
                     belongsToDomain(entry.key, EngineConfigDomain.TRANSLATION)
-                isRelevantPreferenceKey(entry.key) &&
+                isRelevantPreferenceKey(entry.key, activeTtsEngine) &&
                     entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
                     (!isTranslationPreference ||
                         TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
@@ -277,9 +279,15 @@ private object ReadyHistorySessionConfigStore {
             settings.getString("asr_provider", "local"),
         )
         val activeTranslationId = settings.getLong("active_api_id", -1L)
+        val activeTtsEngine = settings.getString("tts_engine", "edge") ?: "edge"
         val entries = settings.all.entries
             .filter { entry ->
                 belongsToDomain(entry.key, domain) &&
+                    (domain != EngineConfigDomain.DUBBING ||
+                        DubbingConfigPreferencePolicy.isRelevantForActiveEngine(
+                            entry.key,
+                            activeTtsEngine,
+                        )) &&
                     (domain != EngineConfigDomain.TRANSCRIPTION ||
                         AsrConfigPreferencePolicy.isRelevantForActiveProvider(
                             entry.key,
