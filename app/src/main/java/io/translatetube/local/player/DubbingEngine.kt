@@ -1413,13 +1413,17 @@ class DubbingEngine(
                         scope.launch {
                             kotlinx.coroutines.delay(DubbingSynthesisFailureRecoveryPolicy.RETRY_DELAY_MS)
                             if (!isWorkerGenerationCurrent(workerCacheGeneration)) return@launch
-                            val enqueued = synchronized(pending) {
-                                if (!isWorkerGenerationCurrent(workerCacheGeneration) ||
-                                    pending.contains(idx) || readiness.isReady(idx)
-                                ) {
+                            // Serialize the generation check with insertion. Otherwise a config
+                            // change could clear the queue after this check but before offerLast().
+                            val enqueued = synchronized(cacheConfigurationLock) {
+                                if (!isWorkerGenerationCurrent(workerCacheGeneration)) {
                                     false
-                                } else {
-                                    pending.offerLast(idx)
+                                } else synchronized(pending) {
+                                    if (pending.contains(idx) || readiness.isReady(idx)) {
+                                        false
+                                    } else {
+                                        pending.offerLast(idx)
+                                    }
                                 }
                             }
                             if (enqueued) startSynthLoop()
@@ -1461,21 +1465,33 @@ class DubbingEngine(
                             android.util.Log.w("DubbingEngine", "Could not validate retry PCM cache", cacheError)
                         }
                     }
-                    synchronized(pending) {
-                        if (activeSynthesisIndex == idx) activeSynthesisIndex = -1
-                        val retryWasRequested = retryAfterActiveSynthesis.remove(idx)
-                        if (
-                            DubbingRetryQueuePolicy.shouldRequeueAfterActiveSynthesis(
-                                retryRequested = retryWasRequested,
-                                translatedCue = translatedCue,
-                                hasReusableAudio = hasReusableAudio,
-                                workerActive = isWorkerTaskCurrent(),
-                                released = released,
-                                fallbackRequested = fallbackRequested.get(),
-                                alreadyQueued = pending.contains(idx),
-                            )
-                        ) {
-                            pending.offerFirst(idx)
+                    // Keep the final active-cue retry decision atomic with a config change.
+                    // The replacement pass clears/rebuilds pending immediately after advancing
+                    // the generation, so a retired worker must not append behind that clear.
+                    synchronized(cacheConfigurationLock) {
+                        synchronized(pending) {
+                            if (activeSynthesisIndex == idx) activeSynthesisIndex = -1
+                            val retryWasRequested = retryAfterActiveSynthesis.remove(idx)
+                            val workerStillOwnsGeneration =
+                                DubbingSynthesisGenerationPolicy.canContinue(
+                                    expectedGeneration = workerCacheGeneration,
+                                    currentGeneration = cacheInitGeneration.get(),
+                                    taskActive = workerJob?.isActive == true,
+                                    engineReleased = released,
+                                )
+                            if (
+                                DubbingRetryQueuePolicy.shouldRequeueAfterActiveSynthesis(
+                                    retryRequested = retryWasRequested,
+                                    translatedCue = translatedCue,
+                                    hasReusableAudio = hasReusableAudio,
+                                    workerActive = workerStillOwnsGeneration,
+                                    released = released,
+                                    fallbackRequested = fallbackRequested.get(),
+                                    alreadyQueued = pending.contains(idx),
+                                )
+                            ) {
+                                pending.offerFirst(idx)
+                            }
                         }
                     }
                 }
