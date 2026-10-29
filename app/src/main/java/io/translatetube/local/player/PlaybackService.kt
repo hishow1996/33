@@ -9693,27 +9693,38 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
         }
-        engine.onPlaybackStarted = { index ->
-            // Cut the original track at speech start; waiting for the next player tick would
-            // briefly overlap two narrations on slower devices.
+        engine.onPlaybackStarted = { index, playbackGeneration ->
+            // Audio starts on a worker thread and this callback can reach Main after a seek,
+            // pause, quick toggle, or restart of the same subtitle row. Bind every side effect
+            // to the exact playAt generation that actually started.
             if (::pm.isInitialized) {
                 scope.launch(Dispatchers.Main) {
-                    if (
-                        ::pm.isInitialized &&
-                        isCurrentDubbingEngine(engine, sessionKey) &&
-                        ui.value.dubbingOn
-                    ) {
-                        runCatching { pm.originalVolume = 0f }
+                    val canApply = DubbingPlaybackStartedPolicy.shouldApply(
+                        dubbingEnabled = ui.value.dubbingOn,
+                        engineIsCurrent = isCurrentDubbingEngine(engine, sessionKey),
+                        startedLineStillCurrent = engine.hasStartedPlaybackFor(index, playbackGeneration),
+                    )
+                    if (::pm.isInitialized && canApply) {
+                        safelySetOriginalVolume(0f, "中文配音开始播放")
                     }
                 }
             }
-            // Highlight the actual spoken cue, not just the video-time subtitle. AudioTrack
-            // startup is asynchronous, so the first cue can otherwise miss its visual emphasis.
+            // The same generation check protects subtitle highlighting from a stale callback.
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
-                state.copy(
-                    dubbingStatus = "${engine.currentTtsName} 正在播放中文配音",
-                    activeDubbingLine = index,
-                )
+                if (
+                    DubbingPlaybackStartedPolicy.shouldApply(
+                        dubbingEnabled = state.dubbingOn,
+                        engineIsCurrent = true,
+                        startedLineStillCurrent = engine.hasStartedPlaybackFor(index, playbackGeneration),
+                    )
+                ) {
+                    state.copy(
+                        dubbingStatus = "${engine.currentTtsName} 正在播放中文配音",
+                        activeDubbingLine = index,
+                    )
+                } else {
+                    state
+                }
             }
         }
         engine.onFallbackRequested = { _, detail ->

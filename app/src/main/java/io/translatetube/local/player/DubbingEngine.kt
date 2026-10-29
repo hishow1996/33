@@ -149,7 +149,7 @@ class DubbingEngine(
     /** Diagnostic callback: the first successful PCM result for this session. */
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
-    @Volatile var onPlaybackStarted: ((index: Int) -> Unit)? = null
+    @Volatile var onPlaybackStarted: ((index: Int, playbackGeneration: Int) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
     private val firstSynthesisReported = AtomicBoolean(false)
     /** Emit first-output milestones once per attached subtitle session, not once per cue. */
@@ -3409,7 +3409,7 @@ class DubbingEngine(
                                         ),
                                     )
                                 }
-                                runCatching { onPlaybackStarted?.invoke(idx) }
+                                runCatching { onPlaybackStarted?.invoke(idx, generation) }
                                     .onFailure {
                                         android.util.Log.w(
                                             "DubbingEngine",
@@ -3524,7 +3524,7 @@ class DubbingEngine(
                             current
                         }
                         if (alreadyMounted) {
-                            runCatching { onPlaybackStarted?.invoke(idx) }
+                            runCatching { onPlaybackStarted?.invoke(idx, generation) }
                                 .onFailure {
                                     android.util.Log.w("DubbingEngine", "Could not publish dubbing playback state", it)
                                 }
@@ -3607,7 +3607,7 @@ class DubbingEngine(
                             ),
                         )
                     }
-                    runCatching { onPlaybackStarted?.invoke(idx) }
+                    runCatching { onPlaybackStarted?.invoke(idx, generation) }
                         .onFailure {
                             android.util.Log.w("DubbingEngine", "Could not publish dubbing playback state", it)
                         }
@@ -3917,8 +3917,16 @@ class DubbingEngine(
     fun currentLineIdx(): Int = _currentLine.value
 
     /** True only after this cue's AudioTrack actually started, not while PCM is merely ready. */
-    fun hasStartedPlaybackFor(idx: Int): Boolean =
-        !released && idx >= 0 && _currentLine.value == idx && playbackStartedLine == idx
+    fun hasStartedPlaybackFor(
+        idx: Int,
+        expectedPlaybackGeneration: Int? = null,
+    ): Boolean =
+        !released &&
+            idx >= 0 &&
+            _currentLine.value == idx &&
+            playbackStartedLine == idx &&
+            (expectedPlaybackGeneration == null ||
+                playbackGeneration.get() == expectedPlaybackGeneration)
 
     fun release() {
         // Publish the released state under the same lock used to install cache files. Any write
