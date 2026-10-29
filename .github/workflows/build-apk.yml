@@ -115,20 +115,6 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Generate debug signing keystore when missing
-        run: |
-          if [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
 
       # This is the final integration build. Run unit tests before creating installable APK artifacts.
       # Speech models are downloaded by the app on first use; do not bundle the 300MB+ ONNX models into the APK.
