@@ -54,14 +54,31 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         ?.firstOrNull()
         ?: File(dir, "model.onnx")
 
-    override val cacheKey: String
-        get() {
-            val signature = dir.listFiles().orEmpty()
-                .filter { it.isFile && (it.extension.equals("onnx", true) || it.name in setOf("tokens.txt", "lexicon.txt", "phone.fst", "date.fst", "number.fst")) }
-                .sortedBy { it.name }
-                .joinToString(",") { "${it.name}:${it.length()}:${it.lastModified()}" }
-            return "$name-$modelId-$signature"
+    private val modelCacheKey: String by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        // Preserve the historical identity for Chinese models. For other languages the active
+        // runtime also consumes espeak-ng-data, so its recursive content signature must be part
+        // of the cache key too; hashing is done once per engine, never for every cue lookup.
+        val signature = dir.listFiles().orEmpty()
+            .filter {
+                it.isFile && (
+                    it.extension.equals("onnx", true) ||
+                        it.name in setOf("tokens.txt", "lexicon.txt", "phone.fst", "date.fst", "number.fst")
+                    )
+            }
+            .sortedBy { it.name }
+            .joinToString(",") { "${it.name}:${it.length()}:${it.lastModified()}" }
+        val espeakSignature = if (definition.supportsChineseOutput) {
+            ""
+        } else {
+            "-espeak-${PiperTtsCacheIdentityPolicy.espeakDataSignature(File(dir, "espeak-ng-data"))}"
         }
+        "$name-$modelId-$signature$espeakSignature"
+    }
+
+    override val cacheKey: String get() = modelCacheKey
+    // PiperTts currently passes sid=0 to sherpa-onnx for every synthesis request.
+    // Speaker labels therefore do not alter its output and must not fragment the PCM cache.
+    override val speakerIdAffectsOutput: Boolean = false
 
     private val tts: OfflineTts
     private val guard: NativeResourceGuard
