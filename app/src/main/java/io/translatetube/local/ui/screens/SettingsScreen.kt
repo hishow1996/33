@@ -1648,22 +1648,6 @@ private fun EngineOption(
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.weight(1f).padding(start = 4.dp),
             )
-            AnimatedVisibility(
-                visible = selected,
-                enter = fadeIn(animationSpec = tween(150)) +
-                    expandHorizontally(animationSpec = tween(190, easing = FastOutSlowInEasing)),
-                exit = shrinkHorizontally(animationSpec = tween(130, easing = FastOutSlowInEasing)) +
-                    fadeOut(animationSpec = tween(100)),
-            ) {
-                Surface(color = Color(0xFFD6E5FF), shape = RoundedCornerShape(30.dp)) {
-                    Text(
-                        "当前使用",
-                        color = BrandBright,
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                    )
-                }
-            }
         }
     }
 }
