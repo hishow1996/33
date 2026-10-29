@@ -15,18 +15,27 @@ internal object YouTubeAsrSourceCacheIdentity {
         "$videoKey|source|youtube-asr-v$CACHE_VERSION|asr-$asrCacheIdentity"
 
     /**
-     * Mode-specific keys and the first mode-independent key were used by previous commits.
-     * Read them during migration, then write the stable CACHE_VERSION key after validation.
+     * Previous releases coupled ASR keys to the caption-source version. Query those versions only
+     * during migration; the active key above never depends on caption selection or its version.
+     * The current key version is excluded from the legacy list to prevent duplicate lookups.
      */
     fun legacyKeys(
         videoKey: String,
-        sourceCacheVersion: Int,
+        legacySourceCacheVersions: Iterable<Int>,
         subtitleModes: Iterable<String>,
         asrCacheIdentity: String,
     ): List<String> = buildList {
-        add("$videoKey|source|youtube-asr-v$sourceCacheVersion|asr-$asrCacheIdentity")
-        subtitleModes.distinct().forEach { mode ->
-            add("$videoKey|source|youtube-v$sourceCacheVersion-subtitle-$mode|asr-$asrCacheIdentity")
-        }
+        legacySourceCacheVersions.distinct()
+            .filter { it > 0 && it != CACHE_VERSION }
+            .forEach { version ->
+                add("$videoKey|source|youtube-asr-v$version|asr-$asrCacheIdentity")
+            }
+        legacySourceCacheVersions.distinct()
+            .filter { it > 0 }
+            .forEach { version ->
+                subtitleModes.distinct().forEach { mode ->
+                    add("$videoKey|source|youtube-v$version-subtitle-$mode|asr-$asrCacheIdentity")
+                }
+            }
     }.distinct()
 }
