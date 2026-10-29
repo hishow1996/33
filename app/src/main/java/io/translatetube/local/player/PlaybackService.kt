@@ -90,43 +90,45 @@ private object ReadyHistorySessionConfigStore {
         TranslationConfigPreferencePolicy.ACTIVE_PROFILE_FINGERPRINT_KEY
 
     fun isRelevantPreferenceKey(key: String): Boolean =
-        key == "active_api_id" ||
-            key == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
-            // ASR provider/model choices, including local and cloud implementations.
-            key.startsWith("asr_") ||
-            key.startsWith("local_asr_") ||
-            key.startsWith("cloud_asr_") ||
-            key.startsWith("online_asr_") ||
-            key.startsWith("whisper_") ||
-            key.startsWith("sensevoice_") ||
-            key.contains("transcription", ignoreCase = true) ||
-            key.contains("transcribe", ignoreCase = true) ||
-            key.contains("speech_recognition", ignoreCase = true) ||
-            // Online API profiles and built-in/local translation model choices.
-            key.startsWith("free_gemini_") ||
-            key.startsWith("free_deepseek_") ||
-            key.startsWith("mlkit_") ||
-            key.startsWith("opus_") ||
-            key.startsWith("small100_") ||
-            key.startsWith("single_pair_") ||
-            key.startsWith("local_translation_") ||
-            key.startsWith("online_translation_") ||
-            key.startsWith("cloud_translation_") ||
-            key.startsWith("local_translate_") ||
-            key.startsWith("online_translate_") ||
-            key.startsWith("cloud_translate_") ||
-            key.contains("translate", ignoreCase = true) ||
-            key.contains("translation", ignoreCase = true) ||
-            // Voice engine, provider, model and voice-selection settings.
-            key.startsWith("tts_") ||
-            key.startsWith("edge_tts_") ||
-            key.startsWith("web_tts_") ||
-            key.startsWith("online_tts_") ||
-            key.startsWith("cloud_tts_") ||
-            key.startsWith("local_tts_") ||
-            key.startsWith("piper_") ||
-            key.startsWith("kokoro_") ||
-            key.startsWith("system_tts_")
+        EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant(key) && (
+            key == "active_api_id" ||
+                key == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
+                // ASR provider/model choices, including local and cloud implementations.
+                key.startsWith("asr_") ||
+                key.startsWith("local_asr_") ||
+                key.startsWith("cloud_asr_") ||
+                key.startsWith("online_asr_") ||
+                key.startsWith("whisper_") ||
+                key.startsWith("sensevoice_") ||
+                key.contains("transcription", ignoreCase = true) ||
+                key.contains("transcribe", ignoreCase = true) ||
+                key.contains("speech_recognition", ignoreCase = true) ||
+                // Online API profiles and built-in/local translation model choices.
+                key.startsWith("free_gemini_") ||
+                key.startsWith("free_deepseek_") ||
+                key.startsWith("mlkit_") ||
+                key.startsWith("opus_") ||
+                key.startsWith("small100_") ||
+                key.startsWith("single_pair_") ||
+                key.startsWith("local_translation_") ||
+                key.startsWith("online_translation_") ||
+                key.startsWith("cloud_translation_") ||
+                key.startsWith("local_translate_") ||
+                key.startsWith("online_translate_") ||
+                key.startsWith("cloud_translate_") ||
+                key.contains("translate", ignoreCase = true) ||
+                key.contains("translation", ignoreCase = true) ||
+                // Voice engine, provider, model and voice-selection settings.
+                key.startsWith("tts_") ||
+                key.startsWith("edge_tts_") ||
+                key.startsWith("web_tts_") ||
+                key.startsWith("online_tts_") ||
+                key.startsWith("cloud_tts_") ||
+                key.startsWith("local_tts_") ||
+                key.startsWith("piper_") ||
+                key.startsWith("kokoro_") ||
+                key.startsWith("system_tts_")
+        )
 
     fun fingerprint(
         context: Context,
@@ -317,44 +319,47 @@ private object ReadyHistorySessionConfigStore {
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
-    private fun belongsToDomain(key: String, domain: EngineConfigDomain): Boolean = when (domain) {
-        EngineConfigDomain.TRANSCRIPTION ->
-            key.startsWith("asr_") ||
-                key.startsWith("local_asr_") ||
-                key.startsWith("cloud_asr_") ||
-                key.startsWith("online_asr_") ||
-                key.startsWith("whisper_") ||
-                key.startsWith("sensevoice_") ||
-                key.contains("transcription", ignoreCase = true) ||
-                key.contains("transcribe", ignoreCase = true) ||
-                key.contains("speech_recognition", ignoreCase = true)
-        EngineConfigDomain.TRANSLATION ->
-            key == "active_api_id" ||
-                key.startsWith("free_gemini_") ||
-                key.startsWith("free_deepseek_") ||
-                // Local model identity and manual/automatic language-mode options affect output.
-                key.startsWith("mlkit_") ||
-                key.startsWith("opus_") ||
-                key.startsWith("small100_") ||
-                key.startsWith("single_pair_") ||
-                key.startsWith("local_translation_") ||
-                key.startsWith("online_translation_") ||
-                key.startsWith("cloud_translation_") ||
-                key.startsWith("local_translate_") ||
-                key.startsWith("online_translate_") ||
-                key.startsWith("cloud_translate_") ||
-                key.contains("translate", ignoreCase = true) ||
-                key.contains("translation", ignoreCase = true)
-        EngineConfigDomain.DUBBING ->
-            key.startsWith("tts_") ||
-                key.startsWith("edge_tts_") ||
-                key.startsWith("web_tts_") ||
-                key.startsWith("online_tts_") ||
-                key.startsWith("cloud_tts_") ||
-                key.startsWith("local_tts_") ||
-                key.startsWith("piper_") ||
-                key.startsWith("kokoro_") ||
-                key.startsWith("system_tts_")
+    private fun belongsToDomain(key: String, domain: EngineConfigDomain): Boolean {
+        if (!EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant(key)) return false
+        return when (domain) {
+            EngineConfigDomain.TRANSCRIPTION ->
+                key.startsWith("asr_") ||
+                    key.startsWith("local_asr_") ||
+                    key.startsWith("cloud_asr_") ||
+                    key.startsWith("online_asr_") ||
+                    key.startsWith("whisper_") ||
+                    key.startsWith("sensevoice_") ||
+                    key.contains("transcription", ignoreCase = true) ||
+                    key.contains("transcribe", ignoreCase = true) ||
+                    key.contains("speech_recognition", ignoreCase = true)
+            EngineConfigDomain.TRANSLATION ->
+                key == "active_api_id" ||
+                    key.startsWith("free_gemini_") ||
+                    key.startsWith("free_deepseek_") ||
+                    // Local model identity and manual/automatic language-mode options affect output.
+                    key.startsWith("mlkit_") ||
+                    key.startsWith("opus_") ||
+                    key.startsWith("small100_") ||
+                    key.startsWith("single_pair_") ||
+                    key.startsWith("local_translation_") ||
+                    key.startsWith("online_translation_") ||
+                    key.startsWith("cloud_translation_") ||
+                    key.startsWith("local_translate_") ||
+                    key.startsWith("online_translate_") ||
+                    key.startsWith("cloud_translate_") ||
+                    key.contains("translate", ignoreCase = true) ||
+                    key.contains("translation", ignoreCase = true)
+            EngineConfigDomain.DUBBING ->
+                key.startsWith("tts_") ||
+                    key.startsWith("edge_tts_") ||
+                    key.startsWith("web_tts_") ||
+                    key.startsWith("online_tts_") ||
+                    key.startsWith("cloud_tts_") ||
+                    key.startsWith("local_tts_") ||
+                    key.startsWith("piper_") ||
+                    key.startsWith("kokoro_") ||
+                    key.startsWith("system_tts_")
+        }
     }
     fun save(
         context: Context,
