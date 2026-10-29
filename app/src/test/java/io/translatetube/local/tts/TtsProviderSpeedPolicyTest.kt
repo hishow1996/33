@@ -15,6 +15,15 @@ class TtsProviderSpeedPolicyTest {
     }
 
     @Test
+    fun webTtsPcmRatioTracksRequestedRateAndBoundsInvalidValues() {
+        assertEquals(2.0f, TtsProviderSpeedPolicy.webPostStretchRatio(0.5f), 0.001f)
+        assertEquals(1.0f, TtsProviderSpeedPolicy.webPostStretchRatio(1.0f), 0.001f)
+        assertEquals(0.5f, TtsProviderSpeedPolicy.webPostStretchRatio(2.0f), 0.001f)
+        assertEquals(1.0f, TtsProviderSpeedPolicy.webPostStretchRatio(Float.NaN), 0.001f)
+        assertEquals(2.0f, TtsProviderSpeedPolicy.webPostStretchRatio(0.1f), 0.001f)
+    }
+
+    @Test
     fun geminiPaceInstructionReflectsRequestedRate() {
         assertTrue(TtsProviderSpeedPolicy.geminiPaceInstruction(0.7f).contains("0.70"))
         assertTrue(TtsProviderSpeedPolicy.geminiPaceInstruction(1.5f).contains("1.50"))

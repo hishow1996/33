@@ -3,6 +3,7 @@ package io.translatetube.local.tts
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import io.translatetube.local.player.Wsola
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.nio.ByteOrder
@@ -22,7 +23,8 @@ import java.util.concurrent.TimeUnit
 internal class WebTts : TtsEngine {
 
     override val name: String = "在线语音"
-    override val cacheKey: String = "web-v1"
+    // Bump cache namespace because this engine now applies the requested rate with pitch-preserving WSOLA.
+    override val cacheKey: String = "web-v2"
     override val speakerIdAffectsOutput: Boolean = false
 
     private val client: OkHttpClient = OkHttpClient.Builder()
@@ -58,6 +60,10 @@ internal class WebTts : TtsEngine {
         if (rate != TARGET_RATE_HZ) {
             samples = resampleTo(samples, rate, TARGET_RATE_HZ)
             rate = TARGET_RATE_HZ
+        }
+        val stretchRatio = TtsProviderSpeedPolicy.webPostStretchRatio(speed)
+        if (stretchRatio != 1.0f) {
+            samples = Wsola.stretch(samples, stretchRatio)
         }
         return TtsAudio(samples, rate)
     }

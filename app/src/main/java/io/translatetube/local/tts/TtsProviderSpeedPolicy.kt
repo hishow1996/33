@@ -18,6 +18,9 @@ internal object TtsProviderSpeedPolicy {
         return (googleNativeSpeed(requested) / requested).coerceIn(0.01f, 1.0f)
     }
 
+    /** Online Youdao/Baidu endpoints do not accept the app's rate slider, so fit their PCM locally. */
+    fun webPostStretchRatio(speed: Float): Float = 1.0f / normalize(speed)
+
     fun geminiPaceInstruction(speed: Float): String {
         val requested = normalize(speed)
         val rate = String.format(Locale.US, "%.2f", requested)
