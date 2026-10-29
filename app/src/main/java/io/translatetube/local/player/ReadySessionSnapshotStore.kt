@@ -40,6 +40,7 @@ internal object ReadySessionSnapshotStore {
         context: Context,
         videoKey: String,
         identityKey: String = videoKey,
+        expectedProcessingFlow: ProcessingFlow? = null,
         fingerprintFor: (ignoreTranscription: Boolean) -> String,
     ): ReadyPlaybackSessionSnapshot? {
         if (!isSupportedVideoKey(videoKey)) return null
@@ -70,6 +71,11 @@ internal object ReadySessionSnapshotStore {
 
             val stateObject = root.optJSONObject("state") ?: continue
             val state = decodeState(videoKey, stateObject) ?: continue
+            if (!ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                    snapshotFlow = state.processingFlow,
+                    expectedFlow = expectedProcessingFlow,
+                )
+            ) continue
             val savedAt = root.optLong("savedAt", file.lastModified()).coerceAtLeast(0L)
             runCatching { file.setLastModified(System.currentTimeMillis()) }
             return ReadyPlaybackSessionSnapshot(
