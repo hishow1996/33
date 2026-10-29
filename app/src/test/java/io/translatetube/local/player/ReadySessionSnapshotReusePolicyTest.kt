@@ -209,6 +209,32 @@ class ReadySessionSnapshotReusePolicyTest {
     }
 
     @Test
+    fun legacyAutoSnapshotIsSafeOnlyWhenItIncludedTheAsrFingerprint() {
+        val compatibleFlows = setOf(
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ProcessingFlow.AUTO,
+            ProcessingFlow.IMPORTED_SUBTITLES,
+            ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+        )
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.AUTO,
+                snapshotIgnoresTranscription = false,
+                expectedFlows = compatibleFlows,
+                isYouTube = false,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
+                snapshotFlow = ProcessingFlow.AUTO,
+                snapshotIgnoresTranscription = true,
+                expectedFlows = compatibleFlows,
+                isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
     fun sourceFlowFilteringRejectsAWebSnapshotWhenOpeningLocalVideo() {
         assertFalse(
             ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
