@@ -3161,7 +3161,7 @@ private fun PlaybackHintOverlay(
     val mainActionLabel = hint.actionLabel
     val secondaryAction = hint.secondaryAction
     val secondaryActionLabel = hint.secondaryActionLabel
-Column(
+    Column(
         modifier = modifier.fillMaxWidth(0.94f),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
