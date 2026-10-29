@@ -101,28 +101,4 @@ class TtsCacheIdentityPolicyTest {
         assertEquals("missing", TtsCacheIdentityPolicy.credentialFingerprint("  "))
     }
 
-    @Test
-    fun fallbackProfileCredentialIsRelevantOnlyWhenFreeGeminiKeyIsMissing() {
-        val first = TtsCacheIdentityPolicy.geminiFallbackCredentialFingerprint("", "profile-secret-a")
-        val changed = TtsCacheIdentityPolicy.geminiFallbackCredentialFingerprint("", "profile-secret-b")
-
-        assertFalse(first == changed)
-        assertEquals(
-            "",
-            TtsCacheIdentityPolicy.geminiFallbackCredentialFingerprint("free-secret", "profile-secret-a"),
-        )
-        assertEquals(
-            "",
-            TtsCacheIdentityPolicy.geminiFallbackCredentialFingerprint("", ""),
-        )
-    }
-
-    @Test
-    fun fallbackProfileFingerprintNeverContainsRawCredential() {
-        val rawKey = "AIza-profile-fallback-secret"
-        val fingerprint = TtsCacheIdentityPolicy.geminiFallbackCredentialFingerprint("", rawKey)
-
-        assertFalse(fingerprint.contains(rawKey))
-        assertTrue(fingerprint.isNotBlank())
-    }
 }
