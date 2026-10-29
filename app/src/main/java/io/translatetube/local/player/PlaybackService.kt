@@ -163,7 +163,7 @@ private object ReadyHistorySessionConfigStore {
             settings.getString("asr_provider", "local"),
         )
         val activeTranslationId = settings.getLong("active_api_id", -1L)
-        val activeTtsEngine = settings.getString("tts_engine", "edge") ?: "edge"
+        val activeTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(settings.getString("tts_engine", "edge"))
         val relevant = settings.all.entries
             .filter { entry ->
                 val isTranscriptionPreference =
@@ -295,7 +295,7 @@ private object ReadyHistorySessionConfigStore {
             settings.getString("asr_provider", "local"),
         )
         val activeTranslationId = settings.getLong("active_api_id", -1L)
-        val activeTtsEngine = settings.getString("tts_engine", "edge") ?: "edge"
+        val activeTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(settings.getString("tts_engine", "edge"))
         val entries = settings.all.entries
             .filter { entry ->
                 belongsToDomain(entry.key, domain) &&
@@ -1150,8 +1150,9 @@ class PlaybackService : MediaSessionService() {
     )
 
     private fun isProcessingEnginePreferenceKey(key: String): Boolean {
-        val selectedTtsEngine = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("tts_engine", "edge") ?: "edge"
+        val selectedTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
             .getLong("active_api_id", -1L)
         return ReadyHistorySessionConfigStore.isRelevantPreferenceKey(
@@ -3329,7 +3330,7 @@ class PlaybackService : MediaSessionService() {
                     val compactProcessState = listOf(
                         "p=${after.phase.name}",
                         "src=$sourceKind",
-                        "tts=${statePrefs.getString("tts_engine", "unknown") ?: "unknown"}",
+                        "tts=" + DubbingConfigPreferencePolicy.normalizeEngineId(statePrefs.getString("tts_engine", "edge")),
                         "api=${statePrefs.getLong("active_api_id", -1L)}",
                         "tr=${after.translatedLineCount}/${after.totalLines}",
                         "dub=${after.preparedCount}",
@@ -3846,7 +3847,9 @@ class PlaybackService : MediaSessionService() {
             qualityAudioUrl = ""
         }
         lastLineIdx = Int.MIN_VALUE
-        val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge") ?: "edge"
+        val configuredTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
         // Match the session isolation used by the downloaded-audio cache. A signed URL can
         // serve different private media to different cookie sessions or page origins.
@@ -5484,8 +5487,9 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 )
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey, pipelineGeneration)
-                val selectedImportTts = getSharedPreferences("settings", MODE_PRIVATE)
-                    .getString("tts_engine", "edge") ?: "edge"
+                val selectedImportTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+                    getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+                )
                 val importEngineReady = when (selectedImportTts) {
                     "kokoro" -> kokoroRuntimeReady()
                     "piper" -> piperModelReadyForChinese()
@@ -8018,8 +8022,9 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
                 dubbingStageEntered = true
                 if (finalLines.isNotEmpty()) {
-                    val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-                        .getString("tts_engine", "edge") ?: "edge"
+                    val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+                        getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+                    )
                     val selectedTtsName = ttsDisplayName(selectedTts)
                     updateUiForSession(key, pipelineGeneration) { it.copy(ttsEngineName = selectedTtsName) }
 
@@ -10319,7 +10324,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
     private fun makeTts(engineId: String? = null): TtsEngine {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val selected = engineId ?: (prefs.getString("tts_engine", "edge") ?: "edge")
+        val selected = DubbingConfigPreferencePolicy.normalizeEngineId(
+            engineId ?: prefs.getString("tts_engine", "edge"),
+        )
         return when (selected) {
             "system" -> io.translatetube.local.tts.SystemTts(
                 this,
@@ -11180,8 +11187,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
      */
     fun autoAssignSpeakers() {
         if (speakerJob?.isActive == true) return
-        val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("tts_engine", "edge") ?: "edge"
+        val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
         val originalLines = ui.value.lines
         if (originalLines.isEmpty()) {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
@@ -11537,8 +11545,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // when the currently selected cue already has that tone.
         if (oldLines[index].speakerId == selectedVoice && !applyToPerson) return
 
-        val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("tts_engine", "edge") ?: "edge"
+        val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
         if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
             updateUiForSession(sessionKey) {
                 it.copy(error = "Kokoro 配音模型尚未就绪，当前人物音色未更改。")
@@ -11784,7 +11793,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     }
 
     private fun currentTtsEngineId(): String =
-        getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge") ?: "edge"
+        DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
 
     private fun assignmentStorageKey(identity: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
