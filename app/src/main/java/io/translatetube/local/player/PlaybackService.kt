@@ -3587,17 +3587,24 @@ class PlaybackService : MediaSessionService() {
                             ),
                         )
                     } else {
-                        val translationsComplete = isChineseLanguage(finishedState.sourceLang) ||
-                            finishedState.lines.none { needsSubtitleTranslation(it, finishedState.sourceLang) }
+                        val translationsComplete = ReadySessionCompletionPolicy.hasCompleteTranslations(
+                            sourceLanguageIsChinese = isChineseLanguage(finishedState.sourceLang),
+                            hasUntranslatedLines = finishedState.lines.any {
+                                needsSubtitleTranslation(it, finishedState.sourceLang)
+                            },
+                        )
                         if (
-                            finishedState.lines.isNotEmpty() &&
-                            finishedState.dubbingOn &&
-                            !finishedState.dubbingHasErrors &&
-                            !finishedState.waitingForTranscriptionEngine &&
-                            !finishedState.waitingForDubbingEngine &&
-                            translationsComplete
+                            ReadySessionCompletionPolicy.canRegisterSuccessfulResult(
+                                phase = finishedState.phase,
+                                lineCount = finishedState.lines.size,
+                                dubbingOn = finishedState.dubbingOn,
+                                dubbingHasErrors = finishedState.dubbingHasErrors,
+                                waitingForTranscriptionEngine = finishedState.waitingForTranscriptionEngine,
+                                waitingForDubbingEngine = finishedState.waitingForDubbingEngine,
+                                translationsComplete = translationsComplete,
+                            )
                         ) {
-                            ReadySessionSnapshotStore.save(
+                            val snapshotSaved = ReadySessionSnapshotStore.save(
                                 context = this@PlaybackService,
                                 videoKey = key,
                                 fingerprint = completedFingerprint,
@@ -3608,18 +3615,47 @@ class PlaybackService : MediaSessionService() {
                                 dubbingFingerprint = completedDomainFingerprints.dubbing,
                                 identityKey = readySnapshotIdentityKey,
                             )
+                            if (snapshotSaved) {
+                                completedReadySessionKey = key
+                                completedReadySessionIgnoresTranscription = ignoreTranscription
+                                completedReadySessionEngineFingerprint = completedFingerprint
+                                ReadyHistorySessionConfigStore.save(
+                                    this@PlaybackService,
+                                    key,
+                                    completedFingerprint,
+                                    ignoreTranscription,
+                                    completedDomainFingerprints,
+                                    finishedState.processingFlow,
+                                )
+                            } else {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    this@PlaybackService,
+                                    "PlaybackFlow",
+                                    "成功结果快照保存失败，未登记可恢复配置",
+                                    diagnosticContext = mapOf(
+                                        "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                                        "处理流程" to finishedState.processingFlow.name,
+                                        "字幕行数" to finishedState.lines.size.toString(),
+                                        "处理结果是否登记为可恢复成功" to "否",
+                                    ),
+                                )
+                            }
+                        } else {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "处理结果未完整，未登记成功快照",
+                                diagnosticContext = mapOf(
+                                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                                    "字幕行数" to finishedState.lines.size.toString(),
+                                    "译文是否完整" to translationsComplete.toString(),
+                                    "配音是否启用" to finishedState.dubbingOn.toString(),
+                                    "配音是否存在失败" to finishedState.dubbingHasErrors.toString(),
+                                    "处理结果是否登记为成功" to "否",
+                                    "恢复策略" to "保留已有成功快照，不将本次未完整结果登记为成功",
+                                ),
+                            )
                         }
-                        completedReadySessionKey = key
-                        completedReadySessionIgnoresTranscription = ignoreTranscription
-                        completedReadySessionEngineFingerprint = completedFingerprint
-                        ReadyHistorySessionConfigStore.save(
-                            this@PlaybackService,
-                            key,
-                            completedFingerprint,
-                            ignoreTranscription,
-                            completedDomainFingerprints,
-                            finishedState.processingFlow,
-                        )
                     }
                 }
             }
@@ -4560,21 +4596,23 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                             localMediaIdentityKey = this@PlaybackService.activeLocalMediaIdentityKey,
                         ),
                     )
-                    completedReadySessionKey = sessionKey
-                    completedReadySessionIgnoresTranscription = true
-                    completedReadySessionEngineFingerprint = completedFingerprint
-                    ReadyHistorySessionConfigStore.save(
-                        this@PlaybackService,
-                        sessionKey,
-                        completedFingerprint,
-                        true,
-                        completedDomainFingerprints,
-                        finishedState.processingFlow,
-                    )
+                    if (snapshotSaved) {
+                        completedReadySessionKey = sessionKey
+                        completedReadySessionIgnoresTranscription = true
+                        completedReadySessionEngineFingerprint = completedFingerprint
+                        ReadyHistorySessionConfigStore.save(
+                            this@PlaybackService,
+                            sessionKey,
+                            completedFingerprint,
+                            true,
+                            completedDomainFingerprints,
+                            finishedState.processingFlow,
+                        )
+                    }
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
                         "PlaybackFlow",
-                        "导入已翻译字幕的成功结果已保存",
+                        if (snapshotSaved) "导入已翻译字幕的成功结果已保存" else "导入已翻译字幕处理完成",
                         diagnosticContext = mapOf(
                             "处理流程" to finishedState.processingFlow.name,
                             "字幕行数" to finishedState.lines.size.toString(),
