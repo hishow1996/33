@@ -784,11 +784,11 @@ class PlayerManager(private val ctx: Context) {
     /** 原声增益：不能用 player.volume（会连混进同一路输出的配音一起静音），改为控制混流处理器。 */
     var originalVolume: Float
         get() = dubbingProcessor.originalGain
-        set(v) { dubbingProcessor.originalGain = v.coerceIn(0f, 1f) }
+        set(v) { dubbingProcessor.originalGain = DubbingGainPolicy.sanitizeGain(v) }
     /** 中文配音增益：与原声独立，不能使用 player.volume，因为两路会在同一 sink 混合。 */
     var dubbingVolume: Float
         get() = dubbingProcessor.dubbingGain
-        set(v) { dubbingProcessor.dubbingGain = v.coerceIn(0f, 1f) }
+        set(v) { dubbingProcessor.dubbingGain = DubbingGainPolicy.sanitizeGain(v) }
     fun duration(): Long = if (released) 0L else
         runCatching { player.duration.coerceAtLeast(0) }
             .onFailure { if (!released) android.util.Log.w("PlayerManager", "Unable to read duration", it) }
