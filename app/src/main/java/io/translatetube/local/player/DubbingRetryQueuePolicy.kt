@@ -21,8 +21,11 @@ internal object DubbingRetryQueuePolicy {
      * If playback already requested the active cue again, its failed attempt is provisional:
      * keep the row pending until the queued retry finishes instead of publishing a silent marker.
      */
-    fun shouldKeepCuePendingAfterFailure(retryRequestedWhileActive: Boolean): Boolean =
-        retryRequestedWhileActive
+    fun shouldKeepCuePendingAfterFailure(
+        retryRequestedWhileActive: Boolean,
+        deterministicFailure: Boolean = false,
+    ): Boolean =
+        retryRequestedWhileActive && !deterministicFailure
 
     /** Requeue only when the active-cue retry is still needed and the worker can accept it. */
     fun shouldRequeueAfterActiveSynthesis(
@@ -33,8 +36,10 @@ internal object DubbingRetryQueuePolicy {
         released: Boolean,
         fallbackRequested: Boolean,
         alreadyQueued: Boolean,
+        deterministicFailure: Boolean = false,
     ): Boolean =
         retryRequested &&
+            !deterministicFailure &&
             translatedCue &&
             !hasReusableAudio &&
             workerActive &&
