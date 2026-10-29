@@ -998,7 +998,11 @@ class PlaybackService : MediaSessionService() {
                 reuseMountedMediaForRestart = true,
                 forceRegenerateDubbing = true,
                 reuseMatchingDubbingCache = previousDomains?.let { previous ->
-                    EngineRestartStagePolicy.canReuseMatchingDubbingCache(previous, currentDomains)
+                    EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                        previous,
+                        currentDomains,
+                        processingFlow = state.processingFlow,
+                    )
                 } == true,
             )
             return true
@@ -1564,7 +1568,11 @@ class PlaybackService : MediaSessionService() {
                                 forceRegenerateDubbing = true,
                                 reuseMatchingDubbingCache = previousDomains?.let { previous ->
                                     currentDomains?.let { current ->
-                                        EngineRestartStagePolicy.canReuseMatchingDubbingCache(previous, current)
+                                        EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                                            previous,
+                                            current,
+                                            processingFlow = state.processingFlow,
+                                        )
                                     }
                                 } == true,
                                 forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,

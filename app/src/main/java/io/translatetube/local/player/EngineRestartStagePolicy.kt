@@ -76,17 +76,33 @@ internal object EngineRestartStagePolicy {
     }
 
     /**
-     * Existing synthesized PCM may be reused only when source text/timing and translation remain
-     * authoritative. A dubbing-only change has a different voice/engine cache identity; cache hits
-     * therefore mean the exact target voice/text/speed/window was already synthesized successfully.
+     * Existing PCM may be reused after a TTS change only when every upstream setting relevant to
+     * the active flow is unchanged. YouTube-caption and imported-subtitle flows do not depend on
+     * ASR; imported translated subtitles do not depend on the selected translation engine.
+     *
+     * The per-cue cache identity still verifies the actual translated text, speaker/voice, speed,
+     * and cue window. This policy only prevents an irrelevant upstream preference change from
+     * needlessly bypassing that exact-identity cache.
      */
     fun canReuseMatchingDubbingCache(
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,
-    ): Boolean =
-        previous.transcription == current.transcription &&
-            previous.translation == current.translation &&
-            previous.dubbing != current.dubbing
+        processingFlow: ProcessingFlow? = null,
+    ): Boolean {
+        if (previous.dubbing == current.dubbing) return false
+
+        // Unknown flow is handled conservatively for older callers and incomplete sessions.
+        val transcriptionMustMatch = processingFlow == null ||
+            !ignoresTranscriptionConfig(
+                processingFlow = processingFlow,
+                isYouTube = processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES,
+            )
+        val translationMustMatch =
+            processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+
+        return (!transcriptionMustMatch || previous.transcription == current.transcription) &&
+            (!translationMustMatch || previous.translation == current.translation)
+    }
 
     fun hasRelevantConfigChange(
         previous: EngineConfigFingerprints,

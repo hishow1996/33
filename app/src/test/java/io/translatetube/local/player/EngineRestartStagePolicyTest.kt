@@ -97,6 +97,75 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun cacheReuseChecksOnlyUpstreamSettingsUsedByTheActiveFlow() {
+        val base = EngineConfigFingerprints(
+            transcription = "asr-a",
+            translation = "translation-a",
+            dubbing = "tts-a",
+        )
+
+        // YouTube's selected caption track and user-imported original subtitles do not depend on ASR.
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                base,
+                base.copy(transcription = "asr-b", dubbing = "tts-b"),
+                processingFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+            ),
+        )
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                base,
+                base.copy(transcription = "asr-b", dubbing = "tts-b"),
+                processingFlow = ProcessingFlow.IMPORTED_SUBTITLES,
+            ),
+        )
+
+        // Imported translated subtitles are authoritative; changing the app translation engine
+        // must not force old, exactly matching PCM to be ignored.
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                base,
+                base.copy(
+                    transcription = "asr-b",
+                    translation = "translation-b",
+                    dubbing = "tts-b",
+                ),
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            ),
+        )
+
+        // For regular ASR/translation flows, changing a relevant upstream engine still forces fresh
+        // dubbing even when the selected TTS engine/voice changes at the same time.
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                base,
+                base.copy(transcription = "asr-b", dubbing = "tts-b"),
+                processingFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                base,
+                base.copy(translation = "translation-b", dubbing = "tts-b"),
+                processingFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                base,
+                base.copy(dubbing = "tts-a"),
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            ),
+        )
+    }
+
+    @Test
     fun switchingApiModelsRestartsAtTranslationForYoutubeWebAndLocalFlows() {
         val flows = listOf(
             ProcessingFlow.YOUTUBE_SUBTITLES,
