@@ -59,16 +59,19 @@ internal object ReadySessionSnapshotReusePolicy {
         isYouTube: Boolean,
     ): Boolean {
         // AUTO is the legacy value for snapshots saved before the source flow was persisted.
-        // Reject ignore-ASR AUTO snapshots even when the caller cannot constrain the source flow.
-        if (snapshotFlow == ProcessingFlow.AUTO && snapshotIgnoresTranscription) return false
-        if (expectedFlows == null) return true
-        if (snapshotFlow !in expectedFlows) return false
-        // It is safe to reuse a legacy AUTO snapshot only when it included the ASR fingerprint.
-        if (snapshotFlow == ProcessingFlow.AUTO) return true
+        // It is safe to reuse only when that snapshot included the ASR fingerprint.
+        if (snapshotFlow == ProcessingFlow.AUTO) {
+            return !snapshotIgnoresTranscription &&
+                (expectedFlows == null || snapshotFlow in expectedFlows)
+        }
+        // Validate the snapshot's own flow marker even for generic history lookup. Otherwise an
+        // ASR-based snapshot incorrectly marked as "ignore transcription" could bypass config checks.
         val expectedIgnoreTranscription = EngineRestartStagePolicy.ignoresTranscriptionConfig(
             processingFlow = snapshotFlow,
             isYouTube = isYouTube,
         )
-        return snapshotIgnoresTranscription == expectedIgnoreTranscription
+        if (snapshotIgnoresTranscription != expectedIgnoreTranscription) return false
+        if (expectedFlows != null && snapshotFlow !in expectedFlows) return false
+        return true
     }
 }
