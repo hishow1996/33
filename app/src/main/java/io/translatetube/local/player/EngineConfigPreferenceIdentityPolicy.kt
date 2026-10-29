@@ -22,8 +22,8 @@ internal object EngineConfigPreferenceIdentityPolicy {
     ): Boolean {
         if (!isFingerprintRelevant(key)) return false
         if (key == "free_gemini_key") {
-            return TranslationConfigPreferencePolicy.isRelevantForActiveEngine(key, activeTranslationId) ||
-                DubbingConfigPreferencePolicy.isRelevantForActiveEngine(key, selectedTtsEngine)
+            // The free Gemini key is translation-only now; Gemini TTS uses gemini_tts_api_key.
+            return TranslationConfigPreferencePolicy.isRelevantForActiveEngine(key, activeTranslationId)
         }
         return DubbingConfigPreferencePolicy.isRelevantForActiveEngine(key, selectedTtsEngine)
     }
