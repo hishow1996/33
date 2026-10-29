@@ -9705,7 +9705,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         startedLineStillCurrent = engine.hasStartedPlaybackFor(index, playbackGeneration),
                     )
                     if (::pm.isInitialized && canApply) {
-                        safelySetOriginalVolume(0f, "中文配音开始播放")
+                        syncOriginalVolumeWithDubbing(engine, ui.value, "中文配音开始播放")
                     }
                 }
             }
