@@ -34,4 +34,34 @@ class ReadySessionSnapshotReusePolicyTest {
             ),
         )
     }
+    @Test
+    fun switchingAwayAndBackRestoresAnExactHistoricalSuccess() {
+        assertTrue(
+            ReadySessionSnapshotReusePolicy.canRestoreMatchingHistoricalSnapshot(
+                matchingSuccessfulSnapshot = true,
+                forceYouTubeSubtitleRefresh = false,
+            ),
+        )
+    }
+
+    @Test
+    fun exactHistoricalSnapshotCannotSkipExplicitYouTubeCaptionRediscovery() {
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.canRestoreMatchingHistoricalSnapshot(
+                matchingSuccessfulSnapshot = true,
+                forceYouTubeSubtitleRefresh = true,
+            ),
+        )
+    }
+
+    @Test
+    fun missingHistoricalSnapshotFallsBackToStageSpecificRestart() {
+        assertFalse(
+            ReadySessionSnapshotReusePolicy.canRestoreMatchingHistoricalSnapshot(
+                matchingSuccessfulSnapshot = false,
+                forceYouTubeSubtitleRefresh = false,
+            ),
+        )
+    }
+
 }
