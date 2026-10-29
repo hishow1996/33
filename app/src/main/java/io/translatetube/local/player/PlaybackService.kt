@@ -132,7 +132,6 @@ private object ReadyHistorySessionConfigStore {
                 // Voice engine, provider, model and voice-selection settings.
                 key.startsWith("tts_") ||
                 key.startsWith("edge_tts_") ||
-                key.startsWith("web_tts_") ||
                 key.startsWith("google_tts_") ||
                 key.startsWith("gemini_tts_") ||
                 key.startsWith("online_tts_") ||
@@ -2186,7 +2185,7 @@ class PlaybackService : MediaSessionService() {
         if (!firstCueHasAudio) {
             val terminalFailure = engine.isSilent(firstAudibleCue)
             val hint = if (terminalFailure) {
-                "所选配音引擎未能生成首句中文配音，视频已暂停。请检查在线语音网络/服务或本地模型文件后，重新处理此视频。"
+                "所选配音引擎未能生成首句中文配音，视频已暂停。请检查引擎连接或模型文件后重新处理此视频。"
             } else {
                 "等待首句中文配音超过启动等待时间，视频保持暂停。请检查网络连接、语音服务或模型状态后重新处理。"
             }
