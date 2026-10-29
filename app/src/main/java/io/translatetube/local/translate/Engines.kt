@@ -1278,6 +1278,7 @@ class OpenAiCompatEngine(
             append("Include every input index exactly once; never return progress/status text. If unsure, keep the original line after the separator. ")
             append("Translate as coherent dialogue: keep pronouns, references and tone consistent across lines. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
+            append(TranslationPromptPolicy.spokenSubtitleRules(tgt))
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
             append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
         }
@@ -1393,6 +1394,7 @@ class GeminiEngine(
             append("Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. ")
             append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines, ")
             append("and render the same person, place or recurring term identically every time it appears. ")
+            append(TranslationPromptPolicy.spokenSubtitleRules(tgt))
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
         }
         val user = buildContextUserPrompt(context, numbered)

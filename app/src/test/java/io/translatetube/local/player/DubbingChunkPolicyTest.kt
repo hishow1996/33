@@ -183,4 +183,15 @@ class DubbingChunkContinuationTest {
         assertEquals("这是一个比较长的片段，后面继续", DubbingChunkPolicy.joinContinuation("这是一个比较长的片段", "后面继续"))
         assertEquals("我们去了商店", DubbingChunkPolicy.joinContinuation("我们去了", "商店"))
     }
+
+    @Test
+    fun aFullStopInsideAContinuedSentenceIsDropped() {
+        val lines = listOf(
+            line(0, 0, 1_500, "so we went to the", "我们去了。"),
+            line(1, 1_500, 3_000, "store yesterday.", "昨天的商店。"),
+        )
+        assertEquals("我们去了昨天的商店。", DubbingChunkPolicy.buildChunks(lines).single().text)
+        assertEquals("你好！", DubbingChunkPolicy.dropClosingFullStop("你好！"))
+        assertEquals("你好", DubbingChunkPolicy.dropClosingFullStop("你好。"))
+    }
 }

@@ -93,7 +93,11 @@ internal object DubbingChunkPolicy {
             val run = continuationRun(lines, pauses, i, punctuated)
             if (run.size > 1) {
                 var mergedText = zhOf(lines[run.first()])
-                for (k in 1 until run.size) mergedText = joinContinuation(mergedText, zhOf(lines[run[k]]))
+                for (k in 1 until run.size) {
+                    // The sentence goes on in the next cue, so a full stop closing this piece would
+                    // make the voice finish the sentence there and restart.
+                    mergedText = joinContinuation(dropClosingFullStop(mergedText), zhOf(lines[run[k]]))
+                }
                 chunks += Chunk(i, run, mergedText, line.startMs, lines[run.last()].endMs)
                 i += run.size
                 continue
@@ -204,6 +208,12 @@ internal object DubbingChunkPolicy {
             current = next
         }
         return run
+    }
+
+    /** Remove a trailing 。 (or .) that closes a fragment whose sentence continues. */
+    internal fun dropClosingFullStop(text: String): String {
+        val trimmed = text.trimEnd()
+        return if (trimmed.endsWith('。') || trimmed.endsWith('.')) trimmed.dropLast(1) else text
     }
 
     /** 接续同一句：前一截很短或已有标点就直接相连，否则补逗号给一个自然的换气点。 */
