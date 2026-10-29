@@ -1292,7 +1292,12 @@ class PlaybackService : MediaSessionService() {
                                     videoKey = sessionKey,
                                 )
                             }
-                        if (matchingSuccessfulSnapshot != null && !forceYouTubeSubtitleRefresh) {
+                        if (
+                            ReadySessionSnapshotReusePolicy.canRestoreMatchingHistoricalSnapshot(
+                                matchingSuccessfulSnapshot = matchingSuccessfulSnapshot != null,
+                                forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                            )
+                        ) {
                             val restoredSuccessfulState = matchingSuccessfulSnapshot.state.copy(
                                 dubbingOn = true,
                                 muteOriginal = state.originalVolume <= 0f,
