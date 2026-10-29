@@ -87,10 +87,21 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
     }
     var geminiTtsVoiceMenuExpanded by remember { mutableStateOf(false) }
     var geminiTtsApiKey by remember {
-        mutableStateOf(Crypto.decrypt(prefs.getString("free_gemini_key", "").orEmpty()))
+        mutableStateOf(Crypto.decrypt(prefs.getString(io.translatetube.local.tts.GeminiTtsVoices.PREF_API_KEY, "").orEmpty()))
     }
     var geminiTtsConfigExpanded by remember { mutableStateOf(false) }
     var geminiTtsSavedMessage by remember { mutableStateOf<String?>(null) }
+    DisposableEffect(prefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == io.translatetube.local.tts.GeminiTtsVoices.PREF_API_KEY) {
+                geminiTtsApiKey = Crypto.decrypt(
+                    prefs.getString(io.translatetube.local.tts.GeminiTtsVoices.PREF_API_KEY, "").orEmpty(),
+                )
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     var systemTtsMode by remember { mutableStateOf(prefs.getString("system_tts_mode", "generated") ?: "generated") }
     var systemTtsVoiceName by remember { mutableStateOf(prefs.getString("system_tts_voice_name", "").orEmpty()) }
     var systemTtsVoiceCatalog by remember {
@@ -818,9 +829,9 @@ Section(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("Gemini API Key", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Text("Gemini 配音 API Key", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            if (geminiTtsApiKey.isNotBlank()) "已配置（与 Gemini 翻译通用）" else "未配置 API Key",
+                            if (geminiTtsApiKey.isNotBlank()) "已配置" else "未配置",
                             color = if (geminiTtsApiKey.isNotBlank()) BrandBright else SubText,
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -838,8 +849,8 @@ Section(
                         },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        label = { Text("Gemini API Key") },
-                        placeholder = { Text("粘贴 AIza 开头的 Gemini API Key") },
+                        label = { Text("Gemini 配音 API Key") },
+                        placeholder = { Text("填入独立的 Gemini 配音 API Key") },
                         visualTransformation = PasswordVisualTransformation(),
                     )
                     Row(
@@ -859,7 +870,7 @@ Section(
                             onClick = {
                                 val trimmed = geminiTtsApiKey.trim()
                                 prefs.edit()
-                                    .putString("free_gemini_key", if (trimmed.isEmpty()) "" else Crypto.encrypt(trimmed))
+                                    .putString(io.translatetube.local.tts.GeminiTtsVoices.PREF_API_KEY, if (trimmed.isEmpty()) "" else Crypto.encrypt(trimmed))
                                     .apply()
                                 geminiTtsSavedMessage = "已保存"
                                 geminiTtsConfigExpanded = false
