@@ -7430,7 +7430,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         if (externalTranslatedLines != null) {
                             translatedLines = externalTranslatedLines
                             restartPlaybackFromBeginningForThisRun = true
-                        forceFreshPcmSynthesisForThisRun = true
+                            forceFreshPcmSynthesisForThisRun = true
                         } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                             val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
                             if (needsTranslation) {
