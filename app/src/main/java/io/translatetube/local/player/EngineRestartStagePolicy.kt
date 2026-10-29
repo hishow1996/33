@@ -61,8 +61,17 @@ internal object EngineRestartStagePolicy {
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,
     ): Boolean {
-        if (!canResumeFromSourcePreparation(phase, processingFlow)) return false
-        if (previous.transcription != current.transcription) return false
+        // YouTube caption discovery is also source preparation. A TTS/translation change must not
+        // cancel it before captions are loaded. Explicit subtitle-mode refresh bypasses this policy
+        // in PlaybackService, so the user's request to choose another caption track is still honored.
+        val canKeepCurrentSourceWork = canResumeFromSourcePreparation(phase, processingFlow) ||
+            (phase == Phase.PARSING && processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES)
+        if (!canKeepCurrentSourceWork) return false
+        val sourceUsesTranscription = !ignoresTranscriptionConfig(
+            processingFlow = processingFlow,
+            isYouTube = processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES,
+        )
+        if (sourceUsesTranscription && previous.transcription != current.transcription) return false
         return previous.translation != current.translation || previous.dubbing != current.dubbing
     }
 

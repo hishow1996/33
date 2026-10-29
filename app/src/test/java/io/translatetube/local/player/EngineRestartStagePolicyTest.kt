@@ -261,6 +261,53 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun switchingToGoogleOrGeminiTtsResumesAtDubbingAcrossAllSourceFlows() {
+        val flows = listOf(
+            ProcessingFlow.YOUTUBE_SUBTITLES,
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ProcessingFlow.IMPORTED_SUBTITLES,
+            ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+        )
+        val targetTtsFingerprints = listOf(
+            "google-tts-v2",
+            "gemini-tts-v3-kore-credential-b",
+        )
+
+        for (flow in flows) {
+            val ignoreTranscription = flow == ProcessingFlow.YOUTUBE_SUBTITLES ||
+                flow == ProcessingFlow.IMPORTED_SUBTITLES ||
+                flow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+            for (targetTts in targetTtsFingerprints) {
+                val current = changed(dubbing = targetTts)
+                assertEquals(
+                    "TTS change must be recognized for flow=$flow target=$targetTts",
+                    true,
+                    EngineRestartStagePolicy.hasRelevantConfigChange(
+                        previous = oldConfig,
+                        current = current,
+                        processingFlow = flow,
+                        ignoreTranscription = ignoreTranscription,
+                    ),
+                )
+                assertEquals(
+                    "TTS change must resume at stage 5 for flow=$flow target=$targetTts",
+                    EngineRestartStage.DUBBING,
+                    EngineRestartStagePolicy.choose(
+                        previous = oldConfig,
+                        current = current,
+                        processingFlow = flow,
+                        ignoreTranscription = ignoreTranscription,
+                        hasLines = true,
+                        sourceLanguageIsChinese = false,
+                    ),
+                )
+            }
+        }
+    }
+
+    @Test
     fun ttsOnlyChangeResumesAtDubbingWhenSourceRowsExist() {
         assertEquals(
             EngineRestartStage.DUBBING,
@@ -500,12 +547,21 @@ class EngineRestartStagePolicyTest {
             ),
         )
         assertEquals(
-            false,
+            true,
             EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
                 Phase.PARSING,
                 ProcessingFlow.YOUTUBE_SUBTITLES,
                 oldConfig,
                 changed(translation = "translation-model-b"),
+            ),
+        )
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.PARSING,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+                oldConfig,
+                changed(transcription = "asr-b", dubbing = "google-tts-v2"),
             ),
         )
         assertEquals(
