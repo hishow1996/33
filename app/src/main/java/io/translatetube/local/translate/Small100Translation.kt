@@ -377,7 +377,7 @@ object Small100ModelManager {
         val downloaded = (bytesBefore + currentBytes).coerceAtMost(TOTAL_BYTES)
         mutableState.value = Small100DownloadState(
             status = Small100Status.DOWNLOADING,
-            progress = (downloaded * 100L / TOTAL_BYTES).toInt().coerceIn(0, 100),
+            progress = (downloaded * 100L / TOTAL_BYTES).toInt().coerceIn(0, 99),
             currentFile = spec.name, fileIndex = index + 1, fileCount = files.size,
             downloadedBytes = downloaded, totalBytes = TOTAL_BYTES,
         )
