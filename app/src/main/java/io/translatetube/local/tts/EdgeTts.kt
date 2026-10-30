@@ -413,7 +413,7 @@ internal class EdgeTts : TtsEngine {
         .replace("\"", "&quot;").replace("'", "&apos;")
         .filter { it == '\n' || it == '\r' || it == '\t' || it.code >= 0x20 }
 
-    private companion object {
+    internal companion object {
         const val TARGET_RATE_HZ = 24_000
         const val MAX_REQUEST_BYTES = 3_500
         const val SOFT_REQUEST_BYTES = 1_700
@@ -430,7 +430,7 @@ internal class EdgeTts : TtsEngine {
         const val EDGE_ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
         const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.3650.75"
-        val VOICES = arrayOf(
+        internal val VOICES = arrayOf(
             "zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural",
             "zh-CN-YunyangNeural", "zh-CN-XiaohanNeural", "zh-CN-XiaomengNeural",
         )
