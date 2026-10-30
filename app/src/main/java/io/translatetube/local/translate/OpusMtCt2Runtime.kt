@@ -232,7 +232,7 @@ internal object OpusMtCt2Runtime {
                 dir.absolutePath,
                 File(dir, "source.spm").absolutePath,
                 File(dir, "target.spm").absolutePath,
-                2,
+                inferenceThreads,
             )
         } catch (error: Throwable) {
             val detail = if (error is OutOfMemoryError) {
