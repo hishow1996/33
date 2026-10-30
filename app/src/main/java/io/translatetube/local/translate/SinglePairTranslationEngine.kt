@@ -24,8 +24,14 @@ object SinglePairModelLanguagePolicy {
  */
 class SinglePairTranslationEngine(private val context: Context) : TranslationEngine {
     private val appContext = context.applicationContext
+    private val small100Engine = Small100Engine(appContext)
     override val id: String = "single-pair-direct-small100"
     override val displayName: String = "单语言对直译模型"
+
+    override fun close() {
+        // This engine shares SMaLL-100's process-wide runtime and must release it with the task.
+        small100Engine.close()
+    }
 
     /**
      * Resolve and validate the subtitle language before playback begins translation batching.
@@ -99,8 +105,8 @@ class SinglePairTranslationEngine(private val context: Context) : TranslationEng
         )
 
         return try {
-            // Small100Engine calls the single multilingual model directly for each subtitle line.
-            val chineseLines = Small100Engine(appContext).translate(lines, source, tgtLang)
+            // Reuse the same SMaLL-100 engine wrapper and process-wide runtime across batches.
+            val chineseLines = small100Engine.translate(lines, source, tgtLang)
             if (chineseLines.size != lines.size) {
                 throw IllegalStateException("直译模型返回的字幕条数与原文不一致。")
             }
