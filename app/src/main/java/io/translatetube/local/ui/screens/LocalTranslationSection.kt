@@ -818,7 +818,7 @@ internal fun LocalTranslationSection(
                                     Text(
                                         when (state.status) {
                                             OpusMtStatus.READY -> "已下载并验证"
-                                            OpusMtStatus.DOWNLOADING -> "下载中 ${state.progress}%"
+                                            OpusMtStatus.DOWNLOADING -> "下载中 ${progressDisplay.progress}%"
                                             OpusMtStatus.VERIFYING -> "正在验证模型"
                                             OpusMtStatus.PAUSED -> state.error.ifBlank {
                                                 if (state.hasCompleteFiles) "模型文件已下载，等待重新验证" else "下载已暂停"
