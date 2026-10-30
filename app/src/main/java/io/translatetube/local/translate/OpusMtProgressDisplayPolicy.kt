@@ -18,7 +18,7 @@ internal object OpusMtProgressDisplayPolicy {
             ?: -1L
         val complete = state.status == OpusMtStatus.READY ||
             state.status == OpusMtStatus.VERIFYING ||
-            state.hasCompleteFiles
+            (totalBytes > 0L && state.downloadedBytes >= totalBytes)
         val downloadedBytes = when {
             complete && totalBytes > 0L -> totalBytes
             totalBytes > 0L -> state.downloadedBytes.coerceIn(0L, totalBytes)
