@@ -49,7 +49,11 @@ data class Small100DownloadState(
     val downloadedBytes: Long = 0L,
     val totalBytes: Long = Small100ModelManager.TOTAL_BYTES,
     val error: String = "",
-)
+) {
+    /** True when every expected model byte is on disk, even if runtime validation is pending. */
+    val hasCompleteFiles: Boolean
+        get() = totalBytes > 0L && downloadedBytes >= totalBytes
+}
 
 /** The exact 100 language codes included by the pinned SMaLL-100 checkpoint. */
 object Small100LanguagePolicy {
@@ -110,7 +114,7 @@ object Small100LanguagePolicy {
 /** Range-resumable downloader for the pinned, int8 SMaLL-100 ONNX checkpoint. */
 object Small100ModelManager {
     private const val MODEL_REVISION = "5c2c73ac70bee9c58f5a7ac5e84a36bee25db8ee"
-    private const val VALIDATION_SCHEMA = 1
+    private const val VALIDATION_SCHEMA = 2
 
     private data class ModelFile(
         val name: String,
@@ -224,7 +228,14 @@ object Small100ModelManager {
         val app = context.applicationContext
         val directory = modelDirectory(app)
         if (isReady(app)) {
-            refresh(app)
+            mutableState.value = Small100DownloadState(
+                status = Small100Status.READY,
+                progress = 100,
+                fileIndex = files.size,
+                fileCount = files.size,
+                downloadedBytes = TOTAL_BYTES,
+                totalBytes = TOTAL_BYTES,
+            )
             return@withLock
         }
         if (!directory.isDirectory && !directory.mkdirs()) throw IOException("无法创建 SMaLL-100 模型目录")
@@ -361,12 +372,33 @@ object Small100ModelManager {
                         throw IOException("HTTP " + response.code + "，下载 SMaLL-100 文件 " + spec.name + " 失败")
                     }
                     val body = response.body ?: throw IOException("下载响应缺少内容：" + spec.name)
-                    val append = existingBytes > 0L && response.code == 206
-                    if (existingBytes > 0L && !append) {
-                        if (part.exists() && !part.delete()) throw IOException("无法重置下载残片：" + spec.name)
-                        existingBytes = 0L
+                    val isPartialResponse = response.code == 206
+                    if (isPartialResponse && existingBytes <= 0L) {
+                        throw IOException("服务器对完整下载返回了异常的分段响应：" + spec.name)
                     }
-                    FileOutputStream(part, append).use { output ->
+                    if (isPartialResponse &&
+                        !Small100RangeResponsePolicy.matches(
+                            response.header("Content-Range"),
+                            expectedStart = existingBytes,
+                            expectedTotal = spec.bytes,
+                        )
+                    ) {
+                        if (rangeRetryUsed) {
+                            throw IOException("断点续传响应范围连续异常：" + spec.name)
+                        }
+                        if (part.exists() && !part.delete()) {
+                            throw IOException("无法重置范围异常的下载残片：" + spec.name)
+                        }
+                        existingBytes = 0L
+                        rangeRetryUsed = true
+                        restartFromZero = true
+                    } else {
+                        val append = isPartialResponse && existingBytes > 0L
+                        if (existingBytes > 0L && !append) {
+                            if (part.exists() && !part.delete()) throw IOException("无法重置下载残片：" + spec.name)
+                            existingBytes = 0L
+                        }
+                        FileOutputStream(part, append).use { output ->
                         body.byteStream().use { input ->
                             val buffer = ByteArray(256 * 1024)
                             var current = if (append) existingBytes else 0L
@@ -397,6 +429,7 @@ object Small100ModelManager {
                         if (!part.delete()) throw IOException("无法清理模型临时文件：" + spec.name)
                     }
                     updateProgress(index, spec, spec.bytes, bytesBefore)
+                    }
                 }
             }
             if (restartFromZero) continue
@@ -511,6 +544,19 @@ class Small100Engine(private val context: Context) : TranslationEngine {
         // another playback session may still be inside inference. The runtime serializes release
         // with inference and model loading through the same mutex.
         Small100Runtime.requestCloseLoadedModel()
+    }
+}
+
+internal object Small100RangeResponsePolicy {
+    private val contentRangePattern = Regex("""(?i)^bytes\s+(\d+)-(\d+)/(\d+)$""")
+
+    fun matches(header: String?, expectedStart: Long, expectedTotal: Long): Boolean {
+        if (header.isNullOrBlank() || expectedStart <= 0L || expectedTotal <= expectedStart) return false
+        val match = contentRangePattern.matchEntire(header.trim()) ?: return false
+        val start = match.groupValues[1].toLongOrNull() ?: return false
+        val end = match.groupValues[2].toLongOrNull() ?: return false
+        val total = match.groupValues[3].toLongOrNull() ?: return false
+        return start == expectedStart && total == expectedTotal && end == expectedTotal - 1L
     }
 }
 

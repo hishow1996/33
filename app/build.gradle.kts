@@ -130,7 +130,11 @@ val buildOpusMtCt2 by tasks.registering(Exec::class) {
 tasks.named("preBuild").configure { dependsOn(buildOpusMtCt2) }
 
 val sherpaAarFile = file("libs/sherpa-onnx-static.aar")
-if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
+val sherpaStaticAarExpectedBytes = 38_691_998L
+if (!sherpaAarFile.isFile || sherpaAarFile.length() != sherpaStaticAarExpectedBytes) {
+    if (sherpaAarFile.exists() && !sherpaAarFile.delete()) {
+        throw GradleException("Cannot remove an invalid cached sherpa-onnx static AAR.")
+    }
     sherpaAarFile.parentFile?.mkdirs()
     val downloadUrls = listOf(
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
@@ -168,6 +172,14 @@ if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
                         }
                     }
                     conn.disconnect()
+                    if (temp.length() != sherpaStaticAarExpectedBytes) {
+                        val actualBytes = temp.length()
+                        temp.delete()
+                        throw IOException(
+                            "Static sherpa AAR size mismatch: expected " +
+                                sherpaStaticAarExpectedBytes + ", received " + actualBytes
+                        )
+                    }
                     if (!temp.renameTo(sherpaAarFile)) {
                         temp.copyTo(sherpaAarFile, overwrite = true)
                         temp.delete()
@@ -186,10 +198,10 @@ if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
     }
 }
 
-if (!sherpaAarFile.isFile || sherpaAarFile.length() != 38_691_998L) {
+if (!sherpaAarFile.isFile || sherpaAarFile.length() != sherpaStaticAarExpectedBytes) {
     throw GradleException(
         "sherpa-onnx static-link AAR is missing or has an unexpected size: " +
-            sherpaAarFile.length() + " bytes. Expected 38,691,998 bytes."
+            sherpaAarFile.length() + " bytes. Expected " + sherpaStaticAarExpectedBytes + " bytes."
     )
 }
 val sherpaAarEntries = JarFile(sherpaAarFile).use { archive ->

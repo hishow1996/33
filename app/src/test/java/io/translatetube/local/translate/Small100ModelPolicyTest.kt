@@ -25,6 +25,48 @@ class Small100ModelPolicyTest {
     }
 
     @Test
+    fun acceptsOnlyAResumeRangeThatStartsAtTheSavedOffsetAndEndsAtTheFileBoundary() {
+        assertTrue(
+            Small100RangeResponsePolicy.matches(
+                "bytes 100-999/1000",
+                expectedStart = 100L,
+                expectedTotal = 1000L,
+            )
+        )
+        assertFalse(
+            Small100RangeResponsePolicy.matches(
+                "bytes 99-999/1000",
+                expectedStart = 100L,
+                expectedTotal = 1000L,
+            )
+        )
+        assertFalse(
+            Small100RangeResponsePolicy.matches(
+                "bytes 100-900/1000",
+                expectedStart = 100L,
+                expectedTotal = 1000L,
+            )
+        )
+        assertFalse(
+            Small100RangeResponsePolicy.matches(
+                "bytes 100-999/1001",
+                expectedStart = 100L,
+                expectedTotal = 1000L,
+            )
+        )
+    }
+
+    @Test
+    fun marksCompleteModelFilesAsDownloadedEvenWhenRuntimeValidationIsPending() {
+        val state = Small100DownloadState(
+            status = Small100Status.PAUSED,
+            downloadedBytes = 614_871_363L,
+            totalBytes = 614_871_363L,
+        )
+        assertTrue(state.hasCompleteFiles)
+    }
+
+    @Test
     fun parsesTokenizerJsonAndEncodesAndDecodesBpeTokens() {
         val json = """
             {

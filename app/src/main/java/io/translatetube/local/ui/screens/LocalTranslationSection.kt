@@ -1004,8 +1004,10 @@ internal fun LocalTranslationSection(
                                         Small100Status.READY -> "已下载并验证"
                                         Small100Status.DOWNLOADING -> "下载中 ${small100State.progress}%"
                                         Small100Status.VERIFYING -> "正在验证模型"
-                                        Small100Status.PAUSED -> "下载已暂停"
-                                        Small100Status.FAILED -> small100State.error.ifBlank { "下载失败" }
+                                        Small100Status.PAUSED -> if (small100State.hasCompleteFiles) "模型文件已下载，等待重新验证" else "下载已暂停"
+                                        Small100Status.FAILED -> small100State.error.ifBlank {
+                                            if (small100State.hasCompleteFiles) "模型文件已下载，验证失败" else "下载失败"
+                                        }
                                         else -> "未下载"
                                     },
                                     color = when (small100State.status) {
@@ -1062,7 +1064,7 @@ internal fun LocalTranslationSection(
                                     onClick = {
                                         small100Job = launchTrackedModelDownload(
                                             taskId = "small100",
-                                            title = "正在下载 SMaLL-100 多语言模型",
+                                            title = if (small100State.hasCompleteFiles) "正在重新验证 SMaLL-100 模型" else "正在下载 SMaLL-100 多语言模型",
                                         ) {
                                             try {
                                                 Small100ModelManager.download(context)
@@ -1074,11 +1076,20 @@ internal fun LocalTranslationSection(
                                         }
                                     },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                ) { Text("下载", maxLines = 1) }
+                                ) { Text(
+                                        when {
+                                            small100State.hasCompleteFiles -> "重新验证"
+                                            small100State.status == Small100Status.PAUSED -> "继续下载"
+                                            small100State.status == Small100Status.FAILED -> "重试"
+                                            else -> "下载"
+                                        },
+                                        maxLines = 1,
+                                    ) }
                             }
                         }
                         if (small100State.status == Small100Status.DOWNLOADING ||
-                            small100State.status == Small100Status.VERIFYING
+                            small100State.status == Small100Status.VERIFYING ||
+                            (small100State.hasCompleteFiles && small100State.status != Small100Status.READY)
                         ) {
                             LinearProgressIndicator(
                                 progress = (small100State.progress / 100f).coerceIn(0f, 1f),
@@ -1150,8 +1161,10 @@ internal fun LocalTranslationSection(
                                         Small100Status.READY -> "已下载并通过验证"
                                         Small100Status.DOWNLOADING -> "下载中 ${small100State.progress}%"
                                         Small100Status.VERIFYING -> "正在验证模型"
-                                        Small100Status.PAUSED -> "下载已暂停"
-                                        Small100Status.FAILED -> small100State.error.ifBlank { "下载失败" }
+                                        Small100Status.PAUSED -> if (small100State.hasCompleteFiles) "模型文件已下载，等待重新验证" else "下载已暂停"
+                                        Small100Status.FAILED -> small100State.error.ifBlank {
+                                            if (small100State.hasCompleteFiles) "模型文件已下载，验证失败" else "下载失败"
+                                        }
                                         else -> "未下载"
                                     },
                                     color = when (small100State.status) {
@@ -1204,7 +1217,7 @@ internal fun LocalTranslationSection(
                                     onClick = {
                                         small100Job = launchTrackedModelDownload(
                                             taskId = "small100",
-                                            title = "正在下载 SMaLL-100 多语言模型",
+                                            title = if (small100State.hasCompleteFiles) "正在重新验证 SMaLL-100 模型" else "正在下载 SMaLL-100 多语言模型",
                                         ) {
                                             try {
                                                 Small100ModelManager.download(context)
@@ -1216,11 +1229,20 @@ internal fun LocalTranslationSection(
                                         }
                                     },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                ) { Text("下载", maxLines = 1) }
+                                ) { Text(
+                                        when {
+                                            small100State.hasCompleteFiles -> "重新验证"
+                                            small100State.status == Small100Status.PAUSED -> "继续下载"
+                                            small100State.status == Small100Status.FAILED -> "重试"
+                                            else -> "下载"
+                                        },
+                                        maxLines = 1,
+                                    ) }
                             }
                         }
                         if (small100State.status == Small100Status.DOWNLOADING ||
-                            small100State.status == Small100Status.VERIFYING
+                            small100State.status == Small100Status.VERIFYING ||
+                            (small100State.hasCompleteFiles && small100State.status != Small100Status.READY)
                         ) {
                             LinearProgressIndicator(
                                 progress = (small100State.progress / 100f).coerceIn(0f, 1f),
