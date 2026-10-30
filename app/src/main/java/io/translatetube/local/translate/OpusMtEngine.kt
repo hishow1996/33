@@ -12,7 +12,10 @@ import com.sentencepiece.Scoring
 import com.sentencepiece.SentencePieceAlgorithm
 import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -30,6 +33,12 @@ internal class OpusMtLineLimitException(message: String) : IllegalArgumentExcept
 class OpusMtEngine(private val context: Context) : TranslationEngine {
     override val id: String = "opus-mt"
     override val displayName: String = "OPUS-MT 本地翻译"
+
+    override fun close() {
+        // The runtime owns process-wide model handles; each release waits for active inference.
+        OpusMtRuntime.requestCloseLoadedModel()
+        OpusMtCt2Runtime.requestRelease()
+    }
 
     /** Validate language compatibility and model readiness before the playback batch loop begins. */
     suspend fun validateConfiguration(
@@ -305,15 +314,28 @@ internal object OpusMtRuntime {
             val maxTokens = (sourceIds.size * 2 + 16).coerceIn(24, MAX_OUTPUT_TOKENS)
 
             var reachedEndToken = false
-            for (step in 0 until maxTokens) {
-                currentCoroutineContext().ensureActive()
-                val token = decodeNext(decoderIds, hidden.first, hidden.second, sourceMask)
-                if (token == EOS_TOKEN || token == PAD_TOKEN) {
-                    reachedEndToken = true
-                    break
+            var hiddenTensor: OnnxTensor? = null
+            var sourceMaskTensor: OnnxTensor? = null
+            try {
+                // These values are invariant for the full sentence. Keep their native tensors
+                // alive across decoder steps instead of copying the encoder state on every token.
+                hiddenTensor = floatTensor(hidden.first, hidden.second)
+                sourceMaskTensor = longTensor(
+                    sourceMask, longArrayOf(1, sourceMask.size.toLong()),
+                )
+                for (step in 0 until maxTokens) {
+                    currentCoroutineContext().ensureActive()
+                    val token = decodeNext(decoderIds, hiddenTensor!!, sourceMaskTensor!!)
+                    if (token == EOS_TOKEN || token == PAD_TOKEN) {
+                        reachedEndToken = true
+                        break
+                    }
+                    decoderIds += token.toLong()
+                    generated += token
                 }
-                decoderIds += token.toLong()
-                generated += token
+            } finally {
+                runCatching { sourceMaskTensor?.close() }
+                runCatching { hiddenTensor?.close() }
             }
             if (!reachedEndToken && generated.size >= maxTokens) {
                 throw OpusMtLineLimitException(
@@ -369,14 +391,11 @@ internal object OpusMtRuntime {
 
         private fun decodeNext(
             decoderIds: List<Long>,
-            hiddenValues: FloatArray,
-            hiddenShape: LongArray,
-            sourceMask: LongArray,
+            hiddenTensor: OnnxTensor,
+            sourceMaskTensor: OnnxTensor,
         ): Int {
             val inputs = linkedMapOf<String, OnnxTensor>()
-            var hiddenTensor: OnnxTensor? = null
             try {
-                hiddenTensor = floatTensor(hiddenValues, hiddenShape)
                 decoder.inputNames.forEach { name ->
                     when {
                         name.contains("decoder_input_ids") || name == "input_ids" ->
@@ -384,11 +403,9 @@ internal object OpusMtRuntime {
                                 decoderIds.toLongArray(), longArrayOf(1, decoderIds.size.toLong()),
                             )
                         name.contains("encoder_hidden_states") || name.contains("encoder_outputs") ->
-                            inputs[name] = hiddenTensor!!
+                            inputs[name] = hiddenTensor
                         name.contains("encoder_attention_mask") || name == "attention_mask" ->
-                            inputs[name] = longTensor(
-                                sourceMask, longArrayOf(1, sourceMask.size.toLong()),
-                            )
+                            inputs[name] = sourceMaskTensor
                         name.contains("decoder_attention_mask") ->
                             inputs[name] = longTensor(
                                 LongArray(decoderIds.size) { 1L }, longArrayOf(1, decoderIds.size.toLong()),
@@ -416,8 +433,16 @@ internal object OpusMtRuntime {
                     return best
                 }
             } finally {
-                inputs.values.toSet().forEach { runCatching { it.close() } }
-                if (inputs.values.none { it === hiddenTensor }) runCatching { hiddenTensor?.close() }
+                // The encoder state and source mask are owned by translateOne() and reused
+                // between decoder calls. Close only the per-step decoder input tensors here.
+                val closed = java.util.Collections.newSetFromMap(
+                    java.util.IdentityHashMap<OnnxTensor, Boolean>(),
+                )
+                inputs.values.forEach { tensor ->
+                    if (tensor !== hiddenTensor && tensor !== sourceMaskTensor && closed.add(tensor)) {
+                        runCatching { tensor.close() }
+                    }
+                }
             }
         }
 
@@ -485,6 +510,11 @@ internal object OpusMtRuntime {
 
     @Volatile private var loaded: Loaded? = null
     private val inferenceMutex = Mutex()
+    private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun requestCloseLoadedModel() {
+        closeScope.launch { closeLoadedModel() }
+    }
 
     /** All session use and release is serialized to prevent deleting a model during active inference. */
     suspend fun translateOne(context: Context, text: String): String =
@@ -539,10 +569,13 @@ internal object OpusMtRuntime {
         if (activityManager != null) {
             val memoryInfo = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memoryInfo)
-            val minimumFreeBytes = 700L * 1024L * 1024L
-            if (memoryInfo.availMem < minimumFreeBytes) {
+            val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memoryInfo.totalMem)
+            if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memoryInfo.availMem, memoryInfo.totalMem)) {
+                val availableMb = memoryInfo.availMem / LocalTranslationMemoryPolicy.MEGABYTE
+                val requiredMb = requiredBytes / LocalTranslationMemoryPolicy.MEGABYTE
                 throw IllegalStateException(
-                    "手机当前可用内存不足，至少需要约 700 MB 空闲内存才能加载 OPUS-MT。请关闭其他应用后重试。"
+                    "OPUS-MT 加载需要更多运行内存：当前约 ${availableMb} MB，可用内存建议至少 " +
+                        "${requiredMb} MB。请关闭其他应用后重试，已下载模型无需重新下载。"
                 )
             }
         }
