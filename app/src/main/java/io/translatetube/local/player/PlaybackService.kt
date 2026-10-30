@@ -500,9 +500,27 @@ private class TranslationFailureException(message: String, cause: Throwable) :
     IllegalStateException(message, cause)
 
 
+data class AudioProgressSnapshot(
+    val downloadedBytes: Long,
+    val totalBytes: Long? = null,
+    val percent: Int? = null,
+    val totalIsEstimate: Boolean = false,
+) {
+    /** Returns only a measured percentage or a ratio based on an exact known total. */
+    fun fraction(): Float? {
+        percent?.takeIf { it >= 0 }?.let { return it.coerceIn(0, 100) / 100f }
+        if (totalIsEstimate) return null
+        val total = totalBytes?.takeIf { it > 0L && downloadedBytes >= 0L && downloadedBytes <= it }
+            ?: return null
+        return (downloadedBytes.toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f)
+    }
+}
+
 data class PlayerUiState(
     val phase: Phase = Phase.IDLE,
     val progress: String = "",
+    val audioProgress: AudioProgressSnapshot? = null,
+    val transcriptionProgressPercent: Int? = null,
     val key: String = "",
     val title: String = "",
     val channel: String = "",
@@ -6845,7 +6863,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 // 音频提取无条件先执行：转写模型没装也要把音频准备好，这样用户装完
                 // 模型重新打开本视频时直接复用缓存开始转写，不需要再次联网提取。
                 awaitProcessingResumed(key, pipelineGeneration)
-                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，正在提取视频音频…") }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "无字幕，正在提取视频音频…",
+                        audioProgress = null,
+                        transcriptionProgressPercent = null,
+                    )
+                }
                 val audioFile: Any = when {
                     videoId != null -> obtainAsrAudioFile(
                         requireNotNull(videoId), key, "复用已下载音频，避免重复下载…",
@@ -6970,7 +6995,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                             onProgressPercent = { percent ->
                                                 updateUiForSession(key, pipelineGeneration) { state ->
                                                     if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%")
+                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%", transcriptionProgressPercent = percent)
                                                     } else state
                                                 }
                                             },
@@ -6983,7 +7008,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                             onProgressPercent = { percent ->
                                                 updateUiForSession(key, pipelineGeneration) { state ->
                                                     if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%")
+                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%", transcriptionProgressPercent = percent)
                                                     } else state
                                                 }
                                             },
@@ -7100,7 +7125,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 onProgressPercent = { percent ->
                                     updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(progress = "解码音频 ${percent}%")
+                                            state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
                                         } else state
                                     }
                                 },
@@ -7112,7 +7137,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 onProgressPercent = { percent ->
                                     updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(progress = "解码音频 ${percent}%")
+                                            state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
                                         } else state
                                     }
                                 },
@@ -7186,7 +7211,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         onProgressPercent = { percent ->
                             updateUiForSession(key, pipelineGeneration) { state ->
                                 if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                    state.copy(progress = "语音分段 ${percent}%")
+                                    state.copy(progress = "语音分段 ${percent}%", transcriptionProgressPercent = percent)
                                 } else state
                             }
                         },
@@ -7207,7 +7232,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             onProgressPercent = { percent ->
                                 updateUiForSession(key, pipelineGeneration) { state ->
                                     if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                        state.copy(progress = "提高灵敏度重新检测 ${percent}%")
+                                        state.copy(progress = "提高灵敏度重新检测 ${percent}%", transcriptionProgressPercent = percent)
                                     } else state
                                 }
                             },
@@ -7590,7 +7615,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                 onProgressPercent = { percent ->
                                     updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(progress = "封装云端音频 ${percent}%")
+                                            state.copy(progress = "封装云端音频 ${percent}%", transcriptionProgressPercent = percent)
                                         } else state
                                     }
                                 },
@@ -9416,7 +9441,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                 if (state.key == sessionKey) {
-                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "YouTube · 正在选择独立音轨…")
+                    state.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "YouTube · 正在选择独立音轨…",
+                        audioProgress = null,
+                        transcriptionProgressPercent = null,
+                    )
                 } else state
             }
             awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
@@ -9429,6 +9459,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
                         progress = "YouTube · 独立音轨 · 正在下载…",
+                        audioProgress = null,
                     )
                 } else state
             }
@@ -9899,6 +9930,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
                         progress = "音轨类型待确认 · 正在检查网页媒体源…",
+                        audioProgress = null,
+                        transcriptionProgressPercent = null,
                     )
                 } else state
             }
@@ -9942,6 +9975,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                         state.copy(
                                             phase = Phase.DOWNLOADING_AUDIO,
                                             progress = progress,
+                                            audioProgress = if (downloadedBytes > 0L || totalBytes != null) {
+                                                AudioProgressSnapshot(
+                                                    downloadedBytes = downloadedBytes,
+                                                    totalBytes = totalBytes,
+                                                    percent = percent.takeIf { it >= 0 },
+                                                )
+                                            } else null,
                                         )
                                     } else state
                                 }
@@ -10013,7 +10053,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                                     totalBytes = totalBytes,
                                                     percent = percent,
                                                     totalIsEstimate = totalIsEstimate,
-                                                )
+                                                ),
+                                                audioProgress = AudioProgressSnapshot(
+                                                    downloadedBytes = extractedBytes,
+                                                    totalBytes = totalBytes,
+                                                    percent = percent,
+                                                    totalIsEstimate = totalIsEstimate,
+                                                ),
                                             )
                                         } else state
                                     }
@@ -10337,7 +10383,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                             percent = percent,
                                         )
                                         updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
-                                            if (state.key == sessionKey) state.copy(progress = progress) else state
+                                            if (state.key == sessionKey) state.copy(
+                                                progress = progress,
+                                                audioProgress = AudioProgressSnapshot(
+                                                    downloadedBytes = got,
+                                                    totalBytes = total.takeIf { it > 0L },
+                                                    percent = percent,
+                                                ),
+                                            ) else state
                                         }
                                         lastProgressBytes = got
                                         lastProgressAtMs = nowMs
@@ -10358,7 +10411,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                             downloadedBytes = got,
                                             totalBytes = total.takeIf { it > 0L },
                                             percent = 100,
-                                        )
+                                        ),
+                                        audioProgress = AudioProgressSnapshot(
+                                            downloadedBytes = got,
+                                            totalBytes = total.takeIf { it > 0L },
+                                            percent = 100,
+                                        ),
                                     )
                                 } else state
                             }
