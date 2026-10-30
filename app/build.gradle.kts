@@ -100,8 +100,11 @@ android {
     packaging {
         resources.excludes += "META-INF/*"
         // sherpa-onnx uses its official static-ONNX-Runtime AAR. SMaLL-100 owns the
-        // only shared libonnxruntime.so via onnxruntime-android; never silently pickFirst
+        // only shared ARM64 libonnxruntime.so via onnxruntime-android; never silently pickFirst
         // between binaries built from different ONNX Runtime versions.
+        // Both dependencies also carry an unused x86 runtime, but this app only packages ARM64.
+        // Exclude that non-target duplicate before AGP's native-library merge task.
+        jniLibs.excludes += "lib/x86/libonnxruntime.so"
         // Protocol Buffers may also ship duplicate .proto resource files from generated runtimes.
         resources.pickFirsts += "google/protobuf/**"
         // youtubedl-android 从 nativeLibraryDir 直接运行 libpython.so，必须解压原生库
