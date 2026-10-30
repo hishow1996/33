@@ -1252,11 +1252,6 @@ private fun PiperModelSection() {
         io.translatetube.local.tts.PiperModels.refreshInstalled(ctx.applicationContext)
     }
 
-    Text(
-        "当前翻译目标为中文，请下载中文 Piper 模型；其他语种模型暂不能用于中文配音。",
-        color = SubText, style = MaterialTheme.typography.bodySmall,
-        modifier = Modifier.padding(start = 8.dp, top = 4.dp),
-    )
     Spacer(Modifier.height(6.dp))
     io.translatetube.local.tts.PiperModels.catalog.filter { it.supportsChineseOutput }.forEach { def ->
         val isInstalled = installed.contains(def.id)
