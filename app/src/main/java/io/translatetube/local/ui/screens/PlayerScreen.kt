@@ -1541,9 +1541,15 @@ private fun VideoParsingPage(
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
-        Phase.DOWNLOADING_AUDIO -> state.audioProgress?.fraction()
-            ?: progressPercent(state.progress)
-            ?: progressRatio(state.progress)
+        Phase.DOWNLOADING_AUDIO -> {
+            val audio = state.audioProgress
+            if (audio != null) {
+                // Do not derive a "precise" bar from an estimated total size.
+                audio.fraction()
+            } else {
+                progressPercent(state.progress)
+            }
+        }
         Phase.TRANSCRIBING -> state.transcriptionProgressPercent
             ?.takeIf { it >= 0 }
             ?.coerceIn(0, 100)
