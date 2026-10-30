@@ -744,40 +744,42 @@ private object Small100Runtime {
                 for (step in 0 until maxOutputTokens) {
                     checkActive()
                     val tokenTensor = longTensor(environment, longArrayOf(currentToken))
-                    val cacheFlagTensor = OnnxTensor.createTensor(
-                        environment, ByteBuffer.wrap(byteArrayOf(if (useCache) 1 else 0)),
-                        longArrayOf(1L), OnnxJavaType.BOOL,
-                    )
-                    val feeds = HashMap<String, OnnxTensor>()
-                    feeds["encoder_attention_mask"] = requireNotNull(maskTensor)
-                    feeds["input_ids"] = tokenTensor
-                    feeds["encoder_hidden_states"] = hidden
-                    feeds["use_cache_branch"] = cacheFlagTensor
-                    feeds.putAll(past)
-                    val result = try {
-                        decoder.run(feeds)
+                    var cacheFlagTensor: OnnxTensor? = null
+                    try {
+                        val currentCacheFlagTensor = OnnxTensor.createTensor(
+                            environment, ByteBuffer.wrap(byteArrayOf(if (useCache) 1 else 0)),
+                            longArrayOf(1L), OnnxJavaType.BOOL,
+                        )
+                        cacheFlagTensor = currentCacheFlagTensor
+                        val feeds = HashMap<String, OnnxTensor>()
+                        feeds["encoder_attention_mask"] = attentionMaskTensor
+                        feeds["input_ids"] = tokenTensor
+                        feeds["encoder_hidden_states"] = hidden
+                        feeds["use_cache_branch"] = currentCacheFlagTensor
+                        feeds.putAll(past)
+                        val result = decoder.run(feeds)
+                        try {
+                            val logitsName = decoder.outputNames.firstOrNull { it == "logits" }
+                                ?: decoder.outputNames.firstOrNull { it.contains("logits") }
+                                ?: throw IOException("SMaLL-100 解码器没有 logits 输出")
+                            val logits = result.get(logitsName).orElseThrow {
+                                IOException("SMaLL-100 解码器缺少输出：" + logitsName)
+                            } as? OnnxTensor ?: throw IOException("SMaLL-100 logits 不是张量")
+                            val nextToken = argmaxLast(logits)
+                            if (nextToken == EOS) {
+                                reachedEos = true
+                                break
+                            }
+                            generated += nextToken
+                            past = rollPast(environment, result, useCache, past)
+                            currentToken = nextToken
+                            useCache = true
+                        } finally {
+                            runCatching { result.close() }
+                        }
                     } finally {
                         runCatching { tokenTensor.close() }
-                        runCatching { cacheFlagTensor.close() }
-                    }
-                    try {
-                        val logitsName = decoder.outputNames.firstOrNull { it == "logits" }
-                            ?: decoder.outputNames.firstOrNull { it.contains("logits") }
-                            ?: throw IOException("SMaLL-100 解码器没有 logits 输出")
-                        val logits = result.get(logitsName).orElseThrow {
-                            IOException("SMaLL-100 解码器缺少输出：" + logitsName)
-                        } as? OnnxTensor ?: throw IOException("SMaLL-100 logits 不是张量")
-                        val nextToken = argmaxLast(logits)
-                        if (nextToken == EOS) {
-                            reachedEos = true
-                            break
-                        }
-                        generated += nextToken
-                        past = rollPast(environment, result, useCache, past)
-                        currentToken = nextToken
-                        useCache = true
-                    } finally {
-                        runCatching { result.close() }
+                        runCatching { cacheFlagTensor?.close() }
                     }
                 }
                 Small100GenerationPolicy.requireComplete(reachedEos, generated.size, maxOutputTokens)
