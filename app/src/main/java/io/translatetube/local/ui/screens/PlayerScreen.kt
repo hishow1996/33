@@ -1548,9 +1548,11 @@ private fun VideoParsingPage(
             ?.takeIf { it >= 0 }
             ?.coerceIn(0, 100)
             ?.div(100f)
-            ?: progressPercent(state.progress)
-            ?: progressRatio(state.progress)
-        Phase.TRANSLATING -> if (state.totalLines > 0) {
+            ?: if (state.transcriptionTotalSegments > 0) {
+                (state.transcriptionCompletedSegments.coerceIn(0, state.transcriptionTotalSegments).toFloat() /
+                    state.transcriptionTotalSegments).coerceIn(0f, 1f)
+            } else progressPercent(state.progress) ?: progressRatio(state.progress)
+        Phase.TRANSLATING -> if (state.totalLines > 0 && !state.manualTranslationModeEnabled && !state.manualTranslationWaiting) {
             (state.translatedLineCount.coerceIn(0, state.totalLines).toFloat() / state.totalLines)
                 .coerceIn(0f, 1f)
         } else progressRatio(state.progress) ?: progressPercent(state.progress)
@@ -3953,9 +3955,15 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
             // focused on the byte counts so the same number is not repeated twice.
             "$downloaded$total"
         }
-        Phase.TRANSCRIBING -> compactProcessingProgress(state.progress, phase)
+        Phase.TRANSCRIBING -> {
+            if (state.transcriptionTotalSegments > 0) {
+                "转写 ${state.transcriptionCompletedSegments.coerceIn(0, state.transcriptionTotalSegments)}/${state.transcriptionTotalSegments} 段"
+            } else {
+                compactProcessingProgress(state.progress, phase)
+            }
+        }
         Phase.TRANSLATING -> {
-            if (state.totalLines > 0 && !state.manualTranslationWaiting) {
+            if (state.totalLines > 0 && !state.manualTranslationWaiting && !state.manualTranslationModeEnabled) {
                 "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
             } else {
                 compactProcessingProgress(state.progress, phase)
