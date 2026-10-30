@@ -28,9 +28,10 @@ internal object DubbingMemoryCacheIdentityPolicy {
  * putAll/replaceAll on a Map subclass can bypass an overridden put() and corrupt the byte budget.
  */
 internal class DubbingPcmMemoryCache(
-    private var maxBytes: Long = maxBytes.coerceAtLeast(0L),
+    maxBytes: Long,
     private val maxEntries: Int = 48,
 ) {
+    private var maxBytes: Long = maxBytes.coerceAtLeast(0L)
     private val storage = LinkedHashMap<Int, DubbingPcmMemoryEntry>(16, 0.75f, true)
     private var retainedBytes = 0L
 
