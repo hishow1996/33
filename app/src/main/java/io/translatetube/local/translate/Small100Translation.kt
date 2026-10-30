@@ -1258,7 +1258,10 @@ internal class Small100BpeTokenizer(
     }
 
     override fun close() {
-        // Pure JVM data structures; no native handles to release.
+        // Drop cached per-word token IDs immediately when the model session is released.
+        synchronized(wordTokenCache) {
+            wordTokenCache.clear()
+        }
     }
 
     companion object {

@@ -191,5 +191,8 @@ class Small100ModelPolicyTest {
             tokenizer.encode("cacheword$index")
         }
         assertEquals(1024, tokenizer.cachedWordCount)
+
+        tokenizer.close()
+        assertEquals(0, tokenizer.cachedWordCount)
     }
 }
