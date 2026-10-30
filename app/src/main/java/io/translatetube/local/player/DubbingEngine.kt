@@ -1948,7 +1948,7 @@ class DubbingEngine(
 
     /** Called with mem locked; shrink/expand the PCM LRU as live memory pressure changes. */
     private fun refreshPcmMemoryBudgetLocked() {
-        val updatedBudget = DubbingPcmMemoryPolicy.maxBytes(DevicePerformanceManager.snapshot(ctx))
+        val updatedBudget = DubbingPcmMemoryPolicy.maxBytes(DevicePerformanceManager.snapshot(appContext))
         if (updatedBudget != pcmMemoryBudgetBytes) {
             pcmMemoryBudgetBytes = updatedBudget
             mem.updateBudget(updatedBudget)
