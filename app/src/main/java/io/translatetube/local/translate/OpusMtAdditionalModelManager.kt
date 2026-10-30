@@ -66,7 +66,16 @@ object OpusMtAdditionalModelManager {
     private val client = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS).callTimeout(0, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true).build()
-    private val mutableStates = MutableStateFlow<Map<String, OpusMtDownloadState>>(emptyMap())
+    // Seed each language pair with its configured total size so the UI never treats an
+    // uninitialized state-flow entry as a real 0 MB package.
+    private val mutableStates = MutableStateFlow(
+        models.associate { model ->
+            model.source to OpusMtDownloadState(
+                fileCount = model.files.size,
+                totalBytes = model.files.sumOf { it.size },
+            )
+        }
+    )
     val states: StateFlow<Map<String, OpusMtDownloadState>> = mutableStates
 
     fun supportedSources(): Set<String> = models.map { it.source }.toSet()
