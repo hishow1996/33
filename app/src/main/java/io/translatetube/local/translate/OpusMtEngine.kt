@@ -590,10 +590,14 @@ internal object OpusMtRuntime {
         loaded?.close()
         loaded = null
 
+        var availableMemoryBytes = 0L
+        var systemLowMemory = false
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager != null) {
             val memoryInfo = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memoryInfo)
+            availableMemoryBytes = memoryInfo.availMem
+            systemLowMemory = memoryInfo.lowMemory
             val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memoryInfo.totalMem)
             if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memoryInfo.availMem, memoryInfo.totalMem)) {
                 val availableMb = memoryInfo.availMem / LocalTranslationMemoryPolicy.MEGABYTE
@@ -604,8 +608,13 @@ internal object OpusMtRuntime {
                 )
             }
         }
+        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(
+            Runtime.getRuntime().availableProcessors(),
+            availableMemoryBytes,
+            systemLowMemory,
+        )
         val environment = OrtEnvironment.getEnvironment()
-        val options = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
+        val options = OrtSession.SessionOptions().apply { setIntraOpNumThreads(inferenceThreads) }
         var encoder: OrtSession? = null
         var decoder: OrtSession? = null
         try {
@@ -635,6 +644,7 @@ internal object OpusMtRuntime {
                     "解码器输入" to decoder.inputNames.sorted().joinToString(","),
                     "解码器输出" to decoder.outputNames.sorted().joinToString(","),
                     "分词器文件已加载" to "true",
+                    "推理线程数" to inferenceThreads.toString(),
                     "未记录字幕原文" to "true",
                 ),
             )

@@ -1,0 +1,26 @@
+package io.translatetube.local.translate
+
+/** Conservative CPU-thread policy shared by the local translation runtimes. */
+internal object LocalTranslationRuntimePolicy {
+    private const val MB = 1024L * 1024L
+    private const val LOW_MEMORY_THREAD_LIMIT_BYTES = 1024L * MB
+
+    /**
+     * Prefer one inference thread on small CPUs or when the system is under memory pressure.
+     * Two threads are used only when the device has at least four logical processors and
+     * Android reports at least 1 GB available memory without its low-memory warning.
+     */
+    fun inferenceThreads(
+        availableProcessors: Int,
+        availableMemoryBytes: Long,
+        systemLowMemory: Boolean,
+    ): Int {
+        val cores = availableProcessors.coerceAtLeast(1)
+        val available = availableMemoryBytes.coerceAtLeast(0L)
+        return if (
+            cores < 4 ||
+            systemLowMemory ||
+            available < LOW_MEMORY_THREAD_LIMIT_BYTES
+        ) 1 else 2
+    }
+}

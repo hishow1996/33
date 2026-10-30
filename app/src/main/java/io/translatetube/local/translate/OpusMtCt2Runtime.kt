@@ -174,38 +174,14 @@ internal object OpusMtCt2Runtime {
     }
 
     private fun resolveBatchLimits(context: Context): OpusMtBatchPolicy.Limits {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            ?: return OpusMtBatchPolicy.resolve(0L)
-        val memoryInfo = ActivityManager.MemoryInfo()
-        val availableBytes = runCatching {
-            activityManager.getMemoryInfo(memoryInfo)
-            memoryInfo.availMem
-        }.getOrDefault(0L)
-        return OpusMtBatchPolicy.resolve(availableBytes)
-    }
-
-    private fun loadLocked(context: Context, source: String): Loaded {
-        if (!OpusMtCt2Native.isAvailable) {
-            throw IOException(
-                "当前运行环境未包含可用的 CTranslate2 原生库 (libopusmtct2.so)。" +
-                    OpusMtCt2Native.loadError.takeIf { it.isNotBlank() }?.let { " 加载原因：$it" }.orEmpty()
-            )
-        }
-        val dir = OpusMtAdditionalModelManager.modelDirectory(context, source)
-        val required = listOf("config.json", "model.bin", "shared_vocabulary.json", "source.spm", "target.spm").map { File(dir, it) }
-        val missing = required.filterNot { it.isFile && it.length() > 0L }
-        if (missing.isNotEmpty()) throw IOException("OPUS-MT ${OpusMtAdditionalModelManager.label(source)} 模型文件不完整：${missing.joinToString { it.name }}")
-        val identity = required.joinToString("|") { "${it.name}:${it.length()}:${it.lastModified()}" }
-        loaded?.takeIf { it.source == source && it.identity == identity }?.let { return it }
-
-        // Drop the previous language pair before checking headroom for the replacement.
-        loaded?.let { old -> runCatching { OpusMtCt2Native.nativeFree(old.handle) } }
-        loaded = null
-
+        var availableMemoryBytes = 0L
+        var systemLowMemory = false
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager != null) {
             val memoryInfo = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memoryInfo)
+            availableMemoryBytes = memoryInfo.availMem
+            systemLowMemory = memoryInfo.lowMemory
             val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memoryInfo.totalMem)
             if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memoryInfo.availMem, memoryInfo.totalMem)) {
                 val availableMb = memoryInfo.availMem / LocalTranslationMemoryPolicy.MEGABYTE
@@ -217,13 +193,18 @@ internal object OpusMtCt2Runtime {
                 )
             }
         }
+        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(
+            Runtime.getRuntime().availableProcessors(),
+            availableMemoryBytes,
+            systemLowMemory,
+        )
 
         val handle = try {
             OpusMtCt2Native.nativeLoad(
                 dir.absolutePath,
                 File(dir, "source.spm").absolutePath,
                 File(dir, "target.spm").absolutePath,
-                2,
+                inferenceThreads,
             )
         } catch (error: Throwable) {
             val detail = if (error is OutOfMemoryError) {
