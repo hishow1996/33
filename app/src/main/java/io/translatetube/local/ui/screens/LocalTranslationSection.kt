@@ -1381,7 +1381,7 @@ private fun LocalEngineCard(
 }
 
 private fun formatLocalModelSizeDetail(bytes: Long): String =
-    "下载大小 " + String.format(Locale.ROOT, "%,d 字节 · %.2f MB", bytes, bytes / 1_000_000.0)
+    String.format(Locale.ROOT, "%.2f MB", bytes.coerceAtLeast(0L) / 1_000_000.0)
 
 private fun formatLocalModelBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 MB"
