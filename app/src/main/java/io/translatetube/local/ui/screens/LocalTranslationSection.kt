@@ -829,6 +829,24 @@ internal fun LocalTranslationSection(
                                         style = MaterialTheme.typography.labelSmall,
                                         maxLines = 2,
                                     )
+                                    // Keep the OPUS-MT progress directly beneath and aligned
+                                    // with the download status text, not indented under the radio button.
+                                    if (state.status == OpusMtStatus.DOWNLOADING ||
+                                        state.status == OpusMtStatus.VERIFYING ||
+                                        (state.hasCompleteFiles && state.status != OpusMtStatus.READY)
+                                    ) {
+                                        LinearProgressIndicator(
+                                            progress = (state.progress / 100f).coerceIn(0f, 1f),
+                                            modifier = Modifier.fillMaxWidth(),
+                                            color = Color(0xFF3569D4),
+                                        )
+                                        Text(
+                                            formatLocalModelBytes(state.downloadedBytes) + " / " +
+                                                formatLocalModelBytes(state.totalBytes),
+                                            color = Color(0xFF64748B),
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
                                 }
                                 if (state.status == OpusMtStatus.DOWNLOADING ||
                                     state.status == OpusMtStatus.VERIFYING
@@ -930,23 +948,6 @@ internal fun LocalTranslationSection(
                                         maxLines = 1,
                                     ) }
                                 }
-                            }
-                            if (state.status == OpusMtStatus.DOWNLOADING ||
-                                state.status == OpusMtStatus.VERIFYING ||
-                                (state.hasCompleteFiles && state.status != OpusMtStatus.READY)
-                            ) {
-                                LinearProgressIndicator(
-                                    progress = (state.progress / 100f).coerceIn(0f, 1f),
-                                    modifier = Modifier.fillMaxWidth().padding(start = 48.dp, end = 4.dp),
-                                    color = Color(0xFF3569D4),
-                                )
-                                Text(
-                                    formatLocalModelBytes(state.downloadedBytes) + " / " +
-                                        formatLocalModelBytes(state.totalBytes),
-                                    modifier = Modifier.padding(start = 52.dp),
-                                    color = Color(0xFF64748B),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
                             }
                         }
                         if (index < 3) HorizontalDivider(color = Color(0xFFE8ECF3))
