@@ -815,7 +815,9 @@ internal fun LocalTranslationSection(
                                             OpusMtStatus.PAUSED -> state.error.ifBlank {
                                                 if (state.hasCompleteFiles) "模型文件已下载，等待重新验证" else "下载已暂停"
                                             }
-                                            OpusMtStatus.FAILED -> state.error.ifBlank { "下载失败" }
+                                            OpusMtStatus.FAILED -> state.error.ifBlank {
+                                                if (state.hasCompleteFiles) "模型文件已下载，运行时验证未通过" else "下载失败"
+                                            }
                                             else -> "未下载"
                                         },
                                         color = when (state.status) {
@@ -896,7 +898,11 @@ internal fun LocalTranslationSection(
                                             } else {
                                                 val newJob = launchTrackedModelDownload(
                                                     taskId = "opus-mt-${source}-zh",
-                                                    title = "正在下载 OPUS-MT：${source.uppercase(Locale.ROOT)} → 中文",
+                                                    title = if (state.hasCompleteFiles) {
+                                                        "正在重新验证 OPUS-MT：${source.uppercase(Locale.ROOT)} → 中文"
+                                                    } else {
+                                                        "正在下载 OPUS-MT：${source.uppercase(Locale.ROOT)} → 中文"
+                                                    },
                                                 ) {
                                                     try {
                                                         OpusMtAdditionalModelManager.download(context, source)

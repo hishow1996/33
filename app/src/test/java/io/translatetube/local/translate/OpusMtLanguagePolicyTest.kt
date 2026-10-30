@@ -47,6 +47,34 @@ class OpusMtLanguagePolicyTest {
     }
 
     @Test
+    fun completeAdditionalOpusFilesAreValidationFailureNotPausedDownload() {
+        assertEquals(
+            OpusMtStatus.FAILED,
+            OpusMtAdditionalDownloadStatePolicy.afterFailure(filesComplete = true, resumableData = false),
+        )
+        assertEquals(
+            OpusMtStatus.FAILED,
+            OpusMtAdditionalDownloadStatePolicy.afterCancellation(filesComplete = true, resumableData = false),
+        )
+    }
+
+    @Test
+    fun incompleteAdditionalOpusFilesRemainResumableWhenDataExists() {
+        assertEquals(
+            OpusMtStatus.PAUSED,
+            OpusMtAdditionalDownloadStatePolicy.afterFailure(filesComplete = false, resumableData = true),
+        )
+        assertEquals(
+            OpusMtStatus.PAUSED,
+            OpusMtAdditionalDownloadStatePolicy.afterCancellation(filesComplete = false, resumableData = true),
+        )
+        assertEquals(
+            OpusMtStatus.NOT_DOWNLOADED,
+            OpusMtAdditionalDownloadStatePolicy.afterCancellation(filesComplete = false, resumableData = false),
+        )
+    }
+
+    @Test
     fun detectsShortJapaneseAndKoreanCaptionsByDistinctiveScripts() {
         assertEquals("ja", SubtitleScriptLanguageHint.detect("こんにちは"))
         assertEquals("ko", SubtitleScriptLanguageHint.detect("안녕하세요"))

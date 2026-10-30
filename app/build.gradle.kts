@@ -39,6 +39,7 @@ val releaseSigningReady = !releaseStorePath.isNullOrBlank() &&
     file(releaseStorePath).isFile
 
 val opusMtCt2JniLibs = layout.buildDirectory.dir("generated/opusmtct2/jniLibs")
+val opusMtCt2NativeLibrary = layout.buildDirectory.file("generated/opusmtct2/jniLibs/arm64-v8a/libopusmtct2.so")
 val opusMtCt2SourceDir = rootProject.file("native/opusmt-ct2")
 
 android {
@@ -109,8 +110,14 @@ android {
 
 val buildOpusMtCt2 by tasks.registering(Exec::class) {
     inputs.files(fileTree(opusMtCt2SourceDir))
-    outputs.dir(opusMtCt2JniLibs)
-    onlyIf { false }
+    outputs.file(opusMtCt2NativeLibrary)
+    onlyIf {
+        val androidHome = System.getenv("ANDROID_HOME").orEmpty()
+        val configuredNdk = System.getenv("ANDROID_NDK")
+            ?: System.getenv("ANDROID_NDK_HOME")
+            ?: File(androidHome, "ndk/29.0.14206865").absolutePath
+        File(configuredNdk, "build/cmake/android.toolchain.cmake").isFile
+    }
     doFirst {
         val androidHome = System.getenv("ANDROID_HOME").orEmpty()
         val configuredNdk = System.getenv("ANDROID_NDK")
@@ -127,7 +134,22 @@ val buildOpusMtCt2 by tasks.registering(Exec::class) {
     }
     commandLine("bash", File(opusMtCt2SourceDir, "build.sh").absolutePath)
 }
-tasks.named("preBuild").configure { dependsOn(buildOpusMtCt2) }
+val verifyOpusMtCt2Native by tasks.registering {
+    dependsOn(buildOpusMtCt2)
+    doLast {
+        val nativeLibrary = opusMtCt2NativeLibrary.get().asFile
+        if (!nativeLibrary.isFile || nativeLibrary.length() < 1_000_000L) {
+            throw GradleException(
+                "The required arm64-v8a CTranslate2 library was not produced: " +
+                    nativeLibrary.absolutePath +
+                    ". Install Android NDK r29 and CMake 3.31.6; refusing to package an APK " +
+                    "that downloads OPUS-MT models but cannot run them."
+            )
+        }
+        logger.lifecycle("Verified OPUS-MT CTranslate2 native runtime: ${nativeLibrary.length()} bytes.")
+    }
+}
+tasks.named("preBuild").configure { dependsOn(verifyOpusMtCt2Native) }
 
 val sherpaAarFile = file("libs/sherpa-onnx-static.aar")
 val sherpaStaticAarExpectedBytes = 38_691_998L

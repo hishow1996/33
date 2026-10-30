@@ -119,12 +119,12 @@ jobs:
       # This is the final integration build. Run unit tests before creating installable APK artifacts.
       # Speech models are downloaded by the app on first use; do not bundle the 300MB+ ONNX models into the APK.
 
-      - name: Download sherpa-onnx AAR
+      - name: Download statically linked sherpa-onnx AAR
         run: |
           mkdir -p app/libs
           curl -fL --retry 3 --retry-delay 2 \
-            -o app/libs/sherpa-onnx.aar \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
+            -o app/libs/sherpa-onnx-static.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar
 
       - name: Run JVM unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
