@@ -606,8 +606,16 @@ internal fun LocalTranslationSection(
                                         ) { Text("暂停", maxLines = 1) }
                                     }
                                 }
-                                "ready" -> TextButton(
-                                    enabled = mlkitBusy == null && activeId != EngineFactory.ID_LOCAL_MLKIT,
+                                "ready" -> if (activeId == EngineFactory.ID_LOCAL_MLKIT) {
+                                    Text(
+                                        "使用中",
+                                        modifier = Modifier.padding(horizontal = 8.dp),
+                                        color = Color(0xFF3569D4),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                    )
+                                } else TextButton(
+                                    enabled = mlkitBusy == null,
                                     onClick = {
                                         mlkitBusy = pair.source
                                         mlkitError = ""
@@ -646,7 +654,7 @@ internal fun LocalTranslationSection(
                                             }
                                         }
                                     },
-                                ) { Text(if (activeId == EngineFactory.ID_LOCAL_MLKIT) "使用中" else "删除") }
+                                ) { Text("删除", maxLines = 1) }
                                 else -> TextButton(
                                     enabled = mlkitBusy == null,
                                     onClick = {
@@ -829,7 +837,7 @@ internal fun LocalTranslationSection(
                                             else -> "未下载"
                                         },
                                         color = when (state.status) {
-                                            OpusMtStatus.READY -> Color(0xFF25804A)
+                                            OpusMtStatus.READY -> Color(0xFF3569D4)
                                             OpusMtStatus.FAILED -> Color(0xFFB42318)
                                             OpusMtStatus.DOWNLOADING, OpusMtStatus.VERIFYING -> Color(0xFF3569D4)
                                             else -> Color(0xFF64748B)
@@ -875,7 +883,7 @@ internal fun LocalTranslationSection(
                                         Text(
                                             "使用中",
                                             modifier = Modifier.padding(horizontal = 8.dp),
-                                            color = Color(0xFF25804A),
+                                            color = Color(0xFF3569D4),
                                             style = MaterialTheme.typography.labelMedium,
                                             maxLines = 1,
                                         )
