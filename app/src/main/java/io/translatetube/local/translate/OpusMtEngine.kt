@@ -34,10 +34,25 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
     override val id: String = "opus-mt"
     override val displayName: String = "OPUS-MT 本地翻译"
 
+    private val runtimeLeaseLock = Any()
+    private val leasedRuntimes = linkedSetOf<String>()
+
+    private fun retainRuntimeLease(source: String) {
+        synchronized(runtimeLeaseLock) {
+            if (source == "en") {
+                if (leasedRuntimes.add("onnx")) OpusMtRuntime.acquireLease()
+            } else {
+                if (leasedRuntimes.add("ct2")) OpusMtCt2Runtime.acquireLease()
+            }
+        }
+    }
+
     override fun close() {
-        // The runtime owns process-wide model handles; each release waits for active inference.
-        OpusMtRuntime.requestCloseLoadedModel()
-        OpusMtCt2Runtime.requestRelease()
+        val released = synchronized(runtimeLeaseLock) {
+            leasedRuntimes.toList().also { leasedRuntimes.clear() }
+        }
+        if ("onnx" in released) OpusMtRuntime.releaseLease()
+        if ("ct2" in released) OpusMtCt2Runtime.releaseLease()
     }
 
     /** Validate language compatibility and model readiness before the playback batch loop begins. */
@@ -125,6 +140,7 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
         if (lines.isEmpty()) return emptyList()
         if (lines.none { it.isNotBlank() }) return lines.map { "" }
         val source = validateConfiguration(srcLang, tgtLang, lines)
+        retainRuntimeLease(source)
         val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
 
         AppLogStore.info(
@@ -511,8 +527,14 @@ internal object OpusMtRuntime {
     @Volatile private var loaded: Loaded? = null
     private val inferenceMutex = Mutex()
     private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val runtimeLeases = SharedRuntimeLeaseCounter()
 
-    fun requestCloseLoadedModel() {
+    fun acquireLease() {
+        runtimeLeases.acquire()
+    }
+
+    fun releaseLease() {
+        if (!runtimeLeases.release()) return
         closeScope.launch { closeLoadedModel() }
     }
 
@@ -544,8 +566,10 @@ internal object OpusMtRuntime {
 
     suspend fun closeLoadedModel() {
         inferenceMutex.withLock {
-            loaded?.close()
-            loaded = null
+            runtimeLeases.closeIfUnused {
+                loaded?.close()
+                loaded = null
+            }
         }
     }
 

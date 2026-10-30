@@ -24,9 +24,15 @@ internal object OpusMtCt2Runtime {
 
     private val lock = Mutex()
     private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val runtimeLeases = SharedRuntimeLeaseCounter()
     @Volatile private var loaded: Loaded? = null
 
-    fun requestRelease() {
+    fun acquireLease() {
+        runtimeLeases.acquire()
+    }
+
+    fun releaseLease() {
+        if (!runtimeLeases.release()) return
         closeScope.launch { release() }
     }
 
@@ -146,12 +152,16 @@ internal object OpusMtCt2Runtime {
     }
 
     suspend fun release(source: String? = null) = lock.withLock {
-        val current = loaded ?: return@withLock
-        if (source != null && current.source != source) return@withLock
-        if (OpusMtCt2Native.isAvailable) {
-            runCatching { OpusMtCt2Native.nativeFree(current.handle) }
+        runtimeLeases.closeIfUnused {
+            val current = loaded
+            if (current != null && (source == null || current.source == source)) {
+                if (OpusMtCt2Native.isAvailable) {
+                    runCatching { OpusMtCt2Native.nativeFree(current.handle) }
+                }
+                loaded = null
+            }
         }
-        loaded = null
+        Unit
     }
 
     private fun loadLocked(context: Context, source: String): Loaded {

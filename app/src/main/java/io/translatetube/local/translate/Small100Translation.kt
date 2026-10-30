@@ -568,6 +568,7 @@ class Small100Engine(private val context: Context) : TranslationEngine {
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (lines.isEmpty()) return emptyList()
         val source = validateConfiguration(srcLang, tgtLang, lines)
+        retainRuntimeLease()
         AppLogStore.info(
             appContext, "Translation", "开始调用 SMaLL-100 多语言本地模型",
             diagnosticContext = mapOf("源语言" to source, "目标语言" to "zh", "字幕条数" to lines.size.toString()),
@@ -615,11 +616,26 @@ class Small100Engine(private val context: Context) : TranslationEngine {
         }
     }
 
+    private val runtimeLeaseLock = Any()
+    private var holdsRuntimeLease = false
+
+    private fun retainRuntimeLease() {
+        synchronized(runtimeLeaseLock) {
+            if (!holdsRuntimeLease) {
+                Small100Runtime.acquireLease()
+                holdsRuntimeLease = true
+            }
+        }
+    }
+
     override fun close() {
-        // TranslationEngine.close() is non-suspending. Never close ONNX sessions directly here:
-        // another playback session may still be inside inference. The runtime serializes release
-        // with inference and model loading through the same mutex.
-        Small100Runtime.requestCloseLoadedModel()
+        val releaseLease = synchronized(runtimeLeaseLock) {
+            if (!holdsRuntimeLease) false else {
+                holdsRuntimeLease = false
+                true
+            }
+        }
+        if (releaseLease) Small100Runtime.releaseLease()
     }
 }
 
@@ -632,6 +648,7 @@ private object Small100Runtime {
     private val inferenceMutex = Mutex()
     private val loadedLock = Any()
     private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val runtimeLeases = SharedRuntimeLeaseCounter()
     @Volatile private var loaded: Loaded? = null
 
     private data class Loaded(
@@ -823,21 +840,26 @@ private object Small100Runtime {
         )
     }
 
+    /** Retain the process-wide model for the lifetime of one translation task. */
+    fun acquireLease() {
+        runtimeLeases.acquire()
+    }
+
     /**
-     * Release model memory safely after the current inference completes. The engine interface's
-     * close() method cannot suspend, so schedule the same mutex-protected close used by model
-     * deletion instead of closing native ONNX sessions while another playback session uses them.
+     * Release this task's ownership. A deferred close re-checks the owner count while holding
+     * the same lease monitor, so another playback task can safely begin before cleanup runs.
      */
-    fun requestCloseLoadedModel() {
-        closeScope.launch {
-            closeLoadedModel()
-        }
+    fun releaseLease() {
+        if (!runtimeLeases.release()) return
+        closeScope.launch { closeLoadedModel() }
     }
 
     suspend fun closeLoadedModel() = inferenceMutex.withLock {
-        synchronized(loadedLock) {
-            loaded?.close()
-            loaded = null
+        runtimeLeases.closeIfUnused {
+            synchronized(loadedLock) {
+                loaded?.close()
+                loaded = null
+            }
         }
     }
 
