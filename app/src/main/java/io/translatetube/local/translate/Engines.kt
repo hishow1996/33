@@ -651,6 +651,7 @@ class MlKitEngine : TranslationEngine {
             val target = LangMap.mlkit(tgtLang)
             val translator = translatorFor(source, target)
             lines.mapIndexed { index, line ->
+                currentCoroutineContext().ensureActive()
                 if (line.isBlank()) {
                     ""
                 } else {
