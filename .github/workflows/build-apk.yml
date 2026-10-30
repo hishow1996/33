@@ -295,3 +295,4 @@ jobs:
 # Explicit APK retry after fixing Small100Translation download try/use braces (2026-10-31).
 # Explicit APK retry after fixing Kotlin compile errors found on 2026-10-31.
 # Explicit APK retry after fixing five-stage policy and shared runtime lease unit tests (2026-10-31).
+# Explicit APK retry after excluding the unused x86 ONNX Runtime duplicate (2026-10-31).
