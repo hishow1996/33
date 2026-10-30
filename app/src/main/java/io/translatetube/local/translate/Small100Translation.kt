@@ -673,9 +673,13 @@ private object Small100Runtime {
             if (recoveryDepth >= Small100GenerationPolicy.MAX_SPLIT_RECOVERY_DEPTH) {
                 throw IllegalStateException("SMaLL-100 字幕拆分恢复达到最大层数，仍未能完整生成译文。", cause)
             }
+            val sourceTokenCount = tokenizer.encode(text).size + 1
+            val allowWeakBoundaries = cause is Small100InputTooLongException ||
+                sourceTokenCount > Small100GenerationPolicy.MIN_TOKENS_FOR_NON_SEMANTIC_SPLIT
             val parts = Small100GenerationPolicy.splitForRecovery(
                 text = text,
                 maxChunkTokens = MAX_SOURCE_TOKENS,
+                allowWeakBoundaries = allowWeakBoundaries,
                 tokenCount = { chunk -> tokenizer.encode(chunk).size + 1 },
             ) ?: throw IllegalStateException(
                 "SMaLL-100 字幕无法继续拆分，无法保证译文完整。", cause

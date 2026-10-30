@@ -100,6 +100,18 @@ class Small100GenerationPolicyTest {
     }
 
     @Test
+    fun doesNotSplitShortPhrasesAtWhitespaceOrInsideWords() {
+        assertNull(
+            Small100GenerationPolicy.splitForRecovery(
+                text = "hello world",
+                maxChunkTokens = 1024,
+                allowWeakBoundaries = false,
+                tokenCount = { it.length },
+            )
+        )
+    }
+
+    @Test
     fun doesNotSplitSingleCodePointOrBlankText() {
         assertNull(
             Small100GenerationPolicy.splitForRecovery(

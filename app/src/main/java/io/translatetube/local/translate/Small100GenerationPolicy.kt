@@ -29,6 +29,8 @@ internal object Small100GenerationPolicy {
     const val MIN_OUTPUT_TOKENS = 512
     const val MAX_OUTPUT_TOKENS = 1024
     const val MAX_SPLIT_RECOVERY_DEPTH = 8
+    const val MIN_TOKENS_FOR_NON_SEMANTIC_SPLIT = 64
+    private const val MAX_BOUNDARY_CANDIDATES_TO_SCORE = 8
 
     /**
      * Reserve a generous output budget for short and long subtitle cues alike.
@@ -53,6 +55,7 @@ internal object Small100GenerationPolicy {
     fun splitForRecovery(
         text: String,
         maxChunkTokens: Int,
+        allowWeakBoundaries: Boolean = true,
         tokenCount: (String) -> Int,
     ): Pair<String, String>? {
         if (text.codePointCount(0, text.length) < 2 || text.isBlank()) return null
@@ -74,31 +77,36 @@ internal object Small100GenerationPolicy {
             val priority = when (char) {
                 '.', '!', '?', '。', '！', '？', ';', '；', '\n', '\r' -> 0
                 ',', '，', '、', ':', '：' -> 1
-                else -> if (char.isWhitespace()) 2 else -1
+                else -> if (char.isWhitespace() && allowWeakBoundaries) 2 else -1
             }
             if (priority >= 0) candidates += Candidate(index + 1, priority)
         }
 
-        val scored = candidates.mapNotNull { candidate ->
-            val left = text.substring(0, candidate.offset)
-            val right = text.substring(candidate.offset)
-            if (left.isBlank() || right.isBlank()) return@mapNotNull null
-            val leftTokens = tokenCount(left)
-            val rightTokens = tokenCount(right)
-            if (leftTokens <= maxChunkTokens && rightTokens <= maxChunkTokens) {
-                ScoredCandidate(candidate, leftTokens, rightTokens)
-            } else null
-        }
-        val best = scored.minWithOrNull(
-            compareBy<ScoredCandidate> { it.candidate.priority }
-                .thenBy { maxOf(it.leftTokens, it.rightTokens) }
-                .thenBy { kotlin.math.abs(it.leftTokens - it.rightTokens) }
-                .thenBy { kotlin.math.abs(it.candidate.offset - text.length / 2) }
-        )
-        if (best != null) {
-            return text.substring(0, best.candidate.offset) to text.substring(best.candidate.offset)
+        for (priority in 0..2) {
+            val nearest = candidates.asSequence()
+                .filter { it.priority == priority }
+                .sortedBy { kotlin.math.abs(it.offset - text.length / 2) }
+                .take(MAX_BOUNDARY_CANDIDATES_TO_SCORE)
+            val best = nearest.mapNotNull { candidate ->
+                val left = text.substring(0, candidate.offset)
+                val right = text.substring(candidate.offset)
+                if (left.isBlank() || right.isBlank()) return@mapNotNull null
+                val leftTokens = tokenCount(left)
+                val rightTokens = tokenCount(right)
+                if (leftTokens <= maxChunkTokens && rightTokens <= maxChunkTokens) {
+                    ScoredCandidate(candidate, leftTokens, rightTokens)
+                } else null
+            }.minWithOrNull(
+                compareBy<ScoredCandidate> { maxOf(it.leftTokens, it.rightTokens) }
+                    .thenBy { kotlin.math.abs(it.leftTokens - it.rightTokens) }
+                    .thenBy { kotlin.math.abs(it.candidate.offset - text.length / 2) }
+            )
+            if (best != null) {
+                return text.substring(0, best.candidate.offset) to text.substring(best.candidate.offset)
+            }
         }
 
+        if (!allowWeakBoundaries) return null
         var midpoint = text.length / 2
         if (midpoint in 1 until text.length &&
             Character.isLowSurrogate(text[midpoint]) &&
