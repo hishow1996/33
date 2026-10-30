@@ -564,6 +564,7 @@ internal object OpusMtRuntime {
         val identity = expectedFiles.joinToString("|") { "${it.name}:${it.length()}:${it.lastModified()}" }
         loaded?.takeIf { it.identity == identity }?.let { return it }
         loaded?.close()
+        loaded = null
 
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager != null) {
