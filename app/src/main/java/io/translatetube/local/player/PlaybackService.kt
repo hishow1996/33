@@ -521,6 +521,8 @@ data class PlayerUiState(
     val progress: String = "",
     val audioProgress: AudioProgressSnapshot? = null,
     val transcriptionProgressPercent: Int? = null,
+    val transcriptionCompletedSegments: Int = 0,
+    val transcriptionTotalSegments: Int = 0,
     val key: String = "",
     val title: String = "",
     val channel: String = "",
@@ -6956,6 +6958,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 phase = Phase.TRANSCRIBING,
                                 progress = "检查云端可直传音轨格式…",
                                 transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
                                 noModelHint = null,
                                 waitingForTranscriptionEngine = false,
                                 waitingForDubbingEngine = false,
@@ -7072,7 +7076,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 onProgress = { message ->
                                     updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(progress = message, transcriptionProgressPercent = null)
+                                            state.copy(
+                                                progress = message,
+                                                transcriptionProgressPercent = null,
+                                                transcriptionCompletedSegments = 0,
+                                                transcriptionTotalSegments = 0,
+                                            )
                                         } else state
                                     }
                                 },
@@ -7080,7 +7089,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "云端转写完成，正在整理字幕…", transcriptionProgressPercent = null)
+                                it.copy(
+                                progress = "云端转写完成，正在整理字幕…",
+                                transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
+                            )
                             }
                             val language = io.translatetube.local.subs.SubtitleLanguageDetector
                                 .resolveTranscriptionLanguageFromCues(
@@ -7107,6 +7121,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         phase = Phase.TRANSCRIBING,
                         progress = "解码音频…",
                         transcriptionProgressPercent = null,
+                        transcriptionCompletedSegments = 0,
+                        transcriptionTotalSegments = 0,
                         noModelHint = null,
                         waitingForTranscriptionEngine = false,
                         waitingForDubbingEngine = false,
@@ -7205,7 +7221,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 asrTimelineDurationMs = pcmFile.durationMs
                 val (decodedAsrLines, decodedAsrLang) = if (asrProvider == "local") {
 updateUiForSession(key, pipelineGeneration) {
-                    it.copy(progress = "语音分段 0%", transcriptionProgressPercent = 0)
+                    it.copy(
+                        progress = "语音分段 0%",
+                        transcriptionProgressPercent = 0,
+                        transcriptionCompletedSegments = 0,
+                        transcriptionTotalSegments = 0,
+                    )
                 }
                 val firstPassSegs = withContext(Dispatchers.IO) {
                     vadSegmentsFromFile(
@@ -7215,7 +7236,12 @@ updateUiForSession(key, pipelineGeneration) {
                         onProgressPercent = { percent ->
                             updateUiForSession(key, pipelineGeneration) { state ->
                                 if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                    state.copy(progress = "语音分段 ${percent}%", transcriptionProgressPercent = percent)
+                                    state.copy(
+                                        progress = "语音分段 ${percent}%",
+                                        transcriptionProgressPercent = percent,
+                                        transcriptionCompletedSegments = 0,
+                                        transcriptionTotalSegments = 0,
+                                    )
                                 } else state
                             }
                         },
@@ -7226,7 +7252,12 @@ updateUiForSession(key, pipelineGeneration) {
                 // 而不是直接报"未检测到语音内容"。
                 val segs = if (firstPassSegs.isEmpty()) {
                     updateUiForSession(key, pipelineGeneration) {
-                        it.copy(progress = "声音较小，正在提高灵敏度重新检测语音…", transcriptionProgressPercent = null)
+                        it.copy(
+                            progress = "声音较小，正在提高灵敏度重新检测语音…",
+                            transcriptionProgressPercent = null,
+                            transcriptionCompletedSegments = 0,
+                            transcriptionTotalSegments = 0,
+                        )
                     }
                     withContext(Dispatchers.IO) {
                         vadSegmentsFromFile(
@@ -7236,7 +7267,12 @@ updateUiForSession(key, pipelineGeneration) {
                             onProgressPercent = { percent ->
                                 updateUiForSession(key, pipelineGeneration) { state ->
                                     if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                        state.copy(progress = "提高灵敏度重新检测 ${percent}%", transcriptionProgressPercent = percent)
+                                        state.copy(
+                                            progress = "提高灵敏度重新检测 ${percent}%",
+                                            transcriptionProgressPercent = percent,
+                                            transcriptionCompletedSegments = 0,
+                                            transcriptionTotalSegments = 0,
+                                        )
                                     } else state
                                 }
                             },
@@ -7507,7 +7543,12 @@ updateUiForSession(key, pipelineGeneration) {
                                     val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
                                     updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(progress = progressLabel, transcriptionProgressPercent = null)
+                                            state.copy(
+                                                progress = progressLabel,
+                                                transcriptionProgressPercent = null,
+                                                transcriptionCompletedSegments = chunkStart + done,
+                                                transcriptionTotalSegments = segs.size,
+                                            )
                                         } else state
                                     }
                                 }
@@ -7634,13 +7675,23 @@ updateUiForSession(key, pipelineGeneration) {
                                 onProgress = { message ->
                                     updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(progress = message, transcriptionProgressPercent = null)
+                                            state.copy(
+                                                progress = message,
+                                                transcriptionProgressPercent = null,
+                                                transcriptionCompletedSegments = 0,
+                                                transcriptionTotalSegments = 0,
+                                            )
                                         } else state
                                     }
                                 },
                             )
                             ownerJob?.ensureActive()
-                            updateUiForSession(key, pipelineGeneration) { it.copy(progress = "云端转写完成，正在整理字幕…", transcriptionProgressPercent = null) }
+                            updateUiForSession(key, pipelineGeneration) { it.copy(
+                                progress = "云端转写完成，正在整理字幕…",
+                                transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
+                            ) }
                             // Sample timed cues directly instead of allocating a concatenated transcript.
                             val language = io.translatetube.local.subs.SubtitleLanguageDetector
                                 .resolveTranscriptionLanguageFromCues(
@@ -11549,7 +11600,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
                     updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                        if (state.key == sessionKey) state.copy(progress = message, transcriptionProgressPercent = null) else state
+                        if (state.key == sessionKey) state.copy(
+                                                progress = message,
+                                                transcriptionProgressPercent = null,
+                                                transcriptionCompletedSegments = 0,
+                                                transcriptionTotalSegments = 0,
+                                            ) else state
                     }
                 }
                 detectedSpeakerCount = segments.map { it.speaker }.distinct().size
