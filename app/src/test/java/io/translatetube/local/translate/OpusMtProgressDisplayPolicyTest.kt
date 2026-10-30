@@ -75,6 +75,24 @@ class OpusMtProgressDisplayPolicyTest {
     }
 
     @Test
+    fun completeByteCountUsesConfiguredTotalEvenWhenStateIsPaused() {
+        val display = OpusMtProgressDisplayPolicy.resolve(
+            state = OpusMtDownloadState(
+                status = OpusMtStatus.PAUSED,
+                progress = 99,
+                downloadedBytes = 1_000L,
+                totalBytes = -1L,
+            ),
+            configuredTotalBytes = 1_000L,
+        )
+
+        assertEquals(1_000L, display.downloadedBytes)
+        assertEquals(1_000L, display.totalBytes)
+        assertEquals(100, display.progress)
+        assertTrue(display.visible)
+    }
+
+    @Test
     fun verifyingModelDisplaysCompleteProgress() {
         val display = OpusMtProgressDisplayPolicy.resolve(
             state = OpusMtDownloadState(
