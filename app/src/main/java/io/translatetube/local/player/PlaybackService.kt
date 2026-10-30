@@ -1723,6 +1723,15 @@ class PlaybackService : MediaSessionService() {
                 if (boundVideoSurface?.get() === tv) return
 
                 try {
+                    // A different TextureView is a new video output. Never carry the previous
+                    // output's "first frame rendered" state into it, or a blank replacement view
+                    // can look healthy forever while the old surface is gone.
+                    pm.markVideoSurfaceNeedsFrame()
+                    noFrameWaitStartedAtMs = 0L
+                    noFrameWaitSessionKey = ui.value.key
+                    playbackStallWatchSessionKey = ""
+                    playbackStallWatchPositionMs = -1L
+                    playbackStallWatchLastProgressAtMs = 0L
                     pm.player.setVideoTextureView(tv)
                     boundVideoSurface = java.lang.ref.WeakReference(tv)
                     val bindDetails = mapOf(
@@ -1777,6 +1786,22 @@ class PlaybackService : MediaSessionService() {
         // Avoid an unnecessary main-loop delay when called from Compose/View lifecycle callbacks.
         if (Looper.myLooper() == Looper.getMainLooper()) attach.run()
         else surfaceAttachHandler.post(attach)
+    }
+
+    /**
+     * Called only after the Activity confirms that TextureView received a different SurfaceTexture.
+     * Media3 owns the TextureView listener and handles the actual surface swap; this only invalidates
+     * our previous first-frame proof so a missing frame is visible to the playback watchdog.
+     */
+    fun notifyVideoSurfaceRecreated(tv: android.view.TextureView) {
+        if (requestedVideoSurface?.get() !== tv || !playerReady || !::pm.isInitialized) return
+        pm.markVideoSurfaceNeedsFrame()
+        noFrameWaitStartedAtMs = 0L
+        noFrameWaitSessionKey = ui.value.key
+        playbackStallWatchSessionKey = ""
+        playbackStallWatchPositionMs = -1L
+        playbackStallWatchLastProgressAtMs = 0L
+        refreshPlaybackHint()
     }
 
     private fun attachPendingVideoSurface() {
