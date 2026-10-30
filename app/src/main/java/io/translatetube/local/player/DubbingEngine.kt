@@ -11,6 +11,7 @@ import android.os.Looper
 import android.media.PlaybackParams
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.tts.TtsEngine
+import io.translatetube.local.tts.LocalCpuBoundTtsEngine
 import io.translatetube.local.tts.GeminiTtsQuotaException
 import io.translatetube.local.tts.TimelineTtsPlayback
 import io.translatetube.local.tts.TtsInputLimitException
@@ -888,6 +889,27 @@ class DubbingEngine(
                     if (next != null) activeSynthesisIndex = next
                     next
                 } ?: break
+                // During playback, local neural TTS should spend CPU on the current cue and a
+                // short look-ahead window first. Keep distant/behind cues queued rather than
+                // synthesizing the full backlog while Media3 is decoding and rendering audio.
+                if (
+                    tts is LocalCpuBoundTtsEngine &&
+                    DubbingSynthesisSchedulingPolicy.shouldDefer(
+                        index = idx,
+                        currentIndex = priorityTarget,
+                        lookAhead = priorityLookAhead,
+                        playbackActive = DevicePerformanceManager.isPlaybackLoadActive(),
+                    )
+                ) {
+                    val deferred = synchronized(pending) {
+                        if (activeSynthesisIndex == idx) activeSynthesisIndex = -1
+                        !released && isWorkerTaskCurrent() && pending.offerLast(idx)
+                    }
+                    if (deferred) {
+                        kotlinx.coroutines.delay(DubbingSynthesisSchedulingPolicy.DEFER_DELAY_MS)
+                        continue
+                    }
+                }
                 // Keep the worker identity visible to finally: cancelled/reconfigured workers
                 // must clear their active slot but must not repopulate the replacement queue.
                 var deterministicFailureInThisCue = false

@@ -14,6 +14,9 @@ import java.util.concurrent.atomic.AtomicReference
 /** TTS 统一输出：合成的 PCM 音频 */
 data class TtsAudio(val samples: FloatArray, val sampleRate: Int)
 
+/** Marker for on-device neural speech engines whose inference competes with video decoding. */
+interface LocalCpuBoundTtsEngine
+
 interface TtsEngine {
     val name: String
     /** Stable synthesis configuration identity, used to avoid stale PCM cache hits. */
@@ -85,7 +88,7 @@ class KokoroTts(
     private val ctx: Context,
     private val speakerId: Int = 14,
     private val numThreads: Int = TtsCpuThreadPolicy.recommendedThreads(ctx),
-) : TtsEngine {
+) : TtsEngine, LocalCpuBoundTtsEngine {
     override val name = "Kokoro"
     private val runtimeSignature by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         io.translatetube.local.data.ModelFiles.ttsCacheSignature(ctx)

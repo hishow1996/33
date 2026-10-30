@@ -42,7 +42,7 @@ import java.util.concurrent.TimeUnit
  * 目录布局：
  *   model.onnx / tokens.txt / espeak-ng-data/
  */
-class PiperTts(context: Context, private val modelId: String) : TtsEngine {
+class PiperTts(context: Context, private val modelId: String) : TtsEngine, LocalCpuBoundTtsEngine {
     override val name = "Piper"
     private val appCtx = context.applicationContext
     private val dir: File = PiperModels.modelDir(appCtx, modelId)
