@@ -47,6 +47,16 @@ class OpusMtLanguagePolicyTest {
     }
 
     @Test
+    fun identifiesCompletedTemporaryFilesWithoutRequestingBytesPastEof() {
+        assertTrue(ModelDownloadRangePolicy.isCompletePart(1000L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.isCompletePart(999L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.isCompletePart(1001L, 1000L))
+        assertTrue(ModelDownloadRangePolicy.canAcceptBytes(900L, 100L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.canAcceptBytes(900L, 101L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.canAcceptBytes(1001L, 0L, 1000L))
+    }
+
+    @Test
     fun completeOpusFilesAreValidationFailureNotPausedDownload() {
         assertEquals(
             OpusMtStatus.FAILED,
