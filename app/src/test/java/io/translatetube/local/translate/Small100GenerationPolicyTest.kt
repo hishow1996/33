@@ -75,7 +75,7 @@ class Small100GenerationPolicyTest {
         val source = "palabra uno dos tres cuatro cinco seis siete"
         val result = Small100GenerationPolicy.splitForRecovery(
             text = source,
-            maxChunkTokens = 20,
+            maxChunkTokens = 30,
             tokenCount = { it.length },
         )
         assertNotNull(result)
@@ -93,9 +93,10 @@ class Small100GenerationPolicyTest {
         )
         assertNotNull(result)
         assertEquals(source, result!!.first + result.second)
-        assertEquals(0, result.first.last().isHighSurrogate().compareTo(true))
-        assertFalse(result.first.last().isHighSurrogate())
-        assertFalse(result.second.first().isLowSurrogate())
+        assertFalse(Character.isHighSurrogate(result.first.last()))
+        assertFalse(Character.isLowSurrogate(result.second.first()))
+        assertTrue(result.first.endsWith("😀"))
+        assertTrue(result.second.startsWith("😀"))
     }
 
     @Test
