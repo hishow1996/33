@@ -101,7 +101,7 @@ class DubbingEngine(
         cacheRootDir,
         DubbingCachePath.directoryName(videoKey),
     ).apply { mkdirs() }
-    private val pcmMemoryBudgetBytes = DubbingPcmMemoryPolicy.maxBytes(
+    @Volatile private var pcmMemoryBudgetBytes = DubbingPcmMemoryPolicy.maxBytes(
         DevicePerformanceManager.snapshot(ctx),
     )
     /** 行号 → (PCM 样本, 采样率)：按真实字节数限额，低内存设备优先走磁盘缓存。 */
@@ -1294,6 +1294,7 @@ class DubbingEngine(
                     }
                     checkSynthesisActive()
                     val retainedInMemory = synchronized(mem) {
+                        refreshPcmMemoryBudgetLocked()
                         if (!released && workerJob?.isActive != false) {
                             mem[idx] = DubbingPcmMemoryEntry(
                                 samples = boundedSamples,
@@ -1924,9 +1925,19 @@ class DubbingEngine(
     }
 
     /** Read only PCM synthesized for the currently active TTS/text/speaker/speed identity. */
+    /** Called with mem locked; shrink/expand the PCM LRU as live memory pressure changes. */
+    private fun refreshPcmMemoryBudgetLocked() {
+        val updatedBudget = DubbingPcmMemoryPolicy.maxBytes(DevicePerformanceManager.snapshot(ctx))
+        if (updatedBudget != pcmMemoryBudgetBytes) {
+            pcmMemoryBudgetBytes = updatedBudget
+            mem.updateBudget(updatedBudget)
+        }
+    }
+
     private fun memoryAudio(idx: Int): DubbingPcmMemoryEntry? {
         val activeIdentity = cacheFile(idx).name
         return synchronized(mem) {
+            refreshPcmMemoryBudgetLocked()
             val entry = mem[idx] ?: return@synchronized null
             if (DubbingMemoryCacheIdentityPolicy.canReuse(entry.cacheIdentity, activeIdentity)) {
                 entry
@@ -1945,6 +1956,7 @@ class DubbingEngine(
         cacheIdentity: String,
     ) {
         synchronized(mem) {
+            refreshPcmMemoryBudgetLocked()
             // A cache reader may finish just as this engine is retired. Never repopulate its
             // in-memory PCM LRU after release has begun.
             if (!released) {

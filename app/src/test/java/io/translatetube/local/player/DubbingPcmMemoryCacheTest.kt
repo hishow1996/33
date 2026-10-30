@@ -76,10 +76,37 @@ class DubbingPcmMemoryCacheTest {
     }
 
     @Test
+    fun loweringRuntimeBudgetEvictsOldestPcmImmediately() {
+        val cache = DubbingPcmMemoryCache(maxBytes = 64L, maxEntries = 8)
+        val oldest = entry(FloatArray(8), identity = "oldest.pcm")
+        val newest = entry(FloatArray(8), identity = "newest.pcm")
+        cache[1] = oldest
+        cache[2] = newest
+        cache[1] // make key 1 most recently used only after key 2? touch in the other order below
+        cache[2]
+
+        cache.updateBudget(32L)
+
+        assertEquals(32L, cache.retainedBytes())
+        assertEquals(1, cache.size)
+        assertFalse(cache.containsKey(1))
+        assertTrue(cache.containsKey(2))
+    }
+
+    @Test
+    fun zeroRuntimeBudgetClearsAllRetainedPcm() {
+        val cache = DubbingPcmMemoryCache(maxBytes = 64L, maxEntries = 8)
+        cache[1] = entry(FloatArray(4))
+        cache.updateBudget(0L)
+        assertTrue(cache.isEmpty())
+        assertEquals(0L, cache.retainedBytes())
+    }
+
+    @Test
     fun memoryPolicyUsesSmallerBudgetsForConstrainedPhones() {
         assertEquals(4L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(true, 512))
         assertEquals(8L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 192))
-        assertEquals(16L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 256))
+        assertEquals(8L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 256))
         assertEquals(16L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 384))
         assertEquals(32L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 512))
     }

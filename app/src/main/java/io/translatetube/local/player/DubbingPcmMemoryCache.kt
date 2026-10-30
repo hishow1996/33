@@ -28,7 +28,7 @@ internal object DubbingMemoryCacheIdentityPolicy {
  * putAll/replaceAll on a Map subclass can bypass an overridden put() and corrupt the byte budget.
  */
 internal class DubbingPcmMemoryCache(
-    private val maxBytes: Long,
+    private var maxBytes: Long = maxBytes.coerceAtLeast(0L),
     private val maxEntries: Int = 48,
 ) {
     private val storage = LinkedHashMap<Int, DubbingPcmMemoryEntry>(16, 0.75f, true)
@@ -80,6 +80,12 @@ internal class DubbingPcmMemoryCache(
         retainedBytes = 0L
     }
 
+    /** Lowering the budget immediately evicts least-recently-used PCM until it fits. */
+    fun updateBudget(newMaxBytes: Long) {
+        maxBytes = newMaxBytes.coerceAtLeast(0L)
+        trimToBudget()
+    }
+
     fun retainedBytes(): Long = retainedBytes
 
     private fun trimToBudget() {
@@ -101,8 +107,8 @@ internal object DubbingPcmMemoryPolicy {
 
     fun maxBytes(isLowRamDevice: Boolean, memoryClassMb: Int): Long = when {
         isLowRamDevice -> 4L * MIB
-        memoryClassMb in 1..192 -> 8L * MIB
-        memoryClassMb in 193..384 -> 16L * MIB
+        memoryClassMb in 1..256 -> 8L * MIB
+        memoryClassMb in 257..384 -> 16L * MIB
         memoryClassMb > 384 -> 32L * MIB
         else -> 8L * MIB
     }
