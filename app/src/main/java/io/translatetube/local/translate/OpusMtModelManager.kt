@@ -85,7 +85,10 @@ object OpusMtModelManager {
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true)
         .build()
-    private val mutableState = MutableStateFlow(OpusMtDownloadState())
+    // Keep the known package size available before the first disk refresh or download update.
+    private val mutableState = MutableStateFlow(
+        OpusMtDownloadState(fileCount = files.size, totalBytes = files.sumOf { it.sizeBytes })
+    )
     val state: StateFlow<OpusMtDownloadState> = mutableState
 
     fun modelDirectory(context: Context): File =
