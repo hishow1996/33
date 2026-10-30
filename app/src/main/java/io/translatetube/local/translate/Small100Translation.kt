@@ -396,7 +396,7 @@ object Small100ModelManager {
         // A completed .part file is already the download. Verify and install it instead of
         // asking the server for bytes after EOF, which returns 416 and previously restarted it.
         if (existingBytes >= spec.bytes) {
-            if (existingBytes == spec.bytes && hasValidContent(part, spec)) {
+            if (ModelDownloadRangePolicy.isCompletePart(existingBytes, spec.bytes) && hasValidContent(part, spec)) {
                 installVerifiedPart(target, part, spec.name)
                 updateProgress(index, spec, spec.bytes, bytesBefore)
                 return@withContext
@@ -465,7 +465,7 @@ object Small100ModelManager {
                                 coroutineContext.ensureActive()
                                 val count = input.read(buffer)
                                 if (count < 0) break
-                                if (count.toLong() > spec.bytes - current) {
+                                if (!ModelDownloadRangePolicy.canAcceptBytes(current, count.toLong(), spec.bytes)) {
                                     throw IOException("服务器返回的模型文件超过预期大小：" + spec.name)
                                 }
                                 output.write(buffer, 0, count)
