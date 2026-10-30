@@ -435,7 +435,7 @@ object OpusMtModelManager {
         // A pause may happen after the final byte is written but before installation. Reuse
         // a completed .part file instead of requesting Range: bytes=size- and downloading again.
         if (existingBytes >= spec.sizeBytes) {
-            if (existingBytes == spec.sizeBytes && hasValidContent(part, spec)) {
+            if (ModelDownloadRangePolicy.isCompletePart(existingBytes, spec.sizeBytes) && hasValidContent(part, spec)) {
                 installVerifiedPart(target, part, spec.name)
                 return@withContext
             }
@@ -511,7 +511,7 @@ object OpusMtModelManager {
                             val count = input.read(buffer)
                             if (count < 0) break
                             val bytesBeforeWrite = (if (append) existingBytes else 0L) + writtenThisRequest
-                            if (count.toLong() > spec.sizeBytes - bytesBeforeWrite) {
+                            if (!ModelDownloadRangePolicy.canAcceptBytes(bytesBeforeWrite, count.toLong(), spec.sizeBytes)) {
                                 throw IOException("服务器返回的模型文件超过预期大小：${spec.name}")
                             }
                             output.write(buffer, 0, count)
