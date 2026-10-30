@@ -43,7 +43,6 @@ object VideoProcessingFlowPolicy {
     fun steps(source: VideoSourceKind, flow: ProcessingFlow = ProcessingFlow.AUTO): List<String> = when (flow) {
         ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION -> listOf(
             "解析视频",
-            "查找字幕",
             "提取音频",
             "语音识别",
             "翻译字幕",
@@ -117,13 +116,12 @@ object VideoProcessingFlowPolicy {
 
         val resolved = when (flow) {
             ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION -> when (phase) {
-                Phase.IDLE -> 0
-                Phase.PARSING -> youtubeSubtitleLookupStage(progress, fallbackStage = 0)
-                Phase.DOWNLOADING_AUDIO -> 2
-                Phase.TRANSCRIBING -> 3
-                Phase.TRANSLATING -> 4
-                Phase.SYNTHESIZING -> 5
-                Phase.READY -> 6
+                Phase.IDLE, Phase.PARSING -> 0
+                Phase.DOWNLOADING_AUDIO -> 1
+                Phase.TRANSCRIBING -> 2
+                Phase.TRANSLATING -> 3
+                Phase.SYNTHESIZING -> 4
+                Phase.READY -> 5
                 Phase.ERROR -> 0
             }
             ProcessingFlow.YOUTUBE_SUBTITLES -> when (phase) {
@@ -265,8 +263,7 @@ object VideoProcessingFlowPolicy {
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
         if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null
 
-    fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int =
-        if (flow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION) 3 else 2
+    fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int = 2
 
     /** Notification title for a READY player whose translation or dubbing setup is still blocked. */
     fun readyNotificationWaitTitle(
