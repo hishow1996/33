@@ -1601,7 +1601,8 @@ private fun VideoParsingPage(
         waitingForDubbingEngine -> "等待配音引擎"
         state.isProcessingPaused -> structuredProcessingProgress(state, displayPhase)
             .ifBlank { "等待继续" }
-        displayPhase == Phase.TRANSLATING && !state.manualTranslationModeEnabled && state.totalLines > 0 ->
+        displayPhase == Phase.TRANSLATING && !state.manualTranslationModeEnabled &&
+            !state.manualTranslationWaiting && state.totalLines > 0 ->
             "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
         displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
             "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
