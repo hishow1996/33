@@ -342,7 +342,7 @@ object OpusMtModelManager {
             )
         } catch (cancelled: CancellationException) {
             val stateNow = mutableState.value
-            val completeFiles = allModelFilesPresent(app)
+            val completeFiles = areAllModelFilesPresent(app)
             val resumableData = hasPartialDownload(app)
             val nextStatus = OpusMtAdditionalDownloadStatePolicy.afterCancellation(
                 filesComplete = completeFiles,
@@ -373,7 +373,7 @@ object OpusMtModelManager {
             throw cancelled
         } catch (error: Throwable) {
             val previous = mutableState.value
-            val completeFiles = allModelFilesPresent(app)
+            val completeFiles = areAllModelFilesPresent(app)
             val resumableData = hasPartialDownload(app)
             val nextStatus = OpusMtAdditionalDownloadStatePolicy.afterFailure(
                 filesComplete = completeFiles,
