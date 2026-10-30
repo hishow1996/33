@@ -196,6 +196,9 @@ class DubbingAudioProcessor(
             }
         }
         if (voiceScratch.size < frames) voiceScratch = FloatArray(frames)
+        // A source reset/seek can invalidate cues after mixInto() copied samples into this
+        // scratch buffer. Keep the generation that owns this buffer and re-check it at render time.
+        val voiceBusGeneration = bus.generationToken()
         if (windowStartUs >= 0L) {
             bus.mixInto(windowStartUs, frames, voiceScratch)
         } else {
@@ -220,6 +223,7 @@ class DubbingAudioProcessor(
                 sample = voiceScratch[frame],
                 gain = requestedDubbingGain,
                 enabled = bus.isDubbingEnabled(),
+                generationMatches = bus.generationToken() == voiceBusGeneration,
             )
             appliedOriginalGain += (requestedOriginalGain - appliedOriginalGain) *
                 if (requestedOriginalGain < appliedOriginalGain) sourceAttack else sourceRelease
