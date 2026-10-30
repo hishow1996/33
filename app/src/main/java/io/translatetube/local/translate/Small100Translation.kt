@@ -989,6 +989,12 @@ private object Small100Runtime {
     ): MutableMap<String, OnnxTensor> {
         val next = linkedMapOf<String, OnnxTensor>()
         try {
+            // decoder.run() has finished, so the previous decoder cache is no longer needed.
+            // Release it before copying the larger next-token cache to avoid keeping both
+            // generations resident at the same time. Encoder cache is carried across steps.
+            Small100PastCachePolicy.keysToReleaseBeforeCopy(LAYERS, wasCache).forEach { name ->
+                previous[name]?.close()
+            }
             for (layer in 0 until LAYERS) {
                 for (kv in listOf("key", "value")) {
                     val decoderName = "present." + layer + ".decoder." + kv
@@ -999,15 +1005,16 @@ private object Small100Runtime {
                         else copyTensor(environment, result, encoderName)
                 }
             }
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
+            // A native allocation can fail with OutOfMemoryError, not just Exception.
+            // Close every newly copied tensor while leaving carried encoder cache to the caller.
             next.forEach { (name, tensor) ->
                 if (!wasCache || !name.contains(".encoder.")) runCatching { tensor.close() }
             }
             throw error
         }
-        previous.forEach { (name, tensor) ->
-            if (!wasCache || !name.contains(".encoder.")) runCatching { tensor.close() }
-        }
+        // Previous decoder caches and first-step placeholders were released before allocation.
+        // Encoder cache entries are intentionally transferred to the returned map.
         return next
     }
 
