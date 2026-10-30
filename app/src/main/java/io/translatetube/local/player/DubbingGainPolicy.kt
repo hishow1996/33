@@ -10,7 +10,10 @@ internal object DubbingGainPolicy {
     fun sanitizePcmSample(value: Float): Float =
         value.takeIf { it.isFinite() } ?: 0f
 
-    /** Apply the live dubbing gate at render time, not only when the PCM queue is read. */
+    /**
+     * Apply the live dubbing gate at render time, not only when the PCM queue is read.
+     * [gain] is normalized once per audio buffer by the caller to keep the per-frame path cheap.
+     */
     fun applyDubbingGain(sample: Float, gain: Float, enabled: Boolean): Float =
-        if (enabled) sanitizePcmSample(sample) * sanitizeGain(gain) else 0f
+        if (enabled) sanitizePcmSample(sample) * gain else 0f
 }
