@@ -135,6 +135,25 @@ internal object Small100GenerationPolicy {
         }
     }
 
+    /**
+     * Preserve a word boundary when independently translated chunks end and start
+     * with Latin letters/digits. Chinese text remains naturally unspaced.
+     */
+    fun joinTranslatedParts(left: String, right: String): String {
+        val first = left.trimEnd()
+        val second = right.trimStart()
+        if (first.isEmpty()) return second
+        if (second.isEmpty()) return first
+        val leftChar = first.last()
+        val rightChar = second.first()
+        val needsLatinSeparator = isLatinWordCharacter(leftChar) && isLatinWordCharacter(rightChar)
+        return first + if (needsLatinSeparator) " " else "" + second
+    }
+
+    private fun isLatinWordCharacter(char: Char): Boolean =
+        char.isDigit() || (char.isLetter() &&
+            Character.UnicodeScript.of(char.code) == Character.UnicodeScript.LATIN)
+
     fun requireComplete(
         reachedEos: Boolean,
         generatedTokenCount: Int,

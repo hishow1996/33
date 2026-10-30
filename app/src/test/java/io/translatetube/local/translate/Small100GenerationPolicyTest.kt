@@ -153,6 +153,13 @@ class Small100GenerationPolicyTest {
     }
 
     @Test
+    fun joinsLatinChunkBoundariesWithoutMergingWords() {
+        assertEquals("OpenAI model", Small100GenerationPolicy.joinTranslatedParts("OpenAI ", " model"))
+        assertEquals("你好世界", Small100GenerationPolicy.joinTranslatedParts("你好", "世界"))
+        assertEquals("你好OpenAI", Small100GenerationPolicy.joinTranslatedParts("你好", "OpenAI"))
+    }
+
+    @Test
     fun doesNotSplitSingleCodePointOrBlankText() {
         assertNull(
             Small100GenerationPolicy.splitForRecovery(

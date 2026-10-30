@@ -696,7 +696,7 @@ private object Small100Runtime {
             val right = translateOneWithRecovery(
                 parts.second, targetCode, sourceLanguage, checkActive, recoveryDepth + 1
             )
-            return cleanChineseSpacing(left + right)
+            return cleanChineseSpacing(Small100GenerationPolicy.joinTranslatedParts(left, right))
         }
 
         fun translateOne(
@@ -789,13 +789,8 @@ private object Small100Runtime {
         }
     }
 
-    suspend fun translateOne(context: Context, text: String, targetCode: String): String {
-        val taskContext = currentCoroutineContext()
-        return inferenceMutex.withLock {
-            taskContext.ensureActive()
-            load(context).translateOne(text, targetCode) { taskContext.ensureActive() }
-        }
-    }
+    suspend fun translateOne(context: Context, text: String, targetCode: String): String =
+        translateOneWithRecovery(context, text, targetCode, "en")
 
     suspend fun translateOneWithRecovery(
         context: Context,
