@@ -76,6 +76,53 @@ class Small100ModelPolicyTest {
     }
 
     @Test
+    fun priorityQueueBpePreservesMergeRankAndLeftToRightOverlapRules() {
+        val tokens = listOf("▁", "a", "▁a", "aa", "aaaa")
+        val vocab = tokens.withIndex().associate { it.value to (20 + it.index) }
+        val idToToken = arrayOfNulls<String>(64).apply {
+            vocab.forEach { (token, id) -> this[id] = token }
+        }
+        val tokenizer = Small100BpeTokenizer(
+            vocab = vocab,
+            idToToken = idToToken,
+            merges = mapOf(
+                "▁ a" to 0,
+                "a a" to 1,
+                "aa aa" to 2,
+            ),
+            specialIds = emptySet(),
+        )
+
+        // "▁a" is formed first, then the remaining repeated letters are
+        // merged left-to-right in non-overlapping pairs.
+        val encoded = tokenizer.encode("aaaaaaaa")
+        assertEquals(
+            listOf(vocab.getValue("▁a"), vocab.getValue("aaaa"), vocab.getValue("aa"), 2),
+            encoded.map { it.toInt() },
+        )
+    }
+
+    @Test
+    fun priorityQueueBpeHandlesLongUnbrokenTextWithoutChangingCharacterOrder() {
+        val tokens = listOf("▁", "a", "▁a", "aa")
+        val vocab = tokens.withIndex().associate { it.value to (20 + it.index) }
+        val idToToken = arrayOfNulls<String>(64).apply {
+            vocab.forEach { (token, id) -> this[id] = token }
+        }
+        val tokenizer = Small100BpeTokenizer(
+            vocab = vocab,
+            idToToken = idToToken,
+            merges = mapOf("▁ a" to 0, "a a" to 1),
+            specialIds = emptySet(),
+        )
+        val encoded = tokenizer.encode("a".repeat(512))
+        assertEquals(513, encoded.size)
+        assertEquals(2L, encoded.last())
+        assertEquals(512, tokenizer.decode(encoded).replace(" ", "").length)
+        assertTrue(encoded.dropLast(1).all { it.toInt() == vocab.getValue("▁a") || it.toInt() == vocab.getValue("aa") || it.toInt() == vocab.getValue("a") })
+    }
+
+    @Test
     fun parsesTokenizerJsonAndEncodesAndDecodesBpeTokens() {
         val json = """
             {

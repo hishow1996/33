@@ -37,6 +37,7 @@ import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.PriorityQueue
 import java.util.concurrent.TimeUnit
 
 enum class Small100Status { NOT_DOWNLOADED, DOWNLOADING, VERIFYING, PAUSED, READY, FAILED }
@@ -1091,37 +1092,118 @@ internal class Small100BpeTokenizer(
         id in 0..3 || id in 128004..128111 || id in specialIds
 
     private fun applyBpe(initialPieces: MutableList<String>): List<String> {
-        var pieces = initialPieces
-        while (pieces.size > 1) {
-            var bestRank = Int.MAX_VALUE
-            var bestFirst = ""
-            var bestSecond = ""
-            for (i in 0 until pieces.size - 1) {
-                val first = pieces[i]
-                val second = pieces[i + 1]
-                val rank = merges["$first $second"] ?: continue
-                if (rank < bestRank) {
-                    bestRank = rank
-                    bestFirst = first
-                    bestSecond = second
-                }
-            }
-            if (bestRank == Int.MAX_VALUE) break
+        if (initialPieces.size <= 1) return initialPieces
 
-            val merged = ArrayList<String>(pieces.size - 1)
-            var i = 0
-            while (i < pieces.size) {
-                if (i + 1 < pieces.size && pieces[i] == bestFirst && pieces[i + 1] == bestSecond) {
-                    merged.add(bestFirst + bestSecond)
-                    i += 2
+        data class PieceNode(
+            var token: String,
+            var previous: Int,
+            var next: Int,
+            var active: Boolean = true,
+        )
+        data class MergeCandidate(
+            val rank: Int,
+            val leftIndex: Int,
+            val rightIndex: Int,
+        )
+
+        val nodes = ArrayList<PieceNode>(initialPieces.size)
+        for (index in initialPieces.indices) {
+            nodes += PieceNode(
+                token = initialPieces[index],
+                previous = index - 1,
+                next = if (index == initialPieces.lastIndex) -1 else index + 1,
+            )
+        }
+        val queue = PriorityQueue<MergeCandidate>(
+            compareBy<MergeCandidate> { it.rank }.thenBy { it.leftIndex }
+        )
+
+        fun addCandidate(leftIndex: Int) {
+            if (leftIndex !in nodes.indices) return
+            val left = nodes[leftIndex]
+            if (!left.active || left.next < 0) return
+            val rightIndex = left.next
+            val right = nodes[rightIndex]
+            if (!right.active) return
+            val rank = merges[left.token + " " + right.token] ?: return
+            queue.add(MergeCandidate(rank, leftIndex, rightIndex))
+        }
+
+        fun isCurrent(candidate: MergeCandidate): Boolean {
+            if (candidate.leftIndex !in nodes.indices || candidate.rightIndex !in nodes.indices) return false
+            val left = nodes[candidate.leftIndex]
+            val right = nodes[candidate.rightIndex]
+            return left.active &&
+                right.active &&
+                left.next == candidate.rightIndex &&
+                merges[left.token + " " + right.token] == candidate.rank
+        }
+
+        for (index in 0 until nodes.lastIndex) addCandidate(index)
+
+        while (queue.isNotEmpty()) {
+            var first: MergeCandidate? = null
+            while (queue.isNotEmpty() && first == null) {
+                val candidate = queue.poll()
+                if (isCurrent(candidate)) first = candidate
+            }
+            val selected = first ?: break
+            val selectedRank = selected.rank
+            val selectedFirst = nodes[selected.leftIndex].token
+            val selectedSecond = nodes[selected.rightIndex].token
+
+            // The original tokenizer merges every non-overlapping occurrence of
+            // the selected pair before evaluating newly-created adjacent pairs.
+            // Collect that rank first so queue updates cannot change this rule.
+            val batch = ArrayList<MergeCandidate>()
+            batch += selected
+            val deferred = ArrayList<MergeCandidate>()
+            while (queue.peek()?.rank == selectedRank) {
+                val candidate = queue.poll()
+                if (!isCurrent(candidate)) continue
+                val left = nodes[candidate.leftIndex]
+                val right = nodes[candidate.rightIndex]
+                if (left.token == selectedFirst && right.token == selectedSecond) {
+                    batch += candidate
                 } else {
-                    merged.add(pieces[i])
-                    i += 1
+                    deferred += candidate
                 }
             }
-            pieces = merged
+            deferred.forEach(queue::add)
+
+            val changedLeftIndices = ArrayList<Int>(batch.size)
+            batch.sortBy { it.leftIndex }
+            for (candidate in batch) {
+                if (!isCurrent(candidate)) continue
+                val leftIndex = candidate.leftIndex
+                val left = nodes[leftIndex]
+                val right = nodes[candidate.rightIndex]
+                left.token += right.token
+                left.next = right.next
+                if (right.next >= 0) nodes[right.next].previous = leftIndex
+                right.active = false
+                right.previous = -1
+                right.next = -1
+                changedLeftIndices += leftIndex
+            }
+
+            // Only the two links around each merge can acquire new BPE pairs.
+            // Stale candidates remain cheap to discard when they reach the queue head.
+            for (leftIndex in changedLeftIndices) {
+                val node = nodes[leftIndex]
+                addCandidate(node.previous)
+                addCandidate(leftIndex)
+            }
         }
-        return pieces
+
+        val result = ArrayList<String>(nodes.size)
+        var index = 0
+        while (index >= 0) {
+            val node = nodes[index]
+            if (node.active) result += node.token
+            index = node.next
+        }
+        return result
     }
 
     override fun close() {
