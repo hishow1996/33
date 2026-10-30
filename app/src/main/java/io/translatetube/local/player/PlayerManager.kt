@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import android.content.Context
+import io.translatetube.local.performance.DevicePerformanceManager
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
@@ -126,13 +127,11 @@ class PlayerManager(private val ctx: Context) {
         .setAllowCrossProtocolRedirects(true)
 
     private val bufferConfig: PlayerBufferConfig = run {
-        val activityManager = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
-        val memoryInfo = android.app.ActivityManager.MemoryInfo()
-        runCatching { activityManager?.getMemoryInfo(memoryInfo) }
+        val device = DevicePerformanceManager.snapshot(ctx)
         PlayerBufferPolicy.select(
-            isLowRamDevice = activityManager?.isLowRamDevice == true,
-            memoryClassMb = activityManager?.memoryClass ?: 256,
-            availableMemoryBytes = memoryInfo.availMem,
+            isLowRamDevice = device.isLowRamDevice,
+            memoryClassMb = device.memoryClassMb.takeIf { it > 0 } ?: 192,
+            availableMemoryBytes = device.availableMemoryBytes,
         )
     }
 

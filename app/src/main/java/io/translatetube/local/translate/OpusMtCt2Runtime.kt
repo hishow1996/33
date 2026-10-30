@@ -2,6 +2,8 @@ package io.translatetube.local.translate
 
 import android.app.ActivityManager
 import android.content.Context
+import io.translatetube.local.performance.DevicePerformanceManager
+import io.translatetube.local.performance.DevicePerformancePolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -174,14 +176,12 @@ internal object OpusMtCt2Runtime {
     }
 
     private fun resolveBatchLimits(context: Context): OpusMtBatchPolicy.Limits {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            ?: return OpusMtBatchPolicy.resolve(0L)
-        val memoryInfo = ActivityManager.MemoryInfo()
-        val availableBytes = runCatching {
-            activityManager.getMemoryInfo(memoryInfo)
-            memoryInfo.availMem
-        }.getOrDefault(0L)
-        return OpusMtBatchPolicy.resolve(availableBytes)
+        val device = DevicePerformanceManager.snapshot(context)
+        return OpusMtBatchPolicy.resolve(
+            availableMemoryBytes = device.availableMemoryBytes,
+            deviceMaxExamples = DevicePerformancePolicy.translationBatchMaxExamples(device),
+            deviceMaxCharacters = DevicePerformancePolicy.translationBatchMaxCharacters(device),
+        )
     }
 
     private fun loadLocked(context: Context, source: String): Loaded {
@@ -202,14 +202,10 @@ internal object OpusMtCt2Runtime {
         loaded?.let { old -> runCatching { OpusMtCt2Native.nativeFree(old.handle) } }
         loaded = null
 
-        var availableMemoryBytes = 0L
-        var systemLowMemory = false
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager != null) {
             val memoryInfo = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memoryInfo)
-            availableMemoryBytes = memoryInfo.availMem
-            systemLowMemory = memoryInfo.lowMemory
             val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memoryInfo.totalMem)
             if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memoryInfo.availMem, memoryInfo.totalMem)) {
                 val availableMb = memoryInfo.availMem / LocalTranslationMemoryPolicy.MEGABYTE
@@ -221,11 +217,7 @@ internal object OpusMtCt2Runtime {
                 )
             }
         }
-        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(
-            Runtime.getRuntime().availableProcessors(),
-            availableMemoryBytes,
-            systemLowMemory,
-        )
+        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(context)
 
         val handle = try {
             OpusMtCt2Native.nativeLoad(

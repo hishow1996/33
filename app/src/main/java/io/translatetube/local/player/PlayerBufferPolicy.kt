@@ -12,7 +12,7 @@ internal data class PlayerBufferConfig(
 internal object PlayerBufferPolicy {
     private const val BYTES_PER_MIB = 1024L * 1024L
     private const val LOW_AVAILABLE_MEMORY_BYTES = 384L * BYTES_PER_MIB
-    private const val LOW_MEMORY_CLASS_MB = 256
+    private const val LOW_MEMORY_CLASS_MB = 192
 
     private val normal = PlayerBufferConfig(
         minBufferMs = 30_000,

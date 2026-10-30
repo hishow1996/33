@@ -880,14 +880,10 @@ private object Small100Runtime {
         loaded?.close()
         loaded = null
 
-        var availableMemoryBytes = 0L
-        var systemLowMemory = false
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager != null) {
             val memory = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memory)
-            availableMemoryBytes = memory.availMem
-            systemLowMemory = memory.lowMemory
             val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memory.totalMem)
             if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memory.availMem, memory.totalMem)) {
                 val availableMb = memory.availMem / LocalTranslationMemoryPolicy.MEGABYTE
@@ -898,11 +894,7 @@ private object Small100Runtime {
                 )
             }
         }
-        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(
-            Runtime.getRuntime().availableProcessors(),
-            availableMemoryBytes,
-            systemLowMemory,
-        )
+        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(context)
         var stage = "ONNX Runtime 环境初始化"
         var options: OrtSession.SessionOptions? = null
         var encoder: OrtSession? = null

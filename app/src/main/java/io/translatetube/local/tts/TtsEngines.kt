@@ -1,6 +1,8 @@
 package io.translatetube.local.tts
 
 import android.content.Context
+import io.translatetube.local.performance.DevicePerformanceManager
+import io.translatetube.local.performance.DevicePerformancePolicy
 import android.speech.tts.TextToSpeech
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
@@ -48,6 +50,9 @@ internal object TtsCpuThreadPolicy {
             availableProcessors >= 6 -> 3
             else -> 2
         }
+
+    fun recommendedThreads(context: Context): Int =
+        DevicePerformancePolicy.recommendedTtsThreads(DevicePerformanceManager.snapshot(context))
 }
 
 /**
@@ -76,7 +81,7 @@ interface TimelineTtsPlayback {
 class KokoroTts(
     private val ctx: Context,
     private val speakerId: Int = 14,
-    private val numThreads: Int = TtsCpuThreadPolicy.recommendedThreads(),
+    private val numThreads: Int = TtsCpuThreadPolicy.recommendedThreads(ctx),
 ) : TtsEngine {
     override val name = "Kokoro"
     private val runtimeSignature by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {

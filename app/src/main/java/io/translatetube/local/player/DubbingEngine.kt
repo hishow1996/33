@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import android.content.Context
+import io.translatetube.local.performance.DevicePerformanceManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -100,11 +101,8 @@ class DubbingEngine(
         cacheRootDir,
         DubbingCachePath.directoryName(videoKey),
     ).apply { mkdirs() }
-    private val activityManager =
-        ctx.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
     private val pcmMemoryBudgetBytes = DubbingPcmMemoryPolicy.maxBytes(
-        isLowRamDevice = activityManager?.isLowRamDevice == true,
-        memoryClassMb = activityManager?.memoryClass ?: 256,
+        DevicePerformanceManager.snapshot(ctx),
     )
     /** 行号 → (PCM 样本, 采样率)：按真实字节数限额，低内存设备优先走磁盘缓存。 */
     private val mem = DubbingPcmMemoryCache(maxBytes = pcmMemoryBudgetBytes, maxEntries = 48)

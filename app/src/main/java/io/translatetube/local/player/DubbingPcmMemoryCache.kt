@@ -101,10 +101,12 @@ internal object DubbingPcmMemoryPolicy {
 
     fun maxBytes(isLowRamDevice: Boolean, memoryClassMb: Int): Long = when {
         isLowRamDevice -> 4L * MIB
-        memoryClassMb in 1..256 -> 8L * MIB
-        memoryClassMb in 257..384 -> 16L * MIB
+        memoryClassMb in 1..192 -> 8L * MIB
+        memoryClassMb in 193..384 -> 16L * MIB
         memoryClassMb > 384 -> 32L * MIB
-        // Unknown memory-class readings should not receive the largest cache budget.
         else -> 8L * MIB
     }
+
+    fun maxBytes(snapshot: io.translatetube.local.performance.DevicePerformanceSnapshot): Long =
+        io.translatetube.local.performance.DevicePerformancePolicy.dubbingPcmCacheBytes(snapshot)
 }

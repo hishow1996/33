@@ -78,7 +78,8 @@ class DubbingPcmMemoryCacheTest {
     @Test
     fun memoryPolicyUsesSmallerBudgetsForConstrainedPhones() {
         assertEquals(4L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(true, 512))
-        assertEquals(8L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 256))
+        assertEquals(8L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 192))
+        assertEquals(16L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 256))
         assertEquals(16L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 384))
         assertEquals(32L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 512))
     }

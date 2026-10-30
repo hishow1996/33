@@ -1,6 +1,9 @@
 package io.translatetube.local.asr
 
 import android.util.Log
+import io.translatetube.local.TranslateTubeApp
+import io.translatetube.local.performance.DevicePerformanceManager
+import io.translatetube.local.performance.DevicePerformancePolicy
 
 /**
  * Conservative sherpa-onnx CPU scheduling:
@@ -16,10 +19,14 @@ internal object LocalAsrPerformancePolicy {
         dubbingEnabled: Boolean,
     ): Int {
         val cores = processorCount.coerceAtLeast(1)
-        if (cores <= 2) return 1
-        if (modelId == "sensevoice" && cores >= 8 && !(isPlaying && dubbingEnabled)) {
-            return 3
+        val dynamic = runCatching {
+            DevicePerformanceManager.snapshot(TranslateTubeApp.instance).copy(processorCount = cores)
+        }.getOrNull()
+        if (dynamic != null) {
+            return DevicePerformancePolicy.recommendedAsrThreads(dynamic, modelId, isPlaying, dubbingEnabled)
         }
+        if (cores <= 2) return 1
+        if (modelId == "sensevoice" && cores >= 8 && !(isPlaying && dubbingEnabled)) return 3
         return 2.coerceAtMost(cores)
     }
 }

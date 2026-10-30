@@ -15,13 +15,17 @@ internal object OpusMtBatchPolicy {
      * Available system memory is sampled for every batch. A single long cue is always allowed
      * through on its own; it is never truncated to satisfy the aggregate batch character budget.
      */
-    fun resolve(availableMemoryBytes: Long): Limits {
+    fun resolve(availableMemoryBytes: Long, deviceMaxExamples: Int = 8, deviceMaxCharacters: Int = 4_096): Limits {
         val available = availableMemoryBytes.coerceAtLeast(0L)
-        return when {
+        val memoryBased = when {
             available < LOW_MEMORY_BYTES -> Limits(maxExamples = 2, maxCharacters = 1_024)
             available < NORMAL_MEMORY_BYTES -> Limits(maxExamples = 4, maxCharacters = 2_048)
             else -> Limits(maxExamples = 8, maxCharacters = 4_096)
         }
+        return Limits(
+            maxExamples = minOf(memoryBased.maxExamples, deviceMaxExamples.coerceAtLeast(1)),
+            maxCharacters = minOf(memoryBased.maxCharacters, deviceMaxCharacters.coerceAtLeast(1)),
+        )
     }
 
     /** Returns an exclusive end index and always advances for a valid start index. */

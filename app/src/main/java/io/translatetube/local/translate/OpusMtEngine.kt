@@ -590,14 +590,10 @@ internal object OpusMtRuntime {
         loaded?.close()
         loaded = null
 
-        var availableMemoryBytes = 0L
-        var systemLowMemory = false
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager != null) {
             val memoryInfo = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memoryInfo)
-            availableMemoryBytes = memoryInfo.availMem
-            systemLowMemory = memoryInfo.lowMemory
             val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memoryInfo.totalMem)
             if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memoryInfo.availMem, memoryInfo.totalMem)) {
                 val availableMb = memoryInfo.availMem / LocalTranslationMemoryPolicy.MEGABYTE
@@ -608,11 +604,7 @@ internal object OpusMtRuntime {
                 )
             }
         }
-        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(
-            Runtime.getRuntime().availableProcessors(),
-            availableMemoryBytes,
-            systemLowMemory,
-        )
+        val inferenceThreads = LocalTranslationRuntimePolicy.inferenceThreads(context)
         val environment = OrtEnvironment.getEnvironment()
         val options = OrtSession.SessionOptions().apply { setIntraOpNumThreads(inferenceThreads) }
         var encoder: OrtSession? = null

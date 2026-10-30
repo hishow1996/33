@@ -9,7 +9,7 @@ class PlayerBufferPolicyTest {
     @Test
     fun usesShorterBufferForLowRamOrSmallAppHeap() {
         val lowRam = PlayerBufferPolicy.select(true, 512, 2L * 1024 * 1024 * 1024)
-        val smallHeap = PlayerBufferPolicy.select(false, 256, 2L * 1024 * 1024 * 1024)
+        val smallHeap = PlayerBufferPolicy.select(false, 192, 2L * 1024 * 1024 * 1024)
         assertTrue(lowRam.lowMemoryProfile)
         assertTrue(smallHeap.lowMemoryProfile)
         assertEquals(15_000, lowRam.minBufferMs)

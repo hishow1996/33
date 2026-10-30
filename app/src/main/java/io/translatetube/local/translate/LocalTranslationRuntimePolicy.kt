@@ -1,5 +1,9 @@
 package io.translatetube.local.translate
 
+import android.content.Context
+import io.translatetube.local.performance.DevicePerformanceManager
+import io.translatetube.local.performance.DevicePerformancePolicy
+
 /** Conservative CPU-thread policy shared by the local translation runtimes. */
 internal object LocalTranslationRuntimePolicy {
     private const val MB = 1024L * 1024L
@@ -10,6 +14,9 @@ internal object LocalTranslationRuntimePolicy {
      * Two threads are used only when the device has at least four logical processors and
      * Android reports at least 1 GB available memory without its low-memory warning.
      */
+    fun inferenceThreads(context: Context): Int =
+        DevicePerformancePolicy.recommendedLocalInferenceThreads(DevicePerformanceManager.snapshot(context))
+
     fun inferenceThreads(
         availableProcessors: Int,
         availableMemoryBytes: Long,
