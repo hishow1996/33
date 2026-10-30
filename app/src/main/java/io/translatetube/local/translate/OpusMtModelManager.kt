@@ -4,6 +4,8 @@ import android.content.Context
 import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,7 +116,7 @@ object OpusMtModelManager {
         return marker.isFile &&
             files.all { spec ->
                 val file = File(dir, spec.name)
-                file.isFile && file.length() >= spec.sizeBytes
+                file.isFile && file.length() == spec.sizeBytes
             } &&
             runCatching {
                 marker.readText(Charsets.UTF_8).trim() == validationSignature(context)
@@ -153,22 +155,19 @@ object OpusMtModelManager {
     private fun areAllModelFilesPresent(context: Context): Boolean {
         val dir = modelDirectory(context)
         return files.all { spec ->
-            File(dir, spec.name).let { it.isFile && it.length() >= spec.sizeBytes }
+            File(dir, spec.name).let { it.isFile && it.length() == spec.sizeBytes }
         }
     }
 
-    /** Also returns true when complete model files exist but runtime validation has not passed. */
+    /** True when a resumable fragment or an incomplete installed file exists. */
     fun hasPartialDownload(context: Context): Boolean {
+        if (areAllModelFilesPresent(context)) return false
         val dir = modelDirectory(context)
-        if (files.any { spec ->
-                val part = File(dir, "${spec.name}.part")
-                part.isFile && part.length() > 0L
-            }
-        ) return true
         return files.any { spec ->
+            val part = File(dir, "${spec.name}.part")
             val target = File(dir, spec.name)
-            target.isFile && target.length() >= spec.sizeBytes
-        } && !isReady(context)
+            (part.isFile && part.length() > 0L) || (target.isFile && target.length() > 0L)
+        }
     }
 
     suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
@@ -419,6 +418,7 @@ object OpusMtModelManager {
         }
     }
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     private suspend fun downloadFile(
         context: Context,
         dir: File,
@@ -432,12 +432,34 @@ object OpusMtModelManager {
         var existingBytes = if (part.isFile) part.length() else 0L
         var rangeRetryUsed = false
 
+        // A pause may happen after the final byte is written but before installation. Reuse
+        // a completed .part file instead of requesting Range: bytes=size- and downloading again.
+        if (existingBytes >= spec.sizeBytes) {
+            if (existingBytes == spec.sizeBytes && hasValidContent(part, spec)) {
+                installVerifiedPart(target, part, spec.name)
+                return@withContext
+            }
+            if (part.exists() && !part.delete()) throw IOException("无法清理无效的完整下载残片：${spec.name}")
+            existingBytes = 0L
+        }
+
         while (true) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            val requestBuilder = Request.Builder().url(spec.url).get()
+            val requestBuilder = Request.Builder().url(spec.url)
+                .header("Accept-Encoding", "identity")
+                .get()
             if (existingBytes > 0L) requestBuilder.header("Range", "bytes=$existingBytes-")
             var retryFromZero = false
-            client.newCall(requestBuilder.build()).execute().use { response ->
+            val call = client.newCall(requestBuilder.build())
+            val activeJob = currentCoroutineContext()[Job]
+            val cancellationHandle = activeJob?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is java.util.concurrent.CancellationException) call.cancel()
+            }
+            try {
+                call.execute().use { response ->
                 if (response.code == 416 && existingBytes > 0L) {
                     if (rangeRetryUsed) throw IOException("服务器连续拒绝 OPUS-MT 续传范围：${spec.name}")
                     if (part.exists() && !part.delete()) throw IOException("无法清理无效的下载残片：${spec.name}")
@@ -488,6 +510,10 @@ object OpusMtModelManager {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val count = input.read(buffer)
                             if (count < 0) break
+                            val bytesBeforeWrite = (if (append) existingBytes else 0L) + writtenThisRequest
+                            if (count.toLong() > spec.sizeBytes - bytesBeforeWrite) {
+                                throw IOException("服务器返回的模型文件超过预期大小：${spec.name}")
+                            }
                             output.write(buffer, 0, count)
                             writtenThisRequest += count.toLong()
                             val currentBytes = (if (append) existingBytes else 0L) + writtenThisRequest
@@ -517,11 +543,7 @@ object OpusMtModelManager {
                     if (!part.delete()) throw IOException("OPUS-MT SHA-256 校验失败，且无法清理残片：${spec.name}")
                     throw IOException("模型文件 SHA-256 校验失败：${spec.name}。已清除损坏文件，可重新下载。")
                 }
-                if (target.exists() && !target.delete()) throw IOException("无法替换旧模型文件：${spec.name}")
-                if (!part.renameTo(target)) {
-                    part.copyTo(target, overwrite = true)
-                    if (!part.delete()) throw IOException("模型文件已复制，但无法清理残片：${spec.name}")
-                }
+                installVerifiedPart(target, part, spec.name)
                 AppLogStore.info(
                     context,
                     "LocalTranslationModel",
@@ -533,10 +555,26 @@ object OpusMtModelManager {
                         "文件序号" to "${index + 1}/${files.size}",
                     ),
                 )
+                }
+            } catch (error: Exception) {
+                if (activeJob?.isCancelled == true && error !is CancellationException) {
+                    throw CancellationException("OPUS-MT 模型下载已取消").also { it.initCause(error) }
+                }
+                throw error
+            } finally {
+                cancellationHandle?.dispose()
             }
             if (retryFromZero) continue
             if (!validFile(target, spec)) throw IOException("下载文件检查失败：${spec.name}")
             break
+        }
+    }
+
+    private fun installVerifiedPart(target: File, part: File, name: String) {
+        if (target.exists() && !target.delete()) throw IOException("无法替换旧模型文件：$name")
+        if (!part.renameTo(target)) {
+            part.copyTo(target, overwrite = true)
+            if (!part.delete()) throw IOException("模型文件已复制，但无法清理残片：$name")
         }
     }
 
