@@ -366,7 +366,7 @@ object OpusMtAdditionalModelManager {
             var existingBytes = if (part.isFile) part.length() else 0L
             // Keep a fully downloaded temporary file after interruption and finalize it on resume.
             if (existingBytes >= item.size) {
-                if (existingBytes == item.size && validFile(part, item)) {
+                if (ModelDownloadRangePolicy.isCompletePart(existingBytes, item.size) && validFile(part, item)) {
                     installVerifiedPart(target, part, item.name)
                     return@withContext
                 }
@@ -427,7 +427,7 @@ object OpusMtAdditionalModelManager {
                             val count = input.read(buffer)
                             if (count < 0) break
                             val bytesBeforeWrite = (if (append) existingBytes else 0L) + writtenThisRequest
-                            if (count.toLong() > item.size - bytesBeforeWrite) {
+                            if (!ModelDownloadRangePolicy.canAcceptBytes(bytesBeforeWrite, count.toLong(), item.size)) {
                                 throw IOException("服务器返回的模型文件超过预期大小：" + item.name)
                             }
                             output.write(buffer, 0, count)
