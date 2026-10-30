@@ -54,6 +54,8 @@ internal data class PlaybackHintInput(
     val blockedMessage: String? = null,
     val blockedOffersOriginalOnly: Boolean = false,
     val noFirstFrameTimedOut: Boolean = false,
+    /** Playhead is unchanged while Media3 still claims active playback. */
+    val playbackStalled: Boolean = false,
 )
 
 internal object PlaybackHintPolicy {
@@ -61,7 +63,7 @@ internal object PlaybackHintPolicy {
     private const val MAX_DETAIL_CHARS = 140
 
     fun hintFor(input: PlaybackHintInput): PlaybackHint? {
-        if (input.hasRenderedFirstFrame && input.isPlaying) return null
+        if (input.hasRenderedFirstFrame && input.isPlaying && !input.playbackStalled) return null
         if (!input.screenEligible) return null
 
         val failure = safeReason(input.failureMessage)
@@ -81,6 +83,13 @@ internal object PlaybackHintPolicy {
                 action = PlaybackHintAction.RELOAD,
                 actionLabel = "重新加载",
                 priority = 110,
+            )
+            input.playbackStalled -> PlaybackHint(
+                key = "playback-stalled",
+                message = "视频播放似乎卡住了",
+                action = PlaybackHintAction.RELOAD,
+                actionLabel = "重新加载",
+                priority = 108,
             )
             input.recoveryInProgress -> PlaybackHint(
                 key = "address-recovery",
