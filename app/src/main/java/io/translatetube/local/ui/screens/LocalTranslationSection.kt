@@ -787,17 +787,26 @@ internal fun LocalTranslationSection(
                                         .padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalArrangement = Arrangement.spacedBy(3.dp),
                                 ) {
-                                    Text(
-                                        language,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = if (selectedLanguage) Color(0xFF2858B8) else Color(0xFF172033),
-                                        maxLines = 1,
-                                    )
-                                    Text(
-                                        formatLocalModelSizeDetail(expectedBytes),
-                                        color = Color(0xFF64748B),
-                                        style = MaterialTheme.typography.labelSmall,
-                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Text(
+                                            language,
+                                            modifier = Modifier.weight(1f),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = if (selectedLanguage) Color(0xFF2858B8) else Color(0xFF172033),
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            formatLocalModelSizeDetail(expectedBytes),
+                                            color = Color(0xFF64748B),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
+                                        )
+                                    }
                                     Text(
                                         when (state.status) {
                                             OpusMtStatus.READY -> "已下载并验证"
@@ -989,16 +998,26 @@ internal fun LocalTranslationSection(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(3.dp),
                             ) {
-                                Text(
-                                    "共用直译模型 · SMaLL-100",
-                                    color = Color(0xFF172033),
-                                    style = MaterialTheme.typography.titleSmall,
-                                )
-                                Text(
-                                    formatLocalModelSizeDetail(Small100ModelManager.TOTAL_BYTES),
-                                    color = Color(0xFF64748B),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        "共用直译模型 · SMaLL-100",
+                                        modifier = Modifier.weight(1f),
+                                        color = Color(0xFF172033),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        formatLocalModelSizeDetail(Small100ModelManager.TOTAL_BYTES),
+                                        color = Color(0xFF64748B),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                    )
+                                }
                                 Text(
                                     when (small100State.status) {
                                         Small100Status.READY -> "已下载并验证"
@@ -1146,16 +1165,26 @@ internal fun LocalTranslationSection(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(3.dp),
                             ) {
-                                Text(
-                                    "SMaLL-100 多语言直译模型",
-                                    color = Color(0xFF172033),
-                                    style = MaterialTheme.typography.titleSmall,
-                                )
-                                Text(
-                                    formatLocalModelSizeDetail(Small100ModelManager.TOTAL_BYTES),
-                                    color = Color(0xFF64748B),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        "SMaLL-100 多语言直译模型",
+                                        modifier = Modifier.weight(1f),
+                                        color = Color(0xFF172033),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        formatLocalModelSizeDetail(Small100ModelManager.TOTAL_BYTES),
+                                        color = Color(0xFF64748B),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                    )
+                                }
                                 Text(
                                     when (small100State.status) {
                                         Small100Status.READY -> "已下载并通过验证"
