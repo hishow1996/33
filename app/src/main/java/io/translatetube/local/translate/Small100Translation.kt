@@ -825,8 +825,11 @@ private object Small100Runtime {
         return inferenceMutex.withLock {
             taskContext.ensureActive()
             load(context).translateOneWithRecovery(
-                text, targetCode, sourceLanguage
-            ) { taskContext.ensureActive() }
+                text = text,
+                targetCode = targetCode,
+                sourceLanguage = sourceLanguage,
+                checkActive = { taskContext.ensureActive() },
+            )
         }
     }
 
