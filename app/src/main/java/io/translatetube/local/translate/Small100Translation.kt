@@ -719,11 +719,16 @@ private object Small100Runtime {
             val maxOutputTokens = Small100GenerationPolicy.outputTokenLimit(sourceIds.size)
             val mask = LongArray(sourceIds.size) { 1L }
             val inputIdsTensor = longTensor(environment, sourceIds)
-            val maskTensor = longTensor(environment, mask)
+            var maskTensor: OnnxTensor? = null
             var encoderResult: OrtSession.Result? = null
-            var past = emptyPast(environment)
+            var past: MutableMap<String, OnnxTensor> = linkedMapOf()
             try {
-                val encResult = encoder.run(mapOf("input_ids" to inputIdsTensor, "attention_mask" to maskTensor))
+                val attentionMaskTensor = longTensor(environment, mask)
+                maskTensor = attentionMaskTensor
+                past = emptyPast(environment)
+                val encResult = encoder.run(
+                    mapOf("input_ids" to inputIdsTensor, "attention_mask" to attentionMaskTensor)
+                )
                 encoderResult = encResult
                 val hiddenName = encoder.outputNames.firstOrNull { it.contains("last_hidden_state") }
                     ?: encoder.outputNames.firstOrNull()
@@ -744,7 +749,7 @@ private object Small100Runtime {
                         longArrayOf(1L), OnnxJavaType.BOOL,
                     )
                     val feeds = HashMap<String, OnnxTensor>()
-                    feeds["encoder_attention_mask"] = maskTensor
+                    feeds["encoder_attention_mask"] = requireNotNull(maskTensor)
                     feeds["input_ids"] = tokenTensor
                     feeds["encoder_hidden_states"] = hidden
                     feeds["use_cache_branch"] = cacheFlagTensor
@@ -784,7 +789,7 @@ private object Small100Runtime {
                 past.values.forEach { runCatching { it.close() } }
                 runCatching { encoderResult?.close() }
                 runCatching { inputIdsTensor.close() }
-                runCatching { maskTensor.close() }
+                runCatching { maskTensor?.close() }
             }
         }
     }
@@ -846,19 +851,24 @@ private object Small100Runtime {
         val identity = modelFiles.joinToString("|") { it.name + ":" + it.length() + ":" + it.lastModified() }
         loaded?.takeIf { it.identity == identity }?.let { return@synchronized it }
 
+        // Release a stale model session before measuring available memory for a replacement.
+        loaded?.close()
+        loaded = null
+
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager != null) {
             val memory = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memory)
-            val minAvailable = 256L * 1024L * 1024L
-            if (memory.availMem in 1 until minAvailable) {
+            val requiredBytes = Small100MemoryPolicy.requiredAvailableBytes(memory.totalMem)
+            if (!Small100MemoryPolicy.hasEnoughAvailableMemory(memory.availMem, memory.totalMem)) {
+                val availableMb = memory.availMem / Small100MemoryPolicy.MEGABYTE
+                val requiredMb = requiredBytes / Small100MemoryPolicy.MEGABYTE
                 throw IllegalStateException(
-                    "当前设备可用运行内存不足（低于 256 MB），请关闭其他应用后重试。"
+                    "SMaLL-100 加载需要更多运行内存：当前约 ${availableMb} MB，可用内存建议至少 " +
+                        "${requiredMb} MB。请关闭其他应用后重试，已下载模型无需重新下载。"
                 )
             }
         }
-
-        loaded?.close()
         var stage = "ONNX Runtime 环境初始化"
         var options: OrtSession.SessionOptions? = null
         var encoder: OrtSession? = null
@@ -916,7 +926,11 @@ private object Small100Runtime {
                 val next = rootCause.cause
                 if (next != null && next !== rootCause) rootCause = next
             }
-            val detail = rootCause.message?.takeIf { it.isNotBlank() } ?: rootCause.javaClass.simpleName
+            val detail = if (rootCause is OutOfMemoryError) {
+                "模型运行时占用内存超过当前设备可用内存，请关闭其他应用后重试；已下载模型无需重新下载。"
+            } else {
+                rootCause.message?.takeIf { it.isNotBlank() } ?: rootCause.javaClass.simpleName
+            }
             throw IOException("SMaLL-100 $stage 失败：$detail", error)
         } finally {
             runCatching { options?.close() }
@@ -925,16 +939,21 @@ private object Small100Runtime {
 
     private fun emptyPast(environment: OrtEnvironment): MutableMap<String, OnnxTensor> {
         val result = linkedMapOf<String, OnnxTensor>()
-        for (layer in 0 until LAYERS) {
-            for (kind in listOf("decoder", "encoder")) {
-                for (kv in listOf("key", "value")) {
-                    result["past_key_values." + layer + "." + kind + "." + kv] = OnnxTensor.createTensor(
-                        environment, FloatBuffer.allocate(0), longArrayOf(1L, HEADS, 0L, HEAD_DIM),
-                    )
+        try {
+            for (layer in 0 until LAYERS) {
+                for (kind in listOf("decoder", "encoder")) {
+                    for (kv in listOf("key", "value")) {
+                        result["past_key_values." + layer + "." + kind + "." + kv] = OnnxTensor.createTensor(
+                            environment, FloatBuffer.allocate(0), longArrayOf(1L, HEADS, 0L, HEAD_DIM),
+                        )
+                    }
                 }
             }
+            return result
+        } catch (error: Throwable) {
+            result.values.forEach { tensor -> runCatching { tensor.close() } }
+            throw error
         }
-        return result
     }
 
     private fun rollPast(
