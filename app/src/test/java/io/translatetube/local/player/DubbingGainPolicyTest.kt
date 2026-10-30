@@ -26,6 +26,30 @@ class DubbingGainPolicyTest {
     }
 
     @Test
+    fun bufferedVoiceIsMutedWhenItsBusGenerationBecomesStale() {
+        assertEquals(
+            0f,
+            DubbingGainPolicy.applyDubbingGain(
+                sample = 0.8f,
+                gain = 1f,
+                enabled = true,
+                generationMatches = false,
+            ),
+            0f,
+        )
+        assertEquals(
+            0.8f,
+            DubbingGainPolicy.applyDubbingGain(
+                sample = 0.8f,
+                gain = 1f,
+                enabled = true,
+                generationMatches = true,
+            ),
+            0f,
+        )
+    }
+
+    @Test
     fun invalidPcmSamplesCannotPropagateToOutput() {
         assertEquals(0f, DubbingGainPolicy.sanitizePcmSample(Float.NaN), 0f)
         assertEquals(0f, DubbingGainPolicy.sanitizePcmSample(Float.POSITIVE_INFINITY), 0f)
