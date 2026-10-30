@@ -1373,7 +1373,6 @@ private fun LocalEngineCard(
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             Text(name, style = MaterialTheme.typography.titleMedium, color = Color(0xFF172033))
-            if (selected) Text("当前翻译引擎", style = MaterialTheme.typography.labelSmall, color = Color(0xFF3569D4))
         }
         TextButton(onClick = onManage, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
             Text("管理", maxLines = 1)
