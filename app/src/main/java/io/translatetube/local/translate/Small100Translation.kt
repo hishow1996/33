@@ -1048,7 +1048,7 @@ internal class Small100BpeTokenizer(
 
     fun encode(text: String, checkActive: () -> Unit = {}): LongArray {
         checkActive()
-        val normalized = normalize(text)
+        val normalized = normalize(text, checkActive)
         if (normalized.isEmpty()) return longArrayOf(eosId.toLong())
 
         val ids = ArrayList<Long>(normalized.length + 4)
@@ -1061,9 +1061,10 @@ internal class Small100BpeTokenizer(
             start = if (spaceIdx < 0) normalized.length else spaceIdx + 1
             if (word.isEmpty()) continue
 
-            val pieces = splitToCodePointStrings("$METASPACE$word")
+            val pieces = splitToCodePointStrings("$METASPACE$word", checkActive)
             val bpeTokens = applyBpe(pieces, checkActive)
-            for (piece in bpeTokens) {
+            for ((pieceIndex, piece) in bpeTokens.withIndex()) {
+                if ((pieceIndex and 255) == 0) checkActive()
                 val id = vocab[piece] ?: unkId
                 if (fuseUnk && id == unkId && ids.isNotEmpty() && ids.last() == unkId.toLong()) {
                     continue
@@ -1114,6 +1115,7 @@ internal class Small100BpeTokenizer(
 
         val nodes = ArrayList<PieceNode>(initialPieces.size)
         for (index in initialPieces.indices) {
+            if ((index and 255) == 0) checkActive()
             nodes += PieceNode(
                 token = initialPieces[index],
                 previous = index - 1,
@@ -1229,11 +1231,12 @@ internal class Small100BpeTokenizer(
         private const val DEFAULT_UNK_ID = 3
         private const val DEFAULT_EOS_ID = 2
 
-        internal fun normalize(text: String): String {
+        internal fun normalize(text: String, checkActive: () -> Unit = {}): String {
             if (text.isEmpty()) return ""
             val sb = StringBuilder(text.length)
             var lastWasSpace = true
             for (i in 0 until text.length) {
+                if ((i and 1023) == 0) checkActive()
                 val mapped = when (val c = text[i]) {
                     '，' -> ','
                     '？' -> '?'
@@ -1262,10 +1265,15 @@ internal class Small100BpeTokenizer(
             return sb.toString()
         }
 
-        private fun splitToCodePointStrings(input: String): MutableList<String> {
+        private fun splitToCodePointStrings(
+            input: String,
+            checkActive: () -> Unit = {},
+        ): MutableList<String> {
             val list = ArrayList<String>(input.length)
             var index = 0
+            var scannedCodePoints = 0
             while (index < input.length) {
+                if ((scannedCodePoints++ and 255) == 0) checkActive()
                 val cp = input.codePointAt(index)
                 val charCount = Character.charCount(cp)
                 list.add(input.substring(index, index + charCount))
