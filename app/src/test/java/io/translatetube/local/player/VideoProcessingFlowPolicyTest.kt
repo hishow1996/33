@@ -37,13 +37,15 @@ class VideoProcessingFlowPolicyTest {
     fun youtubeFallsBackToAnAudioAndTranscriptionSpecificFlow() {
         val flow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
         val steps = VideoProcessingFlowPolicy.steps(VideoSourceKind.YOUTUBE, flow)
-        assertEquals(6, steps.size)
-        assertEquals("查找并读取可用原文字幕", steps[1])
-        assertEquals("提取视频音轨", steps[2])
-        assertEquals("转写原文并生成时间轴字幕", steps[3])
-        assertEquals(2, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.DOWNLOADING_AUDIO))
-        assertEquals(3, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.TRANSCRIBING))
-        assertEquals(3, VideoProcessingFlowPolicy.transcriptionStageIndex(VideoSourceKind.YOUTUBE, flow))
+        assertEquals(5, steps.size)
+        assertEquals("解析视频", steps[0])
+        assertEquals("提取视频音轨", steps[1])
+        assertEquals("转写原文并生成时间轴字幕", steps[2])
+        assertEquals("将原文字幕翻译成中文", steps[3])
+        assertEquals("按时间轴生成中文配音", steps[4])
+        assertEquals(1, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.DOWNLOADING_AUDIO))
+        assertEquals(2, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.TRANSCRIBING))
+        assertEquals(2, VideoProcessingFlowPolicy.transcriptionStageIndex(VideoSourceKind.YOUTUBE, flow))
     }
 
     @Test
