@@ -1171,7 +1171,9 @@ internal class Small100BpeTokenizer(
             val batch = ArrayList<MergeCandidate>()
             batch += selected
             val deferred = ArrayList<MergeCandidate>()
+            var inspectedCandidates = 0
             while (queue.peek()?.rank == selectedRank) {
+                if ((inspectedCandidates++ and 127) == 0) checkActive()
                 val candidate = queue.poll()
                 if (!isCurrent(candidate)) continue
                 val left = nodes[candidate.leftIndex]
@@ -1202,7 +1204,9 @@ internal class Small100BpeTokenizer(
 
             // Only the two links around each merge can acquire new BPE pairs.
             // Stale candidates remain cheap to discard when they reach the queue head.
+            var refreshedLinks = 0
             for (leftIndex in changedLeftIndices) {
+                if ((refreshedLinks++ and 127) == 0) checkActive()
                 val node = nodes[leftIndex]
                 addCandidate(node.previous)
                 addCandidate(leftIndex)
