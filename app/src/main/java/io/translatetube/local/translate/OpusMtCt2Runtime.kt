@@ -19,7 +19,6 @@ import java.nio.charset.StandardCharsets
 
 /** Native CTranslate2 runtime for additional quantized OPUS-MT pairs; keeps one model resident. */
 internal object OpusMtCt2Runtime {
-    private const val BATCH_SIZE = 8
     private data class Loaded(val source: String, val identity: String, val handle: Long)
 
     private val lock = Mutex()
@@ -44,9 +43,18 @@ internal object OpusMtCt2Runtime {
                 // Keep original positions, but never pass blank subtitle cues into native inference.
                 val output = MutableList(lines.size) { "" }
                 val nonBlankEntries = lines.withIndex().filter { it.value.isNotBlank() }
-                for (batchStartIndex in nonBlankEntries.indices step BATCH_SIZE) {
+                val lineLengths = nonBlankEntries.map { it.value.length }
+                var batchStartIndex = 0
+                while (batchStartIndex < nonBlankEntries.size) {
                     currentCoroutineContext().ensureActive()
-                    val batchEndIndex = minOf(batchStartIndex + BATCH_SIZE, nonBlankEntries.size)
+                    // Re-sample available memory before each batch so later batches can shrink
+                    // when other apps or the video player increase device memory pressure.
+                    val limits = resolveBatchLimits(context.applicationContext)
+                    val batchEndIndex = OpusMtBatchPolicy.nextBatchEndIndex(
+                        lineLengths,
+                        batchStartIndex,
+                        limits,
+                    )
                     val batchEntries = nonBlankEntries.subList(batchStartIndex, batchEndIndex)
                     val batch = batchEntries.map { it.value }
                     val input = batch.map { it.toByteArray(StandardCharsets.UTF_8) }.toTypedArray()
@@ -128,6 +136,7 @@ internal object OpusMtCt2Runtime {
                     }
                     // Failed cues stay blank in their original positions. The playback layer can
                     // retry just those rows without losing successful translations in this batch.
+                    batchStartIndex = batchEndIndex
                 }
                 output
             }
@@ -162,6 +171,17 @@ internal object OpusMtCt2Runtime {
             }
         }
         Unit
+    }
+
+    private fun resolveBatchLimits(context: Context): OpusMtBatchPolicy.Limits {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return OpusMtBatchPolicy.resolve(0L)
+        val memoryInfo = ActivityManager.MemoryInfo()
+        val availableBytes = runCatching {
+            activityManager.getMemoryInfo(memoryInfo)
+            memoryInfo.availMem
+        }.getOrDefault(0L)
+        return OpusMtBatchPolicy.resolve(availableBytes)
     }
 
     private fun loadLocked(context: Context, source: String): Loaded {
