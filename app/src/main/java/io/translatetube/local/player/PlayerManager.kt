@@ -347,8 +347,9 @@ class PlayerManager(private val ctx: Context) {
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
-                // Emit an immediate update on pause/resume to invalidate detached AudioTrack work.
-                notifyTick()
+                // PlaybackService owns pause/resume timeline transitions and performs the single
+                // immediate tick there. Emitting another tick here starts a cue only for the
+                // service listener to stop and start it again on the same resume callback.
                 syncTicker()
             }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
