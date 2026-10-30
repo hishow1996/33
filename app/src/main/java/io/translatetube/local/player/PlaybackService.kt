@@ -9487,7 +9487,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ) { detail ->
                     updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                         if (state.key == sessionKey) {
-                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
                         } else state
                     }
                 }
@@ -9508,7 +9508,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     NewPipeRepo.invalidate(videoId)
                     updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                         if (state.key == sessionKey) {
-                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "音频链接已失效，正在刷新视频流…")
+                            state.copy(
+                                phase = Phase.DOWNLOADING_AUDIO,
+                                progress = "音频链接已失效，正在刷新视频流…",
+                                audioProgress = null,
+                            )
                         } else state
                     }
                     awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
@@ -10011,7 +10015,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
                         updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                             if (state.key == sessionKey) {
-                                state.copy(progress = "独立音轨下载失败，正在检查网页媒体源并提取音轨…")
+                                state.copy(
+                                    progress = "独立音轨下载失败，正在检查网页媒体源并提取音轨…",
+                                    audioProgress = null,
+                                )
                             } else state
                         }
                     }
@@ -10022,7 +10029,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
                             updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                 if (state.key == sessionKey) {
-                                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
                                 } else state
                             }
                         }
@@ -10130,7 +10137,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 ) { detail ->
                                     updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                         if (state.key == sessionKey) {
-                                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
                                         } else state
                                     }
                                 }
