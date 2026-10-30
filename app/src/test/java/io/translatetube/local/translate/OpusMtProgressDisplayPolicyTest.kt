@@ -44,7 +44,7 @@ class OpusMtProgressDisplayPolicyTest {
                 status = OpusMtStatus.FAILED,
                 progress = 100,
                 downloadedBytes = 1_000L,
-                totalBytes = 1_000L,
+                totalBytes = -1L,
                 error = "运行时验证失败",
             ),
             configuredTotalBytes = 1_000L,
