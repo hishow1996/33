@@ -185,24 +185,36 @@ object Small100ModelManager {
                     val target = File(directory, spec.name)
                     val part = File(directory, spec.name + ".part")
                     !target.isFile || target.length() != spec.bytes || part.isFile
-                }.coerceAtLeast(0)
-                val spec = files[firstIncomplete]
-                val part = File(directory, spec.name + ".part")
-                val finalFile = File(directory, spec.name)
-                val priorBytes = files.take(firstIncomplete).sumOf { it.bytes }
-                val currentBytes = if (part.isFile) part.length() else finalFile.length()
-                Small100DownloadState(
-                    status = Small100Status.PAUSED,
-                    progress = ((priorBytes + currentBytes).coerceAtMost(TOTAL_BYTES) * 100L / TOTAL_BYTES).toInt(),
-                    currentFile = spec.name,
-                    fileIndex = firstIncomplete + 1,
-                    fileCount = files.size,
-                    downloadedBytes = (priorBytes + currentBytes).coerceAtMost(TOTAL_BYTES),
-                    totalBytes = TOTAL_BYTES,
-                    error = if (files.all { entry ->
-                            File(directory, entry.name).let { f -> f.isFile && f.length() == entry.bytes }
-                        }) "模型文件已下载，等待运行时验证" else "",
-                )
+                }
+                if (firstIncomplete < 0) {
+                    // All four files are already present. A failed runtime check must not make
+                    // the UI report a partial download or suggest downloading the 615 MB again.
+                    Small100DownloadState(
+                        status = Small100Status.PAUSED,
+                        progress = 100,
+                        currentFile = "运行时验证",
+                        fileIndex = files.size,
+                        fileCount = files.size,
+                        downloadedBytes = TOTAL_BYTES,
+                        totalBytes = TOTAL_BYTES,
+                        error = "模型文件已下载，等待运行环境验证",
+                    )
+                } else {
+                    val spec = files[firstIncomplete]
+                    val part = File(directory, spec.name + ".part")
+                    val finalFile = File(directory, spec.name)
+                    val priorBytes = files.take(firstIncomplete).sumOf { it.bytes }
+                    val currentBytes = if (part.isFile) part.length() else finalFile.length()
+                    Small100DownloadState(
+                        status = Small100Status.PAUSED,
+                        progress = ((priorBytes + currentBytes).coerceAtMost(TOTAL_BYTES) * 100L / TOTAL_BYTES).toInt(),
+                        currentFile = spec.name,
+                        fileIndex = firstIncomplete + 1,
+                        fileCount = files.size,
+                        downloadedBytes = (priorBytes + currentBytes).coerceAtMost(TOTAL_BYTES),
+                        totalBytes = TOTAL_BYTES,
+                    )
+                }
             }
             else -> Small100DownloadState(status = Small100Status.NOT_DOWNLOADED)
         }
@@ -270,7 +282,20 @@ object Small100ModelManager {
             throw cancelled
         } catch (error: Throwable) {
             val partial = hasPartialDownload(app)
-            val reason = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
+            var rootCause = error
+            repeat(8) {
+                val next = rootCause.cause
+                if (next != null && next !== rootCause) rootCause = next
+            }
+            val reason = when (rootCause) {
+                is ClassNotFoundException, is NoClassDefFoundError ->
+                    "应用缺少 ONNX Runtime Java 运行类（${rootCause.message ?: "ai.onnxruntime"}）。" +
+                        "请安装修复版应用；已下载模型文件会保留。"
+                is UnsatisfiedLinkError ->
+                    "ONNX Runtime 原生库加载失败（${rootCause.message ?: "未知原因"}）。" +
+                        "请安装修复版应用；已下载模型文件会保留。"
+                else -> error.message?.takeIf { it.isNotBlank() } ?: rootCause.javaClass.simpleName
+            }
             mutableState.value = mutableState.value.copy(
                 status = Small100Status.FAILED,
                 error = reason,
@@ -281,6 +306,8 @@ object Small100ModelManager {
                     "当前文件" to mutableState.value.currentFile,
                     "是否可续传" to partial.toString(),
                     "失败原因" to reason,
+                    "根因类型" to rootCause.javaClass.name,
+                    "根因信息" to (rootCause.message ?: ""),
                 ),
             )
             if (error is Exception) throw error else throw IOException("SMaLL-100 模型验证或加载失败：$reason", error)
@@ -659,20 +686,40 @@ private object Small100Runtime {
         }
 
         loaded?.close()
-        val environment = OrtEnvironment.getEnvironment()
-        val options = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
+        var stage = "ONNX Runtime 环境初始化"
+        var options: OrtSession.SessionOptions? = null
         var encoder: OrtSession? = null
         var decoder: OrtSession? = null
         var tokenizer: Small100BpeTokenizer? = null
         try {
-            val encoderSession = environment.createSession(encoderFile.absolutePath, options)
+            val environment = try {
+                OrtEnvironment.getEnvironment()
+            } catch (error: Throwable) {
+                throw IOException("ONNX Runtime 环境初始化失败：" +
+                    (error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName), error)
+            }
+
+            stage = "创建 ONNX Runtime 会话参数"
+            val sessionOptions = OrtSession.SessionOptions().apply {
+                setIntraOpNumThreads(2)
+            }
+            options = sessionOptions
+
+            stage = "加载 SMaLL-100 编码器"
+            val encoderSession = environment.createSession(encoderFile.absolutePath, sessionOptions)
             encoder = encoderSession
-            val decoderSession = environment.createSession(decoderFile.absolutePath, options)
+
+            stage = "加载 SMaLL-100 解码器"
+            val decoderSession = environment.createSession(decoderFile.absolutePath, sessionOptions)
             decoder = decoderSession
+
+            stage = "解析 SMaLL-100 Tokenizer"
             val bpeTokenizer = tokenizerFile.inputStream().use { input ->
                 Small100BpeTokenizer.fromStream(input)
             }
             tokenizer = bpeTokenizer
+
+            stage = "读取 SMaLL-100 语言代码表"
             val languageJson = JSONObject(languageFile.readText(Charsets.UTF_8)).getJSONObject("lang_to_id")
             val parsedTokens = linkedMapOf<String, Long>()
             val keys = languageJson.keys()
@@ -683,6 +730,7 @@ private object Small100Runtime {
             if (parsedTokens != Small100LanguagePolicy.expectedTokenMap()) {
                 throw IOException("SMaLL-100 语言代码表与固定模型版本不一致")
             }
+
             val result = Loaded(identity, environment, encoderSession, decoderSession, bpeTokenizer, parsedTokens)
             loaded = result
             result
@@ -690,9 +738,15 @@ private object Small100Runtime {
             runCatching { encoder?.close() }
             runCatching { decoder?.close() }
             runCatching { tokenizer?.close() }
-            if (error is Exception) throw error else throw IOException("加载 SMaLL-100 模型失败：" + (error.message ?: error.javaClass.simpleName), error)
+            var rootCause = error
+            repeat(8) {
+                val next = rootCause.cause
+                if (next != null && next !== rootCause) rootCause = next
+            }
+            val detail = rootCause.message?.takeIf { it.isNotBlank() } ?: rootCause.javaClass.simpleName
+            throw IOException("SMaLL-100 $stage 失败：$detail", error)
         } finally {
-            runCatching { options.close() }
+            runCatching { options?.close() }
         }
     }
 

@@ -97,8 +97,9 @@ android {
     }
     packaging {
         resources.excludes += "META-INF/*"
-        // Prefer one copy when native/runtime dependencies package the same ONNX Runtime library.
-        jniLibs.pickFirsts += "**/libonnxruntime.so"
+        // sherpa-onnx uses its official static-ONNX-Runtime AAR. SMaLL-100 owns the
+        // only shared libonnxruntime.so via onnxruntime-android; never silently pickFirst
+        // between binaries built from different ONNX Runtime versions.
         // Protocol Buffers may also ship duplicate .proto resource files from generated runtimes.
         resources.pickFirsts += "google/protobuf/**"
         // youtubedl-android 从 nativeLibraryDir 直接运行 libpython.so，必须解压原生库
@@ -128,18 +129,18 @@ val buildOpusMtCt2 by tasks.registering(Exec::class) {
 }
 tasks.named("preBuild").configure { dependsOn(buildOpusMtCt2) }
 
-val sherpaAarFile = file("libs/sherpa-onnx.aar")
+val sherpaAarFile = file("libs/sherpa-onnx-static.aar")
 if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
     sherpaAarFile.parentFile?.mkdirs()
     val downloadUrls = listOf(
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar",
-        "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar",
-        "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar"
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
+        "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
+        "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar"
     )
     var downloaded = false
     for (urlStr in downloadUrls) {
         try {
-            logger.lifecycle("Downloading sherpa-onnx.aar from $urlStr...")
+            logger.lifecycle("Downloading static-link sherpa-onnx AAR from $urlStr...")
             var cur = urlStr
             var redirects = 0
             while (redirects < 10) {
@@ -159,7 +160,7 @@ if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
                     continue
                 }
                 if (code in 200..299) {
-                    val temp = File(sherpaAarFile.parentFile, "sherpa-onnx.aar.tmp")
+                    val temp = File(sherpaAarFile.parentFile, "sherpa-onnx-static.aar.tmp")
                     temp.delete()
                     conn.inputStream.use { input: InputStream ->
                         FileOutputStream(temp).use { output: OutputStream ->
@@ -171,7 +172,7 @@ if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
                         temp.copyTo(sherpaAarFile, overwrite = true)
                         temp.delete()
                     }
-                    logger.lifecycle("Downloaded sherpa-onnx.aar successfully (${sherpaAarFile.length()} bytes)")
+                    logger.lifecycle("Downloaded static-link sherpa-onnx AAR successfully (${sherpaAarFile.length()} bytes)")
                     downloaded = true
                     break
                 }
@@ -180,10 +181,33 @@ if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
             }
             if (downloaded) break
         } catch (e: Exception) {
-            logger.warn("Failed to download sherpa-onnx.aar from $urlStr: ${e.message}")
+            logger.warn("Failed to download static-link sherpa-onnx AAR from $urlStr: ${e.message}")
         }
     }
 }
+
+if (!sherpaAarFile.isFile || sherpaAarFile.length() != 38_691_998L) {
+    throw GradleException(
+        "sherpa-onnx static-link AAR is missing or has an unexpected size: " +
+            sherpaAarFile.length() + " bytes. Expected 38,691,998 bytes."
+    )
+}
+val sherpaAarEntries = JarFile(sherpaAarFile).use { archive ->
+    val names = mutableListOf<String>()
+    val entries = archive.entries()
+    while (entries.hasMoreElements()) names += entries.nextElement().name
+    names
+}
+if (sherpaAarEntries.none { it.startsWith("jni/arm64-v8a/") && it.endsWith(".so") }) {
+    throw GradleException("sherpa-onnx static-link AAR has no arm64-v8a native libraries.")
+}
+if (sherpaAarEntries.any { it.endsWith("/libonnxruntime.so") }) {
+    throw GradleException(
+        "sherpa-onnx AAR unexpectedly contains a shared libonnxruntime.so; " +
+            "refusing a non-static AAR to prevent ONNX Runtime version conflicts."
+    )
+}
+logger.lifecycle("Verified sherpa-onnx static-link AAR: arm64-v8a libraries present; no shared libonnxruntime.so.")
 
 
 /*
@@ -390,7 +414,7 @@ dependencies {
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
     // 本地 aar：sherpa-onnx（TTS Kokoro + ASR Whisper 推理引擎）
-    implementation(files("libs/sherpa-onnx.aar"))
+    implementation(files("libs/sherpa-onnx-static.aar"))
 
     // Compose
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03")
@@ -423,6 +447,8 @@ dependencies {
     // 离线翻译（bundled 引擎，不依赖 GMS）
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:language-id:17.0.6")
+    // SMaLL-100 uses this single shared ONNX Runtime. sherpa-onnx is statically linked
+    // in its AAR, preventing it from contributing a conflicting libonnxruntime.so.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
     // Pure-Kotlin BPE tokenizer is used for SMaLL-100 on Android (ai.djl.huggingface:tokenizers lacks Android arm64 native libs).
     // implementation("ai.djl.huggingface:tokenizers:0.30.0")
