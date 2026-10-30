@@ -2281,14 +2281,14 @@ class PlaybackService : MediaSessionService() {
 
     /**
      * Detect a frozen playback timeline, not just a missing first frame or a buffering state.
-     * A paused video, audio-only playback, source switch, active recovery, and the final 1.5 seconds
-     * are excluded so they do not produce false "stuck" warnings.
+     * A user-paused video, audio-only playback, source switch, active recovery, and the final
+     * 1.5 seconds are excluded. This also catches playWhenReady=true while READY never transitions
+     * into actual playback, which otherwise leaves the play button apparently unresponsive.
      */
     private fun isPlaybackStalled(
         state: PlayerUiState,
         player: androidx.media3.common.Player,
         nowMs: Long,
-        isPlaying: Boolean,
         playWhenReady: Boolean,
         hasRenderedFirstFrame: Boolean,
         hasMedia: Boolean,
@@ -2299,7 +2299,6 @@ class PlaybackService : MediaSessionService() {
         val shouldWatch = state.phase in setOf(Phase.READY, Phase.SYNTHESIZING) &&
             hasMedia &&
             hasRenderedFirstFrame &&
-            isPlaying &&
             playWhenReady &&
             !state.audioOnly &&
             player.playbackState == androidx.media3.common.Player.STATE_READY &&
@@ -2353,7 +2352,6 @@ class PlaybackService : MediaSessionService() {
             state = state,
             player = player,
             nowMs = now,
-            isPlaying = isPlaying,
             playWhenReady = playWhenReady,
             hasRenderedFirstFrame = firstFrame,
             hasMedia = mediaAttached,
