@@ -8773,10 +8773,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
         // to abort every subtitle and prevent the video from playing.
         val sourceEchoAsUntranslatedFallback =
-            EngineFactory.isLocalTranslationEngine(activeId) ||
-                engine!!.id == "local" || engine!!.id == "mlkit-local" || engine!!.id == "opus-mt" ||
-                engine!!.id == "small100" || engine!!.id == "google-hybrid" ||
-                engine!!.id == "microsoft-web" || engine!!.id == "baidu-web"
+            TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback(engine!!.id)
         val pendingIndices = ArrayList<Int>()
         var completed = 0
         for (index in lines.indices) {

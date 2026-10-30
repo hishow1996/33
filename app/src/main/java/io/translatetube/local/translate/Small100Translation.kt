@@ -581,23 +581,23 @@ class Small100Engine(private val context: Context) : TranslationEngine {
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
-                    AppLogStore.error(
+                    // Keep successful cues in this batch. PlaybackService recognizes the blank
+                    // row as missing and retries only that cue instead of discarding the batch.
+                    AppLogStore.warning(
                         appContext,
                         "Translation",
-                        "SMaLL-100 单条字幕自动拆分恢复失败",
+                        "SMaLL-100 单条字幕恢复失败，已隔离该行",
                         error,
                         diagnosticContext = mapOf(
                             "字幕序号" to (index + 1).toString(),
                             "字幕总数" to lines.size.toString(),
                             "字幕字符数" to line.length.toString(),
                             "自动拆分恢复" to "已尝试",
+                            "后续处理" to "仅重试当前失败字幕",
                             "未记录字幕原文" to "true",
                         ),
                     )
-                    throw IllegalStateException(
-                        "SMaLL-100 第 ${index + 1}/${lines.size} 条字幕无法完整翻译，已停止本次翻译以避免空字幕进入配音。",
-                        error,
-                    )
+                    ""
                 }
                 if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
                     AppLogStore.info(

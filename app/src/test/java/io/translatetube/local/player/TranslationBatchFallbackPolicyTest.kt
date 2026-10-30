@@ -6,6 +6,20 @@ import org.junit.Test
 
 class TranslationBatchFallbackPolicyTest {
     @Test
+    fun onlyEnginesWithAnExplicitOriginalAudioFallbackAcceptSourceEchoes() {
+        assertTrue(TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback("local"))
+        assertTrue(TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback("google-hybrid"))
+        assertTrue(TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback("microsoft-web"))
+        assertFalse(TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback("small100"))
+        assertFalse(TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback("opus-mt"))
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback(
+                "single-pair-direct-small100"
+            )
+        )
+    }
+
+    @Test
     fun keepsOnlyFailedRowsOnOriginalAudioWhenLocalBatchHasUsableTranslations() {
         assertTrue(
             TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
