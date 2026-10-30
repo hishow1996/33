@@ -1552,38 +1552,44 @@ private fun VideoParsingPage(
     val busy = !complete && !isError && !isCancelled
 
     val mainTitle = when {
-        isCancelled -> "处理已取消"
-        waitingForTranscriptionEngine -> "等待转写引擎就绪"
-        waitingForDubbingEngine -> "等待配音引擎就绪"
-        dubbingPreparationPendingOnReady && state.dubbingHasErrors ->
-            "正在准备配音，失败字幕已恢复原声"
-        dubbingPreparationPendingOnReady -> "正在按时间轴生成中文配音"
-        state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
-        else -> VideoProcessingFlowPolicy.mainTitle(
-            source = source,
-            phase = displayPhase,
-            flow = flow,
-            isPaused = state.isProcessingPaused,
-            waitingForTranscriptionEngine = waitingForTranscriptionEngine,
-        )
+        isCancelled -> "已取消"
+        state.isProcessingPaused -> "已暂停"
+        waitingForTranscriptionEngine -> "等待转写"
+        waitingForDubbingEngine -> "等待配音"
+        dubbingPreparationPendingOnReady || displayPhase == Phase.SYNTHESIZING -> "合成配音"
+        state.dubbingHasErrors -> "部分配音失败"
+        else -> when (displayPhase) {
+            Phase.IDLE -> "准备中"
+            Phase.PARSING -> "解析视频"
+            Phase.DOWNLOADING_AUDIO -> "提取音频"
+            Phase.TRANSCRIBING -> "语音识别"
+            Phase.TRANSLATING -> if (state.manualTranslationWaiting) "等待译文" else "翻译字幕"
+            Phase.SYNTHESIZING -> "合成配音"
+            Phase.READY -> "已完成"
+            Phase.ERROR -> "处理失败"
+        }
     }
     val detail = when {
-        isCancelled -> "任务已停止，可以重新开始处理"
-        isError -> state.error?.takeIf { it.isNotBlank() } ?: "当前阶段未能完成，请重试"
+        isCancelled -> "已停止"
+        isError -> state.error?.takeIf { it.isNotBlank() } ?: "处理失败"
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
-        state.isProcessingPaused ->
-            "任务已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
-        state.progress.isNotBlank() -> state.progress
-        dubbingPreparationPendingOnReady ->
-            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音，剩余字幕仍在处理"
-        else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
+        waitingForTranscriptionEngine -> "等待转写引擎"
+        waitingForDubbingEngine -> "等待配音引擎"
+        state.isProcessingPaused -> compactProcessingProgress(state.progress, displayPhase)
+            .ifBlank { "等待继续" }
+        displayPhase == Phase.TRANSLATING && !state.manualTranslationModeEnabled && state.totalLines > 0 ->
+            "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+        displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
+            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+        state.progress.isNotBlank() -> compactProcessingProgress(state.progress, displayPhase)
+        else -> compactPhaseFallback(source, displayPhase)
     }
 
     val sourceLabel = when (source) {
-        VideoSourceKind.YOUTUBE -> "YouTube 来源"
-        VideoSourceKind.WEB -> "网页视频来源"
-        VideoSourceKind.LOCAL -> "本地视频来源"
-        VideoSourceKind.UNKNOWN -> "视频处理"
+        VideoSourceKind.YOUTUBE -> "YouTube"
+        VideoSourceKind.WEB -> "网页"
+        VideoSourceKind.LOCAL -> "本地"
+        VideoSourceKind.UNKNOWN -> "视频"
     }
     val subtitleHeadline = if (source == VideoSourceKind.YOUTUBE) "可用字幕" else "字幕生成状态"
     val subtitleState = when {
@@ -2099,12 +2105,12 @@ private fun VideoParsingPage(
                         )
                         Text(
                             when {
-                                isCancelled -> "当前任务已停止"
-                                isError -> "处理未能完成"
-                                complete -> "视频、字幕与配音已就绪"
-                                state.isProcessingPaused -> "已暂停 · 等待继续处理"
-                                fraction != null -> "实际进度 ${(animatedFraction * 100).toInt()}%"
-                                else -> "正在处理当前阶段…"
+                                isCancelled -> "已取消"
+                                isError -> "处理失败"
+                                complete -> "全部阶段已完成"
+                                state.isProcessingPaused -> "等待继续"
+                                fraction != null -> "本阶段 ${(animatedFraction * 100).toInt()}%"
+                                else -> "处理中"
                             },
                             color = Color(0xFF7C8BA2),
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
@@ -2314,14 +2320,13 @@ private fun VideoParsingPage(
                             Text(
                                 when {
                                     done -> "已完成"
-                                    failed -> "此阶段处理未成功"
-                                    cancelled -> "处理已停止"
-                                    paused -> "任务已暂停，等待继续"
-                                    active && state.progress.isNotBlank() -> state.progress.take(72)
-                                    active && waitingForTranscriptionEngine -> "等待转写引擎就绪"
-                                    active && waitingForDubbingEngine -> "等待配音引擎就绪"
-                                    active -> "正在处理当前阶段…"
-                                    else -> "等待前序步骤完成"
+                                    failed -> "失败"
+                                    cancelled -> "已取消"
+                                    paused -> "已暂停"
+                                    active && waitingForTranscriptionEngine -> "等待转写"
+                                    active && waitingForDubbingEngine -> "等待配音"
+                                    active -> "进行中"
+                                    else -> "待开始"
                                 },
                                 color = when {
                                     done -> Color(0xFF159B71)
@@ -2365,7 +2370,7 @@ private fun VideoParsingPage(
                             cancelled -> "已取消"
                             paused -> "已暂停"
                             active -> if (fraction != null) "${(animatedFraction * 100).toInt()}%" else "进行中"
-                            else -> "待处理"
+                            else -> "待开始"
                         }
                         val stageBadgeBg = when {
                             done -> Color(0xFFE2F7ED)
@@ -3914,6 +3919,81 @@ private fun progressRatio(progress: String): Float? {
     val total = match.groupValues[2].toFloatOrNull() ?: return null
     if (total <= 0f) return null
     return (current / total).coerceIn(0f, 1f)
+}
+
+
+private fun compactProcessingProgress(progress: String, phase: Phase): String {
+    val raw = progress.trim()
+    if (raw.isBlank()) return ""
+
+    val percent = Regex("""\\d+(?:\\.\\d+)?%""").find(raw)?.value
+    return when (phase) {
+        Phase.DOWNLOADING_AUDIO -> {
+            // Keep the measured byte counts (and estimated-total label) intact; the percentage
+            // remains visible in the existing progress indicator beside this line.
+            val byteProgress = Regex(
+                """\\d+(?:\\.\\d+)?\\s*(?:KB|MB|GB|TB|B)(?:\\s*/\\s*(?:预计约\\s*)?\\d+(?:\\.\\d+)?\\s*(?:KB|MB|GB|TB|B))?""",
+                RegexOption.IGNORE_CASE,
+            ).find(raw)?.value
+            byteProgress ?: when {
+                raw.contains("下载") -> "下载音频"
+                raw.contains("提取") -> "提取音频"
+                else -> "准备音轨"
+            }
+        }
+        Phase.TRANSCRIBING -> {
+            val label = when {
+                raw.contains("语音分段") -> "语音分段"
+                raw.contains("提高灵敏度重新检测") || raw.contains("声音较小") -> "重新检测语音"
+                raw.contains("解码音频") -> "音频解码"
+                raw.contains("封装云端音频") -> "封装音频"
+                raw.contains("整理压缩音轨") -> "整理音轨"
+                raw.contains("云端转写完成") -> "整理字幕"
+                else -> "识别语音"
+            }
+            if (percent != null) "$label $percent" else label
+        }
+        Phase.TRANSLATING -> {
+            val ratio = Regex("""(\\d+)\\s*/\\s*(\\d+)\\s*行""").find(raw)
+            if (ratio != null) "已翻译 ${ratio.groupValues[1]}/${ratio.groupValues[2]} 行" else "翻译字幕"
+        }
+        Phase.SYNTHESIZING -> {
+            val ratio = Regex("""(\\d+)\\s*/\\s*(\\d+)""").find(raw)
+            when {
+                ratio != null -> "已准备 ${ratio.groupValues[1]}/${ratio.groupValues[2]} 行"
+                percent != null -> "合成配音 $percent"
+                else -> "合成配音"
+            }
+        }
+        Phase.PARSING -> when {
+            raw.contains("重新检查字幕") -> "重新检查字幕"
+            raw.contains("查找") && raw.contains("字幕") -> "查找字幕"
+            raw.contains("读取") && raw.contains("字幕") -> "读取字幕"
+            raw.contains("刷新") || raw.contains("地址已失效") -> "刷新视频地址"
+            raw.contains("备用解析") -> "备用解析"
+            raw.contains("本地视频") -> "读取本地视频"
+            else -> "解析视频"
+        }
+        Phase.IDLE -> "等待开始"
+        Phase.READY -> "已就绪"
+        Phase.ERROR -> "处理失败"
+    }
+}
+
+private fun compactPhaseFallback(source: VideoSourceKind, phase: Phase): String = when (phase) {
+    Phase.IDLE -> "等待开始"
+    Phase.PARSING -> when (source) {
+        VideoSourceKind.YOUTUBE -> "检查视频与字幕"
+        VideoSourceKind.WEB -> "识别网页视频"
+        VideoSourceKind.LOCAL -> "读取本地视频"
+        VideoSourceKind.UNKNOWN -> "检查视频"
+    }
+    Phase.DOWNLOADING_AUDIO -> "提取音频"
+    Phase.TRANSCRIBING -> "识别语音"
+    Phase.TRANSLATING -> "翻译字幕"
+    Phase.SYNTHESIZING -> "合成配音"
+    Phase.READY -> "已就绪"
+    Phase.ERROR -> "处理失败"
 }
 
 private fun phaseText(p: Phase, progress: String): String = when (p) {
