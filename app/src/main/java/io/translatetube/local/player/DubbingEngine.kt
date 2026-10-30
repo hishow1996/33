@@ -4008,6 +4008,14 @@ class DubbingEngine(
             (expectedPlaybackGeneration == null ||
                 playbackGeneration.get() == expectedPlaybackGeneration)
 
+    /** True while this exact direct-TTS sentence still owns the live output callback. */
+    fun hasActiveTimelineUtteranceFor(idx: Int): Boolean {
+        if (released || idx < 0 || !usesImmediateTimelinePlayback) return false
+        return synchronized(playbackControlLock) {
+            !released && _currentLine.value == idx && activeTimelineUtteranceId != null
+        }
+    }
+
     fun release() {
         // Publish the released state under the same lock used to install cache files. Any write
         // that commits first is complete; any later write sees released and aborts.
