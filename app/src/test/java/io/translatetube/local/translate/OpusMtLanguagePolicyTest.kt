@@ -37,6 +37,16 @@ class OpusMtLanguagePolicyTest {
     }
 
     @Test
+    fun validatesResumeContentRangeBeforeAppendingDownloadedBytes() {
+        assertTrue(ModelDownloadRangePolicy.matches("bytes 100-999/1000", 100L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.matches("bytes 99-999/1000", 100L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.matches("bytes 100-900/1000", 100L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.matches("bytes 100-999/1001", 100L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.matches("bytes */1000", 100L, 1000L))
+        assertFalse(ModelDownloadRangePolicy.matches(null, 100L, 1000L))
+    }
+
+    @Test
     fun detectsShortJapaneseAndKoreanCaptionsByDistinctiveScripts() {
         assertEquals("ja", SubtitleScriptLanguageHint.detect("こんにちは"))
         assertEquals("ko", SubtitleScriptLanguageHint.detect("안녕하세요"))

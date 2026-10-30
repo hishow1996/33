@@ -121,20 +121,49 @@ object OpusMtAdditionalModelManager {
             val current = next[model.source]
             if (current?.status == OpusMtStatus.DOWNLOADING || current?.status == OpusMtStatus.VERIFYING) return@forEach
             val dir = modelDirectory(app, model.source)
-            val partial = model.files.firstOrNull { item ->
-                File(dir, item.name + ".part").let { it.isFile && it.length() > 0L }
-            } ?: model.files.firstOrNull { item -> File(dir, item.name).let { !it.isFile || it.length() != item.size } }
-            val progressFile = partial?.let { item ->
-                File(dir, item.name + ".part").takeIf { it.isFile } ?: File(dir, item.name)
-            }
             val total = model.files.sumOf { it.size }
+            val firstPartIndex = model.files.indexOfFirst { item ->
+                File(dir, item.name + ".part").let { it.isFile && it.length() > 0L }
+            }.takeIf { it >= 0 }
+            val firstIncompleteIndex = model.files.indexOfFirst { item ->
+                File(dir, item.name).let { !it.isFile || it.length() != item.size }
+            }.takeIf { it >= 0 }
+            val currentIndex = firstPartIndex ?: firstIncompleteIndex
+            val allFilesPresent = model.files.all { item ->
+                File(dir, item.name).let { it.isFile && it.length() == item.size }
+            }
+            val completedBefore = if (currentIndex == null) total else model.files.take(currentIndex).sumOf { item ->
+                val finalFile = File(dir, item.name)
+                if (finalFile.isFile && finalFile.length() == item.size) item.size else 0L
+            }
+            val currentSpec = currentIndex?.let { model.files[it] }
+            val part = currentSpec?.let { File(dir, it.name + ".part") }
+            val finalFile = currentSpec?.let { File(dir, it.name) }
+            val currentBytes = when {
+                part?.isFile == true -> part.length()
+                finalFile?.isFile == true -> finalFile.length().coerceAtMost(currentSpec?.size ?: 0L)
+                else -> 0L
+            }
+            val downloaded = (completedBefore + currentBytes).coerceAtMost(total)
             next[model.source] = when {
-                isReady(app, model.source) -> OpusMtDownloadState(status = OpusMtStatus.READY, progress = 100,
-                    fileIndex = model.files.size, fileCount = model.files.size, downloadedBytes = total, totalBytes = total)
-                hasPartialDownload(app, model.source) -> OpusMtDownloadState(status = OpusMtStatus.PAUSED,
-                    currentFile = partial?.name.orEmpty(), fileIndex = partial?.let { model.files.indexOf(it) + 1 } ?: 0,
-                    fileCount = model.files.size, downloadedBytes = progressFile?.length() ?: 0L, totalBytes = total)
-                else -> OpusMtDownloadState(status = OpusMtStatus.NOT_DOWNLOADED, fileCount = model.files.size)
+                isReady(app, model.source) -> OpusMtDownloadState(
+                    status = OpusMtStatus.READY, progress = 100,
+                    fileIndex = model.files.size, fileCount = model.files.size,
+                    downloadedBytes = total, totalBytes = total,
+                )
+                hasPartialDownload(app, model.source) -> OpusMtDownloadState(
+                    status = OpusMtStatus.PAUSED,
+                    progress = (downloaded * 100L / total).toInt().coerceIn(0, 100),
+                    currentFile = currentSpec?.name ?: "验证实际翻译",
+                    fileIndex = currentIndex?.plus(1) ?: model.files.size,
+                    fileCount = model.files.size,
+                    downloadedBytes = downloaded,
+                    totalBytes = total,
+                    error = if (allFilesPresent) "模型文件已下载，等待重新验证" else "",
+                )
+                else -> OpusMtDownloadState(
+                    status = OpusMtStatus.NOT_DOWNLOADED, fileCount = model.files.size, totalBytes = total,
+                )
             }
         }
         mutableStates.value = next
@@ -247,7 +276,7 @@ object OpusMtAdditionalModelManager {
         var allowRangeRetry = true
         while (true) {
             currentCoroutineContext().ensureActive()
-            val existingBytes = if (part.isFile) part.length() else 0L
+            var existingBytes = if (part.isFile) part.length() else 0L
             val request = Request.Builder().url(model.url(item)).get().apply {
                 if (existingBytes > 0L && allowRangeRetry) header("Range", "bytes=" + existingBytes + "-")
             }.build()
@@ -261,9 +290,26 @@ object OpusMtAdditionalModelManager {
                 }
                 if (!response.isSuccessful) throw IOException("HTTP " + response.code + "，下载 " + item.name + " 失败")
                 val body = response.body ?: throw IOException("下载响应没有内容：" + item.name)
-                val append = existingBytes > 0L && response.code == 206
-                if (existingBytes > 0L && !append && part.exists() && !part.delete()) {
-                    throw IOException("服务器未接受断点续传，且无法重置残片：" + item.name)
+                val isPartialResponse = response.code == 206
+                if (isPartialResponse && (
+                        existingBytes <= 0L ||
+                            !ModelDownloadRangePolicy.matches(
+                                response.header("Content-Range"),
+                                expectedStart = existingBytes,
+                                expectedTotal = item.size,
+                            )
+                    )
+                ) {
+                    if (!allowRangeRetry) throw IOException("OPUS-MT 断点续传响应范围连续异常：" + item.name)
+                    if (part.exists() && !part.delete()) throw IOException("无法重置范围异常的下载残片：" + item.name)
+                    allowRangeRetry = false
+                    retryFromZero = true
+                    return@use
+                }
+                val append = isPartialResponse && existingBytes > 0L
+                if (existingBytes > 0L && !append) {
+                    if (part.exists() && !part.delete()) throw IOException("服务器未接受断点续传，且无法重置残片：" + item.name)
+                    existingBytes = 0L
                 }
                 var writtenThisRequest = 0L
                 body.byteStream().use { input ->
@@ -274,20 +320,27 @@ object OpusMtAdditionalModelManager {
                             val count = input.read(buffer)
                             if (count < 0) break
                             output.write(buffer, 0, count)
-                            writtenThisRequest += count
+                            writtenThisRequest += count.toLong()
                             val bytesNow = (if (append) existingBytes else 0L) + writtenThisRequest
                             val aggregate = completedBefore + bytesNow
-                            publish(model.source, OpusMtDownloadState(status = OpusMtStatus.DOWNLOADING,
-                                progress = (aggregate * 100 / totalBytes).toInt().coerceIn(0, 99),
-                                currentFile = item.name, fileIndex = index + 1, fileCount = model.files.size,
-                                downloadedBytes = aggregate, totalBytes = totalBytes))
+                            publish(model.source, OpusMtDownloadState(
+                                status = OpusMtStatus.DOWNLOADING,
+                                progress = (aggregate * 100L / totalBytes).toInt().coerceIn(0, 99),
+                                currentFile = item.name,
+                                fileIndex = index + 1,
+                                fileCount = model.files.size,
+                                downloadedBytes = aggregate,
+                                totalBytes = totalBytes,
+                            ))
                         }
                         output.fd.sync()
                     }
                 }
-                if (part.length() != item.size) throw IOException("下载文件长度不匹配：" + item.name + "，预期 " + item.size + " 字节，实际 " + part.length() + " 字节")
+                if (part.length() != item.size) throw IOException(
+                    "下载文件长度不匹配：" + item.name + "，预期 " + item.size + " 字节，实际 " + part.length() + " 字节"
+                )
                 if (item.sha256 != null && !sha256(part).equals(item.sha256, ignoreCase = true)) {
-                    part.delete()
+                    if (!part.delete()) throw IOException("模型文件 SHA-256 校验失败，且无法清理残片：" + item.name)
                     throw IOException("模型文件 SHA-256 校验失败：" + item.name + "，已清除损坏文件")
                 }
                 if (target.exists() && !target.delete()) throw IOException("无法替换旧文件：" + item.name)
@@ -302,13 +355,23 @@ object OpusMtAdditionalModelManager {
         }
     }
 
-    suspend fun delete(context: Context, source: String) = withContext(Dispatchers.IO) {
-        val model = spec(source)
-        OpusMtCt2Runtime.release(model.source)
-        val dir = modelDirectory(context, model.source)
-        if (dir.exists() && !dir.deleteRecursively()) throw IOException("无法删除" + model.label + " OPUS-MT 模型")
-        publish(model.source, OpusMtDownloadState(status = OpusMtStatus.NOT_DOWNLOADED, fileCount = model.files.size))
-        AppLogStore.info(context.applicationContext, "LocalTranslationModel", "OPUS-MT " + model.label + " → 中文模型已删除",
-            diagnosticContext = mapOf("模型目录" to dir.absolutePath))
+    suspend fun delete(context: Context, source: String) = lock.withLock {
+        withContext(Dispatchers.IO) {
+            val model = spec(source)
+            OpusMtCt2Runtime.release(model.source)
+            val dir = modelDirectory(context, model.source)
+            if (dir.exists() && !dir.deleteRecursively()) throw IOException("无法删除" + model.label + " OPUS-MT 模型")
+            publish(model.source, OpusMtDownloadState(
+                status = OpusMtStatus.NOT_DOWNLOADED,
+                fileCount = model.files.size,
+                totalBytes = model.files.sumOf { it.size },
+            ))
+            AppLogStore.info(
+                context.applicationContext,
+                "LocalTranslationModel",
+                "OPUS-MT " + model.label + " → 中文模型已删除",
+                diagnosticContext = mapOf("模型目录" to dir.absolutePath),
+            )
+        }
     }
 }

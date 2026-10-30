@@ -812,7 +812,9 @@ internal fun LocalTranslationSection(
                                             OpusMtStatus.READY -> "已下载并验证"
                                             OpusMtStatus.DOWNLOADING -> "下载中 ${state.progress}%"
                                             OpusMtStatus.VERIFYING -> "正在验证模型"
-                                            OpusMtStatus.PAUSED -> "下载已暂停"
+                                            OpusMtStatus.PAUSED -> state.error.ifBlank {
+                                                if (state.hasCompleteFiles) "模型文件已下载，等待重新验证" else "下载已暂停"
+                                            }
                                             OpusMtStatus.FAILED -> state.error.ifBlank { "下载失败" }
                                             else -> "未下载"
                                         },
@@ -908,11 +910,20 @@ internal fun LocalTranslationSection(
                                             }
                                         },
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                    ) { Text("下载", maxLines = 1) }
+                                    ) { Text(
+                                        when {
+                                            state.hasCompleteFiles -> "重新验证"
+                                            state.status == OpusMtStatus.PAUSED -> "继续下载"
+                                            state.status == OpusMtStatus.FAILED -> "重试"
+                                            else -> "下载"
+                                        },
+                                        maxLines = 1,
+                                    ) }
                                 }
                             }
                             if (state.status == OpusMtStatus.DOWNLOADING ||
-                                state.status == OpusMtStatus.VERIFYING
+                                state.status == OpusMtStatus.VERIFYING ||
+                                (state.hasCompleteFiles && state.status != OpusMtStatus.READY)
                             ) {
                                 LinearProgressIndicator(
                                     progress = (state.progress / 100f).coerceIn(0f, 1f),

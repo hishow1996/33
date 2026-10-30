@@ -377,7 +377,7 @@ object Small100ModelManager {
                         throw IOException("服务器对完整下载返回了异常的分段响应：" + spec.name)
                     }
                     if (isPartialResponse &&
-                        !Small100RangeResponsePolicy.matches(
+                        !ModelDownloadRangePolicy.matches(
                             response.header("Content-Range"),
                             expectedStart = existingBytes,
                             expectedTotal = spec.bytes,
@@ -544,19 +544,6 @@ class Small100Engine(private val context: Context) : TranslationEngine {
         // another playback session may still be inside inference. The runtime serializes release
         // with inference and model loading through the same mutex.
         Small100Runtime.requestCloseLoadedModel()
-    }
-}
-
-internal object Small100RangeResponsePolicy {
-    private val contentRangePattern = Regex("""(?i)^bytes\s+(\d+)-(\d+)/(\d+)$""")
-
-    fun matches(header: String?, expectedStart: Long, expectedTotal: Long): Boolean {
-        if (header.isNullOrBlank() || expectedStart <= 0L || expectedTotal <= expectedStart) return false
-        val match = contentRangePattern.matchEntire(header.trim()) ?: return false
-        val start = match.groupValues[1].toLongOrNull() ?: return false
-        val end = match.groupValues[2].toLongOrNull() ?: return false
-        val total = match.groupValues[3].toLongOrNull() ?: return false
-        return start == expectedStart && total == expectedTotal && end == expectedTotal - 1L
     }
 }
 

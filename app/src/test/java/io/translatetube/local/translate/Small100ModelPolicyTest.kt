@@ -27,28 +27,28 @@ class Small100ModelPolicyTest {
     @Test
     fun acceptsOnlyAResumeRangeThatStartsAtTheSavedOffsetAndEndsAtTheFileBoundary() {
         assertTrue(
-            Small100RangeResponsePolicy.matches(
+            ModelDownloadRangePolicy.matches(
                 "bytes 100-999/1000",
                 expectedStart = 100L,
                 expectedTotal = 1000L,
             )
         )
         assertFalse(
-            Small100RangeResponsePolicy.matches(
+            ModelDownloadRangePolicy.matches(
                 "bytes 99-999/1000",
                 expectedStart = 100L,
                 expectedTotal = 1000L,
             )
         )
         assertFalse(
-            Small100RangeResponsePolicy.matches(
+            ModelDownloadRangePolicy.matches(
                 "bytes 100-900/1000",
                 expectedStart = 100L,
                 expectedTotal = 1000L,
             )
         )
         assertFalse(
-            Small100RangeResponsePolicy.matches(
+            ModelDownloadRangePolicy.matches(
                 "bytes 100-999/1001",
                 expectedStart = 100L,
                 expectedTotal = 1000L,

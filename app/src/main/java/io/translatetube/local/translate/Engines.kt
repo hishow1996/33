@@ -519,22 +519,27 @@ object MlKitModelCoordinator {
         val language = TranslateLanguage.fromLanguageTag(languageTag)
             ?: throw IllegalStateException("不支持的离线翻译语言: $languageTag")
         val model = TranslateRemoteModel.Builder(language).build()
-        if (!RemoteModelManager.getInstance().isModelDownloaded(model).await()) {
-            throw IllegalStateException("离线翻译包 $languageTag 尚未下载，请到 API 管理 → 本地翻译下载对应语言包，或切换其他翻译引擎。")
+        val lock = locks.computeIfAbsent(language) { Mutex() }
+        lock.withLock {
+            if (!RemoteModelManager.getInstance().isModelDownloaded(model).await()) {
+                throw IllegalStateException("离线翻译包 $languageTag 尚未下载，请到 API 管理 → 本地翻译下载对应语言包，或切换其他翻译引擎。")
+            }
         }
     }
 
     suspend fun isDownloaded(languageTag: String): Boolean {
         val language = TranslateLanguage.fromLanguageTag(languageTag) ?: return false
         val model = TranslateRemoteModel.Builder(language).build()
-        return RemoteModelManager.getInstance().isModelDownloaded(model).await()
+        val lock = locks.computeIfAbsent(language) { Mutex() }
+        return lock.withLock { RemoteModelManager.getInstance().isModelDownloaded(model).await() }
     }
 
     suspend fun deleteLanguage(languageTag: String) {
         val language = TranslateLanguage.fromLanguageTag(languageTag)
             ?: throw IllegalStateException("不支持的离线翻译语言: $languageTag")
         val model = TranslateRemoteModel.Builder(language).build()
-        RemoteModelManager.getInstance().deleteDownloadedModel(model).await()
+        val lock = locks.computeIfAbsent(language) { Mutex() }
+        lock.withLock { RemoteModelManager.getInstance().deleteDownloadedModel(model).await() }
     }
 
     /** 由设置页面主动调用，用户明确操作后才下载。 */
