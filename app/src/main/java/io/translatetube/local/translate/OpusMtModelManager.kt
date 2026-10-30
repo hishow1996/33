@@ -149,7 +149,15 @@ object OpusMtModelManager {
         }
     }
 
-    /** Also returns true when complete model files exist but later files still need downloading. */
+    /** True only when every pinned model file is present at its expected size. */
+    private fun allModelFilesPresent(context: Context): Boolean {
+        val dir = modelDirectory(context)
+        return files.all { spec ->
+            File(dir, spec.name).let { it.isFile && it.length() >= spec.sizeBytes }
+        }
+    }
+
+    /** Also returns true when complete model files exist but runtime validation has not passed. */
     fun hasPartialDownload(context: Context): Boolean {
         val dir = modelDirectory(context)
         if (files.any { spec ->
@@ -168,9 +176,7 @@ object OpusMtModelManager {
         val dir = modelDirectory(context)
         val totalBytes = files.sumOf { it.sizeBytes }
         val ready = isReady(context)
-        val allModelFilesPresent = files.all { spec ->
-            File(dir, spec.name).let { it.isFile && it.length() == spec.sizeBytes }
-        }
+        val allModelFilesPresent = allModelFilesPresent(context)
         val partialIndex = files.indexOfFirst { spec ->
             File(dir, "${spec.name}.part").let { it.isFile && it.length() > 0L }
         }.takeIf { it >= 0 }
@@ -196,6 +202,16 @@ object OpusMtModelManager {
             ready -> OpusMtDownloadState(
                 status = OpusMtStatus.READY, progress = 100, fileIndex = files.size,
                 fileCount = files.size, downloadedBytes = totalBytes, totalBytes = totalBytes,
+            )
+            allModelFilesPresent -> OpusMtDownloadState(
+                status = OpusMtStatus.FAILED,
+                progress = 100,
+                currentFile = "验证翻译效果",
+                fileIndex = files.size,
+                fileCount = files.size,
+                downloadedBytes = totalBytes,
+                totalBytes = totalBytes,
+                error = "模型文件已完整下载，运行时验证尚未通过；点击重新验证",
             )
             hasPartialDownload(context) -> OpusMtDownloadState(
                 status = OpusMtStatus.PAUSED,
@@ -326,27 +342,59 @@ object OpusMtModelManager {
             )
         } catch (cancelled: CancellationException) {
             val stateNow = mutableState.value
+            val completeFiles = allModelFilesPresent(app)
+            val resumableData = hasPartialDownload(app)
+            val nextStatus = OpusMtAdditionalDownloadStatePolicy.afterCancellation(
+                filesComplete = completeFiles,
+                resumableData = resumableData,
+            )
             mutableState.value = stateNow.copy(
-                status = if (hasPartialDownload(app)) OpusMtStatus.PAUSED else OpusMtStatus.NOT_DOWNLOADED,
-                error = "",
+                status = nextStatus,
+                progress = if (completeFiles) 100 else stateNow.progress,
+                currentFile = if (completeFiles) "验证翻译效果" else stateNow.currentFile,
+                fileIndex = if (completeFiles) files.size else stateNow.fileIndex,
+                downloadedBytes = if (completeFiles) totalBytes else stateNow.downloadedBytes,
+                totalBytes = totalBytes,
+                error = if (completeFiles) "模型文件已下载，运行时验证已中断；点击重新验证" else "",
             )
             AppLogStore.info(
                 app,
                 "LocalTranslationModel",
-                "OPUS-MT 下载已暂停，可继续下载",
+                if (completeFiles) "OPUS-MT 文件已完整下载，验证任务已中断" else "OPUS-MT 下载已暂停，可继续下载",
                 diagnosticContext = mapOf(
-                    "保留可续传数据" to hasPartialDownload(app).toString(),
+                    "模型文件已全部下载" to completeFiles.toString(),
+                    "是否存在可续传数据" to resumableData.toString(),
+                    "中断前阶段" to stateNow.status.name,
                     "当前文件" to stateNow.currentFile,
                     "文件序号" to "${stateNow.fileIndex}/${stateNow.fileCount}",
                     "已下载字节" to stateNow.downloadedBytes.toString(),
                 ),
             )
             throw cancelled
-        } catch (error: Exception) {
-            val partial = hasPartialDownload(app)
-            mutableState.value = mutableState.value.copy(
-                status = if (partial) OpusMtStatus.PAUSED else OpusMtStatus.FAILED,
-                error = error.message ?: error.javaClass.simpleName,
+        } catch (error: Throwable) {
+            val previous = mutableState.value
+            val completeFiles = allModelFilesPresent(app)
+            val resumableData = hasPartialDownload(app)
+            val nextStatus = OpusMtAdditionalDownloadStatePolicy.afterFailure(
+                filesComplete = completeFiles,
+                resumableData = resumableData,
+            )
+            var rootCause = error
+            repeat(8) {
+                val next = rootCause.cause
+                if (next != null && next !== rootCause) rootCause = next
+            }
+            val reason = rootCause.message?.takeIf { it.isNotBlank() }
+                ?: error.message?.takeIf { it.isNotBlank() }
+                ?: rootCause.javaClass.simpleName
+            mutableState.value = previous.copy(
+                status = nextStatus,
+                progress = if (completeFiles) 100 else previous.progress,
+                currentFile = if (completeFiles) "验证翻译效果" else previous.currentFile,
+                fileIndex = if (completeFiles) files.size else previous.fileIndex,
+                downloadedBytes = if (completeFiles) totalBytes else previous.downloadedBytes,
+                totalBytes = totalBytes,
+                error = reason,
             )
             AppLogStore.error(
                 app,
@@ -354,12 +402,16 @@ object OpusMtModelManager {
                 "OPUS-MT 模型下载或模型验证失败",
                 error,
                 diagnosticContext = mapOf(
-                    "当前文件" to mutableState.value.currentFile,
-                    "已保留可继续下载文件" to partial.toString(),
-                    "失败原因" to (error.message ?: error.javaClass.simpleName),
+                    "模型文件已全部下载" to completeFiles.toString(),
+                    "是否存在可续传数据" to resumableData.toString(),
+                    "失败文件或阶段" to previous.currentFile,
+                    "中断前状态" to previous.status.name,
+                    "根因类型" to rootCause.javaClass.name,
+                    "失败原因" to reason,
                 ),
             )
-            throw error
+            if (error is Exception) throw error
+            throw IOException("OPUS-MT 模型验证失败：$reason", error)
         }
     }
 

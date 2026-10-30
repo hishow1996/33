@@ -309,7 +309,7 @@ object OpusMtAdditionalModelManager {
                     "当前文件" to previous.currentFile,
                 ))
             throw cancelled
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             val previous = mutableStates.value[model.source] ?: OpusMtDownloadState(fileCount = model.files.size)
             val allFilesPresent = model.files.all { item ->
                 File(dir, item.name).let { it.isFile && it.length() == item.size }
@@ -343,7 +343,8 @@ object OpusMtAdditionalModelManager {
                     "根因类型" to rootCause.javaClass.name,
                     "失败原因" to reason,
                 ))
-            throw error
+            if (error is Exception) throw error
+            throw IOException("OPUS-MT " + model.label + " 模型验证失败：" + reason, error)
         }
     }
 

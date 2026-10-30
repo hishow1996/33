@@ -47,7 +47,7 @@ class OpusMtLanguagePolicyTest {
     }
 
     @Test
-    fun completeAdditionalOpusFilesAreValidationFailureNotPausedDownload() {
+    fun completeOpusFilesAreValidationFailureNotPausedDownload() {
         assertEquals(
             OpusMtStatus.FAILED,
             OpusMtAdditionalDownloadStatePolicy.afterFailure(filesComplete = true, resumableData = false),

@@ -885,7 +885,11 @@ internal fun LocalTranslationSection(
                                             if (source == "en") {
                                                 opusJob = launchTrackedModelDownload(
                                                     taskId = "opus-mt-en-zh",
-                                                    title = "正在下载 OPUS-MT 英语模型",
+                                                    title = if (state.hasCompleteFiles) {
+                                                        "正在重新验证 OPUS-MT：英语 → 中文"
+                                                    } else {
+                                                        "正在下载 OPUS-MT：英语 → 中文"
+                                                    },
                                                 ) {
                                                     try {
                                                         OpusMtModelManager.download(context)
