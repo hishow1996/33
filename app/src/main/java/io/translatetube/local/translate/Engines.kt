@@ -1518,10 +1518,24 @@ class GoogleHybridEngine(private val context: Context) : TranslationEngine {
     override val id = "google-hybrid"
     override val displayName = "Google 翻译"
 
+    // Reuse one ML Kit translator over all batches when the online route is unavailable.
+    private var offlineFallbackEngine: MlKitEngine? = null
+
+    private fun offlineEngineForTask(): MlKitEngine = synchronized(this) {
+        offlineFallbackEngine ?: MlKitEngine().also { offlineFallbackEngine = it }
+    }
+
+    override fun close() {
+        val engine = synchronized(this) {
+            offlineFallbackEngine.also { offlineFallbackEngine = null }
+        }
+        engine?.close()
+    }
+
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (!hasValidatedNetwork()) {
             return try {
-                MlKitEngine().translate(lines, srcLang, tgtLang)
+                offlineEngineForTask().translate(lines, srcLang, tgtLang)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1537,7 +1551,7 @@ class GoogleHybridEngine(private val context: Context) : TranslationEngine {
             throw e
         } catch (onlineError: Exception) {
             try {
-                MlKitEngine().translate(lines, srcLang, tgtLang)
+                offlineEngineForTask().translate(lines, srcLang, tgtLang)
             } catch (e: CancellationException) {
                 throw e
             } catch (offlineError: Exception) {
