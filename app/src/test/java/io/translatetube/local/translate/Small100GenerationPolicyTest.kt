@@ -1,6 +1,9 @@
 package io.translatetube.local.translate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -19,6 +22,7 @@ class Small100GenerationPolicyTest {
         } catch (error: IllegalStateException) {
             assertTrue(error.message.orEmpty().contains("未正常结束"))
             assertTrue(error.message.orEmpty().contains("640 token"))
+            assertTrue(error is Small100OutputLimitException)
         }
     }
 
@@ -29,6 +33,7 @@ class Small100GenerationPolicyTest {
             fail("An empty model output must be rejected")
         } catch (error: IllegalStateException) {
             assertTrue(error.message.orEmpty().contains("未生成有效译文 token"))
+            assertFalse(error is Small100OutputLimitException)
         }
     }
 
@@ -48,5 +53,66 @@ class Small100GenerationPolicyTest {
         assertEquals(512, Small100GenerationPolicy.outputTokenLimit(0))
         assertEquals(1024, Small100GenerationPolicy.outputTokenLimit(10_000))
         assertEquals(1024, Small100GenerationPolicy.MAX_OUTPUT_TOKENS)
+    }
+
+    @Test
+    fun splitsAtSentenceBoundaryAndPreservesExactSourceText() {
+        val source = "Hola, ¿cómo estás? Estoy muy bien. Gracias."
+        val result = Small100GenerationPolicy.splitForRecovery(
+            text = source,
+            maxChunkTokens = 40,
+            tokenCount = { it.length },
+        )
+        assertNotNull(result)
+        assertTrue(result!!.first.endsWith("?") || result.first.endsWith("."))
+        assertEquals(source, result.first + result.second)
+        assertTrue(result.first.isNotBlank())
+        assertTrue(result.second.isNotBlank())
+    }
+
+    @Test
+    fun splitsAtWhitespaceWhenNoSentenceBoundaryExists() {
+        val source = "palabra uno dos tres cuatro cinco seis siete"
+        val result = Small100GenerationPolicy.splitForRecovery(
+            text = source,
+            maxChunkTokens = 20,
+            tokenCount = { it.length },
+        )
+        assertNotNull(result)
+        assertTrue(result!!.first.last().isWhitespace())
+        assertEquals(source, result.first + result.second)
+    }
+
+    @Test
+    fun fallsBackToUnicodeSafeCodePointBoundary() {
+        val source = "😀😀😀😀😀"
+        val result = Small100GenerationPolicy.splitForRecovery(
+            text = source,
+            maxChunkTokens = 2,
+            tokenCount = { it.codePointCount(0, it.length) },
+        )
+        assertNotNull(result)
+        assertEquals(source, result!!.first + result.second)
+        assertEquals(0, result.first.last().isHighSurrogate().compareTo(true))
+        assertFalse(result.first.last().isHighSurrogate())
+        assertFalse(result.second.first().isLowSurrogate())
+    }
+
+    @Test
+    fun doesNotSplitSingleCodePointOrBlankText() {
+        assertNull(
+            Small100GenerationPolicy.splitForRecovery(
+                text = "😀",
+                maxChunkTokens = 1,
+                tokenCount = { it.length },
+            )
+        )
+        assertNull(
+            Small100GenerationPolicy.splitForRecovery(
+                text = "  ",
+                maxChunkTokens = 1,
+                tokenCount = { it.length },
+            )
+        )
     }
 }

@@ -576,25 +576,27 @@ class Small100Engine(private val context: Context) : TranslationEngine {
             lines.mapIndexed { index, line ->
                 taskContext.ensureActive()
                 val translated = if (line.isBlank()) "" else try {
-                    Small100Runtime.translateOne(appContext, line, "zh")
+                    Small100Runtime.translateOneWithRecovery(appContext, line, "zh")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (lineLimit: Small100InputTooLongException) {
-                    AppLogStore.warning(
+                } catch (error: Exception) {
+                    AppLogStore.error(
                         appContext,
                         "Translation",
-                        "SMaLL-100 单条字幕超过输入长度上限，已隔离该行并继续处理其他字幕",
-                        lineLimit,
+                        "SMaLL-100 单条字幕自动拆分恢复失败",
+                        error,
                         diagnosticContext = mapOf(
                             "字幕序号" to (index + 1).toString(),
                             "字幕总数" to lines.size.toString(),
                             "字幕字符数" to line.length.toString(),
-                            "输入 token 数" to lineLimit.actualTokens.toString(),
-                            "模型上限" to lineLimit.maxTokens.toString(),
+                            "自动拆分恢复" to "已尝试",
                             "未记录字幕原文" to "true",
                         ),
                     )
-                    ""
+                    throw IllegalStateException(
+                        "SMaLL-100 第 ${index + 1}/${lines.size} 条字幕无法完整翻译，已停止本次翻译以避免空字幕进入配音。",
+                        error,
+                    )
                 }
                 if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
                     AppLogStore.info(
@@ -643,6 +645,49 @@ private object Small100Runtime {
             runCatching { encoder.close() }
             runCatching { decoder.close() }
             runCatching { tokenizer.close() }
+        }
+
+        fun translateOneWithRecovery(
+            text: String,
+            targetCode: String,
+            checkActive: () -> Unit,
+            recoveryDepth: Int = 0,
+        ): String {
+            checkActive()
+            try {
+                return translateOne(text, targetCode, checkActive)
+            } catch (error: Small100InputTooLongException) {
+                return translateSplitParts(text, targetCode, checkActive, recoveryDepth, error)
+            } catch (error: Small100OutputLimitException) {
+                return translateSplitParts(text, targetCode, checkActive, recoveryDepth, error)
+            }
+        }
+
+        private fun translateSplitParts(
+            text: String,
+            targetCode: String,
+            checkActive: () -> Unit,
+            recoveryDepth: Int,
+            cause: Exception,
+        ): String {
+            if (recoveryDepth >= Small100GenerationPolicy.MAX_SPLIT_RECOVERY_DEPTH) {
+                throw IllegalStateException("SMaLL-100 字幕拆分恢复达到最大层数，仍未能完整生成译文。", cause)
+            }
+            val parts = Small100GenerationPolicy.splitForRecovery(
+                text = text,
+                maxChunkTokens = MAX_SOURCE_TOKENS,
+                tokenCount = { chunk -> tokenizer.encode(chunk).size + 1 },
+            ) ?: throw IllegalStateException(
+                "SMaLL-100 字幕无法继续拆分，无法保证译文完整。", cause
+            )
+            val left = translateOneWithRecovery(
+                parts.first, targetCode, checkActive, recoveryDepth + 1
+            )
+            checkActive()
+            val right = translateOneWithRecovery(
+                parts.second, targetCode, checkActive, recoveryDepth + 1
+            )
+            return cleanChineseSpacing(left + right)
         }
 
         fun translateOne(text: String, targetCode: String, checkActive: () -> Unit): String {
@@ -734,6 +779,14 @@ private object Small100Runtime {
         return inferenceMutex.withLock {
             taskContext.ensureActive()
             load(context).translateOne(text, targetCode) { taskContext.ensureActive() }
+        }
+    }
+
+    suspend fun translateOneWithRecovery(context: Context, text: String, targetCode: String): String {
+        val taskContext = currentCoroutineContext()
+        return inferenceMutex.withLock {
+            taskContext.ensureActive()
+            load(context).translateOneWithRecovery(text, targetCode) { taskContext.ensureActive() }
         }
     }
 
