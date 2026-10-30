@@ -178,7 +178,18 @@ class Small100ModelPolicyTest {
         val encoded = tokenizer.encode("Hello.")
         org.junit.Assert.assertArrayEquals(longArrayOf(65761L, 5L, 2L), encoded)
 
+        val repeated = tokenizer.encode("Hello Hello")
+        org.junit.Assert.assertArrayEquals(longArrayOf(65761L, 65761L, 2L), repeated)
+        assertEquals(1, tokenizer.cachedWordCount)
+        val repeatedAgain = tokenizer.encode("Hello Hello")
+        org.junit.Assert.assertArrayEquals(repeated, repeatedAgain)
+
         val decoded = tokenizer.decode(longArrayOf(128102L, 88888L, 5L, 2L), skipSpecialTokens = true)
         assertEquals("你好.", decoded)
+
+        for (index in 0 until 1100) {
+            tokenizer.encode("cacheword$index")
+        }
+        assertEquals(1024, tokenizer.cachedWordCount)
     }
 }
