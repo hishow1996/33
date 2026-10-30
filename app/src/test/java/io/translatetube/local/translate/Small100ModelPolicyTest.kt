@@ -97,7 +97,13 @@ class Small100ModelPolicyTest {
         // merged left-to-right in non-overlapping pairs.
         val encoded = tokenizer.encode("aaaaaaaa")
         assertEquals(
-            listOf(vocab.getValue("▁a"), vocab.getValue("aaaa"), vocab.getValue("aa"), 2),
+            listOf(
+                vocab.getValue("▁a"),
+                vocab.getValue("aaaa"),
+                vocab.getValue("aa"),
+                vocab.getValue("a"),
+                2,
+            ),
             encoded.map { it.toInt() },
         )
     }
@@ -116,10 +122,12 @@ class Small100ModelPolicyTest {
             specialIds = emptySet(),
         )
         val encoded = tokenizer.encode("a".repeat(512))
-        assertEquals(513, encoded.size)
+        assertEquals(258, encoded.size)
         assertEquals(2L, encoded.last())
         assertEquals(512, tokenizer.decode(encoded).replace(" ", "").length)
-        assertTrue(encoded.dropLast(1).all { it.toInt() == vocab.getValue("▁a") || it.toInt() == vocab.getValue("aa") || it.toInt() == vocab.getValue("a") })
+        assertEquals(1, encoded.dropLast(1).count { it.toInt() == vocab.getValue("▁a") })
+        assertEquals(255, encoded.dropLast(1).count { it.toInt() == vocab.getValue("aa") })
+        assertEquals(1, encoded.dropLast(1).count { it.toInt() == vocab.getValue("a") })
     }
 
     @Test
