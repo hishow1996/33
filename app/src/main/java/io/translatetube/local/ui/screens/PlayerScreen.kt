@@ -326,6 +326,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     val frame = remember { FrameLayout(ctx) }
     val surfaceAttachScope = rememberCoroutineScope()
     val surfaceAttachJob = remember(tv) { arrayOfNulls<kotlinx.coroutines.Job>(1) }
+    val lastObservedSurfaceTexture = remember(tv) {
+        arrayOfNulls<android.graphics.SurfaceTexture>(1)
+    }
 
     // A view can be attached before its SurfaceTexture exists or before layout gives it
     // non-zero dimensions. Both landscape and portrait videos need a real output surface before
@@ -339,6 +342,18 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 val service = PlaybackService.instance
                 val surfaceReady = tv.isAvailable && tv.width > 0 && tv.height > 0
                 if (service?.isReady == true && surfaceReady) {
+                    val currentTexture = tv.surfaceTexture
+                    val previousTexture = lastObservedSurfaceTexture[0]
+                    if (
+                        previousTexture != null &&
+                        currentTexture != null &&
+                        currentTexture !== previousTexture
+                    ) {
+                        // A TextureView may keep the same View instance while Android replaces its
+                        // SurfaceTexture. Media3 owns the listener; invalidate only our old frame proof.
+                        service.notifyVideoSurfaceRecreated(tv)
+                    }
+                    if (currentTexture != null) lastObservedSurfaceTexture[0] = currentTexture
                     service.attachSurface(tv)
                     return@launch
                 }
@@ -413,44 +428,14 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
     }
 
-    // Returning from background can recreate TextureView's SurfaceTexture without replacing
-    // the TextureView object. Compare identities across pause/resume; never install our own
-    // SurfaceTextureListener because Media3 owns that listener.
+    // Returning from background can recreate the SurfaceTexture while keeping the same
+    // TextureView. attachSurfaceWhenReady compares texture identities before each bind; Media3
+    // keeps sole ownership of its SurfaceTexture listener.
     val resumeLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(resumeLifecycleOwner, tv) {
-        var surfaceTextureBeforePause: android.graphics.SurfaceTexture? = null
+    androidx.compose.runtime.DisposableEffect(resumeLifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            when (event) {
-                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
-                    surfaceTextureBeforePause = tv.surfaceTexture
-                }
-                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
-                    val previousSurfaceTexture = surfaceTextureBeforePause
-                    attachSurfaceWhenReady()
-                    if (previousSurfaceTexture != null) {
-                        surfaceAttachScope.launch {
-                            var attempts = 0
-                            while (
-                                attempts < 30 &&
-                                tv.isAttachedToWindow &&
-                                (!tv.isAvailable || tv.surfaceTexture == null)
-                            ) {
-                                delay(100L)
-                                attempts++
-                            }
-                            val currentSurfaceTexture = tv.surfaceTexture
-                            if (
-                                tv.isAttachedToWindow &&
-                                tv.isAvailable &&
-                                currentSurfaceTexture != null &&
-                                currentSurfaceTexture !== previousSurfaceTexture
-                            ) {
-                                PlaybackService.instance?.notifyVideoSurfaceRecreated(tv)
-                            }
-                        }
-                    }
-                }
-                else -> Unit
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                attachSurfaceWhenReady()
             }
         }
         resumeLifecycleOwner.lifecycle.addObserver(observer)
