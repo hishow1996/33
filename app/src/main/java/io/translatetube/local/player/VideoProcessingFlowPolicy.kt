@@ -125,8 +125,8 @@ object VideoProcessingFlowPolicy {
                 Phase.ERROR -> 0
             }
             ProcessingFlow.YOUTUBE_SUBTITLES -> when (phase) {
-                Phase.IDLE -> 0
-                Phase.PARSING -> youtubeSubtitleStage(progress)
+                // Finding/reading captions is part of video parsing, not audio extraction or ASR.
+                Phase.IDLE, Phase.PARSING -> 0
                 Phase.DOWNLOADING_AUDIO -> 1
                 Phase.TRANSCRIBING -> 2
                 Phase.TRANSLATING -> 3
@@ -150,8 +150,8 @@ object VideoProcessingFlowPolicy {
             }
             ProcessingFlow.AUTO -> if (source == VideoSourceKind.YOUTUBE) {
                 when (phase) {
-                    Phase.IDLE -> 0
-                    Phase.PARSING -> youtubeSubtitleStage(progress)
+                    // Caption lookup remains visible as a detail of the first conceptual stage.
+                    Phase.IDLE, Phase.PARSING -> 0
                     Phase.DOWNLOADING_AUDIO -> 1
                     Phase.TRANSCRIBING -> 2
                     Phase.TRANSLATING -> 3
@@ -167,20 +167,6 @@ object VideoProcessingFlowPolicy {
         } else {
             resolved
         }
-    }
-
-    private fun youtubeSubtitleLookupStage(progress: String, fallbackStage: Int): Int = when {
-        progress.contains("查找可用字幕轨") -> 1
-        progress.contains("检查本地字幕文件与缓存") -> 1
-        progress.contains("下载并读取字幕文件") -> 1
-        else -> fallbackStage
-    }
-
-    private fun youtubeSubtitleStage(progress: String): Int = when {
-        progress.contains("查找可用字幕轨") -> 1
-        progress.contains("检查本地字幕文件与缓存") -> 2
-        progress.contains("下载并读取字幕文件") -> 2
-        else -> 0
     }
 
     private fun genericStageIndex(phase: Phase): Int = when (phase) {
@@ -264,6 +250,32 @@ object VideoProcessingFlowPolicy {
         if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null
 
     fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int = 2
+
+    /**
+     * Compact status for YouTube caption discovery, shown inside the video-parsing stage.
+     * It deliberately does not turn caption lookup/read operations into audio/ASR stages.
+     */
+    fun youtubeSubtitleDetail(
+        progress: String,
+        subtitleTrackStatus: String,
+        availableTrackCount: Int,
+    ): String? {
+        val message = progress.trim()
+        val status = subtitleTrackStatus.trim()
+        return when {
+            message.contains("查找可用字幕轨") -> "正在查找字幕轨"
+            message.contains("检查本地字幕文件与缓存") -> "正在检查字幕缓存"
+            message.contains("下载并读取字幕文件") -> "正在读取字幕文件"
+            message.contains("回退") -> "已切换到备用字幕"
+            message.contains("切换") -> "正在切换字幕语言"
+            availableTrackCount > 0 -> "已发现 $availableTrackCount 条字幕轨"
+            status.contains("未找到") -> "未发现字幕轨"
+            status.contains("暂时无法读取") -> "字幕列表暂不可用"
+            status.startsWith("找到") -> "已发现字幕轨"
+            message.contains("解析") -> "正在解析视频信息"
+            else -> null
+        }
+    }
 
     /** Notification title for a READY player whose translation or dubbing setup is still blocked. */
     fun readyNotificationWaitTitle(

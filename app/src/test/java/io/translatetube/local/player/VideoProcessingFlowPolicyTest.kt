@@ -116,36 +116,37 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
-    fun youtubeSubtitleLookupProgressMovesTheActiveStageWithinParsing() {
+    fun youtubeCaptionLookupAndReadStayInsideTheVideoParsingStage() {
+        val subtitleProgress = listOf(
+            "正在解析 YouTube 视频",
+            "正在查找可用字幕轨…",
+            "正在检查本地字幕文件与缓存…",
+            "正在下载并读取字幕文件…",
+        )
+        subtitleProgress.forEach { progress ->
+            assertEquals(
+                "caption work must remain in stage 1: $progress",
+                0,
+                VideoProcessingFlowPolicy.stageIndex(
+                    VideoSourceKind.YOUTUBE,
+                    ProcessingFlow.YOUTUBE_SUBTITLES,
+                    Phase.PARSING,
+                    progress = progress,
+                ),
+            )
+            assertEquals(
+                "AUTO YouTube caption work must remain in stage 1: $progress",
+                0,
+                VideoProcessingFlowPolicy.stageIndex(
+                    VideoSourceKind.YOUTUBE,
+                    ProcessingFlow.AUTO,
+                    Phase.PARSING,
+                    progress = progress,
+                ),
+            )
+        }
         assertEquals(
             0,
-            VideoProcessingFlowPolicy.stageIndex(
-                VideoSourceKind.YOUTUBE,
-                ProcessingFlow.YOUTUBE_SUBTITLES,
-                Phase.PARSING,
-                progress = "正在解析 YouTube 视频",
-            ),
-        )
-        assertEquals(
-            1,
-            VideoProcessingFlowPolicy.stageIndex(
-                VideoSourceKind.YOUTUBE,
-                ProcessingFlow.YOUTUBE_SUBTITLES,
-                Phase.PARSING,
-                progress = "正在查找可用字幕轨…",
-            ),
-        )
-        assertEquals(
-            2,
-            VideoProcessingFlowPolicy.stageIndex(
-                VideoSourceKind.YOUTUBE,
-                ProcessingFlow.YOUTUBE_SUBTITLES,
-                Phase.PARSING,
-                progress = "正在下载并读取字幕文件…",
-            ),
-        )
-        assertEquals(
-            1,
             VideoProcessingFlowPolicy.stageIndex(
                 VideoSourceKind.YOUTUBE,
                 ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
@@ -156,9 +157,9 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
-    fun failedYouTubeSubtitleLookupRetainsTheSpecificSubstage() {
+    fun failedYouTubeCaptionLookupRetainsTheVideoParsingStage() {
         assertEquals(
-            2,
+            0,
             VideoProcessingFlowPolicy.stageIndex(
                 VideoSourceKind.YOUTUBE,
                 ProcessingFlow.YOUTUBE_SUBTITLES,
@@ -168,7 +169,7 @@ class VideoProcessingFlowPolicyTest {
             ),
         )
         assertEquals(
-            1,
+            0,
             VideoProcessingFlowPolicy.stageIndex(
                 VideoSourceKind.YOUTUBE,
                 ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
@@ -176,6 +177,34 @@ class VideoProcessingFlowPolicyTest {
                 failedPhase = Phase.PARSING,
                 progress = "正在下载并读取字幕文件…",
             ),
+        )
+    }
+
+    @Test
+    fun youtubeSubtitleDetailUsesCompactRealStatusText() {
+        assertEquals(
+            "正在查找字幕轨",
+            VideoProcessingFlowPolicy.youtubeSubtitleDetail("正在查找可用字幕轨…", "", 0),
+        )
+        assertEquals(
+            "正在检查字幕缓存",
+            VideoProcessingFlowPolicy.youtubeSubtitleDetail("正在检查本地字幕文件与缓存…", "", 0),
+        )
+        assertEquals(
+            "正在读取字幕文件",
+            VideoProcessingFlowPolicy.youtubeSubtitleDetail("正在下载并读取字幕文件…", "", 0),
+        )
+        assertEquals(
+            "已发现 3 条字幕轨",
+            VideoProcessingFlowPolicy.youtubeSubtitleDetail("", "", 3),
+        )
+        assertEquals(
+            "未发现字幕轨",
+            VideoProcessingFlowPolicy.youtubeSubtitleDetail("", "未找到可下载的字幕轨", 0),
+        )
+        assertEquals(
+            "字幕列表暂不可用",
+            VideoProcessingFlowPolicy.youtubeSubtitleDetail("", "暂时无法读取字幕列表", 0),
         )
     }
 

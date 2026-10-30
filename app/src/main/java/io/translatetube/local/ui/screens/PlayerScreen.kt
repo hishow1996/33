@@ -10,8 +10,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.animateFloat
@@ -2332,6 +2334,11 @@ private fun VideoParsingPage(
                     val active = !complete && !isError && !isCancelled && !stageSkipped && index == currentStage
                     val failed = isError && !stageSkipped && index == currentStage
                     val cancelled = isCancelled && index == currentStage
+                    val waitingForStageEngine = active && (
+                        (index == 2 && waitingForTranscriptionEngine) ||
+                            (index == 4 && waitingForDubbingEngine)
+                        )
+                    val waitingForExternalSubtitle = active && index == 3 && state.manualTranslationWaiting
                     val paused = active && state.isProcessingPaused
                     val markerBg = when {
                         done -> Color(0xFFE8F8F1)
@@ -2404,13 +2411,30 @@ private fun VideoParsingPage(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            if (active || failed) {
+                            AnimatedVisibility(
+                                visible = active || failed,
+                                enter = fadeIn(tween(150)) + expandVertically(animationSpec = tween(170)),
+                                exit = fadeOut(tween(100)) + shrinkVertically(animationSpec = tween(140)),
+                            ) {
                                 val stageDetailRows = buildList<Pair<String, String>> {
                                     when (index) {
                                         0 -> {
                                             state.title.takeIf { it.isNotBlank() }?.let { add("视频" to it) }
                                             state.channel.takeIf { it.isNotBlank() }?.let { add("频道" to it) }
                                             if (state.durationMs > 0L) add("时长" to formatFloatingTime(state.durationMs))
+                                            state.selectedQuality.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("清晰度" to it) }
+                                            if (
+                                                source == VideoSourceKind.YOUTUBE &&
+                                                flow != ProcessingFlow.IMPORTED_SUBTITLES &&
+                                                flow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                                            ) {
+                                                VideoProcessingFlowPolicy.youtubeSubtitleDetail(
+                                                    progress = if (failed) state.failedProgress else state.progress,
+                                                    subtitleTrackStatus = state.subtitleTrackStatus,
+                                                    availableTrackCount = state.availableSubtitleTracks.size,
+                                                )?.let { add("字幕检测" to it) }
+                                            }
                                         }
                                         1 -> {
                                             val progressText = if (failed) state.failedProgress else state.progress
@@ -2500,6 +2524,8 @@ private fun VideoParsingPage(
                             failed -> "失败"
                             cancelled -> "已取消"
                             paused -> "已暂停"
+                            waitingForStageEngine -> if (index == 2) "等待转写引擎" else "等待配音引擎"
+                            waitingForExternalSubtitle -> "等待译文"
                             active -> "进行中"
                             else -> "等待中"
                         }
