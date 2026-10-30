@@ -1,6 +1,7 @@
 package io.translatetube.local.translate
 
 import android.content.Context
+import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -127,7 +128,9 @@ object OpusMtAdditionalModelManager {
         val next = mutableStates.value.toMutableMap()
         models.forEach { model ->
             val current = next[model.source]
-            if (current?.status == OpusMtStatus.DOWNLOADING || current?.status == OpusMtStatus.VERIFYING) return@forEach
+            val taskId = "opus-mt-${model.source}-zh"
+            val taskIsActive = ModelDownloadForegroundService.isExternalTaskActive(taskId)
+            if (taskIsActive) return@forEach
             val dir = modelDirectory(app, model.source)
             val total = model.files.sumOf { it.size }
             val firstPartIndex = model.files.indexOfFirst { item ->

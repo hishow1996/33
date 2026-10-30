@@ -144,6 +144,36 @@ jobs:
       - name: Build debug and release APKs
         run: ./gradlew --no-daemon assembleDebug assembleRelease
 
+      - name: Verify OPUS-MT native runtime is packaged in APKs
+        run: |
+          python3 - <<'PY'
+          import glob
+          import struct
+          import zipfile
+
+          apks = glob.glob("app/build/outputs/apk/debug/*.apk")
+          apks += glob.glob("app/build/outputs/apk/release/*.apk")
+          if not apks:
+              raise SystemExit("No APK files were produced.")
+
+          entry_name = "lib/arm64-v8a/libopusmtct2.so"
+          for apk in apks:
+              with zipfile.ZipFile(apk) as archive:
+                  try:
+                      info = archive.getinfo(entry_name)
+                  except KeyError:
+                      raise SystemExit(f"{apk} is missing {entry_name}")
+                  header = archive.read(entry_name)[:20]
+                  if len(header) != 20 or header[:4] != b"\\x7fELF":
+                      raise SystemExit(f"{apk} contains an invalid ELF native library")
+                  if header[4] != 2 or header[5] != 1:
+                      raise SystemExit(f"{apk} does not contain a 64-bit little-endian native library")
+                  machine = struct.unpack("<H", header[18:20])[0]
+                  if machine != 183 or info.file_size < 1_000_000:
+                      raise SystemExit(f"{apk} contains an invalid ARM64 CTranslate2 runtime")
+                  print(f"Verified {apk}: {entry_name} ({info.file_size} bytes, AArch64)")
+          PY
+
       # Debug APKs are signed with Android's debug key and can be installed directly.
       - name: Upload installable debug APK
         uses: actions/upload-artifact@v4

@@ -111,13 +111,6 @@ android {
 val buildOpusMtCt2 by tasks.registering(Exec::class) {
     inputs.files(fileTree(opusMtCt2SourceDir))
     outputs.file(opusMtCt2NativeLibrary)
-    onlyIf {
-        val androidHome = System.getenv("ANDROID_HOME").orEmpty()
-        val configuredNdk = System.getenv("ANDROID_NDK")
-            ?: System.getenv("ANDROID_NDK_HOME")
-            ?: File(androidHome, "ndk/29.0.14206865").absolutePath
-        File(configuredNdk, "build/cmake/android.toolchain.cmake").isFile
-    }
     doFirst {
         val androidHome = System.getenv("ANDROID_HOME").orEmpty()
         val configuredNdk = System.getenv("ANDROID_NDK")
@@ -146,7 +139,28 @@ val verifyOpusMtCt2Native by tasks.registering {
                     "that downloads OPUS-MT models but cannot run them."
             )
         }
-        logger.lifecycle("Verified OPUS-MT CTranslate2 native runtime: ${nativeLibrary.length()} bytes.")
+        val elfHeader = nativeLibrary.inputStream().use { it.readNBytes(20) }
+        val validElf64LittleEndian = elfHeader.size == 20 &&
+            elfHeader[0] == 0x7f.toByte() &&
+            elfHeader[1] == 'E'.code.toByte() &&
+            elfHeader[2] == 'L'.code.toByte() &&
+            elfHeader[3] == 'F'.code.toByte() &&
+            elfHeader[4] == 2.toByte() &&
+            elfHeader[5] == 1.toByte()
+        val machine = if (elfHeader.size >= 20) {
+            (elfHeader[18].toInt() and 0xff) or ((elfHeader[19].toInt() and 0xff) shl 8)
+        } else {
+            -1
+        }
+        if (!validElf64LittleEndian || machine != 183) {
+            throw GradleException(
+                "Invalid OPUS-MT native runtime: expected a 64-bit little-endian AArch64 ELF " +
+                    "(e_machine=183), but the generated file is not ARM64: " + nativeLibrary.absolutePath
+            )
+        }
+        logger.lifecycle(
+            "Verified OPUS-MT CTranslate2 ARM64 ELF runtime: ${nativeLibrary.length()} bytes."
+        )
     }
 }
 tasks.named("preBuild").configure { dependsOn(verifyOpusMtCt2Native) }
