@@ -1490,7 +1490,7 @@ private fun VideoParsingPage(
             .ifBlank { "系统默认音色" }
         "kokoro" -> "音色 ${translationPrefs.getInt("kokoro_speaker", 14)}"
         "piper" -> io.translatetube.local.tts.PiperModels.byId(
-            translationPrefs.getString("piper_model", null),
+            translationPrefs.getString("piper_model", null).orEmpty(),
         )?.voiceLabel.orEmpty().ifBlank { "默认音色" }
         else -> "默认音色"
     }
