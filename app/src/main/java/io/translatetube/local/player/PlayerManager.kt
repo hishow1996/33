@@ -158,6 +158,12 @@ class PlayerManager(private val ctx: Context) {
     val isBuffering: StateFlow<Boolean> = _isBuffering
     private val _hasRenderedFirstFrame = MutableStateFlow(false)
     internal val hasRenderedFirstFrame: StateFlow<Boolean> = _hasRenderedFirstFrame
+
+    /** A replacement TextureView/SurfaceTexture must render a fresh frame before we call it visible. */
+    internal fun markVideoSurfaceNeedsFrame() {
+        _hasRenderedFirstFrame.value = false
+    }
+
     private val _playbackFailure = MutableStateFlow<PlaybackFailure?>(null)
     internal val playbackFailure: StateFlow<PlaybackFailure?> = _playbackFailure
     private val _sourceGeneration = MutableStateFlow(0L)
