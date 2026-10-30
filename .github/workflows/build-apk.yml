@@ -164,7 +164,7 @@ jobs:
                   except KeyError:
                       raise SystemExit(f"{apk} is missing {entry_name}")
                   header = archive.read(entry_name)[:20]
-                  if len(header) != 20 or header[:4] != b"\\x7fELF":
+                  if len(header) != 20 or header[:4] != b"\x7fELF":
                       raise SystemExit(f"{apk} contains an invalid ELF native library")
                   if header[4] != 2 or header[5] != 1:
                       raise SystemExit(f"{apk} does not contain a 64-bit little-endian native library")
