@@ -84,10 +84,21 @@ class DubbingCatchUpQueuePolicyTest {
             cueStartMs = starts::get,
             isPlayableCue = { true },
         )
-        crossed.forEach(queue::add)
+        crossed.forEach { queue.add(it) }
 
         val currentPlayheadCue = 3
         assertTrue(queue.firstOrNull() != currentPlayheadCue)
         assertEquals(1, queue.firstOrNull())
+    }
+
+    @Test
+    fun mediaPositionIsShiftedIntoTheLeadAdjustedTimelineDomain() {
+        assertEquals(1_180L, DubbingCatchUpQueuePolicy.toTimelinePositionMs(1_000L, 180L))
+    }
+
+    @Test
+    fun timelinePositionAdjustmentPreservesUnknownPositionAndSaturatesOverflow() {
+        assertEquals(-1L, DubbingCatchUpQueuePolicy.toTimelinePositionMs(-1L, 180L))
+        assertEquals(Long.MAX_VALUE, DubbingCatchUpQueuePolicy.toTimelinePositionMs(Long.MAX_VALUE - 5L, 10L))
     }
 }
