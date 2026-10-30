@@ -150,7 +150,7 @@ object OpusMtModelManager {
     }
 
     /** True only when every pinned model file is present at its expected size. */
-    private fun allModelFilesPresent(context: Context): Boolean {
+    private fun areAllModelFilesPresent(context: Context): Boolean {
         val dir = modelDirectory(context)
         return files.all { spec ->
             File(dir, spec.name).let { it.isFile && it.length() >= spec.sizeBytes }
@@ -176,7 +176,7 @@ object OpusMtModelManager {
         val dir = modelDirectory(context)
         val totalBytes = files.sumOf { it.sizeBytes }
         val ready = isReady(context)
-        val allModelFilesPresent = allModelFilesPresent(context)
+        val allModelFilesPresent = areAllModelFilesPresent(context)
         val partialIndex = files.indexOfFirst { spec ->
             File(dir, "${spec.name}.part").let { it.isFile && it.length() > 0L }
         }.takeIf { it >= 0 }
@@ -241,6 +241,7 @@ object OpusMtModelManager {
             )
             return@withLock
         }
+        val totalBytes = files.sumOf { it.sizeBytes }
         AppLogStore.info(
             app,
             "LocalTranslationModel",
@@ -253,7 +254,6 @@ object OpusMtModelManager {
             ),
         )
         try {
-            val totalBytes = files.sumOf { it.sizeBytes }
             var completedBytes = 0L
             files.forEachIndexed { index, spec ->
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
