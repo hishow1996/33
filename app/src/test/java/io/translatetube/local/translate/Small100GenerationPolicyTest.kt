@@ -33,6 +33,14 @@ class Small100GenerationPolicyTest {
     }
 
     @Test
+    fun reportsInputLimitWithoutRecordingSubtitleText() {
+        val error = Small100InputTooLongException(actualTokens = 1200, maxTokens = 1024)
+        assertTrue(error.message.orEmpty().contains("1200"))
+        assertTrue(error.message.orEmpty().contains("1024"))
+        assertTrue(error.message.orEmpty().contains("字幕过长"))
+    }
+
+    @Test
     fun providesAdaptiveOutputBudgetForShortAndLongSubtitleCues() {
         assertEquals(512, Small100GenerationPolicy.outputTokenLimit(1))
         assertEquals(640, Small100GenerationPolicy.outputTokenLimit(128))
