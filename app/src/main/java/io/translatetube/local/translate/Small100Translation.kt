@@ -679,14 +679,14 @@ private object Small100Runtime {
                 throw IllegalStateException("SMaLL-100 字幕拆分恢复达到最大层数，仍未能完整生成译文。", cause)
             }
             val sourceTokenCount = (cause as? Small100InputTooLongException)?.actualTokens
-                ?: (tokenizer.encode(text).size + 1)
+                ?: (tokenizer.encode(text, checkActive).size + 1)
             val allowWeakBoundaries = cause is Small100InputTooLongException ||
                 sourceTokenCount > Small100GenerationPolicy.MIN_TOKENS_FOR_NON_SEMANTIC_SPLIT
             val parts = Small100GenerationPolicy.splitForRecovery(
                 text = text,
                 maxChunkTokens = MAX_SOURCE_TOKENS,
                 allowWeakBoundaries = allowWeakBoundaries,
-                tokenCount = { chunk -> tokenizer.encode(chunk).size + 1 },
+                tokenCount = { chunk -> tokenizer.encode(chunk, checkActive).size + 1 },
             ) ?: throw IllegalStateException(
                 "SMaLL-100 字幕无法继续拆分，无法保证译文完整。", cause
             )
@@ -707,7 +707,7 @@ private object Small100Runtime {
             checkActive: () -> Unit,
         ): String {
             val targetId = langToId[targetCode] ?: throw IllegalArgumentException("模型缺少目标语言代码：" + targetCode)
-            val encoded = tokenizer.encode(text)
+            val encoded = tokenizer.encode(text, checkActive)
             val sourceIds = LongArray(encoded.size + 1)
             sourceIds[0] = targetId
             encoded.copyInto(sourceIds, destinationOffset = 1)
@@ -1046,20 +1046,23 @@ internal class Small100BpeTokenizer(
     private val fuseUnk: Boolean = true,
 ) : AutoCloseable {
 
-    fun encode(text: String): LongArray {
+    fun encode(text: String, checkActive: () -> Unit = {}): LongArray {
+        checkActive()
         val normalized = normalize(text)
         if (normalized.isEmpty()) return longArrayOf(eosId.toLong())
 
         val ids = ArrayList<Long>(normalized.length + 4)
         var start = 0
+        var scannedWords = 0
         while (start < normalized.length) {
+            if ((scannedWords++ and 127) == 0) checkActive()
             val spaceIdx = normalized.indexOf(' ', start)
             val word = if (spaceIdx < 0) normalized.substring(start) else normalized.substring(start, spaceIdx)
             start = if (spaceIdx < 0) normalized.length else spaceIdx + 1
             if (word.isEmpty()) continue
 
             val pieces = splitToCodePointStrings("$METASPACE$word")
-            val bpeTokens = applyBpe(pieces)
+            val bpeTokens = applyBpe(pieces, checkActive)
             for (piece in bpeTokens) {
                 val id = vocab[piece] ?: unkId
                 if (fuseUnk && id == unkId && ids.isNotEmpty() && ids.last() == unkId.toLong()) {
@@ -1091,7 +1094,10 @@ internal class Small100BpeTokenizer(
     private fun isSpecialTokenId(id: Int): Boolean =
         id in 0..3 || id in 128004..128111 || id in specialIds
 
-    private fun applyBpe(initialPieces: MutableList<String>): List<String> {
+    private fun applyBpe(
+        initialPieces: MutableList<String>,
+        checkActive: () -> Unit,
+    ): List<String> {
         if (initialPieces.size <= 1) return initialPieces
 
         data class PieceNode(
@@ -1139,9 +1145,14 @@ internal class Small100BpeTokenizer(
                 merges[left.token + " " + right.token] == candidate.rank
         }
 
-        for (index in 0 until nodes.lastIndex) addCandidate(index)
+        for (index in 0 until nodes.lastIndex) {
+            if ((index and 255) == 0) checkActive()
+            addCandidate(index)
+        }
 
+        var mergeOperations = 0
         while (queue.isNotEmpty()) {
+            if ((mergeOperations++ and 127) == 0) checkActive()
             var first: MergeCandidate? = null
             while (queue.isNotEmpty() && first == null) {
                 val candidate = queue.poll()
@@ -1174,6 +1185,7 @@ internal class Small100BpeTokenizer(
             val changedLeftIndices = ArrayList<Int>(batch.size)
             batch.sortBy { it.leftIndex }
             for (candidate in batch) {
+                if ((mergeOperations++ and 127) == 0) checkActive()
                 if (!isCurrent(candidate)) continue
                 val leftIndex = candidate.leftIndex
                 val left = nodes[leftIndex]
@@ -1198,7 +1210,9 @@ internal class Small100BpeTokenizer(
 
         val result = ArrayList<String>(nodes.size)
         var index = 0
+        var visitedNodes = 0
         while (index >= 0) {
+            if ((visitedNodes++ and 255) == 0) checkActive()
             val node = nodes[index]
             if (node.active) result += node.token
             index = node.next
