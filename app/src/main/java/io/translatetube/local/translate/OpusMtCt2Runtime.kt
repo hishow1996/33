@@ -177,10 +177,11 @@ internal object OpusMtCt2Runtime {
 
     private fun resolveBatchLimits(context: Context): OpusMtBatchPolicy.Limits {
         val device = DevicePerformanceManager.snapshot(context)
+        val playbackActive = DevicePerformanceManager.isPlaybackLoadActive()
         return OpusMtBatchPolicy.resolve(
             availableMemoryBytes = device.availableMemoryBytes,
-            deviceMaxExamples = DevicePerformancePolicy.translationBatchMaxExamples(device),
-            deviceMaxCharacters = DevicePerformancePolicy.translationBatchMaxCharacters(device),
+            deviceMaxExamples = DevicePerformancePolicy.translationBatchMaxExamples(device, playbackActive),
+            deviceMaxCharacters = DevicePerformancePolicy.translationBatchMaxCharacters(device, playbackActive),
         )
     }
 

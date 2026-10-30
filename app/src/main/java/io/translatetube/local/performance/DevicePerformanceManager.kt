@@ -55,10 +55,14 @@ internal object DevicePerformancePolicy {
         return n
     }
 
-    fun recommendedLocalInferenceThreads(s: DevicePerformanceSnapshot): Int {
+    fun recommendedLocalInferenceThreads(
+        s: DevicePerformanceSnapshot,
+        playbackActive: Boolean = false,
+    ): Int {
         val cores=s.processorCount.coerceAtLeast(1)
         val base=when(tier(s)){DevicePerformanceTier.LOW->1;DevicePerformanceTier.BALANCED->2;DevicePerformanceTier.HIGH->3}
-        return (base-reductions(s)).coerceIn(1,cores)
+        // Leave one more CPU lane to Media3 decoding/audio rendering during active playback.
+        return (base-reductions(s)-(if(playbackActive)1 else 0)).coerceIn(1,cores)
     }
 
     fun recommendedAsrThreads(s: DevicePerformanceSnapshot, modelId: String, isPlaying: Boolean, dubbingEnabled: Boolean): Int {
@@ -71,13 +75,23 @@ internal object DevicePerformancePolicy {
         return (base-(if(isPlaying&&dubbingEnabled)1 else 0)-reductions(s)).coerceAtLeast(1)
     }
 
-    fun recommendedTtsThreads(s: DevicePerformanceSnapshot): Int = recommendedLocalInferenceThreads(s)
+    fun recommendedTtsThreads(
+        s: DevicePerformanceSnapshot,
+        playbackActive: Boolean = false,
+    ): Int = recommendedLocalInferenceThreads(s, playbackActive)
 
-    fun translationBatchMaxExamples(s: DevicePerformanceSnapshot): Int {
+    fun translationBatchMaxExamples(
+        s: DevicePerformanceSnapshot,
+        playbackActive: Boolean = false,
+    ): Int {
         val base=when(tier(s)){DevicePerformanceTier.LOW->2;DevicePerformanceTier.BALANCED->4;DevicePerformanceTier.HIGH->8}
-        return if(reductions(s)>0) minOf(base,2) else base
+        // Smaller native batches shorten CPU bursts while a video is being rendered.
+        return if(playbackActive || reductions(s)>0) minOf(base,2) else base
     }
-    fun translationBatchMaxCharacters(s: DevicePerformanceSnapshot): Int = translationBatchMaxExamples(s)*512
+    fun translationBatchMaxCharacters(
+        s: DevicePerformanceSnapshot,
+        playbackActive: Boolean = false,
+    ): Int = translationBatchMaxExamples(s, playbackActive)*512
 
     fun dubbingPcmCacheBytes(s: DevicePerformanceSnapshot): Long {
         val base=when(tier(s)){DevicePerformanceTier.LOW->4L*MIB;DevicePerformanceTier.BALANCED->16L*MIB;DevicePerformanceTier.HIGH->32L*MIB}
@@ -100,6 +114,14 @@ internal object DevicePerformanceManager {
     private const val SAMPLE_CACHE_MS=1_500L
     @Volatile private var cachedSnapshot: DevicePerformanceSnapshot?=null
     @Volatile private var cachedAtElapsedMs=0L
+    @Volatile private var playbackLoadActive=false
+
+    /** Updated by PlayerManager for both active playback and play-when-ready buffering. */
+    fun setPlaybackLoadActive(active: Boolean) {
+        playbackLoadActive = active
+    }
+
+    fun isPlaybackLoadActive(): Boolean = playbackLoadActive
 
     fun snapshot(context: Context): DevicePerformanceSnapshot {
         val now=SystemClock.elapsedRealtime()

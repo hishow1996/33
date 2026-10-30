@@ -16,14 +16,20 @@ class DevicePerformancePolicyTest {
     @Test fun sixGbDeviceIsBalancedAndNotForcedIntoLowRamTier(){
         assertEquals(DevicePerformanceTier.BALANCED,DevicePerformancePolicy.tier(s()))
         assertEquals(2,DevicePerformancePolicy.recommendedLocalInferenceThreads(s()))
+        assertEquals(1,DevicePerformancePolicy.recommendedLocalInferenceThreads(s(), playbackActive = true))
+        assertEquals(4,DevicePerformancePolicy.translationBatchMaxExamples(s()))
+        assertEquals(2,DevicePerformancePolicy.translationBatchMaxExamples(s(), playbackActive = true))
         assertEquals(8L*mib,DevicePerformancePolicy.dubbingPcmCacheBytes(s()))
     }
     @Test fun highEndDeviceGetsMoreInferenceCapacity(){
         val d=s(ram=12L*gib,heap=512)
         assertEquals(DevicePerformanceTier.HIGH,DevicePerformancePolicy.tier(d))
         assertEquals(3,DevicePerformancePolicy.recommendedLocalInferenceThreads(d))
+        assertEquals(2,DevicePerformancePolicy.recommendedLocalInferenceThreads(d, playbackActive = true))
         assertEquals(4,DevicePerformancePolicy.recommendedAsrThreads(d,"sensevoice",false,false))
         assertEquals(3,DevicePerformancePolicy.recommendedTtsThreads(d))
+        assertEquals(2,DevicePerformancePolicy.recommendedTtsThreads(d, playbackActive = true))
+        assertEquals(2,DevicePerformancePolicy.translationBatchMaxExamples(d, playbackActive = true))
     }
     @Test fun lowRamAndLowCoreDevicesStayConservative(){
         val d=s(ram=2L*gib,heap=192,cores=4)

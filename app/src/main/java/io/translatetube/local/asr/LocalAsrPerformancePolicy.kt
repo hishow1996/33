@@ -23,7 +23,12 @@ internal object LocalAsrPerformancePolicy {
             DevicePerformanceManager.snapshot(TranslateTubeApp.instance).copy(processorCount = cores)
         }.getOrNull()
         if (dynamic != null) {
-            return DevicePerformancePolicy.recommendedAsrThreads(dynamic, modelId, isPlaying, dubbingEnabled)
+            return DevicePerformancePolicy.recommendedAsrThreads(
+                dynamic,
+                modelId,
+                isPlaying || DevicePerformanceManager.isPlaybackLoadActive(),
+                dubbingEnabled,
+            )
         }
         if (cores <= 2) return 1
         if (modelId == "sensevoice" && cores >= 8 && !(isPlaying && dubbingEnabled)) return 3

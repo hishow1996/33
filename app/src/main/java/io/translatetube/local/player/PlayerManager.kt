@@ -346,6 +346,9 @@ class PlayerManager(private val ctx: Context) {
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
+                DevicePerformanceManager.setPlaybackLoadActive(
+                    isPlaying || (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING),
+                )
                 // PlaybackService owns pause/resume timeline transitions and performs the single
                 // immediate tick there. Emitting another tick here starts a cue only for the
                 // service listener to stop and start it again on the same resume callback.
@@ -357,6 +360,10 @@ class PlayerManager(private val ctx: Context) {
                 notifyTick()
             }
             override fun onPlaybackStateChanged(state: Int) {
+                // Keep CPU budgets conservative during startup/rebuffering as well as audible playback.
+                DevicePerformanceManager.setPlaybackLoadActive(
+                    player.isPlaying || (player.playWhenReady && state == Player.STATE_BUFFERING),
+                )
                 // 记录缓冲耗时：黑屏时能看出是一直在缓冲（网络慢/域名不通）还是根本没开始加载。
                 _isBuffering.value = state == Player.STATE_BUFFERING
                 if (state == Player.STATE_READY || state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
@@ -918,6 +925,7 @@ class PlayerManager(private val ctx: Context) {
     fun release() {
         if (released) return
         released = true
+        DevicePerformanceManager.setPlaybackLoadActive(false)
         mainHandler.removeCallbacks(ticker)
         runCatching { player.release() }
             .onFailure { android.util.Log.w("PlayerManager", "Player release failed", it) }

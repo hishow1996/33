@@ -40,8 +40,8 @@ interface TtsEngine {
 
 /**
  * Conservative CPU thread selection for local ONNX TTS on phones.
- * Small CPUs keep two or fewer workers; larger big.LITTLE devices get at most three so
- * inference can use more cores without aggressively oversubscribing a thermally limited phone.
+ * Larger phones get at most three workers, with one fewer during active video playback so
+ * neural speech synthesis leaves CPU headroom for Media3 decoding and real-time audio.
  */
 internal object TtsCpuThreadPolicy {
     fun recommendedThreads(availableProcessors: Int = Runtime.getRuntime().availableProcessors()): Int =
@@ -52,7 +52,10 @@ internal object TtsCpuThreadPolicy {
         }
 
     fun recommendedThreads(context: Context): Int =
-        DevicePerformancePolicy.recommendedTtsThreads(DevicePerformanceManager.snapshot(context))
+        DevicePerformancePolicy.recommendedTtsThreads(
+            DevicePerformanceManager.snapshot(context),
+            DevicePerformanceManager.isPlaybackLoadActive(),
+        )
 }
 
 /**

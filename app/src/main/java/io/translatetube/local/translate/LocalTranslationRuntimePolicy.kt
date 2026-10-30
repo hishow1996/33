@@ -4,7 +4,7 @@ import android.content.Context
 import io.translatetube.local.performance.DevicePerformanceManager
 import io.translatetube.local.performance.DevicePerformancePolicy
 
-/** Conservative CPU-thread policy shared by the local translation runtimes. */
+/** Shares the device CPU budget with active video playback across local translation runtimes. */
 internal object LocalTranslationRuntimePolicy {
     private const val MB = 1024L * 1024L
     private const val LOW_MEMORY_THREAD_LIMIT_BYTES = 1024L * MB
@@ -15,7 +15,10 @@ internal object LocalTranslationRuntimePolicy {
      * Android reports at least 1 GB available memory without its low-memory warning.
      */
     fun inferenceThreads(context: Context): Int =
-        DevicePerformancePolicy.recommendedLocalInferenceThreads(DevicePerformanceManager.snapshot(context))
+        DevicePerformancePolicy.recommendedLocalInferenceThreads(
+            DevicePerformanceManager.snapshot(context),
+            DevicePerformanceManager.isPlaybackLoadActive(),
+        )
 
     fun inferenceThreads(
         availableProcessors: Int,
