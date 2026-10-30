@@ -270,6 +270,44 @@ class DubbingTrackBusTest {
     }
 
     @Test
+    fun resetClearsPreviousMediaReadHeadBeforeNewSourceCuesAreMounted() {
+        val bus = newBus()
+        val previousGeneration = bus.generationToken()
+
+        bus.setStreamStartUs(ms(120_000))
+        bus.readMixWindow(ms(120_000), 10)
+
+        bus.reset()
+
+        assertEquals(-1L, bus.streamStart())
+        val newGeneration = bus.generationToken()
+        assertTrue(newGeneration > previousGeneration)
+        assertEquals(
+            -1L,
+            bus.feedSequenced(
+                "stale-source",
+                ms(200),
+                0L,
+                FloatArray(100) { 0.5f },
+                1000,
+                previousGeneration,
+            ),
+        )
+        // A replacement video starts on its own timeline, not after the prior video's read head.
+        assertEquals(
+            ms(200),
+            bus.feedSequenced(
+                "new-source",
+                ms(200),
+                0L,
+                FloatArray(100) { 0.5f },
+                1000,
+                newGeneration,
+            ),
+        )
+    }
+
+    @Test
     fun resamplingToTheSinkRateKeepsLevelAndScalesLength() {
         val bus = DubbingTrackBus().also { it.configure(8) }
         val generation = bus.generationToken()
