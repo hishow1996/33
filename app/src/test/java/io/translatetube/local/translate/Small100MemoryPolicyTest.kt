@@ -5,41 +5,41 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class Small100MemoryPolicyTest {
+class LocalTranslationMemoryPolicyTest {
     @Test
     fun enforcesMinimumHeadroomForSmallAndMidRangeDevices() {
-        val threshold = 768L * Small100MemoryPolicy.MEGABYTE
-        assertEquals(threshold, Small100MemoryPolicy.requiredAvailableBytes(2L * 1024L * Small100MemoryPolicy.MEGABYTE))
-        assertEquals(threshold, Small100MemoryPolicy.requiredAvailableBytes(6L * 1024L * Small100MemoryPolicy.MEGABYTE))
+        val threshold = 768L * LocalTranslationMemoryPolicy.MEGABYTE
+        assertEquals(threshold, LocalTranslationMemoryPolicy.requiredAvailableBytes(2L * 1024L * LocalTranslationMemoryPolicy.MEGABYTE))
+        assertEquals(threshold, LocalTranslationMemoryPolicy.requiredAvailableBytes(6L * 1024L * LocalTranslationMemoryPolicy.MEGABYTE))
     }
 
     @Test
     fun scalesHeadroomWithLargerTotalMemoryButKeepsAnUpperBound() {
         assertEquals(
-            1024L * Small100MemoryPolicy.MEGABYTE,
-            Small100MemoryPolicy.requiredAvailableBytes(8L * 1024L * Small100MemoryPolicy.MEGABYTE),
+            1024L * LocalTranslationMemoryPolicy.MEGABYTE,
+            LocalTranslationMemoryPolicy.requiredAvailableBytes(8L * 1024L * LocalTranslationMemoryPolicy.MEGABYTE),
         )
         assertEquals(
-            Small100MemoryPolicy.MAX_AVAILABLE_BYTES,
-            Small100MemoryPolicy.requiredAvailableBytes(32L * 1024L * Small100MemoryPolicy.MEGABYTE),
+            LocalTranslationMemoryPolicy.MAX_AVAILABLE_BYTES,
+            LocalTranslationMemoryPolicy.requiredAvailableBytes(32L * 1024L * LocalTranslationMemoryPolicy.MEGABYTE),
         )
     }
 
     @Test
     fun rejectsInsufficientMemoryAndAcceptsTheExactThreshold() {
-        val total = 6L * 1024L * Small100MemoryPolicy.MEGABYTE
-        val required = Small100MemoryPolicy.requiredAvailableBytes(total)
-        assertFalse(Small100MemoryPolicy.hasEnoughAvailableMemory(required - 1L, total))
-        assertTrue(Small100MemoryPolicy.hasEnoughAvailableMemory(required, total))
-        assertTrue(Small100MemoryPolicy.hasEnoughAvailableMemory(required + 1L, total))
+        val total = 6L * 1024L * LocalTranslationMemoryPolicy.MEGABYTE
+        val required = LocalTranslationMemoryPolicy.requiredAvailableBytes(total)
+        assertFalse(LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(required - 1L, total))
+        assertTrue(LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(required, total))
+        assertTrue(LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(required + 1L, total))
     }
 
     @Test
     fun zeroMemoryInformationFallsBackToTheSafeMinimum() {
         assertEquals(
-            Small100MemoryPolicy.MIN_AVAILABLE_BYTES,
-            Small100MemoryPolicy.requiredAvailableBytes(0L),
+            LocalTranslationMemoryPolicy.MIN_AVAILABLE_BYTES,
+            LocalTranslationMemoryPolicy.requiredAvailableBytes(0L),
         )
-        assertFalse(Small100MemoryPolicy.hasEnoughAvailableMemory(0L, 0L))
+        assertFalse(LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(0L, 0L))
     }
 }

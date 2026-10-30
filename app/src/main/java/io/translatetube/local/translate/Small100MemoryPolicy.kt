@@ -1,12 +1,11 @@
 package io.translatetube.local.translate
 
 /**
- * Conservative available-memory gate for loading the two-file SMaLL-100 ONNX model.
+ * Shared available-memory gate for native on-device translation model runtimes.
  *
- * The checkpoint contains roughly 609 MB of encoder/decoder weights on disk;
- * loading both sessions also needs room for native runtime state and activations.
+ * Native model loading needs headroom for weights, runtime state and inference activations.
  */
-internal object Small100MemoryPolicy {
+internal object LocalTranslationMemoryPolicy {
     const val MEGABYTE = 1024L * 1024L
     const val MIN_AVAILABLE_BYTES = 768L * MEGABYTE
     const val MAX_AVAILABLE_BYTES = 1536L * MEGABYTE

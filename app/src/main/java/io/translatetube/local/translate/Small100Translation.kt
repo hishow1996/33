@@ -862,10 +862,10 @@ private object Small100Runtime {
         if (activityManager != null) {
             val memory = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memory)
-            val requiredBytes = Small100MemoryPolicy.requiredAvailableBytes(memory.totalMem)
-            if (!Small100MemoryPolicy.hasEnoughAvailableMemory(memory.availMem, memory.totalMem)) {
-                val availableMb = memory.availMem / Small100MemoryPolicy.MEGABYTE
-                val requiredMb = requiredBytes / Small100MemoryPolicy.MEGABYTE
+            val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memory.totalMem)
+            if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memory.availMem, memory.totalMem)) {
+                val availableMb = memory.availMem / LocalTranslationMemoryPolicy.MEGABYTE
+                val requiredMb = requiredBytes / LocalTranslationMemoryPolicy.MEGABYTE
                 throw IllegalStateException(
                     "SMaLL-100 加载需要更多运行内存：当前约 ${availableMb} MB，可用内存建议至少 " +
                         "${requiredMb} MB。请关闭其他应用后重试，已下载模型无需重新下载。"
