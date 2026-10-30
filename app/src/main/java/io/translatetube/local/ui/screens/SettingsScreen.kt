@@ -984,7 +984,7 @@ Section(
                     title = "Kokoro 配音模型",
                     state = ttsState,
                     ready = ttsReady,
-                    packageSizeBytes = 147_031_220L,
+                    packageSizeBytes = 147_052_523L,
                     onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.TTS) },
                     onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.TTS) },
                 )

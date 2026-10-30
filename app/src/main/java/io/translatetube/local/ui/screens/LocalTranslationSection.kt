@@ -1068,7 +1068,7 @@ internal fun LocalTranslationSection(
                                                 Small100ModelManager.download(context)
                                             } catch (cancelled: CancellationException) {
                                                 throw cancelled
-                                            } catch (_: Exception) {
+                                            } catch (_: Throwable) {
                                                 // Exact error remains in model state and diagnostics.
                                             }
                                         }
@@ -1210,7 +1210,7 @@ internal fun LocalTranslationSection(
                                                 Small100ModelManager.download(context)
                                             } catch (cancelled: CancellationException) {
                                                 throw cancelled
-                                            } catch (_: Exception) {
+                                            } catch (_: Throwable) {
                                                 // Exact error remains in model state and diagnostics.
                                             }
                                         }

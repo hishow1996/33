@@ -1,6 +1,5 @@
 package io.translatetube.local.translate
 
-import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer
 import ai.onnxruntime.OnnxJavaType
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -24,10 +23,13 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -171,6 +173,7 @@ object Small100ModelManager {
     }
 
     suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
+        if (lock.isLocked) return@withContext
         val directory = modelDirectory(context)
         mutableState.value = when {
             isReady(context) -> Small100DownloadState(
@@ -265,21 +268,22 @@ object Small100ModelManager {
             )
             AppLogStore.info(app, "LocalTranslationModel", "SMaLL-100 下载已暂停，可从上次进度继续")
             throw cancelled
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             val partial = hasPartialDownload(app)
+            val reason = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
             mutableState.value = mutableState.value.copy(
-                status = if (partial) Small100Status.PAUSED else Small100Status.FAILED,
-                error = error.message ?: error.javaClass.simpleName,
+                status = Small100Status.FAILED,
+                error = reason,
             )
             AppLogStore.error(
                 app, "LocalTranslationModel", "SMaLL-100 模型下载或验证失败", error,
                 diagnosticContext = mapOf(
                     "当前文件" to mutableState.value.currentFile,
                     "是否可续传" to partial.toString(),
-                    "失败原因" to (error.message ?: error.javaClass.simpleName),
+                    "失败原因" to reason,
                 ),
             )
-            throw error
+            if (error is Exception) throw error else throw IOException("SMaLL-100 模型验证或加载失败：$reason", error)
         }
     }
 
@@ -500,7 +504,7 @@ private object Small100Runtime {
         val environment: OrtEnvironment,
         val encoder: OrtSession,
         val decoder: OrtSession,
-        val tokenizer: HuggingFaceTokenizer,
+        val tokenizer: Small100BpeTokenizer,
         val langToId: Map<String, Long>,
     ) {
         fun close() {
@@ -511,7 +515,7 @@ private object Small100Runtime {
 
         fun translateOne(text: String, targetCode: String, checkActive: () -> Unit): String {
             val targetId = langToId[targetCode] ?: throw IllegalArgumentException("模型缺少目标语言代码：" + targetCode)
-            val encoded = tokenizer.encode(text).ids
+            val encoded = tokenizer.encode(text)
             val sourceIds = LongArray(encoded.size + 1)
             sourceIds[0] = targetId
             encoded.copyInto(sourceIds, destinationOffset = 1)
@@ -646,10 +650,10 @@ private object Small100Runtime {
         if (activityManager != null) {
             val memory = ActivityManager.MemoryInfo()
             activityManager.getMemoryInfo(memory)
-            val minAvailable = 1_000L * 1024L * 1024L
-            if (memory.availMem < minAvailable) {
+            val minAvailable = 256L * 1024L * 1024L
+            if (memory.availMem in 1 until minAvailable) {
                 throw IllegalStateException(
-                    "SMaLL-100 模型约占 615 MB 磁盘空间，建议至少有 1 GB 可用运行内存。请关闭其他应用后重试。"
+                    "当前设备可用运行内存不足（低于 256 MB），请关闭其他应用后重试。"
                 )
             }
         }
@@ -659,16 +663,16 @@ private object Small100Runtime {
         val options = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
         var encoder: OrtSession? = null
         var decoder: OrtSession? = null
-        var tokenizer: HuggingFaceTokenizer? = null
+        var tokenizer: Small100BpeTokenizer? = null
         try {
             val encoderSession = environment.createSession(encoderFile.absolutePath, options)
             encoder = encoderSession
             val decoderSession = environment.createSession(decoderFile.absolutePath, options)
             decoder = decoderSession
-            val hfTokenizer = tokenizerFile.inputStream().use { input ->
-                HuggingFaceTokenizer.newInstance(input, null)
+            val bpeTokenizer = tokenizerFile.inputStream().use { input ->
+                Small100BpeTokenizer.fromStream(input)
             }
-            tokenizer = hfTokenizer
+            tokenizer = bpeTokenizer
             val languageJson = JSONObject(languageFile.readText(Charsets.UTF_8)).getJSONObject("lang_to_id")
             val parsedTokens = linkedMapOf<String, Long>()
             val keys = languageJson.keys()
@@ -679,14 +683,14 @@ private object Small100Runtime {
             if (parsedTokens != Small100LanguagePolicy.expectedTokenMap()) {
                 throw IOException("SMaLL-100 语言代码表与固定模型版本不一致")
             }
-            val result = Loaded(identity, environment, encoderSession, decoderSession, hfTokenizer, parsedTokens)
+            val result = Loaded(identity, environment, encoderSession, decoderSession, bpeTokenizer, parsedTokens)
             loaded = result
             result
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             runCatching { encoder?.close() }
             runCatching { decoder?.close() }
             runCatching { tokenizer?.close() }
-            throw error
+            if (error is Exception) throw error else throw IOException("加载 SMaLL-100 模型失败：" + (error.message ?: error.javaClass.simpleName), error)
         } finally {
             runCatching { options.close() }
         }
@@ -777,4 +781,482 @@ private object Small100Runtime {
         .replace(Regex("\\s+([，。！？；：、）》】」』])"), "$1")
         .replace(Regex("([（【「『])\\s+"), "$1")
         .trim()
+}
+
+/**
+ * Pure-Kotlin SentencePiece-BPE tokenizer for the pinned SMaLL-100 `tokenizer.json`.
+ * Avoids desktop-only JNI dependencies (`ai.djl.huggingface:tokenizers`) that fail to link on Android Bionic.
+ */
+internal class Small100BpeTokenizer(
+    private val vocab: Map<String, Int>,
+    private val idToToken: Array<String?>,
+    private val merges: Map<String, Int>,
+    private val specialIds: Set<Int>,
+    private val unkId: Int = DEFAULT_UNK_ID,
+    private val eosId: Int = DEFAULT_EOS_ID,
+    private val fuseUnk: Boolean = true,
+) : AutoCloseable {
+
+    fun encode(text: String): LongArray {
+        val normalized = normalize(text)
+        if (normalized.isEmpty()) return longArrayOf(eosId.toLong())
+
+        val ids = ArrayList<Long>(normalized.length + 4)
+        var start = 0
+        while (start < normalized.length) {
+            val spaceIdx = normalized.indexOf(' ', start)
+            val word = if (spaceIdx < 0) normalized.substring(start) else normalized.substring(start, spaceIdx)
+            start = if (spaceIdx < 0) normalized.length else spaceIdx + 1
+            if (word.isEmpty()) continue
+
+            val pieces = splitToCodePointStrings("$METASPACE$word")
+            val bpeTokens = applyBpe(pieces)
+            for (piece in bpeTokens) {
+                val id = vocab[piece] ?: unkId
+                if (fuseUnk && id == unkId && ids.isNotEmpty() && ids.last() == unkId.toLong()) {
+                    continue
+                }
+                ids.add(id.toLong())
+            }
+        }
+        ids.add(eosId.toLong())
+        return ids.toLongArray()
+    }
+
+    fun decode(ids: LongArray, skipSpecialTokens: Boolean = true): String {
+        val sb = StringBuilder(ids.size * 3)
+        for (rawId in ids) {
+            val id = rawId.toInt()
+            if (skipSpecialTokens && isSpecialTokenId(id)) continue
+            val token = if (id in idToToken.indices) idToToken[id] else null
+            if (token != null) {
+                sb.append(token)
+            }
+        }
+        for (i in 0 until sb.length) {
+            if (sb[i] == METASPACE) sb.setCharAt(i, ' ')
+        }
+        return sb.toString().trim()
+    }
+
+    private fun isSpecialTokenId(id: Int): Boolean =
+        id in 0..3 || id in 128004..128111 || id in specialIds
+
+    private fun applyBpe(initialPieces: MutableList<String>): List<String> {
+        var pieces = initialPieces
+        while (pieces.size > 1) {
+            var bestRank = Int.MAX_VALUE
+            var bestFirst = ""
+            var bestSecond = ""
+            for (i in 0 until pieces.size - 1) {
+                val first = pieces[i]
+                val second = pieces[i + 1]
+                val rank = merges["$first $second"] ?: continue
+                if (rank < bestRank) {
+                    bestRank = rank
+                    bestFirst = first
+                    bestSecond = second
+                }
+            }
+            if (bestRank == Int.MAX_VALUE) break
+
+            val merged = ArrayList<String>(pieces.size - 1)
+            var i = 0
+            while (i < pieces.size) {
+                if (i + 1 < pieces.size && pieces[i] == bestFirst && pieces[i + 1] == bestSecond) {
+                    merged.add(bestFirst + bestSecond)
+                    i += 2
+                } else {
+                    merged.add(pieces[i])
+                    i += 1
+                }
+            }
+            pieces = merged
+        }
+        return pieces
+    }
+
+    override fun close() {
+        // Pure JVM data structures; no native handles to release.
+    }
+
+    companion object {
+        private const val METASPACE = '\u2581'
+        private const val DEFAULT_UNK_ID = 3
+        private const val DEFAULT_EOS_ID = 2
+
+        internal fun normalize(text: String): String {
+            if (text.isEmpty()) return ""
+            val sb = StringBuilder(text.length)
+            var lastWasSpace = true
+            for (i in 0 until text.length) {
+                val mapped = when (val c = text[i]) {
+                    '，' -> ','
+                    '？' -> '?'
+                    '！' -> '!'
+                    '：' -> ':'
+                    '；' -> ';'
+                    '（' -> '('
+                    '）' -> ')'
+                    '％' -> '%'
+                    '\u3000' -> ' '
+                    else -> c
+                }
+                if (mapped.isWhitespace()) {
+                    if (!lastWasSpace) {
+                        sb.append(' ')
+                        lastWasSpace = true
+                    }
+                } else {
+                    sb.append(mapped)
+                    lastWasSpace = false
+                }
+            }
+            if (sb.isNotEmpty() && sb[sb.length - 1] == ' ') {
+                sb.setLength(sb.length - 1)
+            }
+            return sb.toString()
+        }
+
+        private fun splitToCodePointStrings(input: String): MutableList<String> {
+            val list = ArrayList<String>(input.length)
+            var index = 0
+            while (index < input.length) {
+                val cp = input.codePointAt(index)
+                val charCount = Character.charCount(cp)
+                list.add(input.substring(index, index + charCount))
+                index += charCount
+            }
+            return list
+        }
+
+        fun fromStream(input: InputStream): Small100BpeTokenizer {
+            val reader = StreamingJsonTokenizerReader(BufferedReader(InputStreamReader(input, Charsets.UTF_8), 64 * 1024))
+            return reader.parseTokenizer()
+        }
+    }
+}
+
+private class StreamingJsonTokenizerReader(private val reader: BufferedReader) {
+    private var lookahead: Int = -2
+
+    fun parseTokenizer(): Small100BpeTokenizer {
+        val vocab = HashMap<String, Int>(180_000)
+        var idToToken = arrayOfNulls<String>(131_072)
+        val merges = HashMap<String, Int>(320_000)
+        val specialIds = HashSet<Int>(256)
+        var fuseUnk = true
+
+        fun putToken(token: String, id: Int, isSpecial: Boolean) {
+            if (id < 0) return
+            vocab[token] = id
+            if (id >= idToToken.size) {
+                idToToken = idToToken.copyOf(maxOf(id + 1, idToToken.size * 2))
+            }
+            idToToken[id] = token
+            if (isSpecial || token.startsWith("<madeupword")) {
+                specialIds.add(id)
+            }
+        }
+
+        expectChar('{')
+        if (peekNonWs() != '}'.code) {
+            while (true) {
+                val key = readString()
+                expectChar(':')
+                when (key) {
+                    "added_tokens" -> {
+                        expectChar('[')
+                        if (peekNonWs() != ']'.code) {
+                            while (true) {
+                                expectChar('{')
+                                var id = -1
+                                var content: String? = null
+                                var special = false
+                                if (peekNonWs() != '}'.code) {
+                                    while (true) {
+                                        val entryKey = readString()
+                                        expectChar(':')
+                                        when (entryKey) {
+                                            "id" -> id = readInt()
+                                            "content" -> content = readString()
+                                            "special" -> special = readBoolean()
+                                            else -> skipValue()
+                                        }
+                                        val sep = nextNonWs()
+                                        if (sep == '}'.code) break
+                                        if (sep != ','.code) throw IOException("解析 added_tokens 对象失败")
+                                    }
+                                } else {
+                                    nextNonWs()
+                                }
+                                if (content != null && id >= 0) {
+                                    putToken(content, id, special)
+                                }
+                                val arrSep = nextNonWs()
+                                if (arrSep == ']'.code) break
+                                if (arrSep != ','.code) throw IOException("解析 added_tokens 数组失败")
+                            }
+                        } else {
+                            nextNonWs()
+                        }
+                    }
+                    "model" -> {
+                        expectChar('{')
+                        if (peekNonWs() != '}'.code) {
+                            while (true) {
+                                val modelKey = readString()
+                                expectChar(':')
+                                when (modelKey) {
+                                    "fuse_unk" -> fuseUnk = readBoolean()
+                                    "vocab" -> {
+                                        expectChar('{')
+                                        if (peekNonWs() != '}'.code) {
+                                            while (true) {
+                                                val token = readString()
+                                                expectChar(':')
+                                                val id = readInt()
+                                                putToken(token, id, false)
+                                                val vSep = nextNonWs()
+                                                if (vSep == '}'.code) break
+                                                if (vSep != ','.code) throw IOException("解析 vocab 词表失败")
+                                            }
+                                        } else {
+                                            nextNonWs()
+                                        }
+                                    }
+                                    "merges" -> {
+                                        expectChar('[')
+                                        var rank = 0
+                                        if (peekNonWs() != ']'.code) {
+                                            while (true) {
+                                                val next = peekNonWs()
+                                                val pair = if (next == '['.code) {
+                                                    expectChar('[')
+                                                    val first = readString()
+                                                    expectChar(',')
+                                                    val second = readString()
+                                                    expectChar(']')
+                                                    "$first $second"
+                                                } else {
+                                                    readString()
+                                                }
+                                                merges.putIfAbsent(pair, rank++)
+                                                val mSep = nextNonWs()
+                                                if (mSep == ']'.code) break
+                                                if (mSep != ','.code) throw IOException("解析 merges 规则失败")
+                                            }
+                                        } else {
+                                            nextNonWs()
+                                        }
+                                    }
+                                    else -> skipValue()
+                                }
+                                val modelSep = nextNonWs()
+                                if (modelSep == '}'.code) break
+                                if (modelSep != ','.code) throw IOException("解析 model 字段失败")
+                            }
+                        } else {
+                            nextNonWs()
+                        }
+                    }
+                    else -> skipValue()
+                }
+                val topSep = nextNonWs()
+                if (topSep == '}'.code) break
+                if (topSep != ','.code) throw IOException("解析 tokenizer.json 顶层字段失败")
+            }
+        } else {
+            nextNonWs()
+        }
+
+        if (vocab.isEmpty()) {
+            throw IOException("SMaLL-100 tokenizer.json 词表为空")
+        }
+        return Small100BpeTokenizer(
+            vocab = vocab,
+            idToToken = idToToken,
+            merges = merges,
+            specialIds = specialIds,
+            unkId = vocab["<unk>"] ?: 3,
+            eosId = vocab["</s>"] ?: 2,
+            fuseUnk = fuseUnk,
+        )
+    }
+
+    private fun read(): Int {
+        val current = lookahead
+        if (current != -2) {
+            lookahead = -2
+            return current
+        }
+        return reader.read()
+    }
+
+    private fun peek(): Int {
+        if (lookahead == -2) {
+            lookahead = reader.read()
+        }
+        return lookahead
+    }
+
+    private fun nextNonWs(): Int {
+        while (true) {
+            val ch = read()
+            if (ch < 0) return -1
+            if (ch != ' '.code && ch != '\t'.code && ch != '\n'.code && ch != '\r'.code) {
+                return ch
+            }
+        }
+    }
+
+    private fun peekNonWs(): Int {
+        while (true) {
+            val ch = peek()
+            if (ch < 0) return -1
+            if (ch != ' '.code && ch != '\t'.code && ch != '\n'.code && ch != '\r'.code) {
+                return ch
+            }
+            read()
+        }
+    }
+
+    private fun expectChar(expected: Char) {
+        val actual = nextNonWs()
+        if (actual != expected.code) {
+            throw IOException("JSON 语法错误：期望 '$expected'，实际为 '${if (actual < 0) "EOF" else actual.toChar()}'")
+        }
+    }
+
+    private fun readString(): String {
+        expectChar('"')
+        val sb = StringBuilder()
+        while (true) {
+            val ch = read()
+            if (ch < 0) throw IOException("JSON 字符串未闭合")
+            if (ch == '"'.code) return sb.toString()
+            if (ch == '\\'.code) {
+                when (val esc = read()) {
+                    '"'.code -> sb.append('"')
+                    '\\'.code -> sb.append('\\')
+                    '/'.code -> sb.append('/')
+                    'b'.code -> sb.append('\b')
+                    'f'.code -> sb.append('\u000C')
+                    'n'.code -> sb.append('\n')
+                    'r'.code -> sb.append('\r')
+                    't'.code -> sb.append('\t')
+                    'u'.code -> {
+                        var code = 0
+                        repeat(4) {
+                            val hex = read()
+                            val digit = Character.digit(hex, 16)
+                            if (digit < 0) throw IOException("JSON unicode 转义无效")
+                            code = (code shl 4) or digit
+                        }
+                        sb.append(code.toChar())
+                    }
+                    else -> throw IOException("JSON 转义字符无效")
+                }
+            } else {
+                sb.append(ch.toChar())
+            }
+        }
+    }
+
+    private fun skipString() {
+        expectChar('"')
+        while (true) {
+            val ch = read()
+            if (ch < 0) throw IOException("JSON 字符串未闭合")
+            if (ch == '"'.code) return
+            if (ch == '\\'.code) {
+                val esc = read()
+                if (esc == 'u'.code) {
+                    repeat(4) { read() }
+                }
+            }
+        }
+    }
+
+    private fun readInt(): Int {
+        val first = nextNonWs()
+        if (first < 0) throw IOException("JSON 数字缺失")
+        val sb = StringBuilder()
+        sb.append(first.toChar())
+        while (true) {
+            val p = peek()
+            if (p in '0'.code..'9'.code || p == '-'.code || p == '+'.code || p == '.'.code || p == 'e'.code || p == 'E'.code) {
+                sb.append(read().toChar())
+            } else {
+                break
+            }
+        }
+        return sb.toString().toIntOrNull()
+            ?: sb.toString().toDoubleOrNull()?.toInt()
+            ?: throw IOException("JSON 整数格式错误：$sb")
+    }
+
+    private fun readBoolean(): Boolean {
+        val token = readPrimitiveToken()
+        return when (token) {
+            "true" -> true
+            "false" -> false
+            else -> throw IOException("JSON 布尔值错误：$token")
+        }
+    }
+
+    private fun readPrimitiveToken(): String {
+        val first = nextNonWs()
+        if (first < 0) throw IOException("JSON 值缺失")
+        val sb = StringBuilder()
+        sb.append(first.toChar())
+        while (true) {
+            val p = peek()
+            if (p < 0 || p == ','.code || p == '}'.code || p == ']'.code ||
+                p == ' '.code || p == '\t'.code || p == '\n'.code || p == '\r'.code
+            ) {
+                break
+            }
+            sb.append(read().toChar())
+        }
+        return sb.toString()
+    }
+
+    private fun skipValue() {
+        when (val next = peekNonWs()) {
+            '{'.code -> {
+                nextNonWs()
+                if (peekNonWs() == '}'.code) {
+                    nextNonWs()
+                    return
+                }
+                while (true) {
+                    skipString()
+                    expectChar(':')
+                    skipValue()
+                    val sep = nextNonWs()
+                    if (sep == '}'.code) return
+                    if (sep != ','.code) throw IOException("跳过 JSON 对象失败")
+                }
+            }
+            '['.code -> {
+                nextNonWs()
+                if (peekNonWs() == ']'.code) {
+                    nextNonWs()
+                    return
+                }
+                while (true) {
+                    skipValue()
+                    val sep = nextNonWs()
+                    if (sep == ']'.code) return
+                    if (sep != ','.code) throw IOException("跳过 JSON 数组失败")
+                }
+            }
+            '"'.code -> skipString()
+            -1 -> throw IOException("JSON 意外结束")
+            else -> {
+                readPrimitiveToken()
+            }
+        }
+    }
 }

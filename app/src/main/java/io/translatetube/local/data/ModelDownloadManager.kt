@@ -856,7 +856,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val pkg = File(ctx.cacheDir, archiveName)
         val maxArchiveBytes = 512L * 1024 * 1024
         val expectedArchiveSha256 = when {
-            kind == ModelKind.TTS -> "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"
+            kind == ModelKind.TTS -> "259c9c8bc906d6078e4e0570421885dabb68b539c2f970fcbb890a58eeaf3e9c"
             ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) ->
                 "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
             else -> null
@@ -878,7 +878,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         // as a safety fallback if the source does not expose its exact Content-Length.
         val modelId = if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) "sensevoice" else "whisper"
         val expectedArchiveBytes = when {
-            kind == ModelKind.TTS -> 147_031_220L
+            kind == ModelKind.TTS -> 147_052_523L
             // The settings page probes the live asset size first. Use the cached live value here
             // to avoid delaying a manual download with a second metadata request; constants below
             // are storage-safety fallbacks only and are never shown as verified UI sizes.
