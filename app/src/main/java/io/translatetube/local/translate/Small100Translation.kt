@@ -1182,10 +1182,9 @@ internal class Small100BpeTokenizer(
                     deferred += candidate
                 }
             }
-            deferred.forEach(queue::add)
+            deferred.forEach { candidate -> queue.add(candidate) }
 
             val changedLeftIndices = ArrayList<Int>(batch.size)
-            batch.sortBy { it.leftIndex }
             for (candidate in batch) {
                 if ((mergeOperations++ and 127) == 0) checkActive()
                 if (!isCurrent(candidate)) continue
