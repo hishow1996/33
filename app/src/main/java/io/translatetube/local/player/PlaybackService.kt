@@ -10809,7 +10809,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         synchronized(dubbingCatchUpLock) {
             dubbingCatchUpQueue.clear()
             dubbingCatchUpSessionKey = sessionKey.orEmpty()
-            lastDubbingCatchUpPositionMs = positionMs
+            // Callers provide raw Media3 time; the queue stores subtitle-timeline time.
+            lastDubbingCatchUpPositionMs = subtitleTimelinePositionMs(positionMs)
         }
     }
 
@@ -10852,7 +10853,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val activeIndex = engine.currentLineIdx()
         if (activeIndex < 0 || !engine.hasActiveTimelineUtteranceFor(activeIndex)) return
 
-        val timelinePositionMs = pm.position().coerceAtLeast(0L) + subtitleTimingOffsetMs()
+        val timelinePositionMs = subtitleTimelinePositionMs(pm.position())
         if (engine.lineAt(timelinePositionMs) == activeIndex) return
 
         enqueueDubbingCatchUpCue(
@@ -10967,7 +10968,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     return
                 }
 
-                runCatching { tick(pm.position()) }.onFailure { error ->
+                runCatching { tick(subtitleTimelinePositionMs(pm.position())) }.onFailure { error ->
                     io.translatetube.local.util.AppLogStore.error(
                         this@PlaybackService,
                         "PlaybackTimeline",
@@ -11049,7 +11050,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         try {
             // 固定提前量：让配音/字幕更早出现（对冲转写字幕时间戳的系统性偏晚），
             // 配音与字幕共用同一个值保证内容一致。
-            tick(ms + subtitleTimingOffsetMs())
+            tick(subtitleTimelinePositionMs(ms))
         } catch (error: Exception) {
             val state = ui.value
             io.translatetube.local.util.AppLogStore.error(
@@ -11082,6 +11083,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
     // 与 DubbingEngine 挂载配音时使用同一个读取逻辑：字幕和配音一起提前/延后。
     private fun subtitleTimingOffsetMs(): Long = SubtitleTimingOffset.LEAD_MS
+
+    /** All catch-up cursors use the same lead-adjusted media timeline as ordinary dubbing ticks. */
+    private fun subtitleTimelinePositionMs(mediaPositionMs: Long): Long =
+        DubbingCatchUpQueuePolicy.toTimelinePositionMs(
+            mediaPositionMs = mediaPositionMs,
+            offsetMs = subtitleTimingOffsetMs(),
+        )
 
     private fun tick(ms: Long) {
         val st = ui.value
