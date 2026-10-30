@@ -95,7 +95,6 @@ import io.translatetube.local.floating.FloatingOverlayLifecycleOwner
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlaybackHint
 import io.translatetube.local.player.PlaybackHintAction
-import io.translatetube.local.player.AudioProgressSnapshot
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.player.Phase
@@ -1550,6 +1549,7 @@ private fun VideoParsingPage(
             ?.coerceIn(0, 100)
             ?.div(100f)
             ?: progressPercent(state.progress)
+            ?: progressRatio(state.progress)
         Phase.TRANSLATING -> if (state.totalLines > 0) {
             (state.translatedLineCount.coerceIn(0, state.totalLines).toFloat() / state.totalLines)
                 .coerceIn(0f, 1f)
@@ -3997,6 +3997,7 @@ private fun compactProcessingProgress(progress: String, phase: Phase): String {
             }
         }
         Phase.TRANSCRIBING -> {
+            val segmentRatio = Regex("""转写中\\s*(\\d+)\\s*/\\s*(\\d+)\\s*段""").find(raw)
             val label = when {
                 raw.contains("语音分段") -> "语音分段"
                 raw.contains("提高灵敏度重新检测") || raw.contains("声音较小") -> "重新检测语音"
@@ -4004,9 +4005,10 @@ private fun compactProcessingProgress(progress: String, phase: Phase): String {
                 raw.contains("封装云端音频") -> "封装音频"
                 raw.contains("整理压缩音轨") -> "整理音轨"
                 raw.contains("云端转写完成") -> "整理字幕"
+                segmentRatio != null -> "转写 ${segmentRatio.groupValues[1]}/${segmentRatio.groupValues[2]} 段"
                 else -> "识别语音"
             }
-            if (percent != null) "$label $percent" else label
+            if (segmentRatio != null) label else if (percent != null) "$label $percent" else label
         }
         Phase.TRANSLATING -> {
             val ratio = Regex("""(\d+)\s*/\s*(\d+)\s*行""").find(raw)
