@@ -10908,11 +10908,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
         if (!captureMissedCues || positionMs <= previousPositionMs) return
 
-        val crossed = state.lines.indices.filter { index ->
-            if (index == activeDubbingIndex) return@filter false
-            val line = state.lines[index]
-            DubbingTimeline.isPlayableCue(line) && line.startMs > previousPositionMs && line.startMs <= positionMs
-        }.sortedWith(compareBy<Int> { state.lines[it].startMs }.thenBy { it })
+        val crossed = DubbingCatchUpQueuePolicy.crossedCueIndexes(
+            cueCount = state.lines.size,
+            previousPositionMs = previousPositionMs,
+            positionMs = positionMs,
+            activeDubbingIndex = activeDubbingIndex,
+            cueStartMs = { index -> state.lines[index].startMs },
+            isPlayableCue = { index -> DubbingTimeline.isPlayableCue(state.lines[index]) },
+        )
 
         synchronized(dubbingCatchUpLock) {
             if (dubbingCatchUpSessionKey != state.key || !state.dubbingOn) return
@@ -11102,9 +11105,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (d != null && previousDubbingLine >= 0 && d.hasStartedPlaybackFor(previousDubbingLine)) {
             removeDubbingCatchUpCue(st.key, previousDubbingLine)
         }
-        val queuedHead = if (d?.usesImmediateTimelinePlayback == true) peekDubbingCatchUpCue(st.key) else null
-        val keepingQueuedCue = d != null && queuedHead != null && previousDubbingLine >= 0 &&
-            previousDubbingLine != queuedHead && d.shouldContinueCurrentCue(queuedHead)
+        // Use the queue snapshot that existed before this tick to decide whether the
+        // currently speaking cue must retain output ownership. Newly crossed cues are captured
+        // below and must not interrupt that sentence.
+        val queuedHeadBeforeCapture =
+            if (d?.usesImmediateTimelinePlayback == true) peekDubbingCatchUpCue(st.key) else null
+        val keepingQueuedCue = d != null && queuedHeadBeforeCapture != null &&
+            previousDubbingLine >= 0 && previousDubbingLine != queuedHeadBeforeCapture &&
+            d.shouldContinueCurrentCue(queuedHeadBeforeCapture)
         val keepingPreviousDubbingCue = keepingTimelineCue || keepingQueuedCue
         updateDubbingCatchUpQueue(
             state = st,
@@ -11114,6 +11122,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     (previousDubbingLine >= 0 && previousDubbingLine != dubLine)),
             activeDubbingIndex = previousDubbingLine,
         )
+        // Read after capture: if TTS completed between ticks, the earliest crossed subtitle
+        // must play before the newest subtitle at the current playhead.
+        val queuedHead =
+            if (d?.usesImmediateTimelinePlayback == true) peekDubbingCatchUpCue(st.key) else null
         // Highlight against the exact subtitle snapshot rendered by the UI. Its cached interval
         // index uses the same overlap/time-window rules as dubbing, without depending on an engine
         // that may be between old and replacement subtitle sessions.
