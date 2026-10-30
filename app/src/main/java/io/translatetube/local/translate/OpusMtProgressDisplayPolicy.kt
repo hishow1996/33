@@ -16,13 +16,16 @@ internal object OpusMtProgressDisplayPolicy {
         val totalBytes = state.totalBytes.takeIf { it > 0L }
             ?: configuredTotalBytes.takeIf { it > 0L }
             ?: -1L
-        val complete = state.status == OpusMtStatus.READY || state.hasCompleteFiles
+        val complete = state.status == OpusMtStatus.READY ||
+            state.status == OpusMtStatus.VERIFYING ||
+            state.hasCompleteFiles
         val downloadedBytes = when {
             complete && totalBytes > 0L -> totalBytes
             totalBytes > 0L -> state.downloadedBytes.coerceIn(0L, totalBytes)
             else -> state.downloadedBytes.coerceAtLeast(0L)
         }
-        val progress = if (complete) 100 else state.progress.coerceIn(0, 100)
+        // An incomplete transfer must never look finished due to stale or malformed progress.
+        val progress = if (complete) 100 else state.progress.coerceIn(0, 99)
         val visible = state.status == OpusMtStatus.DOWNLOADING ||
             state.status == OpusMtStatus.VERIFYING ||
             state.status == OpusMtStatus.READY ||
