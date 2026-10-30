@@ -95,7 +95,9 @@ import io.translatetube.local.floating.FloatingOverlayLifecycleOwner
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlaybackHint
 import io.translatetube.local.player.PlaybackHintAction
+import io.translatetube.local.player.AudioProgressSnapshot
 import io.translatetube.local.player.PlayerUiState
+import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.player.Phase
 import io.translatetube.local.player.VideoSourceKind
 import io.translatetube.local.player.VideoProcessingFlowPolicy
@@ -1540,6 +1542,18 @@ private fun VideoParsingPage(
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
+        Phase.DOWNLOADING_AUDIO -> state.audioProgress?.fraction()
+            ?: progressPercent(state.progress)
+            ?: progressRatio(state.progress)
+        Phase.TRANSCRIBING -> state.transcriptionProgressPercent
+            ?.takeIf { it >= 0 }
+            ?.coerceIn(0, 100)
+            ?.div(100f)
+            ?: progressPercent(state.progress)
+        Phase.TRANSLATING -> if (state.totalLines > 0) {
+            (state.translatedLineCount.coerceIn(0, state.totalLines).toFloat() / state.totalLines)
+                .coerceIn(0f, 1f)
+        } else progressRatio(state.progress) ?: progressPercent(state.progress)
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
     val complete = VideoProcessingFlowPolicy.isCompleted(
@@ -1577,13 +1591,15 @@ private fun VideoParsingPage(
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         waitingForTranscriptionEngine -> "等待转写引擎"
         waitingForDubbingEngine -> "等待配音引擎"
-        state.isProcessingPaused -> compactProcessingProgress(state.progress, displayPhase)
+        state.isProcessingPaused -> structuredProcessingProgress(state, displayPhase)
             .ifBlank { "等待继续" }
         displayPhase == Phase.TRANSLATING && !state.manualTranslationModeEnabled && state.totalLines > 0 ->
             "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
         displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
             "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
-        state.progress.isNotBlank() -> compactProcessingProgress(state.progress, displayPhase)
+        state.progress.isNotBlank() || state.audioProgress != null ||
+            state.transcriptionProgressPercent != null ->
+            structuredProcessingProgress(state, displayPhase)
         else -> compactPhaseFallback(source, displayPhase)
     }
 
@@ -3923,6 +3939,43 @@ private fun progressRatio(progress: String): Float? {
     return (current / total).coerceIn(0f, 1f)
 }
 
+
+
+private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): String {
+    return when (phase) {
+        Phase.DOWNLOADING_AUDIO -> {
+            val audio = state.audioProgress ?: return compactProcessingProgress(state.progress, phase)
+            val downloaded = AudioDownloadProgressFormatter.formatBytes(audio.downloadedBytes)
+            val total = audio.totalBytes?.takeIf { it > 0L }?.let {
+                " / ${if (audio.totalIsEstimate) "预计约 " else ""}${AudioDownloadProgressFormatter.formatBytes(it)}"
+            }.orEmpty()
+            val percent = audio.percent?.takeIf { it >= 0 }?.coerceIn(0, 100)
+                ?: audio.fraction()?.let { (it * 100f).roundToInt() }
+            val percentText = percent?.let { " · $it%" }.orEmpty()
+            "$downloaded$total$percentText"
+        }
+        Phase.TRANSCRIBING -> {
+            val percent = state.transcriptionProgressPercent?.takeIf { it >= 0 }?.coerceIn(0, 100)
+            if (percent != null) "语音识别 $percent%"
+            else compactProcessingProgress(state.progress, phase)
+        }
+        Phase.TRANSLATING -> {
+            if (state.totalLines > 0 && !state.manualTranslationWaiting) {
+                "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+            } else {
+                compactProcessingProgress(state.progress, phase)
+            }
+        }
+        Phase.SYNTHESIZING -> {
+            if (state.totalLines > 0) {
+                "已合成 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+            } else {
+                compactProcessingProgress(state.progress, phase)
+            }
+        }
+        else -> compactProcessingProgress(state.progress, phase)
+    }
+}
 
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
     val raw = progress.trim()
