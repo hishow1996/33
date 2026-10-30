@@ -2610,20 +2610,13 @@ private fun VideoParsingPage(
 
 @Composable
 private fun CurrentSubtitleStrip(state: PlayerUiState) {
-    // The visible caption follows the video playhead. TTS/audio-track startup is asynchronous
-    // and must not delay the first subtitle strip or make captions drift behind the video.
+    // Both the strip and the subtitle list render the same single playhead-selected cue.
+    // Do not replace it with a multi-cue TTS merge: the audio may combine neighboring cues,
+    // but the on-screen caption must stay aligned with state.currentLine.
     val index = state.currentLine.takeIf { it in state.lines.indices } ?: -1
     val currentLine = state.lines.getOrNull(index)
-    val captionOverride = state.captionOverride
-    val currentText = remember(currentLine?.text, currentLine?.zh, captionOverride) {
-        currentLine?.let { line ->
-            (captionOverride?.takeIf { it.isNotBlank() }
-                ?: SubtitleParsers.preferredTranslationText(line)
-                    ?.takeIf { it.isNotBlank() }
-                ?: line.text)
-                .replace(Regex("\\s+"), " ")
-                .trim()
-        }.orEmpty()
+    val currentText = remember(currentLine?.text, currentLine?.zh) {
+        currentLine?.let(::subtitleDisplayText).orEmpty()
     }
 
     BoxWithConstraints(
@@ -3706,19 +3699,8 @@ private fun SubtitleList(
                 val active = i == activeSubtitleIndex
                 val activeScale = if (active) activeSubtitlePulse else 1f
                 val translatedText = remember(line.text, line.zh) {
-                    SubtitleParsers.preferredTranslationText(line)
-                        ?.takeIf { it.isNotBlank() }
-                        // Never display a progress string as if it were translated speech.
-                        ?: "中文字幕暂不可用"
+                    subtitleDisplayText(line)
                 }
-                val sourceComparisonKey = remember(line.text) { subtitleComparisonKey(line.text) }
-                val translatedComparisonKey = remember(translatedText) {
-                    subtitleComparisonKey(translatedText)
-                }
-                // Keep the same bilingual active cue visible in both playback modes.
-                val showOriginalText = active &&
-                    line.text.isNotBlank() &&
-                    sourceComparisonKey != translatedComparisonKey
 
                 Column(
                     Modifier.fillMaxWidth()
@@ -3746,17 +3728,6 @@ private fun SubtitleList(
                             scaleY = activeScale
                         },
                     )
-                    if (showOriginalText) {
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            line.text,
-                            color = BrandBright,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.Normal),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-
                 }
             }
         }
@@ -3764,10 +3735,15 @@ private fun SubtitleList(
 }
 
 
-private val subtitleComparisonPattern = Regex("[\\p{P}\\p{S}\\s]")
-
-private fun subtitleComparisonKey(text: String): String =
-    text.trim().lowercase(java.util.Locale.ROOT).replace(subtitleComparisonPattern, "")
+/**
+ * One shared display rule keeps the active subtitle strip and its row in the list identical.
+ * Never fall back to the source sentence or show merged neighboring cues when a translation
+ * is unavailable; that would make the two subtitle surfaces appear out of sync.
+ */
+private fun subtitleDisplayText(line: SubLine): String =
+    SubtitleParsers.preferredTranslationText(line)
+        ?.takeIf { it.isNotBlank() }
+        ?: "中文字幕暂不可用"
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
