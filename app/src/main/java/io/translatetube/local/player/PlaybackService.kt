@@ -1969,7 +1969,12 @@ class PlaybackService : MediaSessionService() {
                         lastLineIdx = Int.MIN_VALUE
                         if (::pm.isInitialized) tickFromPlayerCallback(pm.position(), "player resumed")
                     } else if (!drainingEndedVideo) {
-                        if (!isPlaying && ::pm.isInitialized && pm.player.playWhenReady) {
+                        if (
+                            !isPlaying &&
+                            ::pm.isInitialized &&
+                            pm.player.playWhenReady &&
+                            pm.player.playbackState == androidx.media3.common.Player.STATE_BUFFERING
+                        ) {
                             preserveInterruptedImmediateCueOnBuffer(ui.value.key)
                         }
                         safelyControlDubbing("player paused") { dubbing?.pausePlayback() }
@@ -10838,7 +10843,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val state = ui.value
         if (state.key != sessionKey || !state.dubbingOn) return
         val player = pm.player
-        if (!player.playWhenReady || player.playbackState == androidx.media3.common.Player.STATE_ENDED) return
+        if (!player.playWhenReady ||
+            player.playbackState != androidx.media3.common.Player.STATE_BUFFERING
+        ) return
 
         val engine = dubbing ?: return
         if (!engine.usesImmediateTimelinePlayback) return
