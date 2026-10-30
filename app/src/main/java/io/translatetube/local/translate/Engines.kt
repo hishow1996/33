@@ -530,8 +530,8 @@ object MlKitModelCoordinator {
     suspend fun isDownloaded(languageTag: String): Boolean {
         val language = TranslateLanguage.fromLanguageTag(languageTag) ?: return false
         val model = TranslateRemoteModel.Builder(language).build()
-        val lock = locks.computeIfAbsent(language) { Mutex() }
-        return lock.withLock { RemoteModelManager.getInstance().isModelDownloaded(model).await() }
+        // Read-only status checks stay non-blocking so the settings page can reflect active SDK downloads.
+        return RemoteModelManager.getInstance().isModelDownloaded(model).await()
     }
 
     suspend fun deleteLanguage(languageTag: String) {
