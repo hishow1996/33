@@ -105,6 +105,21 @@ class PlaybackHintPolicyTest {
     }
 
     @Test
+    fun stalledRenderedPlaybackOffersReloadInsteadOfClearingHint() {
+        val h = hint(
+            PlaybackHintInput(
+                isPlaying = true,
+                hasRenderedFirstFrame = true,
+                playbackStalled = true,
+            ),
+        )!!
+        assertEquals("playback-stalled", h.key)
+        assertEquals("视频播放似乎卡住了", h.message)
+        assertEquals(PlaybackHintAction.RELOAD, h.action)
+        assertEquals("重新加载", h.actionLabel)
+    }
+
+    @Test
     fun idlePlayerWithMountedVideoShowsRestoringHint() {
         val h = hint(PlaybackHintInput(hasMedia = true, idleRecovery = true))!!
         assertEquals("正在恢复播放…", h.message)
