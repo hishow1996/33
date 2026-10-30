@@ -1460,7 +1460,19 @@ private fun VideoParsingPage(
     }
     val selectedTranslationId = translationPrefs.getLong("active_api_id", EngineFactory.ID_GOOGLE)
     val isLocalTranslation = EngineFactory.isLocalTranslationEngine(selectedTranslationId)
-    val localTranslationName = EngineFactory.localTranslationEngineName(selectedTranslationId).orEmpty()
+    // Use the engine actually selected by the active translation run; fall back to preferences
+    // only before the service has published its resolved engine name.
+    val translationEngineDisplayName = state.engineName.trim().ifBlank {
+        EngineFactory.localTranslationEngineName(selectedTranslationId) ?: when (selectedTranslationId) {
+            EngineFactory.ID_GOOGLE, EngineFactory.ID_GOOGLE_ALT -> "Google 翻译"
+            EngineFactory.ID_MICROSOFT -> "微软翻译"
+            EngineFactory.ID_BAIDU -> "百度翻译"
+            EngineFactory.ID_DEEPL -> "DeepL"
+            EngineFactory.ID_FREE_GEMINI -> "Google Gemini"
+            EngineFactory.ID_FREE_DEEPSEEK -> "DeepSeek"
+            else -> "API 翻译服务"
+        }
+    }
     val configuredSourceLanguage = translationPrefs.getString("translation_source_language", "auto")
         .orEmpty().ifBlank { "auto" }
     val detectedSourceLanguage = state.sourceLang.trim().takeIf { code ->
@@ -2037,45 +2049,6 @@ private fun VideoParsingPage(
                         }
                     }
                 }
-                if (isLocalTranslation) {
-                    Spacer(Modifier.height(7.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFFF0F5FF))
-                            .border(1.dp, Color(0xFFE0E9FF), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Subtitles,
-                            contentDescription = null,
-                            tint = Color(0xFF3268F5),
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(
-                                "本地翻译 · $localTranslationName",
-                                color = Color(0xFF244A9B),
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                "语言方向：$sourceLanguageDisplay → 简体中文",
-                                color = Color(0xFF617394),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                }
                 Spacer(Modifier.height(if (compactLayout) 8.dp else 10.dp))
                 Row(
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
@@ -2363,6 +2336,28 @@ private fun VideoParsingPage(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            // Show translation configuration only while stage 4 is running or
+                            // when translation itself failed. A completed stage collapses to its
+                            // normal "已完成" row, with no leftover model metadata.
+                            if (
+                                steps[index].contains("翻译") &&
+                                !state.manualTranslationModeEnabled &&
+                                (
+                                    (state.phase == Phase.TRANSLATING && active) ||
+                                        (failed && state.failedPhase == Phase.TRANSLATING)
+                                )
+                            ) {
+                                Text(
+                                    "$translationEngineDisplayName · ${if (isLocalTranslation) "本地" else "在线"} · $sourceLanguageDisplay → 简体中文",
+                                    color = if (failed) Color(0xFFB55A65) else Color(0xFF7C8DA7),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = if (compactLayout) 9.sp else 10.sp,
+                                        lineHeight = if (compactLayout) 11.sp else 13.sp,
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                         val stageBadgeText = when {
                             done -> "已完成"
