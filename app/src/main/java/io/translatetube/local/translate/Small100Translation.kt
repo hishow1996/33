@@ -168,6 +168,14 @@ object Small100ModelManager {
             runCatching { marker.readText(Charsets.UTF_8).trim() == signature(context) }.getOrDefault(false)
     }
 
+    /** Distinguishes final model files from a .part file that happens to reach the target byte count. */
+    private fun areAllModelFilesPresent(context: Context): Boolean {
+        val directory = modelDirectory(context)
+        return files.all { spec ->
+            File(directory, spec.name).let { it.isFile && it.length() == spec.bytes }
+        }
+    }
+
     fun hasPartialDownload(context: Context): Boolean {
         val directory = modelDirectory(context)
         return files.any { spec ->
@@ -209,13 +217,15 @@ object Small100ModelManager {
                     val finalFile = File(directory, spec.name)
                     val priorBytes = files.take(firstIncomplete).sumOf { it.bytes }
                     val currentBytes = if (part.isFile) part.length() else finalFile.length()
+                    val incompleteDownloaded = (priorBytes + currentBytes)
+                        .coerceAtMost((TOTAL_BYTES - 1L).coerceAtLeast(0L))
                     Small100DownloadState(
                         status = Small100Status.PAUSED,
-                        progress = ((priorBytes + currentBytes).coerceAtMost(TOTAL_BYTES) * 100L / TOTAL_BYTES).toInt(),
+                        progress = (incompleteDownloaded * 100L / TOTAL_BYTES).toInt().coerceIn(0, 99),
                         currentFile = spec.name,
                         fileIndex = firstIncomplete + 1,
                         fileCount = files.size,
-                        downloadedBytes = (priorBytes + currentBytes).coerceAtMost(TOTAL_BYTES),
+                        downloadedBytes = incompleteDownloaded,
                         totalBytes = TOTAL_BYTES,
                     )
                 }
@@ -285,14 +295,21 @@ object Small100ModelManager {
                 ),
             )
         } catch (cancelled: CancellationException) {
-            mutableState.value = mutableState.value.copy(
+            val previous = mutableState.value
+            val completeFiles = areAllModelFilesPresent(app)
+            mutableState.value = previous.copy(
                 status = if (hasPartialDownload(app)) Small100Status.PAUSED else Small100Status.NOT_DOWNLOADED,
-                error = "",
+                progress = if (completeFiles) 100 else previous.progress.coerceAtMost(99),
+                downloadedBytes = if (completeFiles) TOTAL_BYTES else
+                    previous.downloadedBytes.coerceAtMost((TOTAL_BYTES - 1L).coerceAtLeast(0L)),
+                totalBytes = TOTAL_BYTES,
+                error = if (completeFiles) "模型文件已下载，等待重新验证" else "",
             )
             AppLogStore.info(app, "LocalTranslationModel", "SMaLL-100 下载已暂停，可从上次进度继续")
             throw cancelled
         } catch (error: Throwable) {
             val partial = hasPartialDownload(app)
+            val completeFiles = areAllModelFilesPresent(app)
             var rootCause = error
             repeat(8) {
                 val next = rootCause.cause
@@ -307,8 +324,13 @@ object Small100ModelManager {
                         "请安装修复版应用；已下载模型文件会保留。"
                 else -> error.message?.takeIf { it.isNotBlank() } ?: rootCause.javaClass.simpleName
             }
-            mutableState.value = mutableState.value.copy(
+            val previous = mutableState.value
+            mutableState.value = previous.copy(
                 status = Small100Status.FAILED,
+                progress = if (completeFiles) 100 else previous.progress.coerceAtMost(99),
+                downloadedBytes = if (completeFiles) TOTAL_BYTES else
+                    previous.downloadedBytes.coerceAtMost((TOTAL_BYTES - 1L).coerceAtLeast(0L)),
+                totalBytes = TOTAL_BYTES,
                 error = reason,
             )
             AppLogStore.error(

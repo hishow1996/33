@@ -156,6 +156,8 @@ object OpusMtAdditionalModelManager {
                 else -> 0L
             }
             val downloaded = (completedBefore + currentBytes).coerceAtMost(total)
+            // A full-sized temporary file still needs finalization and integrity validation.
+            val incompleteDownloaded = downloaded.coerceAtMost((total - 1L).coerceAtLeast(0L))
             next[model.source] = when {
                 isReady(app, model.source) -> OpusMtDownloadState(
                     status = OpusMtStatus.READY, progress = 100,
@@ -171,11 +173,11 @@ object OpusMtAdditionalModelManager {
                 )
                 hasPartialDownload(app, model.source) -> OpusMtDownloadState(
                     status = OpusMtStatus.PAUSED,
-                    progress = (downloaded * 100L / total).toInt().coerceIn(0, 100),
+                    progress = (incompleteDownloaded * 100L / total).toInt().coerceIn(0, 99),
                     currentFile = currentSpec?.name ?: "",
                     fileIndex = currentIndex?.plus(1) ?: 0,
                     fileCount = model.files.size,
-                    downloadedBytes = downloaded,
+                    downloadedBytes = incompleteDownloaded,
                     totalBytes = total,
                 )
                 else -> OpusMtDownloadState(
@@ -294,10 +296,11 @@ object OpusMtAdditionalModelManager {
             val nextStatus = OpusMtAdditionalDownloadStatePolicy.afterCancellation(allFilesPresent, resumableData)
             publish(model.source, previous.copy(
                 status = nextStatus,
-                progress = if (allFilesPresent) 100 else previous.progress,
+                progress = if (allFilesPresent) 100 else previous.progress.coerceAtMost(99),
                 currentFile = if (allFilesPresent) "验证实际翻译" else previous.currentFile,
                 fileIndex = if (allFilesPresent) model.files.size else previous.fileIndex,
-                downloadedBytes = if (allFilesPresent) totalBytes else previous.downloadedBytes,
+                downloadedBytes = if (allFilesPresent) totalBytes else
+                    previous.downloadedBytes.coerceAtMost((totalBytes - 1L).coerceAtLeast(0L)),
                 totalBytes = totalBytes,
                 error = if (allFilesPresent) "模型文件已下载，运行时验证被中断；点击重新验证" else "",
             ))
@@ -326,10 +329,11 @@ object OpusMtAdditionalModelManager {
                 ?: rootCause.javaClass.simpleName
             publish(model.source, previous.copy(
                 status = nextStatus,
-                progress = if (allFilesPresent) 100 else previous.progress,
+                progress = if (allFilesPresent) 100 else previous.progress.coerceAtMost(99),
                 currentFile = if (allFilesPresent) "验证实际翻译" else previous.currentFile,
                 fileIndex = if (allFilesPresent) model.files.size else previous.fileIndex,
-                downloadedBytes = if (allFilesPresent) totalBytes else previous.downloadedBytes,
+                downloadedBytes = if (allFilesPresent) totalBytes else
+                    previous.downloadedBytes.coerceAtMost((totalBytes - 1L).coerceAtLeast(0L)),
                 totalBytes = totalBytes,
                 error = reason,
             ))
