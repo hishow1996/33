@@ -70,6 +70,24 @@ class OpusMtProgressDisplayPolicyTest {
 
         assertEquals(700L, display.downloadedBytes)
         assertEquals(1_000L, display.totalBytes)
+        assertEquals(99, display.progress)
+        assertTrue(display.visible)
+    }
+
+    @Test
+    fun verifyingModelDisplaysCompleteProgress() {
+        val display = OpusMtProgressDisplayPolicy.resolve(
+            state = OpusMtDownloadState(
+                status = OpusMtStatus.VERIFYING,
+                progress = 96,
+                downloadedBytes = 1_000L,
+                totalBytes = 1_000L,
+            ),
+            configuredTotalBytes = 1_000L,
+        )
+
+        assertEquals(1_000L, display.downloadedBytes)
+        assertEquals(1_000L, display.totalBytes)
         assertEquals(100, display.progress)
         assertTrue(display.visible)
     }
