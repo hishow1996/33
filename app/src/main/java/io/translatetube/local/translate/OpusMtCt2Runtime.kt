@@ -1,9 +1,13 @@
 package io.translatetube.local.translate
 
+import android.app.ActivityManager
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -15,10 +19,16 @@ import java.nio.charset.StandardCharsets
 
 /** Native CTranslate2 runtime for additional quantized OPUS-MT pairs; keeps one model resident. */
 internal object OpusMtCt2Runtime {
+    private const val BATCH_SIZE = 8
     private data class Loaded(val source: String, val identity: String, val handle: Long)
 
     private val lock = Mutex()
+    private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var loaded: Loaded? = null
+
+    fun requestRelease() {
+        closeScope.launch { release() }
+    }
 
     suspend fun translate(context: Context, source: String, lines: List<String>): List<String> {
         if (lines.isEmpty()) return emptyList()
@@ -26,12 +36,14 @@ internal object OpusMtCt2Runtime {
             withContext(Dispatchers.Default) {
                 val engine = loadLocked(context.applicationContext, source)
                 val output = ArrayList<String>(lines.size)
-                for (batch in lines.chunked(8)) {
+                for (batchStartIndex in lines.indices step BATCH_SIZE) {
                     currentCoroutineContext().ensureActive()
-                    val batchStartIndex = output.size
+                    val batchEndIndex = minOf(batchStartIndex + BATCH_SIZE, lines.size)
+                    val batch = lines.subList(batchStartIndex, batchEndIndex)
                     val input = batch.map { it.toByteArray(StandardCharsets.UTF_8) }.toTypedArray()
                     val translated = try {
                         val result = OpusMtCt2Native.nativeTranslate(engine.handle, input)
+                        currentCoroutineContext().ensureActive()
                         if (result.size != batch.size) {
                             throw IOException("CTranslate2 返回的字幕条数不匹配：预期 ${batch.size}，实际 ${result.size}")
                         }
@@ -50,6 +62,7 @@ internal object OpusMtCt2Runtime {
                                     engine.handle,
                                     arrayOf(line.toByteArray(StandardCharsets.UTF_8)),
                                 )
+                                currentCoroutineContext().ensureActive()
                                 if (one.size != 1) {
                                     throw IOException("CTranslate2 单条重试返回了 ${one.size} 条结果")
                                 }
@@ -133,12 +146,41 @@ internal object OpusMtCt2Runtime {
         val identity = required.joinToString("|") { "${it.name}:${it.length()}:${it.lastModified()}" }
         loaded?.takeIf { it.source == source && it.identity == identity }?.let { return it }
 
+        // Drop the previous language pair before checking headroom for the replacement.
         loaded?.let { old -> runCatching { OpusMtCt2Native.nativeFree(old.handle) } }
         loaded = null
+
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (activityManager != null) {
+            val memoryInfo = ActivityManager.MemoryInfo()
+            activityManager.getMemoryInfo(memoryInfo)
+            val requiredBytes = LocalTranslationMemoryPolicy.requiredAvailableBytes(memoryInfo.totalMem)
+            if (!LocalTranslationMemoryPolicy.hasEnoughAvailableMemory(memoryInfo.availMem, memoryInfo.totalMem)) {
+                val availableMb = memoryInfo.availMem / LocalTranslationMemoryPolicy.MEGABYTE
+                val requiredMb = requiredBytes / LocalTranslationMemoryPolicy.MEGABYTE
+                throw IllegalStateException(
+                    "OPUS-MT ${OpusMtAdditionalModelManager.label(source)} 加载需要更多运行内存：" +
+                        "当前约 ${availableMb} MB，可用内存建议至少 ${requiredMb} MB。" +
+                        "请关闭其他应用后重试，已下载模型无需重新下载。"
+                )
+            }
+        }
+
         val handle = try {
-            OpusMtCt2Native.nativeLoad(dir.absolutePath, File(dir, "source.spm").absolutePath, File(dir, "target.spm").absolutePath, 2)
+            OpusMtCt2Native.nativeLoad(
+                dir.absolutePath,
+                File(dir, "source.spm").absolutePath,
+                File(dir, "target.spm").absolutePath,
+                2,
+            )
         } catch (error: Throwable) {
-            throw IllegalStateException("无法加载 OPUS-MT ${OpusMtAdditionalModelManager.label(source)} 的 CTranslate2 运行时：${error.message ?: error.javaClass.simpleName}", error)
+            val detail = if (error is OutOfMemoryError) {
+                "当前设备可用运行内存不足，请关闭其他应用后重试"
+            } else error.message ?: error.javaClass.simpleName
+            throw IllegalStateException(
+                "无法加载 OPUS-MT ${OpusMtAdditionalModelManager.label(source)} 的 CTranslate2 运行时：$detail",
+                error,
+            )
         }
         if (handle == 0L) throw IOException("CTranslate2 未返回有效的模型句柄")
         return Loaded(source, identity, handle).also { loaded = it }
