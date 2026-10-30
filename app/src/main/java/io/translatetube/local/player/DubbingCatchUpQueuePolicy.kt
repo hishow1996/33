@@ -22,4 +22,24 @@ internal object DubbingCatchUpQueuePolicy {
             if (queuedIndex != index) queue.add(queuedIndex)
         }
     }
+
+    /** Return playable subtitle starts crossed since the previous timeline tick, in time order. */
+    fun crossedCueIndexes(
+        cueCount: Int,
+        previousPositionMs: Long,
+        positionMs: Long,
+        activeDubbingIndex: Int,
+        cueStartMs: (Int) -> Long,
+        isPlayableCue: (Int) -> Boolean,
+    ): List<Int> {
+        if (cueCount <= 0 || positionMs <= previousPositionMs) return emptyList()
+        return (0 until cueCount)
+            .filter { index ->
+                index != activeDubbingIndex &&
+                    isPlayableCue(index) &&
+                    cueStartMs(index) > previousPositionMs &&
+                    cueStartMs(index) <= positionMs
+            }
+            .sortedWith(compareBy<Int> { cueStartMs(it) }.thenBy { it })
+    }
 }
