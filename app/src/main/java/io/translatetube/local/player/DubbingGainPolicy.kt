@@ -9,4 +9,8 @@ internal object DubbingGainPolicy {
     /** A malformed PCM sample must never poison the output buffer. */
     fun sanitizePcmSample(value: Float): Float =
         value.takeIf { it.isFinite() } ?: 0f
+
+    /** Apply the live dubbing gate at render time, not only when the PCM queue is read. */
+    fun applyDubbingGain(sample: Float, gain: Float, enabled: Boolean): Float =
+        if (enabled) sanitizePcmSample(sample) * sanitizeGain(gain) else 0f
 }
