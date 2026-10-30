@@ -1587,7 +1587,7 @@ private fun VideoParsingPage(
     }
     val detail = when {
         isCancelled -> "已停止"
-        isError -> state.error?.takeIf { it.isNotBlank() } ?: "处理失败"
+        isError -> "查看下方错误提示"
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         waitingForTranscriptionEngine -> "等待转写引擎"
         waitingForDubbingEngine -> "等待配音引擎"
@@ -3949,16 +3949,11 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
             val total = audio.totalBytes?.takeIf { it > 0L }?.let {
                 " / ${if (audio.totalIsEstimate) "预计约 " else ""}${AudioDownloadProgressFormatter.formatBytes(it)}"
             }.orEmpty()
-            val percent = audio.percent?.takeIf { it >= 0 }?.coerceIn(0, 100)
-                ?: audio.fraction()?.let { (it * 100f).roundToInt() }
-            val percentText = percent?.let { " · $it%" }.orEmpty()
-            "$downloaded$total$percentText"
+            // The exact percentage remains in the progress bar/caption below; keep this line
+            // focused on the byte counts so the same number is not repeated twice.
+            "$downloaded$total"
         }
-        Phase.TRANSCRIBING -> {
-            val percent = state.transcriptionProgressPercent?.takeIf { it >= 0 }?.coerceIn(0, 100)
-            if (percent != null) "语音识别 $percent%"
-            else compactProcessingProgress(state.progress, phase)
-        }
+        Phase.TRANSCRIBING -> compactProcessingProgress(state.progress, phase)
         Phase.TRANSLATING -> {
             if (state.totalLines > 0 && !state.manualTranslationWaiting) {
                 "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
@@ -4008,7 +4003,7 @@ private fun compactProcessingProgress(progress: String, phase: Phase): String {
                 segmentRatio != null -> "转写 ${segmentRatio.groupValues[1]}/${segmentRatio.groupValues[2]} 段"
                 else -> "识别语音"
             }
-            if (segmentRatio != null) label else if (percent != null) "$label $percent" else label
+            label
         }
         Phase.TRANSLATING -> {
             val ratio = Regex("""(\d+)\s*/\s*(\d+)\s*行""").find(raw)
