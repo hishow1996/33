@@ -43,55 +43,55 @@ object VideoProcessingFlowPolicy {
     fun steps(source: VideoSourceKind, flow: ProcessingFlow = ProcessingFlow.AUTO): List<String> = when (flow) {
         ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION -> listOf(
             "解析视频",
-            "提取音频",
-            "语音识别",
-            "翻译字幕",
-            "合成配音",
+            "提取视频音轨",
+            "转写原文并生成时间轴字幕",
+            "将原文字幕翻译成中文",
+            "按时间轴生成中文配音",
         )
         ProcessingFlow.YOUTUBE_SUBTITLES -> listOf(
             "解析视频",
-            "查找字幕",
-            "读取字幕",
-            "翻译字幕",
-            "合成配音",
+            "查找可用字幕轨",
+            "读取原文字幕与时间轴",
+            "将原文字幕翻译成中文",
+            "按时间轴生成中文配音",
         )
         ProcessingFlow.IMPORTED_SUBTITLES -> listOf(
-            "读取字幕",
-            "翻译字幕",
-            "合成配音",
+            "读取导入字幕并检查时间轴",
+            "将原文字幕翻译成中文",
+            "按时间轴生成中文配音",
         )
         ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES -> listOf(
-            "读取译文",
-            "合成配音",
+            "读取已翻译字幕并检查时间轴",
+            "按时间轴生成中文配音",
         )
         else -> when (source) {
             VideoSourceKind.YOUTUBE -> listOf(
                 "解析视频",
-                "查找字幕",
-                "读取字幕",
-                "翻译字幕",
-                "合成配音",
+                "查找可用字幕轨",
+                "读取原文字幕与时间轴",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
             VideoSourceKind.WEB -> listOf(
-                "识别视频",
-                "提取音频",
-                "语音识别",
-                "翻译字幕",
-                "合成配音",
+                "识别网页视频",
+                "提取视频音轨",
+                "转写原文并生成时间轴字幕",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
             VideoSourceKind.LOCAL -> listOf(
-                "读取视频",
-                "提取音频",
-                "语音识别",
-                "翻译字幕",
-                "合成配音",
+                "读取本地视频",
+                "提取本地视频音轨",
+                "转写原文并生成时间轴字幕",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
             VideoSourceKind.UNKNOWN -> listOf(
                 "解析视频",
-                "准备资源",
-                "获取字幕",
-                "翻译字幕",
-                "合成配音",
+                "准备视频资源",
+                "转写原文并生成时间轴字幕",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
         }
     }
