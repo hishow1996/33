@@ -753,8 +753,26 @@ internal fun LocalTranslationSection(
                         val state = if (source == "en") {
                             opusState
                         } else {
-                            opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
+                            opusExtraStates[source] ?: OpusMtDownloadState(
+                                fileCount = 5,
+                                totalBytes = expectedBytes,
+                            )
                         }
+                        // The configured model size is authoritative when a freshly opened page
+                        // has not received its first state-flow update yet.
+                        val displayTotalBytes = state.totalBytes.takeIf { it > 0L } ?: expectedBytes
+                        val modelComplete = state.status == OpusMtStatus.READY || state.hasCompleteFiles
+                        val displayDownloadedBytes = if (modelComplete) {
+                            displayTotalBytes
+                        } else {
+                            state.downloadedBytes.coerceIn(0L, displayTotalBytes)
+                        }
+                        val displayProgress = if (modelComplete) 100 else state.progress.coerceIn(0, 100)
+                        val shouldShowProgress = state.status == OpusMtStatus.DOWNLOADING ||
+                            state.status == OpusMtStatus.VERIFYING ||
+                            state.status == OpusMtStatus.READY ||
+                            state.hasCompleteFiles ||
+                            state.downloadedBytes > 0L
                         val expectedBytes = if (source == "en") {
                             OpusMtModelManager.downloadSizeBytes()
                         } else {
@@ -831,18 +849,15 @@ internal fun LocalTranslationSection(
                                     )
                                     // Keep the OPUS-MT progress directly beneath and aligned
                                     // with the download status text, not indented under the radio button.
-                                    if (state.status == OpusMtStatus.DOWNLOADING ||
-                                        state.status == OpusMtStatus.VERIFYING ||
-                                        (state.hasCompleteFiles && state.status != OpusMtStatus.READY)
-                                    ) {
+                                    if (shouldShowProgress) {
                                         LinearProgressIndicator(
-                                            progress = (state.progress / 100f).coerceIn(0f, 1f),
+                                            progress = (displayProgress / 100f).coerceIn(0f, 1f),
                                             modifier = Modifier.fillMaxWidth(),
                                             color = Color(0xFF3569D4),
                                         )
                                         Text(
-                                            formatLocalModelBytes(state.downloadedBytes) + " / " +
-                                                formatLocalModelBytes(state.totalBytes),
+                                            formatLocalModelBytes(displayDownloadedBytes) + " / " +
+                                                formatLocalModelBytes(displayTotalBytes),
                                             color = Color(0xFF64748B),
                                             style = MaterialTheme.typography.labelSmall,
                                         )
