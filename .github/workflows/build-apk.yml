@@ -293,3 +293,4 @@ jobs:
 # Explicit APK retry after adding the sherpa AAR conflicting-entry path to diagnostics (2026-10-31).
 # Explicit APK retry after limiting sherpa ONNX conflict validation to the packaged ARM64 ABI (2026-10-31).
 # Explicit APK retry after fixing Small100Translation download try/use braces (2026-10-31).
+# Explicit APK retry after fixing Kotlin compile errors found on 2026-10-31.
