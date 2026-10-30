@@ -821,10 +821,10 @@ internal fun LocalTranslationSection(
                                             OpusMtStatus.DOWNLOADING -> "下载中 ${progressDisplay.progress}%"
                                             OpusMtStatus.VERIFYING -> "正在验证模型"
                                             OpusMtStatus.PAUSED -> state.error.ifBlank {
-                                                if (state.hasCompleteFiles) "模型文件已下载，等待重新验证" else "下载已暂停"
+                                                if (progressDisplay.progress == 100) "模型文件已下载，等待重新验证" else "下载已暂停"
                                             }
                                             OpusMtStatus.FAILED -> state.error.ifBlank {
-                                                if (state.hasCompleteFiles) "模型文件已下载，运行时验证未通过" else "下载失败"
+                                                if (progressDisplay.progress == 100) "模型文件已下载，运行时验证未通过" else "下载失败"
                                             }
                                             else -> "未下载"
                                         },
@@ -908,7 +908,7 @@ internal fun LocalTranslationSection(
                                             if (source == "en") {
                                                 opusJob = launchTrackedModelDownload(
                                                     taskId = "opus-mt-en-zh",
-                                                    title = if (state.hasCompleteFiles) {
+                                                    title = if (progressDisplay.progress == 100) {
                                                         "正在重新验证 OPUS-MT：英语 → 中文"
                                                     } else {
                                                         "正在下载 OPUS-MT：英语 → 中文"
@@ -925,7 +925,7 @@ internal fun LocalTranslationSection(
                                             } else {
                                                 val newJob = launchTrackedModelDownload(
                                                     taskId = "opus-mt-${source}-zh",
-                                                    title = if (state.hasCompleteFiles) {
+                                                    title = if (progressDisplay.progress == 100) {
                                                         "正在重新验证 OPUS-MT：${source.uppercase(Locale.ROOT)} → 中文"
                                                     } else {
                                                         "正在下载 OPUS-MT：${source.uppercase(Locale.ROOT)} → 中文"
@@ -945,7 +945,7 @@ internal fun LocalTranslationSection(
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                     ) { Text(
                                         when {
-                                            state.hasCompleteFiles -> "重新验证"
+                                            progressDisplay.progress == 100 -> "重新验证"
                                             state.status == OpusMtStatus.PAUSED -> "继续下载"
                                             state.status == OpusMtStatus.FAILED -> "重试"
                                             else -> "下载"
