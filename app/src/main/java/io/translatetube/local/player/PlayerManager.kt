@@ -191,6 +191,10 @@ class PlayerManager(private val ctx: Context) {
         _loadRetryCount.value = 0
         bufferingStartedAtMs = 0L
         errorSink.value = null
+
+        // A new source/retry may have a completely different media timeline. Clear both queued
+        // PCM and the old renderer read head before Media3 begins feeding the replacement stream.
+        dubbingBus.reset()
     }
 
     private fun resetPlaybackStatusForRetry() = resetPlaybackStatusForNewSource()
