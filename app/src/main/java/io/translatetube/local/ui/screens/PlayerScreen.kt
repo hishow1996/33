@@ -1556,8 +1556,10 @@ private fun VideoParsingPage(
         state.isProcessingPaused -> "已暂停"
         waitingForTranscriptionEngine -> "等待转写"
         waitingForDubbingEngine -> "等待配音"
-        dubbingPreparationPendingOnReady || displayPhase == Phase.SYNTHESIZING -> "合成配音"
+        dubbingPreparationPendingOnReady && state.dubbingHasErrors -> "部分配音失败"
+        dubbingPreparationPendingOnReady -> "合成配音"
         state.dubbingHasErrors -> "部分配音失败"
+        displayPhase == Phase.SYNTHESIZING -> "合成配音"
         else -> when (displayPhase) {
             Phase.IDLE -> "准备中"
             Phase.PARSING -> "解析视频"
@@ -3926,13 +3928,13 @@ private fun compactProcessingProgress(progress: String, phase: Phase): String {
     val raw = progress.trim()
     if (raw.isBlank()) return ""
 
-    val percent = Regex("""\\d+(?:\\.\\d+)?%""").find(raw)?.value
+    val percent = Regex("""\d+(?:\.\d+)?%""").find(raw)?.value
     return when (phase) {
         Phase.DOWNLOADING_AUDIO -> {
             // Keep the measured byte counts (and estimated-total label) intact; the percentage
             // remains visible in the existing progress indicator beside this line.
             val byteProgress = Regex(
-                """\\d+(?:\\.\\d+)?\\s*(?:KB|MB|GB|TB|B)(?:\\s*/\\s*(?:预计约\\s*)?\\d+(?:\\.\\d+)?\\s*(?:KB|MB|GB|TB|B))?""",
+                """\d+(?:\.\d+)?\s*(?:KB|MB|GB|TB|B)(?:\s*/\s*(?:预计约\s*)?\d+(?:\.\d+)?\s*(?:KB|MB|GB|TB|B))?""",
                 RegexOption.IGNORE_CASE,
             ).find(raw)?.value
             byteProgress ?: when {
@@ -3954,11 +3956,11 @@ private fun compactProcessingProgress(progress: String, phase: Phase): String {
             if (percent != null) "$label $percent" else label
         }
         Phase.TRANSLATING -> {
-            val ratio = Regex("""(\\d+)\\s*/\\s*(\\d+)\\s*行""").find(raw)
+            val ratio = Regex("""(\d+)\s*/\s*(\d+)\s*行""").find(raw)
             if (ratio != null) "已翻译 ${ratio.groupValues[1]}/${ratio.groupValues[2]} 行" else "翻译字幕"
         }
         Phase.SYNTHESIZING -> {
-            val ratio = Regex("""(\\d+)\\s*/\\s*(\\d+)""").find(raw)
+            val ratio = Regex("""(\d+)\s*/\s*(\d+)""").find(raw)
             when {
                 ratio != null -> "已准备 ${ratio.groupValues[1]}/${ratio.groupValues[2]} 行"
                 percent != null -> "合成配音 $percent"
