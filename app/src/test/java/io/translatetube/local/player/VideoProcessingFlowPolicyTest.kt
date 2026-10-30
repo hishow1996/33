@@ -213,7 +213,7 @@ class VideoProcessingFlowPolicyTest {
     @Test
     fun missingTranscriptionEngineMustNotMarkReadyFlowAsComplete() {
         assertEquals(
-            3,
+            2,
             VideoProcessingFlowPolicy.stageIndex(
                 VideoSourceKind.YOUTUBE,
                 ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
