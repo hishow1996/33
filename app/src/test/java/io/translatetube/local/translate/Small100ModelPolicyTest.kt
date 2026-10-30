@@ -57,6 +57,15 @@ class Small100ModelPolicyTest {
     }
 
     @Test
+    fun identifiesCompletedTemporaryFilesAndRejectsOversizedResponses() {
+        assertTrue(ModelDownloadRangePolicy.isCompletePart(500L, 500L))
+        assertFalse(ModelDownloadRangePolicy.isCompletePart(499L, 500L))
+        assertFalse(ModelDownloadRangePolicy.isCompletePart(501L, 500L))
+        assertTrue(ModelDownloadRangePolicy.canAcceptBytes(450L, 50L, 500L))
+        assertFalse(ModelDownloadRangePolicy.canAcceptBytes(450L, 51L, 500L))
+    }
+
+    @Test
     fun marksCompleteModelFilesAsDownloadedEvenWhenRuntimeValidationIsPending() {
         val state = Small100DownloadState(
             status = Small100Status.PAUSED,
