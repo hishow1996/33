@@ -179,7 +179,7 @@ object VideoProcessingFlowPolicy {
     }
 
     private fun youtubeSubtitleStage(progress: String): Int = when {
-        progress.contains("查找字幕") -> 1
+        progress.contains("查找可用字幕轨") -> 1
         progress.contains("检查本地字幕文件与缓存") -> 2
         progress.contains("下载并读取字幕文件") -> 2
         else -> 0
