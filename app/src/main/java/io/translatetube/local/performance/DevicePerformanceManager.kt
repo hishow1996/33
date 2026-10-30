@@ -82,8 +82,8 @@ internal object DevicePerformancePolicy {
     fun dubbingPcmCacheBytes(s: DevicePerformanceSnapshot): Long {
         val base=when(tier(s)){DevicePerformanceTier.LOW->4L*MIB;DevicePerformanceTier.BALANCED->16L*MIB;DevicePerformanceTier.HIGH->32L*MIB}
         val heapCap=when{
-            s.memoryClassMb in 1..192->8L*MIB
-            s.memoryClassMb in 193..384->16L*MIB
+            s.memoryClassMb in 1..256->8L*MIB
+            s.memoryClassMb in 257..384->16L*MIB
             s.memoryClassMb>384->32L*MIB
             else->8L*MIB
         }

@@ -16,7 +16,7 @@ class DevicePerformancePolicyTest {
     @Test fun sixGbDeviceIsBalancedAndNotForcedIntoLowRamTier(){
         assertEquals(DevicePerformanceTier.BALANCED,DevicePerformancePolicy.tier(s()))
         assertEquals(2,DevicePerformancePolicy.recommendedLocalInferenceThreads(s()))
-        assertEquals(16L*mib,DevicePerformancePolicy.dubbingPcmCacheBytes(s()))
+        assertEquals(8L*mib,DevicePerformancePolicy.dubbingPcmCacheBytes(s()))
     }
     @Test fun highEndDeviceGetsMoreInferenceCapacity(){
         val d=s(ram=12L*gib,heap=512)

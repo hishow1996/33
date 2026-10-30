@@ -1924,7 +1924,6 @@ class DubbingEngine(
         )
     }
 
-    /** Read only PCM synthesized for the currently active TTS/text/speaker/speed identity. */
     /** Called with mem locked; shrink/expand the PCM LRU as live memory pressure changes. */
     private fun refreshPcmMemoryBudgetLocked() {
         val updatedBudget = DubbingPcmMemoryPolicy.maxBytes(DevicePerformanceManager.snapshot(ctx))
@@ -1934,6 +1933,7 @@ class DubbingEngine(
         }
     }
 
+    /** Read only PCM synthesized for the currently active TTS/text/speaker/speed identity. */
     private fun memoryAudio(idx: Int): DubbingPcmMemoryEntry? {
         val activeIdentity = cacheFile(idx).name
         return synchronized(mem) {

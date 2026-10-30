@@ -82,8 +82,8 @@ class DubbingPcmMemoryCacheTest {
         val newest = entry(FloatArray(8), identity = "newest.pcm")
         cache[1] = oldest
         cache[2] = newest
-        cache[1] // make key 1 most recently used only after key 2? touch in the other order below
-        cache[2]
+        cache[1] // Make the older entry most recently used first.
+        cache[2] // The newest entry becomes least-recently-used after this access order.
 
         cache.updateBudget(32L)
 

@@ -8,8 +8,8 @@ import io.translatetube.local.performance.DevicePerformancePolicy
 /**
  * Conservative sherpa-onnx CPU scheduling:
  * - Keep two workers while video playback and dubbing are both enabled.
- * - Allow SenseVoice to use a third worker on 8+ logical CPUs when playback/TTS have more headroom.
- * - Keep Whisper at two workers because its timestamped decoding is already CPU-heavy.
+ * - Let high-headroom devices use up to four SenseVoice workers and three Whisper workers.
+ * - Reduce the budget while playback and dubbing are both active or system pressure increases.
  */
 internal object LocalAsrPerformancePolicy {
     fun recommendedThreadCount(
