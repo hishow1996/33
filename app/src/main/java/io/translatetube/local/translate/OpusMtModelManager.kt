@@ -137,7 +137,7 @@ object OpusMtModelManager {
     }
 
     private fun hasValidContent(file: File, spec: ModelFile): Boolean =
-        file.isFile && file.length() >= spec.sizeBytes &&
+        file.isFile && file.length() == spec.sizeBytes &&
             runCatching { sha256(file).equals(spec.sha256, ignoreCase = true) }.getOrDefault(false)
 
     private fun writeReadyMarker(context: Context) {
