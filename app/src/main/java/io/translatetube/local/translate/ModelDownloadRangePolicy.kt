@@ -12,4 +12,13 @@ internal object ModelDownloadRangePolicy {
         val total = match.groupValues[3].toLongOrNull() ?: return false
         return start == expectedStart && total == expectedTotal && end == expectedTotal - 1L
     }
+
+    /** A full-size temporary file can be validated and installed without another HTTP request. */
+    fun isCompletePart(partBytes: Long, expectedBytes: Long): Boolean =
+        expectedBytes > 0L && partBytes == expectedBytes
+
+    /** Reject an oversized response before writing it to disk. */
+    fun canAcceptBytes(currentBytes: Long, incomingBytes: Long, expectedBytes: Long): Boolean =
+        expectedBytes > 0L && currentBytes >= 0L && incomingBytes >= 0L &&
+            currentBytes <= expectedBytes && incomingBytes <= expectedBytes - currentBytes
 }
