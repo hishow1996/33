@@ -1606,7 +1606,7 @@ private fun VideoParsingPage(
         displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
             "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
         state.progress.isNotBlank() || state.audioProgress != null ||
-            state.transcriptionProgressPercent != null ->
+            state.transcriptionProgressPercent != null || state.transcriptionTotalSegments > 0 ->
             structuredProcessingProgress(state, displayPhase)
         else -> compactPhaseFallback(source, displayPhase)
     }
