@@ -98,6 +98,7 @@ import io.translatetube.local.player.PlaybackHintAction
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.player.Phase
+import io.translatetube.local.player.ProcessingFlow
 import io.translatetube.local.player.VideoSourceKind
 import io.translatetube.local.player.VideoProcessingFlowPolicy
 import io.translatetube.local.subs.SubLine
@@ -1445,7 +1446,9 @@ private fun VideoParsingPage(
 ) {
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
     val flow = state.processingFlow
-    val steps = VideoProcessingFlowPolicy.steps(source, flow)
+    // Keep all five conceptual stages visible for every source type.
+    // Subtitle-only/imported paths mark unused steps as skipped instead of hiding their headings.
+    val steps = listOf("视频解析", "音频提取", "语音转写", "字幕翻译", "配音合成")
     // Optimistic UI state makes the external-translation card react to the menu tap immediately,
     // while still syncing with the service as the pipeline advances or the mode is cancelled.
     var externalTranslationCardVisible by remember(state.key) {
@@ -1474,6 +1477,22 @@ private fun VideoParsingPage(
             else -> "API 翻译服务"
         }
     }
+    val dubbingVoiceDisplay = when (translationPrefs.getString("tts_engine", "edge").orEmpty()) {
+        "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.labelFor(
+            translationPrefs.getString(
+                io.translatetube.local.tts.GeminiTtsVoices.PREF_VOICE_KEY,
+                io.translatetube.local.tts.GeminiTtsVoices.DEFAULT_VOICE,
+            ) ?: io.translatetube.local.tts.GeminiTtsVoices.DEFAULT_VOICE,
+        )
+        "system" -> translationPrefs.getString("system_tts_voice_name", "").orEmpty()
+            .ifBlank { "系统默认音色" }
+        "kokoro" -> "音色 ${translationPrefs.getInt("kokoro_speaker", 14)}"
+        "piper" -> io.translatetube.local.tts.PiperModels.byId(
+            translationPrefs.getString("piper_model", null),
+        )?.voiceLabel.orEmpty().ifBlank { "默认音色" }
+        else -> "默认音色"
+    }
+
     val configuredSourceLanguage = translationPrefs.getString("translation_source_language", "auto")
         .orEmpty().ifBlank { "auto" }
     val detectedSourceLanguage = state.sourceLang.trim().takeIf { code ->
@@ -1516,15 +1535,45 @@ private fun VideoParsingPage(
         state.phase
     }
 
-    val currentStage = VideoProcessingFlowPolicy.stageIndex(
-        source = source,
-        flow = flow,
-        phase = displayPhase,
-        failedPhase = state.failedPhase,
-        progress = if (state.phase == Phase.ERROR) state.failedProgress else state.progress,
-        waitingForTranscriptionEngine = waitingForTranscriptionEngine,
-    ).coerceIn(0, (steps.size - 1).coerceAtLeast(0))
-
+    val stagePhase = if (state.phase == Phase.ERROR) {
+        state.failedPhase ?: Phase.PARSING
+    } else {
+        displayPhase
+    }
+    val currentStage = when (flow) {
+        ProcessingFlow.YOUTUBE_SUBTITLES -> when (stagePhase) {
+            Phase.IDLE, Phase.PARSING -> 0
+            Phase.DOWNLOADING_AUDIO -> 1
+            Phase.TRANSCRIBING -> 2
+            Phase.TRANSLATING -> 3
+            Phase.SYNTHESIZING -> 4
+            Phase.READY -> 5
+            Phase.ERROR -> 0
+        }
+        ProcessingFlow.IMPORTED_SUBTITLES -> when (stagePhase) {
+            Phase.IDLE, Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING -> 0
+            Phase.TRANSLATING -> 3
+            Phase.SYNTHESIZING -> 4
+            Phase.READY -> 5
+            Phase.ERROR -> 0
+        }
+        ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES -> when (stagePhase) {
+            Phase.SYNTHESIZING -> 4
+            Phase.READY -> 5
+            else -> 0
+        }
+        else -> if (source == VideoSourceKind.YOUTUBE && stagePhase == Phase.PARSING) {
+            0
+        } else {
+            VideoProcessingFlowPolicy.stageIndex(
+                source = source,
+                flow = flow,
+                phase = stagePhase,
+                progress = if (state.phase == Phase.ERROR) state.failedProgress else state.progress,
+                waitingForTranscriptionEngine = waitingForTranscriptionEngine,
+            )
+        }
+    }.coerceIn(0, steps.lastIndex)
     val fraction: Float? = when (state.phase) {
         Phase.READY -> when {
             waitingForTranscriptionEngine || waitingForDubbingEngine -> null
@@ -2268,11 +2317,20 @@ private fun VideoParsingPage(
                 )
                 .padding(horizontal = 12.dp, vertical = if (compactLayout) 9.dp else 12.dp),
         ) {
-            Column {
+            Column(
+                Modifier.fillMaxWidth().heightIn(min = if (compactLayout) 270.dp else 340.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
                 visibleStages.forEachIndexed { visibleIndex, index ->
-                    val done = complete || index < currentStage
-                    val active = !complete && !isError && !isCancelled && index == currentStage
-                    val failed = isError && index == currentStage
+                    val stageSkipped = when (flow) {
+                        ProcessingFlow.YOUTUBE_SUBTITLES,
+                        ProcessingFlow.IMPORTED_SUBTITLES -> index == 1 || index == 2
+                        ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES -> index in 1..3
+                        else -> false
+                    }
+                    val done = !stageSkipped && (complete || index < currentStage)
+                    val active = !complete && !isError && !isCancelled && !stageSkipped && index == currentStage
+                    val failed = isError && !stageSkipped && index == currentStage
                     val cancelled = isCancelled && index == currentStage
                     val paused = active && state.isProcessingPaused
                     val markerBg = when {
@@ -2330,7 +2388,7 @@ private fun VideoParsingPage(
                                 else -> Box(Modifier.size(7.dp).clip(CircleShape).background(markerColor))
                             }
                         }
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
                                 "${index + 1}. ${steps[index]}",
                                 color = when {
@@ -2343,63 +2401,110 @@ private fun VideoParsingPage(
                                     fontWeight = if (active || done) FontWeight.Bold else FontWeight.SemiBold,
                                     lineHeight = if (compactLayout) 15.sp else 18.sp,
                                 ),
-                            )
-                            Text(
-                                when {
-                                    done -> "已完成"
-                                    failed -> "失败"
-                                    cancelled -> "已取消"
-                                    paused -> "已暂停"
-                                    active && waitingForTranscriptionEngine -> "等待转写"
-                                    active && waitingForDubbingEngine -> "等待配音"
-                                    active -> "进行中"
-                                    else -> "待开始"
-                                },
-                                color = when {
-                                    done -> Color(0xFF159B71)
-                                    failed -> Color(0xFFCB3E4D)
-                                    active -> Color(0xFF8193B5)
-                                    else -> Color(0xFF8D9BB0)
-                                },
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = if (compactLayout) 9.sp else 10.sp,
-                                    lineHeight = if (compactLayout) 11.sp else 13.sp,
-                                ),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            // Show translation configuration only while stage 4 is running or
-                            // when translation itself failed. A completed stage collapses to its
-                            // normal "已完成" row, with no leftover model metadata.
-                            if (
-                                steps[index].contains("翻译") &&
-                                !state.manualTranslationModeEnabled &&
-                                (
-                                    (state.phase == Phase.TRANSLATING && active) ||
-                                        (failed && state.failedPhase == Phase.TRANSLATING)
-                                )
-                            ) {
-                                Text(
-                                    "$translationEngineDisplayName · ${if (isLocalTranslation) "本地" else "在线"} · $sourceLanguageDisplay → 简体中文",
-                                    color = if (failed) Color(0xFFB55A65) else Color(0xFF7C8DA7),
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        fontSize = if (compactLayout) 9.sp else 10.sp,
-                                        lineHeight = if (compactLayout) 11.sp else 13.sp,
-                                    ),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                            if (active || failed) {
+                                val stageDetailRows = buildList<Pair<String, String>> {
+                                    when (index) {
+                                        0 -> {
+                                            state.title.takeIf { it.isNotBlank() }?.let { add("视频" to it) }
+                                            state.channel.takeIf { it.isNotBlank() }?.let { add("频道" to it) }
+                                            if (state.durationMs > 0L) add("时长" to formatFloatingTime(state.durationMs))
+                                        }
+                                        1 -> {
+                                            val progressText = if (failed) state.failedProgress else state.progress
+                                            val segmentRegex = Regex("""(?:音轨(?:片段)?|分片|片段)\D{0,16}(\d+)\s*/\s*(\d+)""")
+                                            val segmentMatch = segmentRegex.find(progressText)
+                                                ?: Regex("""(?:已下载|下载中|下载)\D{0,10}(\d+)\s*/\s*(\d+)\D{0,8}(?:分片|片段)""")
+                                                    .find(progressText)
+                                            segmentMatch?.let {
+                                                add("分片下载" to "${it.groupValues[1]}/${it.groupValues[2]}")
+                                            }
+                                            val audioLanguage = state.audioTrackLanguage.trim()
+                                            if (audioLanguage.isNotBlank() &&
+                                                audioLanguage.lowercase(java.util.Locale.ROOT) !in setOf("und", "unknown", "undefined")
+                                            ) {
+                                                add("音轨语言" to LangMap.display(audioLanguage))
+                                            }
+                                            processingAudioFormatLabel(state.audioTrackMimeType)?.let {
+                                                add("音频格式" to it)
+                                            }
+                                            if (state.audioTrackDurationMs > 0L) {
+                                                add("音频时长" to formatFloatingTime(state.audioTrackDurationMs))
+                                            }
+                                            if (state.audioTrackChannelCount > 0) {
+                                                val channels = when (state.audioTrackChannelCount) {
+                                                    1 -> "单声道"
+                                                    2 -> "立体声"
+                                                    else -> "${state.audioTrackChannelCount} 声道"
+                                                }
+                                                add("声道" to channels)
+                                            }
+                                        }
+                                        2 -> {
+                                            state.transcriptionEngineName.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("转写引擎" to it) }
+                                            state.sourceLang.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("识别语言" to LangMap.display(it)) }
+                                            if (state.transcriptionTotalSegments > 0) {
+                                                add(
+                                                    "已处理分段" to "${state.transcriptionCompletedSegments.coerceIn(0, state.transcriptionTotalSegments)}/${state.transcriptionTotalSegments}",
+                                                )
+                                            }
+                                            if (state.lines.isNotEmpty()) add("已识别字幕" to "${state.lines.size} 条")
+                                        }
+                                        3 -> {
+                                            if (!state.manualTranslationModeEnabled && !state.manualTranslationWaiting) {
+                                                val engine = state.engineName.trim().ifBlank { translationEngineDisplayName }
+                                                if (engine.isNotBlank()) add("翻译引擎" to engine)
+                                            } else {
+                                                add("翻译方式" to "外部译文")
+                                            }
+                                            add("翻译方向" to "${sourceLanguageDisplay} → 简体中文")
+                                            if (state.totalLines > 0 && !state.manualTranslationWaiting) {
+                                                add(
+                                                    "已翻译" to "${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 条",
+                                                )
+                                            }
+                                        }
+                                        4 -> {
+                                            state.ttsEngineName.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("配音引擎" to it) }
+                                            add("音色" to dubbingVoiceDisplay)
+                                            if (state.totalLines > 0) {
+                                                add(
+                                                    "已合成" to "${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 句",
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                stageDetailRows.forEach { (label, value) ->
+                                    Text(
+                                        "$label：$value",
+                                        color = Color(0xFF74839A),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = if (compactLayout) 9.sp else 10.sp,
+                                            lineHeight = if (compactLayout) 12.sp else 14.sp,
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                         }
                         val stageBadgeText = when {
+                            stageSkipped -> "已跳过"
                             done -> "已完成"
                             failed -> "失败"
                             cancelled -> "已取消"
                             paused -> "已暂停"
-                            active -> if (fraction != null) "${(animatedFraction * 100).toInt()}%" else "进行中"
-                            else -> "待开始"
+                            active -> "进行中"
+                            else -> "等待中"
                         }
                         val stageBadgeBg = when {
+                            stageSkipped -> Color(0xFFF1F4F8)
                             done -> Color(0xFFE2F7ED)
                             failed -> Color(0xFFFFE6E8)
                             active && !paused -> Color(0xFFDFEAFF)
@@ -2407,6 +2512,7 @@ private fun VideoParsingPage(
                             else -> Color(0xFFF1F4F8)
                         }
                         val stageBadgeColor = when {
+                            stageSkipped -> Color(0xFF8794A8)
                             done -> Color(0xFF14996C)
                             failed -> Color(0xFFCB3C4C)
                             active && !paused -> Color(0xFF2862EA)
@@ -2776,6 +2882,22 @@ private fun ModeButton(
             )
             Text(title, color = labelColor, style = MaterialTheme.typography.bodyMedium)
         }
+    }
+}
+
+private fun processingAudioFormatLabel(mimeType: String): String? {
+    val mime = mimeType.trim().lowercase(java.util.Locale.ROOT)
+    if (mime.isBlank() || mime == "unknown" || mime == "application/octet-stream") return null
+    return when {
+        "mp4a-latm" in mime || "aac" in mime -> "AAC"
+        "opus" in mime -> "Opus"
+        "mpeg" in mime || "mp3" in mime -> "MP3"
+        "vorbis" in mime -> "Vorbis"
+        "flac" in mime -> "FLAC"
+        "ac3" in mime -> "AC-3"
+        "eac3" in mime -> "E-AC-3"
+        "amr" in mime -> "AMR"
+        else -> mime.substringAfter('/', mime).uppercase(java.util.Locale.ROOT)
     }
 }
 

@@ -520,6 +520,11 @@ data class PlayerUiState(
     val phase: Phase = Phase.IDLE,
     val progress: String = "",
     val audioProgress: AudioProgressSnapshot? = null,
+    val audioTrackLanguage: String = "",
+    val audioTrackMimeType: String = "",
+    val audioTrackDurationMs: Long = 0L,
+    val audioTrackChannelCount: Int = 0,
+    val transcriptionEngineName: String = "",
     val transcriptionProgressPercent: Int? = null,
     val transcriptionCompletedSegments: Int = 0,
     val transcriptionTotalSegments: Int = 0,
@@ -6291,6 +6296,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
             } ?: "local"
             val localAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this)
+            val transcriptionEngineDisplayName = when (asrProvider) {
+                "local" -> "本地 " + io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
+                "elevenlabs" -> "ElevenLabs 云端转写"
+                "cartesia" -> "Cartesia 云端转写"
+                "kawa" -> "Kawa 云端转写"
+                else -> "云端转写"
+            }
             val cloudAsrLanguageIdentity = when (asrProvider) {
                 "cartesia" -> settingsPrefs.getString("asr_cartesia_language", "en") ?: "en"
                 "kawa" -> settingsPrefs.getString("asr_kawa_language", "auto") ?: "auto"
@@ -6870,6 +6882,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         phase = Phase.DOWNLOADING_AUDIO,
                         progress = "无字幕，正在提取视频音频…",
                         audioProgress = null,
+                        audioTrackLanguage = "",
+                        audioTrackMimeType = "",
+                        audioTrackDurationMs = 0L,
+                        audioTrackChannelCount = 0,
+                        transcriptionEngineName = transcriptionEngineDisplayName,
                         transcriptionProgressPercent = null,
                     )
                 }
@@ -6891,6 +6908,30 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
                     ?.absolutePath
+                val audioProbe = try {
+                    when (audioFile) {
+                        is File -> withContext(Dispatchers.IO) { AudioExtract.probeMediaFile(audioFile) }
+                        is android.net.Uri -> withContext(Dispatchers.IO) {
+                            AudioExtract.probeMediaUri(this@PlaybackService, audioFile)
+                        }
+                        else -> null
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (probeFailure: Exception) {
+                    android.util.Log.i("PlaybackService", "Selected audio track metadata is unavailable", probeFailure)
+                    null
+                }
+                if (audioProbe != null) {
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            audioTrackLanguage = audioProbe.selectedAudioLanguage.orEmpty(),
+                            audioTrackMimeType = audioProbe.selectedAudioMimeType.orEmpty(),
+                            audioTrackDurationMs = audioProbe.durationMs.coerceAtLeast(0L),
+                            audioTrackChannelCount = audioProbe.selectedAudioChannelCount ?: 0,
+                        )
+                    }
+                }
                 if (missingLocalModel || missingCloudKey) {
                     val hint = when (asrProvider) {
                         "local" -> {

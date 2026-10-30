@@ -208,9 +208,17 @@ object AudioExtract {
         if (!file.isFile || file.length() <= 0L) {
             throw IllegalStateException("音频文件不存在或为空")
         }
+        return probeMediaSource { extractor -> extractor.setDataSource(file.absolutePath) }
+    }
+
+    /** Read metadata from a local content URI without decoding audio samples. */
+    fun probeMediaUri(ctx: Context, uri: Uri): MediaProbe =
+        probeMediaSource { extractor -> extractor.setDataSource(ctx, uri, null) }
+
+    private fun probeMediaSource(configureDataSource: (MediaExtractor) -> Unit): MediaProbe {
         val extractor = MediaExtractor()
         try {
-            extractor.setDataSource(file.absolutePath)
+            configureDataSource(extractor)
             val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
             val audioTrackDetails = ArrayList<String>()
             var audioTrackCount = 0
