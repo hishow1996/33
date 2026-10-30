@@ -1081,7 +1081,7 @@ internal fun LocalTranslationSection(
                                     Text(
                                         "使用中",
                                         modifier = Modifier.padding(horizontal = 8.dp),
-                                        color = Color(0xFF25804A),
+                                        color = Color(0xFF3569D4),
                                         style = MaterialTheme.typography.labelMedium,
                                         maxLines = 1,
                                     )
@@ -1248,7 +1248,7 @@ internal fun LocalTranslationSection(
                                     Text(
                                         "使用中",
                                         modifier = Modifier.padding(horizontal = 8.dp),
-                                        color = Color(0xFF25804A),
+                                        color = Color(0xFF3569D4),
                                         style = MaterialTheme.typography.labelMedium,
                                         maxLines = 1,
                                     )
