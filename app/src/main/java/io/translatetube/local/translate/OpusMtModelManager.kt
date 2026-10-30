@@ -568,7 +568,7 @@ object OpusMtModelManager {
                 cancellationHandle?.dispose()
             }
             if (retryFromZero) continue
-            if (!validFile(target, spec)) throw IOException("下载文件检查失败：${spec.name}")
+            if (!hasValidContent(target, spec)) throw IOException("下载文件检查失败：${spec.name}")
             break
         }
     }
