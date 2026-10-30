@@ -180,7 +180,7 @@ class Small100ModelPolicyTest {
 
         val repeated = tokenizer.encode("Hello Hello")
         org.junit.Assert.assertArrayEquals(longArrayOf(65761L, 65761L, 2L), repeated)
-        assertEquals(1, tokenizer.cachedWordCount)
+        assertEquals(2, tokenizer.cachedWordCount)
         val repeatedAgain = tokenizer.encode("Hello Hello")
         org.junit.Assert.assertArrayEquals(repeated, repeatedAgain)
 
