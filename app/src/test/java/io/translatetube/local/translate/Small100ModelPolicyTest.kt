@@ -69,8 +69,8 @@ class Small100ModelPolicyTest {
     fun marksCompleteModelFilesAsDownloadedEvenWhenRuntimeValidationIsPending() {
         val state = Small100DownloadState(
             status = Small100Status.PAUSED,
-            downloadedBytes = 614_871_363L,
-            totalBytes = 614_871_363L,
+            downloadedBytes = Small100ModelManager.TOTAL_BYTES,
+            totalBytes = Small100ModelManager.TOTAL_BYTES,
         )
         assertTrue(state.hasCompleteFiles)
     }
