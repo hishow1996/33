@@ -16,6 +16,13 @@ internal class Small100InputTooLongException(
     "字幕过长：分词后 " + actualTokens + " tokens，模型上限为 " + maxTokens + "。"
 )
 
+/** A complete model response was returned, but it simply echoed translatable source text. */
+internal class Small100QualityException(
+    val sourceLanguage: String,
+) : IllegalStateException(
+    "SMaLL-100 已生成完整结果，但检测到译文仍与原文相同或只包含标点；已尝试拆分恢复。"
+)
+
 /** Generation hit its output budget without the decoder emitting EOS. */
 internal class Small100OutputLimitException(
     val outputTokenLimit: Int,
@@ -116,6 +123,16 @@ internal object Small100GenerationPolicy {
         }
         if (midpoint <= 0 || midpoint >= text.length) return null
         return text.substring(0, midpoint) to text.substring(midpoint)
+    }
+
+    fun requireTranslationQuality(
+        sourceText: String,
+        translatedText: String,
+        sourceLanguage: String,
+    ) {
+        if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, translatedText, sourceLanguage)) {
+            throw Small100QualityException(sourceLanguage)
+        }
     }
 
     fun requireComplete(

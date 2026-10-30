@@ -112,6 +112,47 @@ class Small100GenerationPolicyTest {
     }
 
     @Test
+    fun rejectsUntranslatedSourceEchoButAcceptsValidChineseTranslation() {
+        try {
+            Small100GenerationPolicy.requireTranslationQuality(
+                sourceText = "Hola, ¿cómo estás?",
+                translatedText = "Hola, ¿cómo estás?",
+                sourceLanguage = "es",
+            )
+            fail("An unchanged translatable Spanish sentence must be rejected")
+        } catch (error: Small100QualityException) {
+            assertEquals("es", error.sourceLanguage)
+            assertTrue(error.message.orEmpty().contains("检测到译文"))
+        }
+
+        Small100GenerationPolicy.requireTranslationQuality(
+            sourceText = "Hola, ¿cómo estás?",
+            translatedText = "你好，你怎么样？",
+            sourceLanguage = "es",
+        )
+    }
+
+    @Test
+    fun punctuationOnlyOutputIsRejectedButAcronymsCanRemainUnchanged() {
+        try {
+            Small100GenerationPolicy.requireTranslationQuality(
+                sourceText = "Good morning",
+                translatedText = "……",
+                sourceLanguage = "en",
+            )
+            fail("Punctuation-only model output must be rejected")
+        } catch (error: Small100QualityException) {
+            assertEquals("en", error.sourceLanguage)
+        }
+
+        Small100GenerationPolicy.requireTranslationQuality(
+            sourceText = "NASA",
+            translatedText = "NASA",
+            sourceLanguage = "en",
+        )
+    }
+
+    @Test
     fun doesNotSplitSingleCodePointOrBlankText() {
         assertNull(
             Small100GenerationPolicy.splitForRecovery(

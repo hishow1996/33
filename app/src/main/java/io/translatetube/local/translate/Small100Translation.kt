@@ -576,7 +576,7 @@ class Small100Engine(private val context: Context) : TranslationEngine {
             lines.mapIndexed { index, line ->
                 taskContext.ensureActive()
                 val translated = if (line.isBlank()) "" else try {
-                    Small100Runtime.translateOneWithRecovery(appContext, line, "zh")
+                    Small100Runtime.translateOneWithRecovery(appContext, line, "zh", source)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -650,22 +650,26 @@ private object Small100Runtime {
         fun translateOneWithRecovery(
             text: String,
             targetCode: String,
+            sourceLanguage: String,
             checkActive: () -> Unit,
             recoveryDepth: Int = 0,
         ): String {
             checkActive()
             try {
-                return translateOne(text, targetCode, checkActive)
+                return translateOne(text, targetCode, sourceLanguage, checkActive)
             } catch (error: Small100InputTooLongException) {
-                return translateSplitParts(text, targetCode, checkActive, recoveryDepth, error)
+                return translateSplitParts(text, targetCode, sourceLanguage, checkActive, recoveryDepth, error)
             } catch (error: Small100OutputLimitException) {
-                return translateSplitParts(text, targetCode, checkActive, recoveryDepth, error)
+                return translateSplitParts(text, targetCode, sourceLanguage, checkActive, recoveryDepth, error)
+            } catch (error: Small100QualityException) {
+                return translateSplitParts(text, targetCode, sourceLanguage, checkActive, recoveryDepth, error)
             }
         }
 
         private fun translateSplitParts(
             text: String,
             targetCode: String,
+            sourceLanguage: String,
             checkActive: () -> Unit,
             recoveryDepth: Int,
             cause: Exception,
@@ -686,16 +690,21 @@ private object Small100Runtime {
                 "SMaLL-100 字幕无法继续拆分，无法保证译文完整。", cause
             )
             val left = translateOneWithRecovery(
-                parts.first, targetCode, checkActive, recoveryDepth + 1
+                parts.first, targetCode, sourceLanguage, checkActive, recoveryDepth + 1
             )
             checkActive()
             val right = translateOneWithRecovery(
-                parts.second, targetCode, checkActive, recoveryDepth + 1
+                parts.second, targetCode, sourceLanguage, checkActive, recoveryDepth + 1
             )
             return cleanChineseSpacing(left + right)
         }
 
-        fun translateOne(text: String, targetCode: String, checkActive: () -> Unit): String {
+        fun translateOne(
+            text: String,
+            targetCode: String,
+            sourceLanguage: String,
+            checkActive: () -> Unit,
+        ): String {
             val targetId = langToId[targetCode] ?: throw IllegalArgumentException("模型缺少目标语言代码：" + targetCode)
             val encoded = tokenizer.encode(text)
             val sourceIds = LongArray(encoded.size + 1)
@@ -769,6 +778,7 @@ private object Small100Runtime {
                 Small100GenerationPolicy.requireComplete(reachedEos, generated.size, maxOutputTokens)
                 val translation = tokenizer.decode(generated.toLongArray(), true).trim()
                 if (translation.isBlank()) throw IllegalStateException("SMaLL-100 返回了空译文。")
+                Small100GenerationPolicy.requireTranslationQuality(text, translation, sourceLanguage)
                 return cleanChineseSpacing(translation)
             } finally {
                 past.values.forEach { runCatching { it.close() } }
@@ -787,16 +797,23 @@ private object Small100Runtime {
         }
     }
 
-    suspend fun translateOneWithRecovery(context: Context, text: String, targetCode: String): String {
+    suspend fun translateOneWithRecovery(
+        context: Context,
+        text: String,
+        targetCode: String,
+        sourceLanguage: String,
+    ): String {
         val taskContext = currentCoroutineContext()
         return inferenceMutex.withLock {
             taskContext.ensureActive()
-            load(context).translateOneWithRecovery(text, targetCode) { taskContext.ensureActive() }
+            load(context).translateOneWithRecovery(
+                text, targetCode, sourceLanguage
+            ) { taskContext.ensureActive() }
         }
     }
 
     suspend fun validate(context: Context) {
-        val result = translateOne(context, "Hello.", "zh")
+        val result = translateOneWithRecovery(context, "Hello.", "zh", "en")
         if (result.isBlank() || result.none { it in '\u4E00'..'\u9FFF' }) {
             throw IllegalStateException("SMaLL-100 运行验证失败：英文测试句没有生成中文译文。")
         }
