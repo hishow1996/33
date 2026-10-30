@@ -81,7 +81,7 @@ object VideoProcessingFlowPolicy {
                 "合成配音",
             )
             VideoSourceKind.LOCAL -> listOf(
-                "读取本地视频",
+                "读取视频",
                 "提取音频",
                 "语音识别",
                 "翻译字幕",
@@ -172,7 +172,7 @@ object VideoProcessingFlowPolicy {
     }
 
     private fun youtubeSubtitleLookupStage(progress: String, fallbackStage: Int): Int = when {
-        progress.contains("查找字幕") -> 1
+        progress.contains("查找可用字幕轨") -> 1
         progress.contains("检查本地字幕文件与缓存") -> 1
         progress.contains("下载并读取字幕文件") -> 1
         else -> fallbackStage
