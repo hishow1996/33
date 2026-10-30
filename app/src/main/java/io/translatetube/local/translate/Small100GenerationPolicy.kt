@@ -147,7 +147,7 @@ internal object Small100GenerationPolicy {
         val leftChar = first.last()
         val rightChar = second.first()
         val needsLatinSeparator = isLatinWordCharacter(leftChar) && isLatinWordCharacter(rightChar)
-        return first + if (needsLatinSeparator) " " else "" + second
+        return first + (if (needsLatinSeparator) " " else "") + second
     }
 
     private fun isLatinWordCharacter(char: Char): Boolean =
