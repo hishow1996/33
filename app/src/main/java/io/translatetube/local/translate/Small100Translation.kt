@@ -1046,6 +1046,16 @@ internal class Small100BpeTokenizer(
     private val fuseUnk: Boolean = true,
 ) : AutoCloseable {
 
+    private companion object {
+        const val MAX_CACHED_WORD_CHARS = 48
+        const val MAX_CACHED_WORDS = 1024
+    }
+
+    private val wordTokenCache = java.util.LinkedHashMap<String, IntArray>(64, 0.75f, true)
+
+    internal val cachedWordCount: Int
+        get() = synchronized(wordTokenCache) { wordTokenCache.size }
+
     fun encode(text: String, checkActive: () -> Unit = {}): LongArray {
         checkActive()
         val normalized = normalize(text, checkActive)
@@ -1061,11 +1071,9 @@ internal class Small100BpeTokenizer(
             start = if (spaceIdx < 0) normalized.length else spaceIdx + 1
             if (word.isEmpty()) continue
 
-            val pieces = splitToCodePointStrings("$METASPACE$word", checkActive)
-            val bpeTokens = applyBpe(pieces, checkActive)
-            for ((pieceIndex, piece) in bpeTokens.withIndex()) {
+            val wordTokenIds = encodeWord(word, checkActive)
+            for ((pieceIndex, id) in wordTokenIds.withIndex()) {
                 if ((pieceIndex and 255) == 0) checkActive()
-                val id = vocab[piece] ?: unkId
                 if (fuseUnk && id == unkId && ids.isNotEmpty() && ids.last() == unkId.toLong()) {
                     continue
                 }
@@ -1074,6 +1082,35 @@ internal class Small100BpeTokenizer(
         }
         ids.add(eosId.toLong())
         return ids.toLongArray()
+    }
+
+    private fun encodeWord(word: String, checkActive: () -> Unit): IntArray {
+        // Common short words repeat heavily across subtitle timelines. Cache only
+        // bounded short entries; long CJK runs are encoded once and not retained.
+        if (word.length <= MAX_CACHED_WORD_CHARS) {
+            synchronized(wordTokenCache) {
+                wordTokenCache[word]?.let { return it }
+            }
+        }
+
+        checkActive()
+        val pieces = splitToCodePointStrings("$METASPACE$word", checkActive)
+        val mergedPieces = applyBpe(pieces, checkActive)
+        val tokenIds = IntArray(mergedPieces.size) { index ->
+            if ((index and 255) == 0) checkActive()
+            vocab[mergedPieces[index]] ?: unkId
+        }
+
+        if (word.length <= MAX_CACHED_WORD_CHARS) {
+            synchronized(wordTokenCache) {
+                wordTokenCache[word] = tokenIds
+                if (wordTokenCache.size > MAX_CACHED_WORDS) {
+                    val oldestKey = wordTokenCache.entries.iterator().next().key
+                    wordTokenCache.remove(oldestKey)
+                }
+            }
+        }
+        return tokenIds
     }
 
     fun decode(ids: LongArray, skipSpecialTokens: Boolean = true): String {
