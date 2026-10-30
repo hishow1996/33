@@ -19,6 +19,13 @@ class DubbingGainPolicyTest {
     }
 
     @Test
+    fun disabledDubbingGateMutesAlreadyPrefetchedVoiceSamples() {
+        assertEquals(0f, DubbingGainPolicy.applyDubbingGain(0.8f, 1f, false), 0f)
+        assertEquals(0f, DubbingGainPolicy.applyDubbingGain(Float.NaN, 1f, true), 0f)
+        assertEquals(0.4f, DubbingGainPolicy.applyDubbingGain(0.8f, 0.5f, true), 0f)
+    }
+
+    @Test
     fun invalidPcmSamplesCannotPropagateToOutput() {
         assertEquals(0f, DubbingGainPolicy.sanitizePcmSample(Float.NaN), 0f)
         assertEquals(0f, DubbingGainPolicy.sanitizePcmSample(Float.POSITIVE_INFINITY), 0f)
