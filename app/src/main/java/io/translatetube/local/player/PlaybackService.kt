@@ -1991,10 +1991,18 @@ class PlaybackService : MediaSessionService() {
                     // 混流总线：seek 后音频流会 flush；清空旧块并按新媒体头重设时钟基点，
                     // 下一次 playAt()（本次 tick 立即触发）重新挂载正确时间窗的块。
                     if (::pm.isInitialized) {
-                        if (System.nanoTime() < keepDubbingBusUntilNanos) {
-                            // 开播前的 flush（见 startPlaybackWithMountedDubbing）：配音已经挂好，
-                            // 只把读头和时钟基点对齐到新位置，不能清总线，否则第一句又要重新挂。
-                            keepDubbingBusUntilNanos = 0L
+                        val preserveStartupMount = DubbingStartupFlushPolicy.shouldKeepMountedBus(
+                            expectedPositionMs = startupMountedBusPositionMs,
+                            actualPositionMs = newPosition.positionMs,
+                            nowNanos = System.nanoTime(),
+                            expiresAtNanos = startupMountedBusExpiresAtNanos,
+                        )
+                        // This is intentionally one-shot. Any other seek/discontinuity invalidates
+                        // the exemption, even when it happens inside the startup time window.
+                        startupMountedBusPositionMs = -1L
+                        startupMountedBusExpiresAtNanos = 0L
+                        if (preserveStartupMount) {
+                            // Startup flush: keep the already-mounted first cues, but align the read head.
                             pm.dubbingBus.rewindReadHead()
                         } else {
                             pm.dubbingBus.reset()
@@ -2234,8 +2242,13 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** 开播前的 flush 会触发一次位置不连续回调；这段时间内保留已挂载的配音，不清总线。 */
-    @Volatile private var keepDubbingBusUntilNanos = 0L
+    /**
+     * One-shot identity for the startup seek whose already-mounted PCM must survive the audio flush.
+     * A broad time-only window can mistakenly preserve stale PCM when the user seeks immediately
+     * after opening; match the expected target position and consume the token on the next callback.
+     */
+    @Volatile private var startupMountedBusPositionMs = -1L
+    @Volatile private var startupMountedBusExpiresAtNanos = 0L
 
     /**
      * 开播：先把起播位置附近的配音挂到混流总线，再让播放器音频管线从起播位置重读一遍，最后 play。
@@ -2703,7 +2716,8 @@ class PlaybackService : MediaSessionService() {
                 waitMs = STARTUP_MOUNT_WAIT_MS,
             )
             ensureCurrent()
-            keepDubbingBusUntilNanos = System.nanoTime() + STARTUP_FLUSH_KEEP_BUS_NANOS
+            startupMountedBusPositionMs = startMs
+            startupMountedBusExpiresAtNanos = System.nanoTime() + STARTUP_FLUSH_KEEP_BUS_NANOS
             pm.seekTo(startMs)
         } else if (seekToMs != null) {
             pm.seekTo(startMs)
