@@ -789,9 +789,6 @@ private object Small100Runtime {
         }
     }
 
-    suspend fun translateOne(context: Context, text: String, targetCode: String): String =
-        translateOneWithRecovery(context, text, targetCode, "en")
-
     suspend fun translateOneWithRecovery(
         context: Context,
         text: String,
