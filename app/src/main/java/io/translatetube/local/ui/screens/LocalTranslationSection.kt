@@ -750,6 +750,11 @@ internal fun LocalTranslationSection(
                         "芬兰语 → 简体中文" to "fi",
                         "瑞典语 → 简体中文" to "sv",
                     ).forEachIndexed { index, (language, source) ->
+                        val expectedBytes = if (source == "en") {
+                            OpusMtModelManager.downloadSizeBytes()
+                        } else {
+                            OpusMtAdditionalModelManager.downloadSizeBytes(source)
+                        }
                         val state = if (source == "en") {
                             opusState
                         } else {
@@ -773,11 +778,6 @@ internal fun LocalTranslationSection(
                             state.status == OpusMtStatus.READY ||
                             state.hasCompleteFiles ||
                             state.downloadedBytes > 0L
-                        val expectedBytes = if (source == "en") {
-                            OpusMtModelManager.downloadSizeBytes()
-                        } else {
-                            OpusMtAdditionalModelManager.downloadSizeBytes(source)
-                        }
                         val job = if (source == "en") opusJob else opusExtraJobs[source]
                         val selectedLanguage = isOpusManualSelection && sourceLanguageSelection == source
                         Column(
