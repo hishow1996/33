@@ -291,3 +291,4 @@ jobs:
 # Explicit user-requested APK build trigger (2026-10-31).
 # Explicit one-time APK retry after fixing the missing IOException import (2026-10-31).
 # Explicit APK retry after adding the sherpa AAR conflicting-entry path to diagnostics (2026-10-31).
+# Explicit APK retry after limiting sherpa ONNX conflict validation to the packaged ARM64 ABI (2026-10-31).
