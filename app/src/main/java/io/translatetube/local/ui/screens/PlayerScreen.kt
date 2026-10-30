@@ -413,13 +413,44 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
     }
 
-    // 从后台回到播放页时重新绑定画面：后台期间 TextureView 的画面表面会被系统销毁，
-    // 不重新绑定就会一直黑屏。
+    // Returning from background can recreate TextureView's SurfaceTexture without replacing
+    // the TextureView object. Compare identities across pause/resume; never install our own
+    // SurfaceTextureListener because Media3 owns that listener.
     val resumeLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(resumeLifecycleOwner) {
+    androidx.compose.runtime.DisposableEffect(resumeLifecycleOwner, tv) {
+        var surfaceTextureBeforePause: android.graphics.SurfaceTexture? = null
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                attachSurfaceWhenReady()
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    surfaceTextureBeforePause = tv.surfaceTexture
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    val previousSurfaceTexture = surfaceTextureBeforePause
+                    attachSurfaceWhenReady()
+                    if (previousSurfaceTexture != null) {
+                        surfaceAttachScope.launch {
+                            var attempts = 0
+                            while (
+                                attempts < 30 &&
+                                tv.isAttachedToWindow &&
+                                (!tv.isAvailable || tv.surfaceTexture == null)
+                            ) {
+                                delay(100L)
+                                attempts++
+                            }
+                            val currentSurfaceTexture = tv.surfaceTexture
+                            if (
+                                tv.isAttachedToWindow &&
+                                tv.isAvailable &&
+                                currentSurfaceTexture != null &&
+                                currentSurfaceTexture !== previousSurfaceTexture
+                            ) {
+                                PlaybackService.instance?.notifyVideoSurfaceRecreated(tv)
+                            }
+                        }
+                    }
+                }
+                else -> Unit
             }
         }
         resumeLifecycleOwner.lifecycle.addObserver(observer)
