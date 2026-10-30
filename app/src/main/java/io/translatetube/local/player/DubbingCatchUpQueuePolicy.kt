@@ -23,6 +23,16 @@ internal object DubbingCatchUpQueuePolicy {
         }
     }
 
+    /** Convert media time into the same lead-adjusted domain used by subtitle lineAt(). */
+    fun toTimelinePositionMs(mediaPositionMs: Long, offsetMs: Long): Long {
+        if (mediaPositionMs < 0L) return mediaPositionMs
+        return if (offsetMs > 0L && mediaPositionMs > Long.MAX_VALUE - offsetMs) {
+            Long.MAX_VALUE
+        } else {
+            mediaPositionMs + offsetMs
+        }
+    }
+
     /** Return playable subtitle starts crossed since the previous timeline tick, in time order. */
     fun crossedCueIndexes(
         cueCount: Int,
