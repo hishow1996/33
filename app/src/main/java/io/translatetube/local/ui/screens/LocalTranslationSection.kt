@@ -1450,7 +1450,9 @@ private fun formatLocalModelSizeDetail(bytes: Long): String =
     String.format(Locale.ROOT, "%.2f MB", bytes.coerceAtLeast(0L) / 1_000_000.0)
 
 private fun formatLocalModelBytes(bytes: Long): String {
-    if (bytes <= 0L) return "0 MB"
+    // Negative values mean the size is not known yet; do not misreport them as 0 MB.
+    if (bytes < 0L) return "—"
+    if (bytes == 0L) return "0 MB"
     val mb = bytes / 1_000_000.0
     return String.format(Locale.ROOT, "%.2f MB", mb)
 }
