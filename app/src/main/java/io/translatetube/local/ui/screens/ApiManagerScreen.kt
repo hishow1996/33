@@ -211,7 +211,7 @@ private fun BuiltinWebEngineCard(
 }
 
 @Composable
-fun ApiManagerScreen(onBack: () -> Unit) {
+fun ApiManagerScreen(onBack: () -> Unit, initialTab: String = "online") {
     androidx.activity.compose.BackHandler { onBack() }
     val ctx = LocalContext.current
     val providerLogoImageLoader = remember(ctx.applicationContext) {
@@ -230,7 +230,9 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     var adding by remember { mutableStateOf(false) }
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var activeId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
-    var translationTab by rememberSaveable { mutableStateOf("online") }
+    var translationTab by rememberSaveable(initialTab) {
+        mutableStateOf(if (initialTab == "local") "local" else "online")
+    }
 
     var geminiModel by remember {
         mutableStateOf(prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL) ?: FreeModelDefaults.GEMINI_MODEL)

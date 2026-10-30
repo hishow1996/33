@@ -190,6 +190,7 @@ class MainActivity : ComponentActivity() {
                     else -> Screen.HOME
                 }
                 var screen by remember { mutableStateOf(initialScreen) }
+                var apiManagerInitialTab by remember { mutableStateOf("online") }
                 // Render only one screen at a time. Do not fade the old route to zero:
                 // replacing it at alpha=0 and restarting at alpha=0.01 creates a visible blank page.
                 // 所有页面使用固定尺寸的根容器，避免不同页面内容高度变化带动整页跳动。
@@ -541,14 +542,18 @@ class MainActivity : ComponentActivity() {
                             Screen.WEB -> Unit
                             Screen.SETTINGS -> SettingsScreen(
                                 onBack = { screen = previousScreen },
-                                onApiManager = { screen = Screen.API },
+                                onApiManager = { apiManagerInitialTab = "online"; screen = Screen.API },
+                                onLocalTranslationManager = { apiManagerInitialTab = "local"; screen = Screen.API },
                                 onAppLogs = {
                                     logsReturnScreen = Screen.SETTINGS
                                     screen = Screen.LOGS
                                 },
                                 onStorageManagement = { storageHistoryOnly = false; screen = Screen.STORAGE },
                             )
-                            Screen.API -> ApiManagerScreen(onBack = { screen = Screen.SETTINGS })
+                            Screen.API -> ApiManagerScreen(
+                                onBack = { screen = Screen.SETTINGS },
+                                initialTab = apiManagerInitialTab,
+                            )
                             Screen.LOGS -> AppLogsScreen(onBack = { screen = logsReturnScreen })
                             Screen.STORAGE -> StorageManagementScreen(
                                 onBack = {

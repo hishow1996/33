@@ -54,7 +54,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -> Unit, onStorageManagement: () -> Unit) {
+fun SettingsScreen(
+    onBack: () -> Unit,
+    onApiManager: () -> Unit,
+    onLocalTranslationManager: () -> Unit,
+    onAppLogs: () -> Unit,
+    onStorageManagement: () -> Unit,
+) {
     androidx.activity.compose.BackHandler { onBack() }
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
@@ -351,7 +357,13 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                     Column(
                         Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
                             .background(Color.White.copy(alpha = 0.14f))
-                            .clickable { dubbingSectionExpandRequest += 1 }
+                            .clickable {
+                                if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeApiId)) {
+                                    onLocalTranslationManager()
+                                } else {
+                                    dubbingSectionExpandRequest += 1
+                                }
+                            }
                             .padding(9.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
