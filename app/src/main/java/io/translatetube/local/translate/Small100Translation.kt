@@ -11,6 +11,7 @@ import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -177,11 +178,12 @@ object Small100ModelManager {
     }
 
     fun hasPartialDownload(context: Context): Boolean {
+        if (areAllModelFilesPresent(context)) return false
         val directory = modelDirectory(context)
         return files.any { spec ->
             File(directory, spec.name + ".part").let { it.isFile && it.length() > 0L } ||
                 File(directory, spec.name).let { it.isFile && it.length() > 0L }
-        } && !isReady(context)
+        }
     }
 
     suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
@@ -191,6 +193,16 @@ object Small100ModelManager {
             isReady(context) -> Small100DownloadState(
                 status = Small100Status.READY, progress = 100, fileIndex = files.size,
                 fileCount = files.size, downloadedBytes = TOTAL_BYTES, totalBytes = TOTAL_BYTES,
+            )
+            areAllModelFilesPresent(context) -> Small100DownloadState(
+                status = Small100Status.FAILED,
+                progress = 100,
+                currentFile = "运行时验证",
+                fileIndex = files.size,
+                fileCount = files.size,
+                downloadedBytes = TOTAL_BYTES,
+                totalBytes = TOTAL_BYTES,
+                error = "模型文件已完整下载，运行时验证尚未通过；点击重新验证",
             )
             hasPartialDownload(context) -> {
                 val firstIncomplete = files.indexOfFirst { spec ->
@@ -298,12 +310,15 @@ object Small100ModelManager {
             val previous = mutableState.value
             val completeFiles = areAllModelFilesPresent(app)
             mutableState.value = previous.copy(
-                status = if (hasPartialDownload(app)) Small100Status.PAUSED else Small100Status.NOT_DOWNLOADED,
+                status = if (completeFiles) Small100Status.FAILED
+                    else if (hasPartialDownload(app)) Small100Status.PAUSED else Small100Status.NOT_DOWNLOADED,
                 progress = if (completeFiles) 100 else previous.progress.coerceAtMost(99),
+                currentFile = if (completeFiles) "运行时验证" else previous.currentFile,
+                fileIndex = if (completeFiles) files.size else previous.fileIndex,
                 downloadedBytes = if (completeFiles) TOTAL_BYTES else
                     previous.downloadedBytes.coerceAtMost((TOTAL_BYTES - 1L).coerceAtLeast(0L)),
                 totalBytes = TOTAL_BYTES,
-                error = if (completeFiles) "模型文件已下载，等待重新验证" else "",
+                error = if (completeFiles) "模型文件已完整下载，运行时验证已中断；点击重新验证" else "",
             )
             AppLogStore.info(app, "LocalTranslationModel", "SMaLL-100 下载已暂停，可从上次进度继续")
             throw cancelled
@@ -368,22 +383,44 @@ object Small100ModelManager {
         )
     }
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     private suspend fun downloadFile(directory: File, spec: ModelFile, index: Int) = withContext(Dispatchers.IO) {
         val coroutineContext = currentCoroutineContext()
+        val activeJob = coroutineContext[Job]
         val target = File(directory, spec.name)
         val part = File(directory, spec.name + ".part")
         var existingBytes = if (part.isFile) part.length() else 0L
         var rangeRetryUsed = false
         val bytesBefore = files.take(index).sumOf { it.bytes }
 
+        // A completed .part file is already the download. Verify and install it instead of
+        // asking the server for bytes after EOF, which returns 416 and previously restarted it.
+        if (existingBytes >= spec.bytes) {
+            if (existingBytes == spec.bytes && hasValidContent(part, spec)) {
+                installVerifiedPart(target, part, spec.name)
+                updateProgress(index, spec, spec.bytes, bytesBefore)
+                return@withContext
+            }
+            if (part.exists() && !part.delete()) throw IOException("无法清理无效的完整下载残片：" + spec.name)
+            existingBytes = 0L
+        }
+
         while (true) {
             coroutineContext.ensureActive()
             val url = "https://huggingface.co/casawolice/small100-onnx/resolve/" +
                 MODEL_REVISION + "/" + spec.remotePath
-            val builder = Request.Builder().url(url).get()
+            val builder = Request.Builder().url(url).header("Accept-Encoding", "identity").get()
             if (existingBytes > 0L) builder.header("Range", "bytes=" + existingBytes + "-")
             var restartFromZero = false
-            client.newCall(builder.build()).execute().use { response ->
+            val call = client.newCall(builder.build())
+            val cancellationHandle = activeJob?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is java.util.concurrent.CancellationException) call.cancel()
+            }
+            try {
+                call.execute().use { response ->
                 if (response.code == 416 && existingBytes > 0L && !rangeRetryUsed) {
                     if (part.exists() && !part.delete()) throw IOException("无法重置下载残片：" + spec.name)
                     existingBytes = 0L
@@ -428,6 +465,9 @@ object Small100ModelManager {
                                 coroutineContext.ensureActive()
                                 val count = input.read(buffer)
                                 if (count < 0) break
+                                if (count.toLong() > spec.bytes - current) {
+                                    throw IOException("服务器返回的模型文件超过预期大小：" + spec.name)
+                                }
                                 output.write(buffer, 0, count)
                                 current += count.toLong()
                                 updateProgress(index, spec, current, bytesBefore)
@@ -445,17 +485,28 @@ object Small100ModelManager {
                         part.delete()
                         throw IOException("模型文件 SHA-256 校验失败：" + spec.name + "，请重新下载")
                     }
-                    if (target.exists() && !target.delete()) throw IOException("无法替换模型文件：" + spec.name)
-                    if (!part.renameTo(target)) {
-                        part.copyTo(target, overwrite = true)
-                        if (!part.delete()) throw IOException("无法清理模型临时文件：" + spec.name)
-                    }
+                    installVerifiedPart(target, part, spec.name)
                     updateProgress(index, spec, spec.bytes, bytesBefore)
                     }
                 }
+            } catch (error: Exception) {
+                if (activeJob?.isCancelled == true && error !is CancellationException) {
+                    throw CancellationException("SMaLL-100 模型下载已取消").also { it.initCause(error) }
+                }
+                throw error
+            } finally {
+                cancellationHandle?.dispose()
             }
             if (restartFromZero) continue
             return@withContext
+        }
+    }
+
+    private fun installVerifiedPart(target: File, part: File, name: String) {
+        if (target.exists() && !target.delete()) throw IOException("无法替换模型文件：" + name)
+        if (!part.renameTo(target)) {
+            part.copyTo(target, overwrite = true)
+            if (!part.delete()) throw IOException("无法清理模型临时文件：" + name)
         }
     }
 
