@@ -626,7 +626,6 @@ private object Small100Runtime {
     private const val HEAD_DIM = 64L
     private const val EOS = 2L
     private const val MAX_SOURCE_TOKENS = 1024
-    private const val MAX_OUTPUT_TOKENS = Small100GenerationPolicy.MAX_OUTPUT_TOKENS
     private val inferenceMutex = Mutex()
     private val loadedLock = Any()
     private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -658,6 +657,7 @@ private object Small100Runtime {
                     maxTokens = MAX_SOURCE_TOKENS,
                 )
             }
+            val maxOutputTokens = Small100GenerationPolicy.outputTokenLimit(sourceIds.size)
             val mask = LongArray(sourceIds.size) { 1L }
             val inputIdsTensor = longTensor(environment, sourceIds)
             val maskTensor = longTensor(environment, mask)
@@ -677,7 +677,7 @@ private object Small100Runtime {
                 var currentToken = 2L
                 var useCache = false
                 var reachedEos = false
-                for (step in 0 until MAX_OUTPUT_TOKENS) {
+                for (step in 0 until maxOutputTokens) {
                     checkActive()
                     val tokenTensor = longTensor(environment, longArrayOf(currentToken))
                     val cacheFlagTensor = OnnxTensor.createTensor(
@@ -716,7 +716,7 @@ private object Small100Runtime {
                         runCatching { result.close() }
                     }
                 }
-                Small100GenerationPolicy.requireComplete(reachedEos, generated.size)
+                Small100GenerationPolicy.requireComplete(reachedEos, generated.size, maxOutputTokens)
                 val translation = tokenizer.decode(generated.toLongArray(), true).trim()
                 if (translation.isBlank()) throw IllegalStateException("SMaLL-100 返回了空译文。")
                 return cleanChineseSpacing(translation)
