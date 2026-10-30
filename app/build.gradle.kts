@@ -250,10 +250,13 @@ val sherpaAarEntries = JarFile(sherpaAarFile).use { archive ->
 if (sherpaAarEntries.none { it.startsWith("jni/arm64-v8a/") && it.endsWith(".so") }) {
     throw GradleException("sherpa-onnx static-link AAR has no arm64-v8a native libraries.")
 }
-if (sherpaAarEntries.any { it.endsWith("/libonnxruntime.so") }) {
+val sherpaBundledOnnxRuntimeEntries =
+    sherpaAarEntries.filter { it.endsWith("/libonnxruntime.so") }
+if (sherpaBundledOnnxRuntimeEntries.isNotEmpty()) {
     throw GradleException(
-        "sherpa-onnx AAR unexpectedly contains a shared libonnxruntime.so; " +
-            "refusing a non-static AAR to prevent ONNX Runtime version conflicts."
+        "sherpa-onnx AAR unexpectedly contains libonnxruntime.so at: " +
+            sherpaBundledOnnxRuntimeEntries.joinToString() +
+            "; refusing a non-static AAR to prevent ONNX Runtime version conflicts."
     )
 }
 logger.lifecycle("Verified sherpa-onnx static-link AAR: arm64-v8a libraries present; no shared libonnxruntime.so.")
