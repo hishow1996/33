@@ -490,6 +490,7 @@ object Small100ModelManager {
                     updateProgress(index, spec, spec.bytes, bytesBefore)
                     }
                 }
+                }
             } catch (error: Exception) {
                 if (activeJob?.isCancelled == true && error !is CancellationException) {
                     throw CancellationException("SMaLL-100 模型下载已取消").also { it.initCause(error) }
