@@ -3193,66 +3193,57 @@ private fun PlaybackHintOverlay(
     val mainActionLabel = hint.actionLabel
     val secondaryAction = hint.secondaryAction
     val secondaryActionLabel = hint.secondaryActionLabel
-    Surface(
+
+    Column(
         modifier = modifier.fillMaxWidth(0.94f),
-        shape = RoundedCornerShape(14.dp),
-        color = Color(0xFFF8FAFF),
-        shadowElevation = 4.dp,
-        tonalElevation = 0.dp,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (hint.showSpinner) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        color = Color(0xFF356FE5),
-                        strokeWidth = 2.dp,
-                    )
-                }
-                Text(
-                    text = hint.message,
-                    color = Color(0xFF253247),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+            if (hint.showSpinner) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp,
                 )
             }
-            if (mainAction != null && !mainActionLabel.isNullOrBlank()) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            Text(
+                text = hint.message,
+                color = Color.White,
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (mainAction != null && !mainActionLabel.isNullOrBlank()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = { onAction(mainAction) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 ) {
+                    Text(
+                        mainActionLabel,
+                        color = Color(0xFF9DC3FF),
+                        style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
+                    )
+                }
+                if (secondaryAction != null && !secondaryActionLabel.isNullOrBlank()) {
                     TextButton(
-                        onClick = { onAction(mainAction) },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        onClick = { onAction(secondaryAction) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                     ) {
                         Text(
-                            mainActionLabel,
-                            color = Color(0xFF245AC6),
-                            style = MaterialTheme.typography.labelLarge,
+                            secondaryActionLabel,
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
                         )
-                    }
-                    if (secondaryAction != null && !secondaryActionLabel.isNullOrBlank()) {
-                        TextButton(
-                            onClick = { onAction(secondaryAction) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                        ) {
-                            Text(
-                                secondaryActionLabel,
-                                color = Color(0xFF4B5563),
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        }
                     }
                 }
             }
