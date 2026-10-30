@@ -750,6 +750,9 @@ class PlaybackService : MediaSessionService() {
     private var noFrameWaitStartedAtMs = 0L
     private var noFrameWaitSessionKey = ""
     private var lastObservedSourceGeneration = -1L
+    private var playbackStallWatchSessionKey = ""
+    private var playbackStallWatchPositionMs = -1L
+    private var playbackStallWatchLastProgressAtMs = 0L
     private var idleRecoveryAttemptedKey = ""
     private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
@@ -2251,6 +2254,59 @@ class PlaybackService : MediaSessionService() {
         playbackHintShownAtMs = if (candidate == null) 0L else now
     }
 
+    /**
+     * Detect a frozen playback timeline, not just a missing first frame or a buffering state.
+     * A paused video, audio-only playback, source switch, active recovery, and the final 1.5 seconds
+     * are excluded so they do not produce false "stuck" warnings.
+     */
+    private fun isPlaybackStalled(
+        state: PlayerUiState,
+        player: androidx.media3.common.Player,
+        nowMs: Long,
+        isPlaying: Boolean,
+        playWhenReady: Boolean,
+        hasRenderedFirstFrame: Boolean,
+        hasMedia: Boolean,
+    ): Boolean {
+        val positionMs = runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+        val durationMs = runCatching { player.duration }.getOrDefault(0L)
+        val nearEnd = durationMs > 0L && durationMs - positionMs <= 1_500L
+        val shouldWatch = state.phase in setOf(Phase.READY, Phase.SYNTHESIZING) &&
+            hasMedia &&
+            hasRenderedFirstFrame &&
+            isPlaying &&
+            playWhenReady &&
+            !state.audioOnly &&
+            player.playbackState == androidx.media3.common.Player.STATE_READY &&
+            !pm.isBuffering.value &&
+            player.playbackParameters.speed > 0f &&
+            !playbackRecoveryInProgress &&
+            playbackRecoveryFailure == null &&
+            !playbackRestoreRequested &&
+            !nearEnd
+
+        if (!shouldWatch) {
+            playbackStallWatchSessionKey = ""
+            playbackStallWatchPositionMs = -1L
+            playbackStallWatchLastProgressAtMs = 0L
+            return false
+        }
+
+        if (
+            playbackStallWatchSessionKey != state.key ||
+            playbackStallWatchPositionMs < 0L ||
+            positionMs != playbackStallWatchPositionMs
+        ) {
+            playbackStallWatchSessionKey = state.key
+            playbackStallWatchPositionMs = positionMs
+            playbackStallWatchLastProgressAtMs = nowMs
+            return false
+        }
+
+        return playbackStallWatchLastProgressAtMs > 0L &&
+            nowMs - playbackStallWatchLastProgressAtMs >= 8_000L
+    }
+
     private fun refreshPlaybackHint() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             processingNotificationHandler.post { refreshPlaybackHint() }
@@ -2266,8 +2322,19 @@ class PlaybackService : MediaSessionService() {
         val screenEligible = playerPhase || playbackRecoveryInProgress ||
             playbackRecoveryFailure != null || playbackRestoreRequested ||
             (state.key == videoKey && state.playBlockedHint != null)
+        val playWhenReady = runCatching { player.playWhenReady }.getOrDefault(false)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val playbackStalled = isPlaybackStalled(
+            state = state,
+            player = player,
+            nowMs = now,
+            isPlaying = isPlaying,
+            playWhenReady = playWhenReady,
+            hasRenderedFirstFrame = firstFrame,
+            hasMedia = mediaAttached,
+        )
 
-        if (firstFrame && isPlaying) {
+        if (firstFrame && isPlaying && !playbackStalled) {
             playbackRecoveryInProgress = false
             playbackRecoveryMessage = null
             playbackRecoveryFailure = null
@@ -2312,8 +2379,6 @@ class PlaybackService : MediaSessionService() {
             playbackRestoreRequested = false
         }
 
-        val playWhenReady = runCatching { player.playWhenReady }.getOrDefault(false)
-        val now = android.os.SystemClock.elapsedRealtime()
         val noFirstFrameTimedOut = if (
             playWhenReady && mediaAttached && !firstFrame && !state.audioOnly
         ) {
@@ -2365,6 +2430,7 @@ class PlaybackService : MediaSessionService() {
             blockedMessage = blocked,
             blockedOffersOriginalOnly = blockedOffersOriginal,
             noFirstFrameTimedOut = noFirstFrameTimedOut,
+            playbackStalled = playbackStalled,
         )
         publishPlaybackHintCandidate(PlaybackHintPolicy.hintFor(input))
     }
