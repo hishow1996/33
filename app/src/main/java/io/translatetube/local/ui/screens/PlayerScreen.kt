@@ -3997,7 +3997,7 @@ private fun compactProcessingProgress(progress: String, phase: Phase): String {
             }
         }
         Phase.TRANSCRIBING -> {
-            val segmentRatio = Regex("""转写中\\s*(\\d+)\\s*/\\s*(\\d+)\\s*段""").find(raw)
+            val segmentRatio = Regex("""转写中\s*(\d+)\s*/\s*(\d+)\s*段""").find(raw)
             val label = when {
                 raw.contains("语音分段") -> "语音分段"
                 raw.contains("提高灵敏度重新检测") || raw.contains("声音较小") -> "重新检测语音"
