@@ -11036,7 +11036,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     private fun tick(ms: Long) {
         val st = ui.value
         val d = dubbing
-        if (d != null && st.dubbingOn) d.primeUpcomingCues(ms)
 
         // 配音必须严格使用 lineAt 的时间区间结果；字幕高亮可以回退到最近一行，
         // 但不能把“字幕间隙中的上一行”当成当前配音行，否则会压低间隙里的原声。
@@ -11045,6 +11044,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // is loading so the audio executor can skip elapsed speech instead of starting late.
         val previousDubbingLine = d?.currentLineIdx() ?: -1
         d?.updateTimelinePosition(dubLine, ms)
+
+        // Prefeed publishes PCM asynchronously and derives notBeforeUs from latestTimelineCursor.
+        // Publish this tick's cursor first; otherwise a seek/forward jump can let a worker mount
+        // the newly selected cue against the previous playhead and schedule it at a stale time.
+        if (d != null && st.dubbingOn) d.primeUpcomingCues(ms)
         val keepingTimelineCue = d?.usesImmediateTimelinePlayback == true &&
             d.shouldContinueCurrentCue(dubLine)
         // Retire a queue head only after its audio output actually starts.
