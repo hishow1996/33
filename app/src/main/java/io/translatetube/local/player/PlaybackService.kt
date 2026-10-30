@@ -1969,6 +1969,9 @@ class PlaybackService : MediaSessionService() {
                         lastLineIdx = Int.MIN_VALUE
                         if (::pm.isInitialized) tickFromPlayerCallback(pm.position(), "player resumed")
                     } else if (!drainingEndedVideo) {
+                        if (!isPlaying && ::pm.isInitialized && pm.player.playWhenReady) {
+                            preserveInterruptedImmediateCueOnBuffer(ui.value.key)
+                        }
                         safelyControlDubbing("player paused") { dubbing?.pausePlayback() }
                         ui.update { state ->
                             if (state.activeDubbingLine == -1) state
@@ -10809,10 +10812,47 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.firstOrNull() else null
     }
 
-    private fun enqueueDubbingCatchUpCue(sessionKey: String, index: Int) {
+    private fun enqueueDubbingCatchUpCue(
+        sessionKey: String,
+        index: Int,
+        prioritizeFirst: Boolean = false,
+    ) {
         synchronized(dubbingCatchUpLock) {
-            if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.add(index)
+            if (dubbingCatchUpSessionKey == sessionKey) {
+                DubbingCatchUpQueuePolicy.enqueue(
+                    queue = dubbingCatchUpQueue,
+                    index = index,
+                    prioritizeFirst = prioritizeFirst,
+                )
+            }
         }
+    }
+
+    /**
+     * Buffering invalidates a live System TTS utterance. If its subtitle window has already
+     * passed, retain that interrupted sentence ahead of later missed cues before pausePlayback()
+     * clears the engine's active utterance state. Manual pause does not enter this path.
+     */
+    private fun preserveInterruptedImmediateCueOnBuffer(sessionKey: String) {
+        if (!::pm.isInitialized) return
+        val state = ui.value
+        if (state.key != sessionKey || !state.dubbingOn) return
+        val player = pm.player
+        if (!player.playWhenReady || player.playbackState == androidx.media3.common.Player.STATE_ENDED) return
+
+        val engine = dubbing ?: return
+        if (!engine.usesImmediateTimelinePlayback) return
+        val activeIndex = engine.currentLineIdx()
+        if (activeIndex < 0 || !engine.hasActiveTimelineUtteranceFor(activeIndex)) return
+
+        val timelinePositionMs = pm.position().coerceAtLeast(0L) + subtitleTimingOffsetMs()
+        if (engine.lineAt(timelinePositionMs) == activeIndex) return
+
+        enqueueDubbingCatchUpCue(
+            sessionKey = sessionKey,
+            index = activeIndex,
+            prioritizeFirst = true,
+        )
     }
 
     private fun removeDubbingCatchUpCue(sessionKey: String, index: Int) {
