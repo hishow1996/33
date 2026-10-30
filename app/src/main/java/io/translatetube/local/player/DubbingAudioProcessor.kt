@@ -213,7 +213,14 @@ class DubbingAudioProcessor(
         // original sound and be affected only by its own gain slider.
         var frame = 0
         while (frame < frames) {
-            val voiceSample = DubbingGainPolicy.sanitizePcmSample(voiceScratch[frame]) * requestedDubbingGain
+            // The user can turn dubbing off after mixInto() has copied this buffer's voice
+            // into voiceScratch. Re-check the live bus gate for every output frame so those
+            // already-prefetched samples are silenced before they reach the AudioTrack.
+            val voiceSample = DubbingGainPolicy.applyDubbingGain(
+                sample = voiceScratch[frame],
+                gain = requestedDubbingGain,
+                enabled = bus.isDubbingEnabled(),
+            )
             appliedOriginalGain += (requestedOriginalGain - appliedOriginalGain) *
                 if (requestedOriginalGain < appliedOriginalGain) sourceAttack else sourceRelease
             val sourceGain = appliedOriginalGain
