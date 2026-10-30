@@ -1046,11 +1046,6 @@ internal class Small100BpeTokenizer(
     private val fuseUnk: Boolean = true,
 ) : AutoCloseable {
 
-    private companion object {
-        const val MAX_CACHED_WORD_CHARS = 48
-        const val MAX_CACHED_WORDS = 1024
-    }
-
     private val wordTokenCache = java.util.LinkedHashMap<String, IntArray>(64, 0.75f, true)
 
     internal val cachedWordCount: Int
@@ -1267,6 +1262,8 @@ internal class Small100BpeTokenizer(
     }
 
     companion object {
+        private const val MAX_CACHED_WORD_CHARS = 48
+        private const val MAX_CACHED_WORDS = 1024
         private const val METASPACE = '\u2581'
         private const val DEFAULT_UNK_ID = 3
         private const val DEFAULT_EOS_ID = 2
