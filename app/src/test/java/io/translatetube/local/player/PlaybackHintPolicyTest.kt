@@ -120,6 +120,19 @@ class PlaybackHintPolicyTest {
     }
 
     @Test
+    fun acceptedPlayRequestThatNeverStartsOffersReload() {
+        val h = hint(
+            PlaybackHintInput(
+                isPlaying = false,
+                hasRenderedFirstFrame = true,
+                playbackStalled = true,
+            ),
+        )!!
+        assertEquals("playback-stalled", h.key)
+        assertEquals(PlaybackHintAction.RELOAD, h.action)
+    }
+
+    @Test
     fun idlePlayerWithMountedVideoShowsRestoringHint() {
         val h = hint(PlaybackHintInput(hasMedia = true, idleRecovery = true))!!
         assertEquals("正在恢复播放…", h.message)
