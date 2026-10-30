@@ -1057,7 +1057,7 @@ internal fun LocalTranslationSection(
                                         else -> "未下载"
                                     },
                                     color = when (small100State.status) {
-                                        Small100Status.READY -> Color(0xFF25804A)
+                                        Small100Status.READY -> Color(0xFF3569D4)
                                         Small100Status.DOWNLOADING, Small100Status.VERIFYING -> Color(0xFF3569D4)
                                         Small100Status.FAILED -> Color(0xFFB42318)
                                         else -> Color(0xFF64748B)
@@ -1224,7 +1224,7 @@ internal fun LocalTranslationSection(
                                         else -> "未下载"
                                     },
                                     color = when (small100State.status) {
-                                        Small100Status.READY -> Color(0xFF25804A)
+                                        Small100Status.READY -> Color(0xFF3569D4)
                                         Small100Status.DOWNLOADING, Small100Status.VERIFYING -> Color(0xFF3569D4)
                                         Small100Status.FAILED -> Color(0xFFB42318)
                                         else -> Color(0xFF64748B)
