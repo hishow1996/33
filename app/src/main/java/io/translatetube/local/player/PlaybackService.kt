@@ -534,6 +534,10 @@ data class PlayerUiState(
     val thumbUrl: String? = null,
     val durationMs: Long = 0,
     val lines: List<SubLine> = emptyList(),
+    /** Latest recognized source captions shown in the five-stage processing preview. */
+    val transcriptionPreviewLines: List<SubLine> = emptyList(),
+    /** Latest successfully translated captions shown in the five-stage processing preview. */
+    val translationPreviewLines: List<SubLine> = emptyList(),
     /** Number of rows resolved for the active subtitle-translation pass; avoids rescanning the full list for progress. */
     val translatedLineCount: Int = 0,
     /** Current translation batch, using one-based numbering for display. */
@@ -1116,6 +1120,8 @@ class PlaybackService : MediaSessionService() {
     ): PlayerUiState? = when (stage) {
         EngineRestartStage.TRANSCRIPTION -> state.copy(
             lines = emptyList(),
+            transcriptionPreviewLines = emptyList(),
+            translationPreviewLines = emptyList(),
             translatedLineCount = 0,
             translationCurrentBatch = 0,
             translationTotalBatches = 0,
@@ -1134,6 +1140,7 @@ class PlaybackService : MediaSessionService() {
         )
         EngineRestartStage.TRANSLATION -> state.copy(
             lines = state.lines.mapIndexed { index, line -> line.copy(index = index, zh = null) },
+            translationPreviewLines = emptyList(),
             translatedLineCount = 0,
             translationCurrentBatch = 0,
             translationTotalBatches = 0,
@@ -3765,6 +3772,8 @@ class PlaybackService : MediaSessionService() {
                         key = key,
                         title = remoteMediaTitle,
                         lines = emptyList(),
+                        transcriptionPreviewLines = emptyList(),
+                        translationPreviewLines = emptyList(),
                         translatedLineCount = 0,
                         totalLines = 0,
                         preparedUntil = 0,
@@ -4241,6 +4250,8 @@ class PlaybackService : MediaSessionService() {
                                     phase = Phase.PARSING,
                                     progress = "原字幕语言与原声音轨不一致，正在重新检查字幕…",
                                     lines = emptyList(),
+                                    transcriptionPreviewLines = emptyList(),
+                                    translationPreviewLines = emptyList(),
                                     translatedLineCount = 0,
                                     totalLines = 0,
                                     currentLine = -1,
@@ -7620,6 +7631,19 @@ updateUiForSession(key, pipelineGeneration) {
                         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                         val rows = restoredAsrRows.toMutableList()
                         var processed = restoredProcessedSegments
+                        fun publishTranscriptionPreview() {
+                            val previewStart = (rows.size - 2).coerceAtLeast(0)
+                            val preview = (previewStart until rows.size).map { rowIndex ->
+                                val row = rows[rowIndex]
+                                SubLine(rowIndex, row.first, row.second, row.third)
+                            }
+                            updateUiForSession(key, pipelineGeneration) { state ->
+                                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                    state.copy(transcriptionPreviewLines = preview)
+                                } else state
+                            }
+                        }
+                        publishTranscriptionPreview()
                         // Keep one file descriptor and byte buffer for the entire local-ASR pass.
                         // Checkpoint writes still happen after every small segment group below.
                         pcmFile.openReader { ownerJob?.ensureActive() }.use { sharedPcmReader ->
@@ -7654,6 +7678,7 @@ updateUiForSession(key, pipelineGeneration) {
                                 }
                                 rows.addAll(chunkRows)
                                 processed = chunkEnd
+                                publishTranscriptionPreview()
 
                                 if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                                     ensureCurrentSession(key, pipelineGeneration)
@@ -7852,6 +7877,11 @@ updateUiForSession(key, pipelineGeneration) {
                                 "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
                         }
                     )
+                }
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                        state.copy(transcriptionPreviewLines = transcribedLines.takeLast(2))
+                    } else state
                 }
                 lines = transcribedLines
                 sourceTranscriptProducedInThisRun = true
@@ -8892,6 +8922,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (state.key == key) {
                 state.copy(
                     translatedLineCount = 0,
+                    translationPreviewLines = emptyList(),
                     translationCurrentBatch = 0,
                     translationTotalBatches = 0,
                     translationRetryCount = 0,
@@ -8960,10 +8991,16 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val sourceEchoAsUntranslatedFallback =
             TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback(engine!!.id)
         val pendingIndices = ArrayList<Int>()
+        val translationPreviewRows = ArrayList<SubLine>(2)
         var completed = 0
         for (index in lines.indices) {
             checkTranslationActive(index)
             val line = lines[index]
+            val existingTranslation = SubtitleParsers.preferredTranslationText(line)
+            if (existingTranslation != null) {
+                if (translationPreviewRows.size == 2) translationPreviewRows.removeAt(0)
+                translationPreviewRows += line.copy(zh = existingTranslation)
+            }
             if (line.text.isBlank() || !needsSubtitleTranslation(line, srcLang)) {
                 completed++
             } else {
@@ -9062,6 +9099,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     sourceLang = sourceLanguageForUi,
                     lines = updatedLines,
                     totalLines = updatedLines.size,
+                    translationPreviewLines = translationPreviewRows.toList(),
                     translatedLineCount = completed.coerceAtMost(updatedLines.size),
                     translationCurrentBatch = 0,
                     translationTotalBatches = translationBatches.size,
@@ -9272,10 +9310,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 translationJob?.ensureActive()
                 updatedLines = nextRows
                 completed += batchIndices.size
+                val completedBatchPreview = batchIndices.mapNotNull { rowIndex ->
+                    val line = updatedLines.getOrNull(rowIndex) ?: return@mapNotNull null
+                    val translation = SubtitleParsers.preferredTranslationText(line) ?: return@mapNotNull null
+                    line.copy(zh = translation)
+                }
+                if (completedBatchPreview.isNotEmpty()) {
+                    val combinedPreview = (translationPreviewRows + completedBatchPreview).takeLast(2)
+                    translationPreviewRows.clear()
+                    translationPreviewRows.addAll(combinedPreview)
+                }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         lines = updatedLines,
                         totalLines = updatedLines.size,
+                        translationPreviewLines = translationPreviewRows.toList(),
                         translatedLineCount = completed.coerceAtMost(updatedLines.size),
                         sourceLang = src,
                         translationCurrentBatch = batchIndex + 1,
