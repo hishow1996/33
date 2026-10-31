@@ -11,7 +11,7 @@ class CloudAsrSubmissionGuardStoreTest {
     fun requestMarkerSurvivesProcessStyleReopenUntilExplicitlyCleared() {
         val directory = createTempDir(prefix = "cloud-asr-pending")
         try {
-            val marker = CloudAsrSubmissionGuardStore.fileFor(directory, "elevenlabs", "remote-session|source|config", "a".repeat(64))
+            val marker = CloudAsrSubmissionGuardStore.fileFor(directory, "elevenlabs", "remote-session|source|config")
             assertFalse(CloudAsrSubmissionGuardStore.hasPendingSubmission(marker))
             CloudAsrSubmissionGuardStore.markInFlight(marker)
             assertTrue(CloudAsrSubmissionGuardStore.hasPendingSubmission(File(directory, marker.name)))
@@ -35,15 +35,13 @@ class CloudAsrSubmissionGuardStoreTest {
     }
 
     @Test
-    fun markerDoesNotExposeSourceIdentityOrAudioDigest() {
+    fun markerDoesNotExposeSourceIdentity() {
         val directory = createTempDir(prefix = "cloud-asr-pending-private")
         try {
             val identity = "https://example.invalid/private/video?token=secret"
-            val digest = "d".repeat(64)
             val marker = CloudAsrSubmissionGuardStore.fileFor(directory, "elevenlabs", identity)
             assertFalse(marker.name.contains("example"))
             assertFalse(marker.name.contains("secret"))
-            assertFalse(marker.name.contains(digest))
         } finally { directory.deleteRecursively() }
     }
 }
