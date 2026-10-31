@@ -2307,6 +2307,50 @@ class PlaybackService : MediaSessionService() {
     }
 
     /**
+     * Keep the translated checkpoint while the background dubbing queue is still warming.
+     * READY means the startup buffer can play; it does not mean every subtitle cue is synthesized.
+     */
+    private fun isDubbingQueueFullyPreparedForCheckpoint(state: PlayerUiState): Boolean {
+        if (state.totalLines <= 0) return true
+        val engine = dubbing ?: return false
+        return engine.usesImmediateTimelinePlayback || state.preparedCount >= state.totalLines
+    }
+
+    private suspend fun clearInProgressCheckpointAfterDubbing(
+        sessionKey: String,
+        pipelineGeneration: Long,
+    ) {
+        val state = ui.value
+        if (
+            state.key != sessionKey ||
+            activePipelineGeneration != pipelineGeneration ||
+            activeProcessingCheckpointIdentityKey.isBlank() ||
+            state.phase != Phase.READY ||
+            state.waitingForTranscriptionEngine ||
+            state.waitingForDubbingEngine ||
+            state.dubbingHasErrors ||
+            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) } ||
+            !isDubbingQueueFullyPreparedForCheckpoint(state)
+        ) return
+
+        val identityKey = activeProcessingCheckpointIdentityKey
+        withContext(Dispatchers.IO) {
+            // A new open/configuration restart may begin while the file operation is queued.
+            if (
+                videoKey == sessionKey &&
+                activePipelineGeneration == pipelineGeneration &&
+                activeProcessingCheckpointIdentityKey == identityKey
+            ) {
+                InProgressProcessingCheckpointStore.delete(
+                    this@PlaybackService,
+                    sessionKey,
+                    identityKey,
+                )
+            }
+        }
+    }
+
+    /**
      * Wait only for a small initial PCM buffer before starting video playback. The DubbingEngine
      * keeps the rest of the queue running in its service scope, so later cues are synthesized
      * while the video and already-ready Chinese speech are playing. Failed cues are counted as
@@ -4589,21 +4633,9 @@ class PlaybackService : MediaSessionService() {
                 )
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
-                if (
-                    finishedState.key == key &&
-                    finishedState.phase == Phase.READY &&
-                    !finishedState.waitingForTranscriptionEngine &&
-                    !finishedState.waitingForDubbingEngine &&
-                    !finishedState.lines.any { needsSubtitleTranslation(it, finishedState.sourceLang) }
-                ) {
-                    withContext(Dispatchers.IO) {
-                        InProgressProcessingCheckpointStore.delete(
-                            this@PlaybackService,
-                            key,
-                            activeProcessingCheckpointIdentityKey,
-                        )
-                    }
-                }
+                // READY may only mean the first few cues are prepared. Retain the full
+                // translated checkpoint until the background dubbing queue has finished.
+                clearInProgressCheckpointAfterDubbing(key, pipelineGeneration)
                 if (
                     finishedState.key == key &&
                     finishedState.phase == Phase.READY &&
@@ -8783,6 +8815,7 @@ updateUiForSession(key, pipelineGeneration) {
                                         updateUiForCurrentDubbingEngine(d, key) {
                                             it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                                         }
+                                        clearInProgressCheckpointAfterDubbing(key, pipelineGeneration)
                                     }
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
