@@ -55,19 +55,17 @@ internal object DubbingStartupBufferPolicy {
             return Plan(spoken.take(1), 0L, 1, 2_500L)
         }
 
-        // Even when synthesis is severely slower than playback, never require the whole video
-        // to finish synthesizing before playback starts. Keep a small first-cue buffer; the
-        // playback service applies the user's existing source-audio setting while synthesis continues.
-        // Keep enough lead for upcoming cues, but cap the startup wait. Playback continues with
-        // source audio for any cue that is not ready when this bounded wait expires.
+        // Start only after seven upcoming cues have been processed; prepare an eighth when it
+        // fits in the look-ahead window. The remaining video queue continues in the background.
+        // Slower engines get a wider timeline window and a longer bounded startup wait.
         val tier = when {
             synthesisTimelineLagFactor.isFinite() && synthesisTimelineLagFactor >= 1.6f ->
-                BufferTier(12_000L, 2, 5, 3_000L)
+                BufferTier(24_000L, 7, 8, 12_000L)
             synthesisTimelineLagFactor.isFinite() && synthesisTimelineLagFactor >= 1.2f ->
-                BufferTier(10_000L, 2, 5, 3_000L)
+                BufferTier(20_000L, 7, 8, 10_000L)
             synthesisTimelineLagFactor.isFinite() && synthesisTimelineLagFactor < 0.75f ->
-                BufferTier(5_000L, 2, 4, 2_500L)
-            else -> BufferTier(8_000L, 3, 6, 3_000L)
+                BufferTier(14_000L, 7, 8, 8_000L)
+            else -> BufferTier(16_000L, 7, 8, 9_000L)
         }
 
         val firstStart = lines[spoken.first()].startMs

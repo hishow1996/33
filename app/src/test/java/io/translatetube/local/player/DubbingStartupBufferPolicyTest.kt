@@ -32,12 +32,13 @@ class DubbingStartupBufferPolicyTest {
     }
 
     @Test
-    fun generatedModePreparesSeveralCuesAcrossUpcomingTimeline() {
+    fun generatedModePreparesSevenToEightCuesAcrossUpcomingTimeline() {
         val plan = DubbingStartupBufferPolicy.plan(lines(12), immediateMode = false)
-        assertTrue(plan.lineIndices.size >= 3)
-        assertTrue(plan.lineIndices.size <= 6)
-        assertEquals(8_000L, plan.lookAheadMs)
-        assertEquals(3_000L, plan.waitTimeoutMs)
+        assertTrue(plan.lineIndices.size >= 7)
+        assertTrue(plan.lineIndices.size <= 8)
+        assertEquals(7, plan.minimumCueCount)
+        assertEquals(16_000L, plan.lookAheadMs)
+        assertEquals(9_000L, plan.waitTimeoutMs)
     }
 
     @Test
@@ -52,9 +53,11 @@ class DubbingStartupBufferPolicyTest {
             immediateMode = false,
             synthesisTimelineLagFactor = 1.8f,
         )
-        assertEquals(8_000L, baseline.lookAheadMs)
-        assertEquals(12_000L, slow.lookAheadMs)
-        assertEquals(2, slow.minimumCueCount)
+        assertEquals(16_000L, baseline.lookAheadMs)
+        assertEquals(24_000L, slow.lookAheadMs)
+        assertEquals(7, baseline.minimumCueCount)
+        assertEquals(7, slow.minimumCueCount)
+        assertEquals(8, slow.lineIndices.size)
         assertFalse(slow.waitForAllBeforePlayback)
         assertTrue(slow.lineIndices.size >= baseline.lineIndices.size)
     }
@@ -68,9 +71,10 @@ class DubbingStartupBufferPolicyTest {
             synthesisSampleCount = 2,
         )
         assertFalse(plan.waitForAllBeforePlayback)
-        assertEquals(12_000L, plan.lookAheadMs)
-        assertEquals(2, plan.minimumCueCount)
-        assertEquals(3_000L, plan.waitTimeoutMs)
+        assertEquals(24_000L, plan.lookAheadMs)
+        assertEquals(7, plan.minimumCueCount)
+        assertEquals(8, plan.lineIndices.size)
+        assertEquals(12_000L, plan.waitTimeoutMs)
         assertTrue(plan.lineIndices.size < 16)
     }
 
@@ -83,8 +87,9 @@ class DubbingStartupBufferPolicyTest {
             synthesisSampleCount = 1,
         )
         assertFalse(plan.waitForAllBeforePlayback)
-        assertEquals(12_000L, plan.lookAheadMs)
-        assertEquals(2, plan.minimumCueCount)
+        assertEquals(24_000L, plan.lookAheadMs)
+        assertEquals(7, plan.minimumCueCount)
+        assertEquals(8, plan.lineIndices.size)
     }
 
     @Test
@@ -107,8 +112,17 @@ class DubbingStartupBufferPolicyTest {
             immediateMode = false,
             synthesisTimelineLagFactor = 0.5f,
         )
-        assertEquals(5_000L, plan.lookAheadMs)
-        assertEquals(2, plan.minimumCueCount)
+        assertEquals(14_000L, plan.lookAheadMs)
+        assertEquals(7, plan.minimumCueCount)
+        assertEquals(8, plan.lineIndices.size)
+        assertEquals(8_000L, plan.waitTimeoutMs)
+    }
+
+    @Test
+    fun fewerThanSevenAvailableSpeechCuesDoNotWaitForNonexistentLines() {
+        val plan = DubbingStartupBufferPolicy.plan(lines(4), immediateMode = false)
+        assertEquals(4, plan.minimumCueCount)
+        assertEquals(listOf(0, 1, 2, 3), plan.lineIndices)
     }
 
     @Test

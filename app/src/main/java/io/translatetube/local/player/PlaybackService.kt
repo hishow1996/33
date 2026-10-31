@@ -2282,7 +2282,23 @@ class PlaybackService : MediaSessionService() {
                 engine.isPrepared(index) || engine.isSilent(index)
             }
             if (readyAhead >= requiredStartupCues.size) break
-            if (System.nanoTime() >= deadlineNs) break
+            if (System.nanoTime() >= deadlineNs) {
+                val remaining = (requiredStartupCues.size - readyAhead).coerceAtLeast(0)
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                    state.copy(
+                        waitingForDubbingEngine = true,
+                        dubbingStatus = "${state.ttsEngineName.ifBlank { "配音引擎" }} 首批配音尚有 $remaining 句未就绪",
+                        progress = "首批 7 句配音尚未全部就绪，视频保持暂停",
+                        noModelHint = state.noModelHint
+                            ?: "正在等待开头 7 句中文配音完成。配音就绪后即可开始播放；请检查语音服务或模型状态。",
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    if (videoKey == sessionKey && ui.value.key == sessionKey) pm.pause()
+                }
+                // Do not silently fall through and start with fewer than seven prepared cues.
+                return
+            }
             kotlinx.coroutines.delay(100L)
         }
 
