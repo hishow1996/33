@@ -40,7 +40,7 @@ internal object AsrTranscriptCheckpointPolicy {
         3 -> savedChunkSize?.takeIf {
             it == LEGACY_SEGMENTS_PER_CHECKPOINT || it == SEGMENTS_PER_CHECKPOINT
         }
-        4 -> SEGMENTS_PER_CHECKPOINT
+        4 -> savedChunkSize?.takeIf { it == SEGMENTS_PER_CHECKPOINT }
         else -> null
     }
 

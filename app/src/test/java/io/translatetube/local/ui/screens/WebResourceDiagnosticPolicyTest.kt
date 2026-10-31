@@ -94,7 +94,6 @@ class WebResourceDiagnosticPolicyTest {
         assertTrue(-8 in WebResourceDiagnosticPolicy.RECOVERABLE_ERROR_CODES)
         assertFalse(-12 in WebResourceDiagnosticPolicy.RECOVERABLE_ERROR_CODES)
     }
-}
 
     @Test
     fun requestHeaderSummaryRecordsPresenceAndHostsButNeverValues() {
@@ -166,3 +165,4 @@ class WebResourceDiagnosticPolicyTest {
             WebResourceDiagnosticPolicy.explainHttpFailure(403).contains("不能确定具体原因")
         )
     }
+}
