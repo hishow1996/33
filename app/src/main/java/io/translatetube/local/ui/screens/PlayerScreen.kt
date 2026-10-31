@@ -1482,8 +1482,7 @@ private fun VideoParsingPage(
             else -> "API 翻译服务"
         }
     }
-    val selectedTtsEngineId = translationPrefs.getString("tts_engine", "edge").orEmpty()
-    val dubbingVoiceDisplay = when (selectedTtsEngineId) {
+    val dubbingVoiceDisplay = when (translationPrefs.getString("tts_engine", "edge").orEmpty()) {
         "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.labelFor(
             translationPrefs.getString(
                 io.translatetube.local.tts.GeminiTtsVoices.PREF_VOICE_KEY,
@@ -1650,13 +1649,23 @@ private fun VideoParsingPage(
         }
     }
     val detail = when {
-        isCancelled -> "处理已停止"
-        isError -> "当前阶段处理失败"
-        state.isProcessingPaused -> "已暂停，等待继续"
-        waitingForTranscriptionEngine -> "等待转写引擎就绪"
-        waitingForDubbingEngine -> "等待配音引擎就绪"
-        complete -> "五个阶段已完成"
-        else -> "正在处理当前阶段"
+        isCancelled -> "已停止"
+        isError -> "查看下方错误提示"
+        state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
+        waitingForTranscriptionEngine -> "等待转写引擎"
+        waitingForDubbingEngine -> "等待配音引擎"
+        state.isProcessingPaused -> structuredProcessingProgress(state, displayPhase)
+            .ifBlank { "等待继续" }
+        displayPhase == Phase.TRANSLATING && !state.manualTranslationModeEnabled &&
+            !state.manualTranslationWaiting && state.totalLines > 0 ->
+            "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+        displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
+            "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
+                if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else ""
+        state.progress.isNotBlank() || state.audioProgress != null ||
+            state.transcriptionProgressPercent != null || state.transcriptionTotalSegments > 0 ->
+            structuredProcessingProgress(state, displayPhase)
+        else -> compactPhaseFallback(source, displayPhase)
     }
 
     val sourceLabel = when (source) {
@@ -1677,7 +1686,8 @@ private fun VideoParsingPage(
         Modifier
             .fillMaxSize()
             .background(Color(0xFFF8FAFF))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .verticalScroll(androidx.compose.foundation.rememberScrollState()),
     ) {
         // Compact navigation header; keep only the back and processing-actions controls.
         Row(
@@ -2262,18 +2272,65 @@ private fun VideoParsingPage(
             }
         }
 
-        // Compact five-stage timeline: stage rows carry status only.
-        // Detailed data and live previews are rendered once in the workspace below.
+        // Stitched seam: a fine dashed thread visually joins the two cards.
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(6.dp),
+        ) {
+            drawLine(
+                color = Color(0xFFBCCBE5),
+                start = Offset(0f, size.height / 2f),
+                end = Offset(size.width, size.height / 2f),
+                strokeWidth = 1.dp.toPx(),
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                    floatArrayOf(3.dp.toPx(), 3.dp.toPx()),
+                    0f,
+                ),
+            )
+        }
+
+        // Stage timeline — the lower card is rounded to meet the stitched upper card.
         Box(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
+                .shadow(
+                    6.dp,
+                    RoundedCornerShape(
+                        topStart = 9.dp,
+                        topEnd = 9.dp,
+                        bottomStart = 22.dp,
+                        bottomEnd = 22.dp,
+                    ),
+                    clip = false,
+                )
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 9.dp,
+                        topEnd = 9.dp,
+                        bottomStart = 22.dp,
+                        bottomEnd = 22.dp,
+                    ),
+                )
                 .background(Color.White)
-                .border(1.dp, Color(0xFFE8EDF1), RoundedCornerShape(18.dp))
-                .padding(horizontal = 12.dp, vertical = if (compactLayout) 7.dp else 9.dp),
+                .border(
+                    1.dp,
+                    Color(0xFFE8EDF5),
+                    RoundedCornerShape(
+                        topStart = 9.dp,
+                        topEnd = 9.dp,
+                        bottomStart = 22.dp,
+                        bottomEnd = 22.dp,
+                    ),
+                )
+                .padding(horizontal = 12.dp, vertical = if (compactLayout) 9.dp else 12.dp),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                visibleStages.forEach { index ->
+            Column(
+                Modifier.fillMaxWidth().heightIn(min = if (compactLayout) 270.dp else 340.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                visibleStages.forEachIndexed { visibleIndex, index ->
                     val stageSkipped = when (flow) {
                         ProcessingFlow.YOUTUBE_SUBTITLES,
                         ProcessingFlow.IMPORTED_SUBTITLES -> index == 1 || index == 2
@@ -2290,102 +2347,374 @@ private fun VideoParsingPage(
                         )
                     val waitingForExternalSubtitle = active && index == 3 && state.manualTranslationWaiting
                     val paused = active && state.isProcessingPaused
-                    val markerColor = when {
-                        done -> Color(0xFF16845F)
-                        failed -> Color(0xFFC83F4F)
-                        cancelled || paused -> Color(0xFFA66B19)
-                        active -> Color(0xFF347BCB)
-                        else -> Color(0xFF9AA3AD)
+                    val markerBg = when {
+                        done -> Color(0xFFE8F8F1)
+                        failed -> Color(0xFFFFE4E6)
+                        cancelled -> Color(0xFFFFF6E7)
+                        active -> Color(0xFFE5EEFF)
+                        else -> Color(0xFFF0F3F8)
                     }
-                    val statusText = when {
-                        stageSkipped -> "已跳过"
-                        failed -> "失败"
-                        cancelled -> "已取消"
-                        paused -> "已暂停"
-                        waitingForStageEngine -> "等待引擎"
-                        waitingForExternalSubtitle -> "等待译文"
-                        done -> "已完成"
-                        active -> "进行中"
-                        else -> "等待中"
+                    val markerColor = when {
+                        done -> Color(0xFF18A879)
+                        failed -> Color(0xFFD74655)
+                        cancelled -> Color(0xFFA86B13)
+                        active -> Color(0xFF3268F5)
+                        else -> Color(0xFF9EACC0)
+                    }
+                    val rowBg = when {
+                        done -> Brush.linearGradient(listOf(Color(0xFFF2FBF7), Color.White))
+                        failed -> Brush.linearGradient(listOf(Color(0xFFFFF4F4), Color.White))
+                        active -> Brush.linearGradient(listOf(Color(0xFFEFF5FF), Color(0xFFF8FAFF)))
+                        else -> Brush.linearGradient(listOf(Color.White, Color(0xFFFCFDFF)))
                     }
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .heightIn(min = if (compactLayout) 30.dp else 34.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (active || failed) Color(0xFFF5F8FC) else Color.Transparent)
-                            .padding(horizontal = 5.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                            .padding(vertical = if (compactLayout) 2.dp else 4.dp)
+                            .clip(RoundedCornerShape(17.dp))
+                            .background(rowBg)
+                            .border(
+                                width = if (active || failed) 1.dp else 0.dp,
+                                color = if (active) Color(0xFFE4EDFF) else Color(0xFFFFD6DB),
+                                shape = RoundedCornerShape(17.dp),
+                            )
+                            .padding(horizontal = 8.dp, vertical = if (compactLayout) 6.dp else 8.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(if (compactLayout) 7.dp else 10.dp),
                     ) {
                         Box(
                             Modifier
-                                .size(if (compactLayout) 22.dp else 24.dp)
+                                .size(if (compactLayout) 28.dp else 32.dp)
                                 .clip(CircleShape)
-                                .background(
-                                    when {
-                                        done -> Color(0xFFE6F5EE)
-                                        failed -> Color(0xFFFFECEE)
-                                        cancelled || paused -> Color(0xFFFFF4E2)
-                                        active -> Color(0xFFEAF1FA)
-                                        else -> Color(0xFFF1F3F5)
-                                    },
-                                ),
-                            contentAlignment = Alignment.Center,
+                                .background(markerBg)
+                                .border(1.dp, Color.White, CircleShape),
+                            contentAlignment = androidx.compose.ui.Alignment.Center,
                         ) {
                             when {
-                                done -> Icon(Icons.Filled.Check, contentDescription = null, tint = markerColor, modifier = Modifier.size(15.dp))
-                                active && !paused && !waitingForStageEngine && !waitingForExternalSubtitle ->
-                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), color = markerColor, strokeWidth = 1.8.dp)
-                                failed -> Text("!", color = markerColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                else -> Text((index + 1).toString(), color = markerColor, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                done -> Icon(Icons.Filled.Check, contentDescription = null, tint = markerColor, modifier = Modifier.size(if (compactLayout) 19.dp else 22.dp))
+                                failed -> Text("!", color = markerColor, style = MaterialTheme.typography.titleMedium)
+                                cancelled -> Text("Ⅱ", color = markerColor, style = MaterialTheme.typography.titleMedium)
+                                active -> CircularProgressIndicator(
+                                    modifier = Modifier.size(if (compactLayout) 19.dp else 22.dp),
+                                    color = markerColor,
+                                    strokeWidth = 2.dp,
+                                )
+                                else -> Box(Modifier.size(7.dp).clip(CircleShape).background(markerColor))
                             }
                         }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                "${index + 1}. ${steps[index]}",
+                                color = when {
+                                    failed -> Color(0xFFCB3E4D)
+                                    active -> Color(0xFF265EE3)
+                                    else -> Color(0xFF34455F)
+                                },
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = if (compactLayout) 12.sp else 13.sp,
+                                    fontWeight = if (active || done) FontWeight.Bold else FontWeight.SemiBold,
+                                    lineHeight = if (compactLayout) 15.sp else 18.sp,
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            AnimatedVisibility(
+                                visible = active || failed,
+                                enter = fadeIn(tween(150)) + expandVertically(animationSpec = tween(170)),
+                                exit = fadeOut(tween(100)) + shrinkVertically(animationSpec = tween(140)),
+                            ) {
+                                val progressText = if (failed) state.failedProgress else state.progress
+                                val stageDetailRows = buildList<Pair<String, String>> {
+                                    when (index) {
+                                        0 -> {
+                                            add("视频来源" to when (source) {
+                                                VideoSourceKind.YOUTUBE -> "YouTube"
+                                                VideoSourceKind.WEB -> "网页视频"
+                                                VideoSourceKind.LOCAL -> "本地视频"
+                                                VideoSourceKind.UNKNOWN -> "视频"
+                                            })
+                                            state.title.takeIf { it.isNotBlank() }?.let { add("视频" to it) }
+                                            state.channel.takeIf { it.isNotBlank() }?.let { add("频道" to it) }
+                                            if (state.durationMs > 0L) add("时长" to formatFloatingTime(state.durationMs))
+                                            state.selectedQuality.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("清晰度" to it) }
+                                            if (
+                                                source == VideoSourceKind.YOUTUBE &&
+                                                flow != ProcessingFlow.IMPORTED_SUBTITLES &&
+                                                flow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                                            ) {
+                                                VideoProcessingFlowPolicy.youtubeSubtitleDetail(
+                                                    progress = progressText,
+                                                    subtitleTrackStatus = state.subtitleTrackStatus,
+                                                    availableTrackCount = state.availableSubtitleTracks.size,
+                                                )?.let { add("字幕检测" to it) }
+                                            } else {
+                                                compactProcessingProgress(progressText, Phase.PARSING)
+                                                    .takeIf { it.isNotBlank() }
+                                                    ?.let { add("当前任务" to it) }
+                                            }
+                                        }
+                                        1 -> {
+                                            val segmentRegex = Regex("""(?:音轨(?:片段)?|分片|片段|网页音轨)\D{0,18}(\d+)\s*/\s*(\d+)""")
+                                            val segmentMatch = segmentRegex.find(progressText)
+                                                ?: Regex("""(?:已下载|下载中|下载)\D{0,10}(\d+)\s*/\s*(\d+)\D{0,8}(?:分片|片段)""")
+                                                    .find(progressText)
+                                            segmentMatch?.let {
+                                                val completed = it.groupValues[1].toIntOrNull()
+                                                val total = it.groupValues[2].toIntOrNull()
+                                                if (completed != null && total != null) {
+                                                    VideoProcessingFlowPolicy.progressCounterLabel(
+                                                        completed, total, "分片",
+                                                    )?.let { progress -> add("分片进度" to progress) }
+                                                }
+                                            }
+                                            val audioTask = when {
+                                                progressText.contains("刷新") || progressText.contains("失效") -> "刷新音轨链接"
+                                                progressText.contains("yt-dlp", ignoreCase = true) -> "yt-dlp 下载独立音轨"
+                                                segmentMatch != null || progressText.contains("HLS", ignoreCase = true) -> "下载音轨分片"
+                                                progressText.contains("正在选择独立音轨") -> "选择独立音轨"
+                                                progressText.contains("正在从网页媒体源提取") ||
+                                                    progressText.contains("网页媒体流音轨提取") -> "网页媒体流式提取"
+                                                progressText.contains("复用") -> "复用已缓存音频"
+                                                progressText.contains("独立音轨") && progressText.contains("下载") -> "下载独立音轨"
+                                                progressText.contains("提取") -> "提取视频音轨"
+                                                progressText.contains("下载") -> "下载音轨"
+                                                else -> "准备音轨"
+                                            }
+                                            add("当前任务" to audioTask)
+                                            val audioPercent = state.audioProgress?.fraction()
+                                                ?.let { (it * 100f).roundToInt() }
+                                                ?: Regex("""(\d{1,3})%""").find(progressText)
+                                                    ?.groupValues?.get(1)?.toIntOrNull()
+                                            audioPercent?.takeIf { it in 0..100 }?.let {
+                                                add("提取进度" to "$it%")
+                                            }
+                                            val audioLanguage = state.audioTrackLanguage.trim()
+                                            if (audioLanguage.isNotBlank() &&
+                                                audioLanguage.lowercase(java.util.Locale.ROOT) !in setOf("und", "unknown", "undefined")
+                                            ) add("音轨语言" to LangMap.display(audioLanguage))
+                                            processingAudioFormatLabel(state.audioTrackMimeType)?.let {
+                                                add("音频格式" to it)
+                                            }
+                                            if (state.audioTrackDurationMs > 0L) {
+                                                add("音频时长" to formatFloatingTime(state.audioTrackDurationMs))
+                                            }
+                                            if (state.audioTrackChannelCount > 0) {
+                                                val channels = when (state.audioTrackChannelCount) {
+                                                    1 -> "单声道"
+                                                    2 -> "立体声"
+                                                    else -> "${state.audioTrackChannelCount} 声道"
+                                                }
+                                                add("声道" to channels)
+                                            }
+                                        }
+                                        2 -> {
+                                            state.transcriptionEngineName.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("转写引擎" to it) }
+                                            state.sourceLang.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("识别语言" to LangMap.display(it)) }
+                                            progressText.takeIf { it.isNotBlank() }?.let {
+                                                add("当前任务" to it)
+                                            }
+                                            if (state.transcriptionTotalSegments > 0) {
+                                                VideoProcessingFlowPolicy.progressCounterLabel(
+                                                    state.transcriptionCompletedSegments,
+                                                    state.transcriptionTotalSegments,
+                                                    "段",
+                                                )?.let { add("处理进度" to it) }
+                                            } else {
+                                                state.transcriptionProgressPercent?.takeIf { it in 0..100 }?.let {
+                                                    add("处理进度" to "$it%")
+                                                }
+                                            }
+                                            if (state.lines.isNotEmpty()) add("已识别字幕" to "${state.lines.size} 条")
+                                        }
+                                        3 -> {
+                                            if (!state.manualTranslationModeEnabled && !state.manualTranslationWaiting) {
+                                                val engine = state.engineName.trim().ifBlank { translationEngineDisplayName }
+                                                if (engine.isNotBlank()) add("翻译引擎" to engine)
+                                            } else {
+                                                add("翻译方式" to "外部译文")
+                                            }
+                                            add("翻译方向" to "$sourceLanguageDisplay → 简体中文")
+                                            if (state.totalLines > 0) {
+                                                val translated = state.translatedLineCount.coerceIn(0, state.totalLines)
+                                                VideoProcessingFlowPolicy.progressCounterLabel(
+                                                    translated, state.totalLines, "行",
+                                                )?.let { add("翻译进度" to it) }
+                                            }
+                                            VideoProcessingFlowPolicy.translationBatchLabel(
+                                                state.translationCurrentBatch,
+                                                state.translationTotalBatches,
+                                                state.translationRetryCount,
+                                            )?.let { add("翻译批次" to it) }
+                                            val translationTask = when {
+                                                state.manualTranslationWaiting -> "等待导入外部译文"
+                                                state.manualTranslationModeEnabled -> "外部翻译模式"
+                                                progressText.isNotBlank() -> progressText
+                                                else -> "准备翻译字幕"
+                                            }
+                                            add("当前状态" to translationTask)
+                                        }
+                                        4 -> {
+                                            state.ttsEngineName.trim().takeIf { it.isNotBlank() }
+                                                ?.let { add("配音引擎" to it) }
+                                            add("音色" to dubbingVoiceDisplay)
+                                            if (state.totalLines > 0) {
+                                                val prepared = state.preparedCount.coerceIn(0, state.totalLines)
+                                                VideoProcessingFlowPolicy.progressCounterLabel(
+                                                    prepared, state.totalLines, "句",
+                                                )?.let { add("配音准备" to it) }
+                                            }
+                                            progressText.takeIf { it.isNotBlank() }?.let {
+                                                add("合成任务" to it)
+                                            }
+                                            state.dubbingStatus.trim().takeIf { it.isNotBlank() }?.let {
+                                                add("引擎状态" to it)
+                                            }
+                                        }
+                                    }
+                                }
+                                stageDetailRows.forEach { (label, value) ->
+                                    val detailMaxLines = when (label) {
+                                        "视频", "频道", "当前任务", "当前状态", "合成任务", "引擎状态" -> 2
+                                        else -> 1
+                                    }
+                                    val isProgressRow = label in setOf(
+                                        "分片进度", "提取进度", "处理进度", "翻译进度", "配音准备",
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(
+                                            if (compactLayout) 8.dp else 10.dp,
+                                        ),
+                                        verticalAlignment = androidx.compose.ui.Alignment.Top,
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            modifier = Modifier.width(if (compactLayout) 68.dp else 76.dp),
+                                            color = Color(0xFF8995A6),
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = if (compactLayout) 11.sp else 12.sp,
+                                                lineHeight = if (compactLayout) 14.sp else 16.sp,
+                                                fontWeight = FontWeight.Medium,
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = value,
+                                            modifier = Modifier.weight(1f),
+                                            color = if (isProgressRow) Color(0xFF3E526F) else Color(0xFF586A80),
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = if (compactLayout) 11.sp else 12.sp,
+                                                lineHeight = if (compactLayout) 14.sp else 16.sp,
+                                                fontWeight = if (isProgressRow) FontWeight.SemiBold else FontWeight.Normal,
+                                            ),
+                                            maxLines = detailMaxLines,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        val stageBadgeText = when {
+                            stageSkipped -> "已跳过"
+                            done -> "已完成"
+                            failed -> "失败"
+                            cancelled -> "已取消"
+                            paused -> "已暂停"
+                            waitingForStageEngine -> if (index == 2) "等待转写引擎" else "等待配音引擎"
+                            waitingForExternalSubtitle -> "等待译文"
+                            active -> "进行中"
+                            else -> "等待中"
+                        }
+                        val stageBadgeBg = when {
+                            stageSkipped -> Color(0xFFF1F4F8)
+                            done -> Color(0xFFE2F7ED)
+                            failed -> Color(0xFFFFE6E8)
+                            active && !paused -> Color(0xFFDFEAFF)
+                            paused || cancelled -> Color(0xFFFFF0D8)
+                            else -> Color(0xFFF1F4F8)
+                        }
+                        val stageBadgeColor = when {
+                            stageSkipped -> Color(0xFF8794A8)
+                            done -> Color(0xFF14996C)
+                            failed -> Color(0xFFCB3C4C)
+                            active && !paused -> Color(0xFF2862EA)
+                            paused || cancelled -> Color(0xFFA86B13)
+                            else -> Color(0xFF8794A8)
+                        }
                         Text(
-                            steps[index],
-                            modifier = Modifier.weight(1f),
-                            color = when {
-                                failed -> Color(0xFFC83F4F)
-                                active -> Color(0xFF263849)
-                                else -> Color(0xFF46515D)
-                            },
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = if (compactLayout) 11.sp else 12.sp,
-                                fontWeight = if (active || done) FontWeight.SemiBold else FontWeight.Normal,
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            statusText,
-                            color = markerColor,
+                            stageBadgeText,
+                            color = stageBadgeColor,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(stageBadgeBg)
+                                .padding(horizontal = if (compactLayout) 4.dp else 8.dp, vertical = if (compactLayout) 4.dp else 5.dp),
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = if (compactLayout) 9.sp else 10.sp,
-                                fontWeight = if (active || failed) FontWeight.SemiBold else FontWeight.Normal,
+                                fontWeight = FontWeight.Bold,
                             ),
+                            maxLines = 1,
                         )
+                    }
+                    if (visibleIndex < visibleStages.lastIndex) {
+                        Box(
+                            Modifier
+                                .padding(start = 21.dp)
+                                .width(2.dp)
+                                .height(if (compactLayout) 5.dp else 7.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE9EEF7)),
+                        )
+                    }
+                }
+                if (state.phase == Phase.ERROR) {
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (isCancelled) Color(0xFFFFF7E9) else Color(0xFFFFF1F2))
+                            .border(
+                                1.dp,
+                                if (isCancelled) Color(0xFFFFE4B5) else Color(0xFFFFD8DD),
+                                RoundedCornerShape(14.dp),
+                            )
+                            .padding(12.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                if (isCancelled) "处理已取消" else "处理未能完成",
+                                color = if (isCancelled) Color(0xFFA86B13) else Color(0xFFCB3E4D),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            )
+                            Text(
+                                state.error.orEmpty().ifBlank { detail },
+                                color = if (isCancelled) Color(0xFF8C6C3F) else Color(0xFF9F4D56),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Button(
+                                onClick = onRetry,
+                                modifier = Modifier.fillMaxWidth().height(43.dp),
+                                shape = RoundedCornerShape(13.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF3268F5),
+                                    contentColor = Color.White,
+                                ),
+                            ) {
+                                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text(if (isCancelled) "重新开始处理" else "重试当前处理", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(8.dp))
-
-        ProcessingWorkspace(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            state = state,
-            activeStage = currentStage.coerceIn(0, steps.lastIndex),
-            source = source,
-            sourceLanguageDisplay = sourceLanguageDisplay,
-            translationEngineDisplayName = translationEngineDisplayName,
-            isLocalTranslation = isLocalTranslation ||
-                Regex("SMaLL-100|OPUS-MT|ML Kit", RegexOption.IGNORE_CASE).containsMatchIn(state.engineName),
-            selectedTtsEngineId = selectedTtsEngineId,
-            dubbingVoiceDisplay = dubbingVoiceDisplay,
-            compactLayout = compactLayout,
-            isError = isError,
-            isCancelled = isCancelled,
-        )
+    }
 
     if (allSubtitlesDialogVisible) {
         AllSubtitlesDialog(
@@ -2394,476 +2723,6 @@ private fun VideoParsingPage(
             onDownloadSubtitle = onDownloadSubtitle,
         )
     }
-}
-
-@Composable
-private fun ProcessingWorkspace(
-    modifier: Modifier = Modifier,
-    state: PlayerUiState,
-    activeStage: Int,
-    source: VideoSourceKind,
-    sourceLanguageDisplay: String,
-    translationEngineDisplayName: String,
-    isLocalTranslation: Boolean,
-    selectedTtsEngineId: String,
-    dubbingVoiceDisplay: String,
-    compactLayout: Boolean,
-    isError: Boolean,
-    isCancelled: Boolean,
-) {
-    val stageTitle = when (activeStage) {
-        0 -> "视频信息"
-        1 -> "音轨提取"
-        2 -> "转写内容"
-        3 -> "翻译内容"
-        else -> "配音合成"
-    }
-    // Prefer the engine that actually ran; preferences are only a fallback before publication.
-    val isLocalTts = if (state.ttsEngineName.isNotBlank()) {
-        state.ttsEngineName.contains("Kokoro", ignoreCase = true) ||
-            state.ttsEngineName.contains("Piper", ignoreCase = true) ||
-            state.ttsEngineName.contains("系统TTS", ignoreCase = true) ||
-            state.ttsEngineName.contains("本地", ignoreCase = true)
-    } else {
-        selectedTtsEngineId in setOf("system", "piper", "kokoro")
-    }
-    val isLocalAsr = state.transcriptionEngineName.contains("本地", ignoreCase = true)
-    val audio = state.audioProgress
-    val audioPercent = audio?.percent?.takeIf { it in 0..100 }
-        ?: audio?.fraction()?.let { (it * 100f).roundToInt() }
-    val transcriptionCount = when {
-        state.transcriptionTotalSegments > 0 ->
-            "${state.transcriptionCompletedSegments.coerceIn(0, state.transcriptionTotalSegments)} / ${state.transcriptionTotalSegments} 段"
-        state.transcriptionProgressPercent != null ->
-            "${state.transcriptionProgressPercent.coerceIn(0, 100)}%"
-        state.lines.isNotEmpty() -> "${state.lines.size} 条字幕"
-        else -> ""
-    }
-    val translationCount = if (state.totalLines > 0) {
-        "${state.translatedLineCount.coerceIn(0, state.totalLines)} / ${state.totalLines} 条"
-    } else ""
-    val dubbingCount = if (state.totalLines > 0) {
-        "${state.preparedCount.coerceIn(0, state.totalLines)} / ${state.totalLines} 条"
-    } else ""
-    val localModeLabel = when {
-        state.manualTranslationModeEnabled || state.manualTranslationWaiting -> "外部"
-        isLocalTranslation -> "本地"
-        else -> "在线"
-    }
-    val translationPreview = state.lines.asReversed().firstOrNull {
-        !SubtitleParsers.preferredTranslationText(it).isNullOrBlank()
-    } ?: state.lines.lastOrNull()
-    val dubbingPreview = state.lines.getOrNull(
-        state.preparedCount.coerceIn(0, (state.lines.size - 1).coerceAtLeast(0)),
-    ) ?: state.lines.lastOrNull()
-    val dubbingStillPreparing = state.dubbingOn && state.totalLines > 0 &&
-        state.preparedCount.coerceAtLeast(0) < state.totalLines
-    val isComplete = state.phase == Phase.READY && !state.dubbingHasErrors && !dubbingStillPreparing
-    val statusText = when {
-        isCancelled -> "已取消"
-        isError -> "处理失败"
-        state.isProcessingPaused -> "已暂停"
-        state.waitingForTranscriptionEngine && activeStage == 2 -> "等待转写引擎"
-        state.waitingForDubbingEngine && activeStage == 4 -> "等待配音引擎"
-        state.manualTranslationWaiting && activeStage == 3 -> "等待译文"
-        isComplete -> "已完成"
-        else -> "正在处理"
-    }
-    val statusColor = when {
-        isError -> Color(0xFFC43F4F)
-        isCancelled || state.isProcessingPaused -> Color(0xFF9A6B22)
-        isComplete -> Color(0xFF16845F)
-        else -> Color(0xFF347BCB)
-    }
-    val statusBackground = when {
-        isError -> Color(0xFFFFEFF0)
-        isCancelled || state.isProcessingPaused -> Color(0xFFFFF5E6)
-        isComplete -> Color(0xFFEAF7F0)
-        else -> Color(0xFFEDF3FA)
-    }
-
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(Color.White)
-            .border(1.dp, Color(0xFFE8EDF1), RoundedCornerShape(18.dp))
-            .padding(horizontal = 13.dp, vertical = if (compactLayout) 10.dp else 12.dp),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(if (compactLayout) 8.dp else 10.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    stageTitle,
-                    color = Color(0xFF252B32),
-                    style = MaterialTheme.typography.titleSmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = if (compactLayout) 13.sp else 14.sp,
-                    ),
-                )
-                Spacer(Modifier.weight(1f))
-                Box(
-                    Modifier.clip(CircleShape).background(statusBackground)
-                        .padding(horizontal = 9.dp, vertical = 5.dp),
-                ) {
-                    Text(
-                        statusText,
-                        color = statusColor,
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium),
-                    )
-                }
-            }
-
-            when (activeStage) {
-                0 -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(11.dp),
-                    ) {
-                        Box(
-                            Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF3F5F7)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color(0xFF687582), modifier = Modifier.size(23.dp))
-                        }
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                state.title.ifBlank {
-                                    when (source) {
-                                        VideoSourceKind.YOUTUBE -> "YouTube 视频"
-                                        VideoSourceKind.WEB -> "网页视频"
-                                        VideoSourceKind.LOCAL -> "本地视频"
-                                        VideoSourceKind.UNKNOWN -> "视频"
-                                    }
-                                },
-                                color = Color(0xFF303840),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                when (source) {
-                                    VideoSourceKind.YOUTUBE -> "YouTube"
-                                    VideoSourceKind.WEB -> "网页视频"
-                                    VideoSourceKind.LOCAL -> "本地文件"
-                                    VideoSourceKind.UNKNOWN -> "视频来源"
-                                },
-                                color = Color(0xFF88929B),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            )
-                        }
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        if (state.durationMs > 0L) ProcessingWorkspaceValue("时长", formatFloatingTime(state.durationMs), Modifier.weight(1f))
-                        if (state.selectedQuality.isNotBlank()) ProcessingWorkspaceValue("清晰度", state.selectedQuality, Modifier.weight(1f))
-                        if (source == VideoSourceKind.YOUTUBE && state.availableSubtitleTracks.isNotEmpty()) {
-                            ProcessingWorkspaceValue("字幕轨", "${state.availableSubtitleTracks.size} 条", Modifier.weight(1f))
-                        }
-                    }
-                    if (state.channel.isNotBlank()) ProcessingWorkspaceValue("频道", state.channel, Modifier.fillMaxWidth())
-                    if (state.progress.isNotBlank()) {
-                        Text(
-                            compactProcessingProgress(state.progress, Phase.PARSING).ifBlank { state.progress },
-                            color = Color(0xFF7D8791),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-
-                1 -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(9.dp),
-                    ) {
-                        Box(
-                            Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(Color(0xFFF0F5FA)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Filled.Headphones, contentDescription = null, tint = Color(0xFF4D7BA8), modifier = Modifier.size(21.dp))
-                        }
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                state.audioTrackLanguage.takeIf { it.isNotBlank() }?.let { LangMap.display(it) + " 音轨" }
-                                    ?: "正在准备音轨",
-                                color = Color(0xFF303840),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            )
-                            Text(
-                                listOfNotNull(
-                                    processingAudioFormatLabel(state.audioTrackMimeType),
-                                    state.audioTrackChannelCount.takeIf { it > 0 }?.let {
-                                        when (it) {
-                                            1 -> "单声道"
-                                            2 -> "立体声"
-                                            else -> "${it} 声道"
-                                        }
-                                    },
-                                ).joinToString(" · ").ifBlank { "音频格式待识别" },
-                                color = Color(0xFF88929B),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            )
-                        }
-                    }
-                    if (audio != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.Bottom,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                AudioDownloadProgressFormatter.formatBytes(audio.downloadedBytes),
-                                color = Color(0xFF252B32),
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontSize = if (compactLayout) 20.sp else 22.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                ),
-                            )
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                when {
-                                    audio.totalBytes != null && audio.totalBytes > 0L ->
-                                        (if (audio.totalIsEstimate) "预计 / " else "/ ") +
-                                            AudioDownloadProgressFormatter.formatBytes(audio.totalBytes)
-                                    else -> "已提取"
-                                },
-                                color = Color(0xFF8A949D),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            )
-                        }
-                        if (audioPercent != null) {
-                            LinearProgressIndicator(
-                                progress = { audioPercent.coerceIn(0, 100) / 100f },
-                                modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape),
-                                color = Color(0xFF3985D5),
-                                trackColor = Color(0xFFEDF0F3),
-                            )
-                            Text(
-                                "${audioPercent}% · 音频提取",
-                                color = Color(0xFF77828D),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                            )
-                        }
-                    } else if (state.progress.isNotBlank()) {
-                        Text(
-                            compactProcessingProgress(state.progress, Phase.DOWNLOADING_AUDIO).ifBlank { state.progress },
-                            color = Color(0xFF626D78),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (state.audioTrackDurationMs > 0L) {
-                        ProcessingWorkspaceValue("音轨时长", formatFloatingTime(state.audioTrackDurationMs), Modifier.fillMaxWidth())
-                    }
-                }
-
-                2 -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                state.transcriptionEngineName.ifBlank { "转写引擎待确认" },
-                                color = Color(0xFF303840),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            )
-                            Text(
-                                state.sourceLang.takeIf { it.isNotBlank() }?.let { LangMap.display(it) } ?: "识别语言待确定",
-                                color = Color(0xFF87919A),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            )
-                        }
-                        ProcessingModeTag(if (isLocalAsr) "本地" else "在线", isLocalAsr)
-                    }
-                    if (transcriptionCount.isNotBlank()) {
-                        Text("已识别  $transcriptionCount", color = Color(0xFF4C5864), style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
-                    }
-                    val transcriptPreview = state.lines.takeLast(2)
-                    if (transcriptPreview.isNotEmpty()) {
-                        ProcessingPreviewSurface {
-                            transcriptPreview.forEachIndexed { index, line ->
-                                if (index > 0) HorizontalDivider(color = Color(0xFFE9EDF0))
-                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text(formatFloatingTime(line.startMs), color = Color(0xFF9AA2AA), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
-                                    Text(
-                                        line.text,
-                                        color = Color(0xFF39434D),
-                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        Text("识别出的字幕会显示在这里", color = Color(0xFF98A0A8), style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                3 -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) "外部导入译文"
-                                else translationEngineDisplayName,
-                                color = Color(0xFF303840),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            )
-                            Text(
-                                "$sourceLanguageDisplay → 简体中文",
-                                color = Color(0xFF87919A),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            )
-                        }
-                        ProcessingModeTag(
-                            if (localModeLabel == "外部") "外部" else localModeLabel,
-                            localModeLabel == "本地",
-                        )
-                    }
-                    if (translationCount.isNotBlank()) {
-                        Text("已翻译  $translationCount", color = Color(0xFF4C5864), style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
-                    }
-                    VideoProcessingFlowPolicy.translationBatchLabel(
-                        state.translationCurrentBatch,
-                        state.translationTotalBatches,
-                        state.translationRetryCount,
-                    )?.let {
-                        Text(it, color = Color(0xFF8A949D), style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp))
-                    }
-                    translationPreview?.let { line ->
-                        ProcessingPreviewSurface {
-                            Text("原文", color = Color(0xFF9AA2AA), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
-                            Text(line.text, color = Color(0xFF66717B), style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            HorizontalDivider(color = Color(0xFFE9EDF0))
-                            Text("中文译文", color = Color(0xFF9AA2AA), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
-                            Text(
-                                SubtitleParsers.preferredTranslationText(line) ?: "等待当前字幕译文",
-                                color = Color(0xFF252B32),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    } ?: Text("译文生成后会显示在这里", color = Color(0xFF98A0A8), style = MaterialTheme.typography.bodySmall)
-                }
-
-                else -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                state.ttsEngineName.ifBlank { "配音引擎待确认" },
-                                color = Color(0xFF303840),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            )
-                            Text(
-                                "音色 · $dubbingVoiceDisplay",
-                                color = Color(0xFF87919A),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            )
-                        }
-                        ProcessingModeTag(if (isLocalTts) "本地" else "在线", isLocalTts)
-                    }
-                    if (dubbingCount.isNotBlank()) {
-                        Text("已合成  $dubbingCount", color = Color(0xFF4C5864), style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
-                    }
-                    val audioReadyText = if (state.totalLines > 0) {
-                        "可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} / ${state.totalLines} 条"
-                    } else ""
-                    if (audioReadyText.isNotBlank() || state.dubbingStatus.isNotBlank()) {
-                        Text(
-                            listOf(audioReadyText, state.dubbingStatus).filter { it.isNotBlank() }.joinToString(" · "),
-                            color = Color(0xFF8A949D),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    dubbingPreview?.let { line ->
-                        ProcessingPreviewSurface {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Icon(Icons.Filled.Headphones, contentDescription = null, tint = Color(0xFF5482B0), modifier = Modifier.size(16.dp))
-                                Text("当前合成内容", color = Color(0xFF8A949D), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
-                            }
-                            Text(
-                                SubtitleParsers.preferredTranslationText(line) ?: line.text,
-                                color = Color(0xFF252B32),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    } ?: Text("待合成的配音内容会显示在这里", color = Color(0xFF98A0A8), style = MaterialTheme.typography.bodySmall)
-                }
-            }
-
-            if (isError || isCancelled) {
-                ProcessingPreviewSurface {
-                    Text(
-                        if (isCancelled) "处理已取消" else "处理遇到问题",
-                        color = if (isCancelled) Color(0xFF94691F) else Color(0xFFC43F4F),
-                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                    )
-                    Text(
-                        state.error.orEmpty().ifBlank { "当前阶段尚未完成" },
-                        color = Color(0xFF707A84),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProcessingWorkspaceValue(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(label, color = Color(0xFF929AA2), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
-        Text(
-            value,
-            color = Color(0xFF3E4852),
-            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun ProcessingModeTag(label: String, local: Boolean) {
-    val color = if (local) Color(0xFF23865E) else Color(0xFF527AA5)
-    val background = if (local) Color(0xFFEAF7F0) else Color(0xFFEEF4FA)
-    Box(Modifier.clip(CircleShape).background(background).padding(horizontal = 9.dp, vertical = 5.dp)) {
-        Text(label, color = color, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium))
-    }
-}
-
-@Composable
-private fun ProcessingPreviewSurface(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFFF7F8F9))
-            .padding(horizontal = 11.dp, vertical = 9.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        content = content,
-    )
 }
 
 @Composable
