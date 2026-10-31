@@ -3001,50 +3001,38 @@ private fun StageProgressVisual(
 ) {
     val transition = rememberInfiniteTransition(label = "stageProgressMotion")
     val pulse by transition.animateFloat(
-        initialValue = 0.45f,
+        initialValue = if (isAnimating) 0.45f else 1f,
         targetValue = 1f,
-        animationSpec = if (isAnimating) {
-            infiniteRepeatable(
-                animation = tween(720),
-                repeatMode = RepeatMode.Reverse,
-            )
-        } else {
-            tween(durationMillis = 0)
-        },
+        animationSpec = infiniteRepeatable(
+            animation = tween(720),
+            repeatMode = RepeatMode.Reverse,
+        ),
         label = "stageProgressPulse",
     )
     val scanPosition by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = if (isAnimating && isIndeterminate) {
-            infiniteRepeatable(
-                animation = tween(
-                    durationMillis = 1150,
-                    easing = androidx.compose.animation.core.LinearEasing,
-                ),
-                repeatMode = RepeatMode.Restart,
-            )
-        } else {
-            tween(durationMillis = 0)
-        },
+        targetValue = if (isAnimating && isIndeterminate) 1f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 1150,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
         label = "stageProgressScan",
     )
     // Keep the whole completed audio range alive: a travelling wave repeatedly
     // changes every lit bar's height instead of pulsing only the final bar.
     val waveformPhase by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 6.2831855f,
-        animationSpec = if (stageIndex == 1 && isAnimating && !isIndeterminate) {
-            infiniteRepeatable(
-                animation = tween(
-                    durationMillis = 1350,
-                    easing = androidx.compose.animation.core.LinearEasing,
-                ),
-                repeatMode = RepeatMode.Restart,
-            )
-        } else {
-            tween(durationMillis = 0)
-        },
+        targetValue = if (stageIndex == 1 && isAnimating && !isIndeterminate) 6.2831855f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 1350,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
         label = "audioWaveformPhase",
     )
 
@@ -3052,21 +3040,17 @@ private fun StageProgressVisual(
     // completed range. Its clip boundary still follows the real synthesis progress.
     val dubbingWaveformPhase by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 6.2831855f,
-        animationSpec = if (
+        targetValue = if (
             stageIndex == 4 && isAnimating && !isIndeterminate &&
             !isPaused && !isFailed && !isCompleted && !isSkipped
-        ) {
-            infiniteRepeatable(
-                animation = tween(
-                    durationMillis = 980,
-                    easing = androidx.compose.animation.core.LinearEasing,
-                ),
-                repeatMode = RepeatMode.Restart,
-            )
-        } else {
-            tween(durationMillis = 0)
-        },
+        ) 6.2831855f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 980,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
         label = "dubbingEcgWaveformPhase",
     )
 
