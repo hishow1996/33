@@ -78,11 +78,22 @@ class DubbingReadinessTest {
         assertEquals(3, readiness.readyCount())
         assertEquals(2, readiness.audioReadyCount())
 
-        readiness.markPending(0)
+        // Repeating the same result must not double-count an already audible cue.
+        readiness.markPrepared(0, hasAudio = true)
+        assertEquals(2, readiness.audioReadyCount())
+
+        // Replacing audible output with a silent fallback decrements the total exactly once.
+        readiness.markPrepared(0, hasAudio = false)
+        assertEquals(1, readiness.audioReadyCount())
+        readiness.markPrepared(0, hasAudio = false)
         assertEquals(1, readiness.audioReadyCount())
 
+        readiness.markPending(2)
+        assertEquals(0, readiness.audioReadyCount())
+
+        // A retry that later succeeds adds the cue back to the count.
         readiness.markPrepared(1, hasAudio = true)
-        assertEquals(2, readiness.audioReadyCount())
+        assertEquals(1, readiness.audioReadyCount())
 
         readiness.clear()
         assertEquals(0, readiness.audioReadyCount())

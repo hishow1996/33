@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Tracks per-cue output readiness independently of the contiguous pre-synthesis progress.
@@ -9,26 +10,37 @@ import java.util.concurrent.ConcurrentHashMap
 internal class DubbingReadiness {
     // true = synthesized audio is ready; false = intentionally silent/fallback to source audio.
     private val states = ConcurrentHashMap<Int, Boolean>()
+    // Maintain the audible-row total incrementally. Recounting every value after each cue
+    // mutation turns a long subtitle run into repeated full-map scans (quadratic total work).
+    private val audioReadyCueCount = AtomicInteger(0)
 
+    @Synchronized
     fun clear() {
         states.clear()
+        audioReadyCueCount.set(0)
     }
 
+    @Synchronized
     fun markPrepared(index: Int, hasAudio: Boolean) {
         if (index < 0) return
-        states[index] = hasAudio
+        val previous = states.put(index, hasAudio)
+        when {
+            hasAudio && previous != true -> audioReadyCueCount.incrementAndGet()
+            !hasAudio && previous == true -> audioReadyCueCount.decrementAndGet()
+        }
     }
 
     /** Reopen a cue after a previously valid cache entry disappears or fails validation. */
+    @Synchronized
     fun markPending(index: Int) {
         if (index < 0) return
-        states.remove(index)
+        if (states.remove(index) == true) audioReadyCueCount.decrementAndGet()
     }
 
     /** Number of ready cues, including out-of-order cues prioritized after a seek. */
     fun readyCount(): Int = states.size
-    /** Number of ready cues with usable audio; silent/source-fallback rows are excluded. */
-    fun audioReadyCount(): Int = states.values.count { it }
+    /** O(1) count of ready cues with usable audio; silent/source-fallback rows are excluded. */
+    fun audioReadyCount(): Int = audioReadyCueCount.get()
 
     fun isReady(index: Int): Boolean = index >= 0 && states.containsKey(index)
 
