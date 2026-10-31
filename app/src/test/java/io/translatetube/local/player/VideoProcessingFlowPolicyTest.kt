@@ -395,6 +395,47 @@ class VideoProcessingFlowPolicyTest {
         )
     }
     @Test
+    fun webVideosRequireCompleteDubbingAndDisableProgressivePlayerEntry() {
+        assertTrue(
+            VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(VideoSourceKind.WEB),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(VideoSourceKind.YOUTUBE),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(VideoSourceKind.LOCAL),
+        )
+
+        assertFalse(
+            VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
+                VideoSourceKind.WEB,
+                hasTtsEngine = true,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
+                VideoSourceKind.YOUTUBE,
+                hasTtsEngine = true,
+            ),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
+                VideoSourceKind.YOUTUBE,
+                hasTtsEngine = false,
+            ),
+        )
+
+        // A transient READY state must not reveal a web player while any dubbing row is pending.
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                progressiveTtsPlayback = false,
+                dubbingPreparationIncomplete = true,
+            ),
+        )
+    }
+
+    @Test
     fun readyNotificationDoesNotClaimDubbingIsCompleteWhileEnginesAreMissing() {
         assertEquals(
             "视频可播放 · 等待转写引擎",

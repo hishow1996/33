@@ -716,7 +716,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     )
     // The service gives the first usable cue a short startup window; once playback starts,
     // later cues can continue generating PCM in the background for Kokoro, Piper and System TTS.
-    val progressiveTtsPlayback = state.ttsEngineName.isNotBlank()
+    val progressiveTtsPlayback = VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
+        source = VideoProcessingFlowPolicy.sourceKind(state.key),
+        hasTtsEngine = state.ttsEngineName.isNotBlank(),
+    )
     // A failed YouTube seek may trigger one bounded stream-refresh attempt. Keep the player
     // visible during those two explicitly-labelled recovery steps instead of showing the parser.
     val playbackRecoveryInProgress = state.key == requestKey && (

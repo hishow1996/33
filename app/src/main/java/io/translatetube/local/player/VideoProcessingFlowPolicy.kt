@@ -27,6 +27,14 @@ object VideoProcessingFlowPolicy {
         else -> VideoSourceKind.UNKNOWN
     }
 
+    /** Web videos must finish the complete generated-PCM queue before playback is allowed. */
+    fun requiresCompleteDubbingBeforePlayback(source: VideoSourceKind): Boolean =
+        source == VideoSourceKind.WEB
+
+    /** Keep progressive startup for other sources, but never expose a web player on a partial queue. */
+    fun allowsProgressiveTtsPlayback(source: VideoSourceKind, hasTtsEngine: Boolean): Boolean =
+        hasTtsEngine && !requiresCompleteDubbingBeforePlayback(source)
+
     fun pageTitle(source: VideoSourceKind, flow: ProcessingFlow = ProcessingFlow.AUTO, failed: Boolean = false): String {
         if (flow == ProcessingFlow.IMPORTED_SUBTITLES || flow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES) {
             return if (failed) "字幕处理失败" else if (flow == ProcessingFlow.IMPORTED_SUBTITLES) "字幕翻译配音" else "已翻译字幕配音"

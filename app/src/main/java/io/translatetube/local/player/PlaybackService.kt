@@ -2204,10 +2204,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     /**
-     * Generated-PCM dubbing must be fully prepared before the video starts. Direct System TTS
-     * speaks live on the timeline and has no PCM batch to wait for, so it keeps its small startup
-     * buffer instead. Failed cues are still counted as prepared by DubbingEngine and safely fall
-     * back to source audio rather than blocking the whole video forever.
+     * Web videos wait for the full generated-PCM queue before playback so the player cannot briefly
+     * open while stage 5 is still running. Other sources retain the short rolling startup buffer.
+     * Direct System TTS speaks live on the timeline and has no PCM batch to wait for. Failed cues
+     * are counted as prepared and safely fall back to source audio.
      */
     private suspend fun awaitDubbingSynthesisBeforePlayback(
         sessionKey: String,
@@ -2221,11 +2221,18 @@ class PlaybackService : MediaSessionService() {
         val firstSpeechCue = spokenIndices.firstOrNull() ?: return
         engine.prioritizeAround(firstSpeechCue, lookAhead = 12)
 
-        // 滚动缓冲：前几句就绪即开播，合成在后台继续追赶（VideoLingo 式流水线的实时版）。
-        // 不再等全部合成完成——视频永不因配音暂停；30 秒兜底超时防极端场景卡死。
+        val waitForCompleteQueue = VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(
+            VideoProcessingFlowPolicy.sourceKind(sessionKey),
+        )
+        // Web playback must not start after only the first few cues: keep stage 5 active until
+        // every subtitle row has a prepared PCM result (including rows safely marked silent).
+        // Other sources retain the existing short rolling startup buffer.
         val needReady = minOf(6, spokenIndices.size)
-        val deadlineNs = System.nanoTime() +
-            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(30_000L)
+        val deadlineNs = if (waitForCompleteQueue) {
+            Long.MAX_VALUE
+        } else {
+            System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(30_000L)
+        }
         var lastReportedCount = -1
         while (true) {
             awaitProcessingResumed(sessionKey, pipelineGeneration)
@@ -2240,15 +2247,41 @@ class PlaybackService : MediaSessionService() {
                 updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                     state.copy(
                         phase = Phase.SYNTHESIZING,
-                        progress = "正在合成中文配音（$prepared/${lines.size}），前几句就绪即开始播放",
+                        progress = if (waitForCompleteQueue) {
+                            "正在合成中文配音（$prepared/${lines.size}），全部配音就绪后开始播放"
+                        } else {
+                            "正在合成中文配音（$prepared/${lines.size}），前几句就绪即开始播放"
+                        },
                     )
                 }
             }
-            val readyAhead = spokenIndices
-                .take(needReady)
-                .count { engine.isPrepared(it) || engine.isSilent(it) }
-            if (readyAhead >= needReady) break
-            if (System.nanoTime() >= deadlineNs) break
+            if (waitForCompleteQueue) {
+                if (prepared >= lines.size) break
+                // A terminal provider/runtime stop must never fall through to playback with a
+                // partially prepared web queue. Keep the user on stage 5 and preserve the hint.
+                if (!engine.isPreparing) {
+                    val remaining = (lines.size - prepared).coerceAtLeast(0)
+                    updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                        state.copy(
+                            waitingForDubbingEngine = true,
+                            dubbingStatus = "${state.ttsEngineName.ifBlank { "配音引擎" }} 尚有 ${remaining} 行未准备完成",
+                            progress = "网页视频配音尚有 ${remaining} 行未完成，视频保持暂停",
+                            noModelHint = state.noModelHint
+                                ?: "网页视频需要全部中文配音准备完成后才会播放。当前配音任务已停止，请检查网络或配音引擎后重试。",
+                        )
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == sessionKey && ui.value.key == sessionKey) pm.pause()
+                    }
+                    return
+                }
+            } else {
+                val readyAhead = spokenIndices
+                    .take(needReady)
+                    .count { engine.isPrepared(it) || engine.isSilent(it) }
+                if (readyAhead >= needReady) break
+                if (System.nanoTime() >= deadlineNs) break
+            }
             kotlinx.coroutines.delay(100L)
         }
 
