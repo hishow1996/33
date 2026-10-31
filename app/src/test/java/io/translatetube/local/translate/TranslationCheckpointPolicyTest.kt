@@ -7,11 +7,11 @@ import org.junit.Test
 
 class TranslationCheckpointPolicyTest {
     @Test
-    fun persistsFirstPeriodicAndFinalBatches() {
+    fun persistsEverySuccessfulBatchByDefault() {
         val saved = (1..10).filter {
             TranslationCheckpointPolicy.shouldPersistCheckpoint(it, totalBatches = 10)
         }
-        assertEquals(listOf(1, 3, 6, 9, 10), saved)
+        assertEquals((1..10).toList(), saved)
     }
 
     @Test
