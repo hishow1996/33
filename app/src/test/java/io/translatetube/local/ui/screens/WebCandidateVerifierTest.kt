@@ -92,6 +92,58 @@ class WebCandidateVerifierTest {
     }
 
     @Test
+    fun forbiddenHlsResponseRetainsBothHeadAndRangeEvidenceWithoutSecrets() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            repeat(2) {
+                server.enqueue(
+                    MockResponse()
+                        .setResponseCode(403)
+                        .setHeader("Content-Type", "application/vnd.apple.mpegurl")
+                        .setHeader("Server", "cloudflare")
+                        .setHeader("Cache-Control", "private, no-store, max-age=30")
+                        .setHeader("WWW-Authenticate", "Bearer do-not-log-this-token")
+                        .setHeader("Location", "https://login.example/continue?token=do-not-log")
+                        .setHeader("Access-Control-Allow-Origin", "https://watch.example")
+                        .setHeader("Access-Control-Allow-Credentials", "true")
+                        .setHeader("Vary", "Origin, Accept-Encoding")
+                )
+            }
+
+            val result = WebCandidateVerifier.verifyDetailed(
+                client = WebCandidateVerifier.buildClient(),
+                url = server.url("/master.m3u8?signature=never-log-this").toString(),
+                referer = "https://watch.example/player?id=private",
+                cookie = "session=never-log-this",
+                userAgent = "test-agent",
+            )
+
+            assertEquals(false, result.verified)
+            assertEquals(403, result.httpStatus)
+            assertEquals(403, result.headStatus)
+            assertEquals("application/vnd.apple.mpegurl", result.contentType)
+            assertEquals("cloudflare", result.responseHeaderSummary["Server 标识"])
+            assertEquals("Bearer", result.responseHeaderSummary["WWW-Authenticate 认证方案"])
+            assertEquals("login.example", result.responseHeaderSummary["Location 目标主机名"])
+            assertEquals("private, no-store, max-age=30", result.responseHeaderSummary["Cache-Control 策略"])
+            assertEquals("cloudflare", result.headResponseHeaderSummary["Server 标识"])
+            assertEquals("true", result.requestHeaderSummary["请求头集合是否显式包含 Cookie"])
+            assertEquals("true", result.requestHeaderSummary["校验 Range 请求"])
+            assertTrue(!result.responseHeaderSummary.values.any { it.contains("never-log") })
+            assertTrue(!result.responseHeaderSummary.values.any { it.contains("do-not-log") })
+            assertTrue(!result.requestHeaderSummary.values.any { it.contains("never-log") })
+
+            assertEquals("HEAD", server.takeRequest().method)
+            val rangeRequest = server.takeRequest()
+            assertEquals("GET", rangeRequest.method)
+            assertEquals("bytes=0-0", rangeRequest.getHeader("Range"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun hlsHintStartsInAnExplicitDetectingState() {
         val hint = WebCandidateVerifier.initialAudioHint("https://cdn.example/master.m3u8")
 

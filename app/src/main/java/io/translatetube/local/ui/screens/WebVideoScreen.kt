@@ -162,6 +162,7 @@ internal data class WebVideoCandidate(
 private data class WebCandidateVerificationSnapshot(
     val result: WebCandidateVerificationResult,
     val checkedAtMs: Long,
+    val pageGeneration: Long,
 )
 
 /** The compact card shows only the detected audio-track type. */
@@ -503,6 +504,7 @@ fun WebVideoScreen(
                 candidateVerificationSnapshots[candidateFingerprint] = WebCandidateVerificationSnapshot(
                     result = result,
                     checkedAtMs = System.currentTimeMillis(),
+                    pageGeneration = verificationGeneration,
                 )
                 val issueKey = webSourceIssueKey("candidate-verify", candidateUrl)
                 val diagnostics = linkedMapOf<String, String>().apply {
@@ -2270,12 +2272,25 @@ fun WebVideoScreen(
                                     null
                                 } else {
                                     candidateVerificationSnapshots[candidateFingerprint]
+                                        ?.takeIf { it.pageGeneration == pageGeneration.get() }
                                 }
+                                val candidateWasDetected = !request.isForMainFrame &&
+                                    candidatesState.value.any {
+                                        webSourceFingerprint(it.url) == candidateFingerprint
+                                    }
+                                val candidateVerificationStarted = !request.isForMainFrame &&
+                                    verificationAttempts.any {
+                                        webSourceFingerprint(it) == candidateFingerprint
+                                    }
                                 val verificationResult = verificationSnapshot?.result
                                 val verificationAgeSeconds = verificationSnapshot?.let {
                                     ((System.currentTimeMillis() - it.checkedAtMs).coerceAtLeast(0L) / 1000L).toString()
                                 } ?: "无记录"
                                 val verificationState = when {
+                                    verificationResult == null && candidateVerificationStarted ->
+                                        "候选源已发起 HEAD/Range 校验，结果尚未返回"
+                                    verificationResult == null && candidateWasDetected ->
+                                        "候选源已发现，尚无校验结果"
                                     verificationResult == null -> "没有关联到候选源校验结果"
                                     verificationResult.verified -> "最近一次校验通过"
                                     verificationResult.httpStatus == errorResponse.statusCode ||
@@ -2335,6 +2350,8 @@ fun WebVideoScreen(
                                                 requestHeaderSummary["Sec-Fetch-Dest"] ?: "未提供"
                                             ),
                                             "关联候选源校验状态" to verificationState,
+                                            "是否匹配已发现候选源" to candidateWasDetected.toString(),
+                                            "是否已发起候选源校验" to candidateVerificationStarted.toString(),
                                             "关联候选源校验方式" to (verificationResult?.method ?: "未执行/未关联"),
                                             "关联候选源校验 HTTP 状态码" to (
                                                 verificationResult?.httpStatus?.toString() ?: "未返回"
