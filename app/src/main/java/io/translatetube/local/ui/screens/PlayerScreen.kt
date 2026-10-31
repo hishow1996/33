@@ -2499,12 +2499,6 @@ private fun VideoParsingPage(
                                 add("转写引擎" to transcriptionEngineSummary)
                                 add("识别语言" to state.sourceLang.trim().takeIf { it.isNotBlank() }
                                     ?.let { LangMap.display(it) }.orEmpty().ifBlank { "自动识别" })
-                                add("当前任务" to when {
-                                    failed -> progressText.ifBlank { "语音转写失败" }
-                                    done -> "语音转写已完成"
-                                    active -> progressText.ifBlank { "正在识别音频内容" }
-                                    else -> "等待识别音频"
-                                })
                                 if (state.transcriptionTotalSegments > 0) {
                                     VideoProcessingFlowPolicy.progressCounterLabel(
                                         state.transcriptionCompletedSegments,
@@ -2688,7 +2682,7 @@ private fun VideoParsingPage(
                         val fullWidthDetailLabels = when (index) {
                             0 -> setOf("视频标题", "当前状态", "处理说明")
                             1 -> setOf("当前任务", "处理说明")
-                            2 -> setOf("当前任务", "处理说明")
+                            2 -> setOf("处理说明")
                             3 -> setOf("当前状态", "处理说明")
                             else -> setOf("合成任务", "引擎状态", "处理说明")
                         }
@@ -2698,15 +2692,38 @@ private fun VideoParsingPage(
                         val fullWidthRows = stageDetailRows.filter {
                             it.first in fullWidthDetailLabels
                         }
-                        val stageProgressText = if (
-    stageProgressRow != null &&
-    stageProgressValue != null &&
-    !stageProgressCaption.contains('%')
-) {
-    stageProgressCaption + " · " + (stageProgressValue * 100f).roundToInt() + "%"
-} else {
-    stageProgressCaption
-}
+                        val stageProgressText = if (index == 2) {
+                            val progressLabel = stageProgressCaption
+                            val percentage = Regex("""\\d+(?:\\.\\d+)?%""")
+                                .find(progressLabel)?.value
+                            val segmentCount = percentage?.let { percent ->
+                                progressLabel.removeSuffix(" · $percent")
+                                    .removeSuffix(percent)
+                                    .trim()
+                                    .trimEnd('·')
+                                    .trim()
+                                    .takeIf { it.isNotBlank() }
+                            } ?: progressLabel.takeIf {
+                                it != "正在处理" &&
+                                    it != "处理失败" &&
+                                    it != "已暂停，等待继续" &&
+                                    it != "等待执行"
+                            }
+                            val audioElapsed = transcriptionAudioElapsed(progressText)
+                            listOfNotNull(
+                                segmentCount,
+                                audioElapsed?.let { "音频$it" },
+                                percentage,
+                            ).joinToString(" · ").ifBlank { progressLabel }
+                        } else if (
+                            stageProgressRow != null &&
+                            stageProgressValue != null &&
+                            !stageProgressCaption.contains('%')
+                        ) {
+                            stageProgressCaption + " · " + (stageProgressValue * 100f).roundToInt() + "%"
+                        } else {
+                            stageProgressCaption
+                        }
 
                         Column(
                             modifier = Modifier
@@ -4980,6 +4997,13 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             style = MaterialTheme.typography.labelSmall,
         )
     }
+}
+
+private fun transcriptionAudioElapsed(progress: String): String? {
+    val match = Regex(
+        """音频(?:进度)?\\s*[:：]?\\s*((?:\\d+\\s*小时(?:\\s*\\d+\\s*分)?(?:\\s*\\d+\\s*秒)?|\\d+\\s*分(?:\\s*\\d+\\s*秒)?|\\d+\\s*秒|\\d{1,2}:\\d{2}(?::\\d{2})?))""",
+    ).find(progress) ?: return null
+    return match.groupValues[1].replace(Regex("""\\s+"""), "")
 }
 
 private fun progressPercent(progress: String): Float? {
