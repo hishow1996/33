@@ -124,11 +124,11 @@ private fun webSourceIssueIdentity(rawUrl: String): String =
         listOfNotNull(uri.host, uri.path).joinToString("|")
     }.getOrDefault(webSourceHost(rawUrl))
 
-/** One-way per-candidate identifier lets related detection/verification errors be matched without logging signed URLs. */
+/** One-way candidate ID stays stable when only volatile signed query values are refreshed. */
 private fun webSourceFingerprint(rawUrl: String): String =
     io.translatetube.local.util.AppLogStore.stableIssueKey(
         "WebSourceCandidate",
-        rawUrl,
+        WebResourceDiagnosticPolicy.candidateIdentity(rawUrl),
     )
 
 private fun webSourceIssueKey(stage: String, rawUrl: String): String =
@@ -535,6 +535,16 @@ fun WebVideoScreen(
                         message = "之前出现 HTTP 错误的媒体请求已通过候选源校验",
                         diagnosticContext = diagnostics,
                     )
+                    WebResourceDiagnosticPolicy.RECOVERABLE_ERROR_CODES.forEach { errorCode ->
+                        io.translatetube.local.util.AppLogStore.resolveIssue(
+                            context = appCtx,
+                            issueKey = webSourceIssueKey("resource-load-$errorCode", candidateUrl),
+                            message = "同一媒体候选源重新通过校验，之前的 WebView 请求失败已恢复",
+                            diagnosticContext = diagnostics + (
+                                "已恢复的 WebView 错误代码" to errorCode.toString()
+                            ),
+                        )
+                    }
                 } else if (result.failure != null || hasHttpError) {
                     io.translatetube.local.util.AppLogStore.warning(
                         context = appCtx,
@@ -2099,34 +2109,80 @@ fun WebVideoScreen(
                                     WebVideoProbePolicy.acceptsMediaUrl(failedUrl) &&
                                     WebMediaUrlPolicy.looksLikeMediaRequest(failedUrl)
                                 ) {
-                                    // HTTP 状态错误由 onReceivedHttpError 处理；这里专门补齐
-                                    // DNS、超时、TLS、连接中断等没有 HTTP 响应的媒体请求失败。
-                                    val errorCategory = when (error.errorCode) {
-                                        WebViewClient.ERROR_HOST_LOOKUP -> "DNS/域名解析失败"
-                                        WebViewClient.ERROR_TIMEOUT -> "网络请求超时"
-                                        WebViewClient.ERROR_CONNECT -> "无法连接媒体服务器"
-                                        WebViewClient.ERROR_FAILED_SSL_HANDSHAKE -> "TLS/证书握手失败"
-                                        WebViewClient.ERROR_IO -> "媒体请求 I/O 失败或连接中断"
-                                        WebViewClient.ERROR_UNSUPPORTED_SCHEME -> "媒体请求使用不支持的协议"
-                                        else -> "WebView 媒体资源加载失败"
+                                    // HTTP 状态错误由 onReceivedHttpError 处理；这里记录没有 HTTP 响应的媒体请求失败。
+                                    val failure = WebResourceDiagnosticPolicy.classifyFailure(
+                                        errorCode = error.errorCode,
+                                        description = error.description.toString(),
+                                    )
+                                    val requestHeaders = request.requestHeaders
+                                    fun requestHeader(name: String): String? =
+                                        requestHeaders.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+
+                                    val failedFingerprint = webSourceFingerprint(failedUrl)
+                                    val candidateWasDetected = candidatesState.value.any {
+                                        webSourceFingerprint(it.url) == failedFingerprint
                                     }
+                                    val candidateWasVerified = verifiedUrls.any {
+                                        webSourceFingerprint(it) == failedFingerprint
+                                    }
+                                    val candidateVerificationStarted = verificationAttempts.any {
+                                        webSourceFingerprint(it) == failedFingerprint
+                                    }
+                                    val candidateState = when {
+                                        candidateWasVerified -> "此前已通过 HEAD/Range 可访问性校验"
+                                        candidateVerificationStarted -> "已发起 HEAD/Range 校验，尚未通过或结果待确认"
+                                        candidateWasDetected -> "已发现候选源，校验尚未开始"
+                                        else -> "当前候选列表中未找到，可能是短暂资源或签名刷新地址"
+                                    }
+                                    val rangeHeader = requestHeader("Range")
+                                    val refererHost = requestHeader("Referer")
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?.let(::webSourceHost)
+                                        ?: "未提供"
+                                    val originHost = requestHeader("Origin")
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?.let(::webSourceHost)
+                                        ?: "未提供"
+                                    val redirectState = if (
+                                        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
+                                    ) {
+                                        request.isRedirect.toString()
+                                    } else {
+                                        "当前系统版本不可用"
+                                    }
+                                    val diagnostics = mapOf(
+                                        "页面主机名" to webSourceHost(currentPage),
+                                        "媒体源主机名" to webSourceHost(failedUrl),
+                                        "候选源诊断编号" to failedFingerprint,
+                                        "媒体源类型" to webSourceType(failedUrl),
+                                        "错误分类" to failure.category,
+                                        "WebView 错误代码" to error.errorCode.toString(),
+                                        "WebView 错误代码名称" to failure.errorCodeName,
+                                        "错误详情" to error.description.toString().take(300),
+                                        "HTTP 方法" to request.method,
+                                        "HTTP 响应状态" to "未收到（onReceivedError）",
+                                        "是否主文档请求" to request.isForMainFrame.toString(),
+                                        "是否用户手势触发" to request.hasGesture().toString(),
+                                        "是否 HTTP 重定向" to redirectState,
+                                        "请求是否携带 Range" to (!rangeHeader.isNullOrBlank()).toString(),
+                                        "Range 请求类型" to WebResourceDiagnosticPolicy.describeRange(rangeHeader),
+                                        "请求是否显式包含 Cookie 头" to (!requestHeader("Cookie").isNullOrBlank()).toString(),
+                                        "请求是否显式包含 Authorization 头" to (!requestHeader("Authorization").isNullOrBlank()).toString(),
+                                        "是否提供 User-Agent 头" to (!requestHeader("User-Agent").isNullOrBlank()).toString(),
+                                        "是否提供 Accept 头" to (!requestHeader("Accept").isNullOrBlank()).toString(),
+                                        "Referer 主机名" to refererHost,
+                                        "Origin 主机名" to originHost,
+                                        "同一候选源关联状态" to candidateState,
+                                        "是否匹配已发现候选源" to candidateWasDetected.toString(),
+                                        "是否匹配已通过校验候选源" to candidateWasVerified.toString(),
+                                        "页面导航代数" to pageGeneration.get().toString(),
+                                        "可能原因" to failure.explanation,
+                                    )
                                     io.translatetube.local.util.AppLogStore.warning(
                                         context = appCtx,
                                         tag = "WebResourceLoad",
                                         message = "网页媒体资源请求失败（没有收到正常 HTTP 响应）",
-                                        diagnosticContext = mapOf(
-                                            "页面主机名" to webSourceHost(currentPage),
-                                            "媒体源主机名" to webSourceHost(failedUrl),
-                                            "候选源诊断编号" to webSourceFingerprint(failedUrl),
-                                            "媒体源类型" to webSourceType(failedUrl),
-                                            "错误分类" to errorCategory,
-                                            "WebView 错误代码" to error.errorCode.toString(),
-                                            "错误详情" to error.description.toString().take(300),
-                                            "HTTP 方法" to request.method,
-                                            "是否主文档请求" to request.isForMainFrame.toString(),
-                                            "页面导航代数" to pageGeneration.get().toString(),
-                                            "可能原因" to "网络连接、DNS、TLS 或媒体服务器中断；如同一候选源随后校验成功，可能是临时请求失败",
-                                        ),
+                                        diagnosticContext = diagnostics,
                                         issueKey = webSourceIssueKey(
                                             "resource-load-" + error.errorCode,
                                             failedUrl,
