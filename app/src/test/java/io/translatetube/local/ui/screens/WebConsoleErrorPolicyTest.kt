@@ -50,5 +50,12 @@ class WebConsoleErrorPolicyTest {
                 scriptHost = "",
             )
         )
+        assertFalse(
+            WebConsoleErrorPolicy.shouldIgnoreKnownThirdPartyError(
+                message = knownError,
+                pageHost = "cn.example.com",
+                scriptHost = "未知",
+            )
+        )
     }
 }

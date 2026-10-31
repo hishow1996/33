@@ -96,15 +96,7 @@ internal object WebCandidateVerifier {
                         "none" -> "none"
                         else -> ""
                     }
-                    val rawContentRange = response.header("Content-Range").orEmpty().trim()
-                    val safeContentRange = if (
-                        Regex("""(?i)^bytess+(?:d+-d+|*)/(?:d+|*)$""")
-                            .matches(rawContentRange)
-                    ) {
-                        rawContentRange.take(80)
-                    } else {
-                        if (rawContentRange.isBlank()) "" else "格式异常"
-                    }
+                    val safeContentRange = sanitizeContentRange(response.header("Content-Range"))
                     WebCandidateVerificationResult(
                         verified = false,
                         method = method,
@@ -197,15 +189,40 @@ internal object WebCandidateVerifier {
     /** Explicit document/error types must never be accepted solely because a URL ends in .mp4/.m3u8. */
     private fun isClearlyNonMediaContentType(contentType: String): Boolean {
         val ct = contentType.substringBefore(';').trim().lowercase(Locale.ROOT)
-        return ct == "text/html" ||
+        return ct.startsWith("text/") ||
             ct == "application/xhtml+xml" ||
-            ct == "text/plain" ||
             ct == "application/json" ||
             ct == "text/json" ||
             ct == "application/xml" ||
             ct == "text/xml" ||
             ct.endsWith("+json") ||
             ct.endsWith("+xml")
+    }
+
+    /** Retain only standardized numeric Content-Range values in persisted diagnostics. */
+    private fun sanitizeContentRange(value: String?): String {
+        val raw = value?.trim().orEmpty()
+        if (raw.isBlank()) return ""
+        if (!raw.startsWith("bytes ", ignoreCase = true)) return "格式异常"
+
+        val rangeAndTotal = raw.substringAfter(' ', "").split('/', limit = 2)
+        if (rangeAndTotal.size != 2) return "格式异常"
+        val rangePart = rangeAndTotal[0].trim()
+        val totalPart = rangeAndTotal[1].trim()
+        val validRange = if (rangePart == "*") {
+            true
+        } else {
+            val separator = rangePart.indexOf('-')
+            if (separator <= 0 || separator != rangePart.lastIndexOf('-')) {
+                false
+            } else {
+                val start = rangePart.substring(0, separator).toLongOrNull()
+                val end = rangePart.substring(separator + 1).toLongOrNull()
+                start != null && end != null && start <= end
+            }
+        }
+        val validTotal = totalPart == "*" || totalPart.toLongOrNull() != null
+        return if (validRange && validTotal) raw.take(80) else "格式异常"
     }
 
     private fun hasMediaExtension(url: String): Boolean {

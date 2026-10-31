@@ -16,7 +16,12 @@ internal object WebConsoleErrorPolicy {
     ): Boolean {
         val normalizedPageHost = pageHost.trim().lowercase(Locale.ROOT)
         val normalizedScriptHost = scriptHost.trim().lowercase(Locale.ROOT)
-        if (normalizedPageHost.isBlank() || normalizedScriptHost.isBlank()) return false
+        if (
+            normalizedPageHost.isBlank() ||
+            normalizedScriptHost.isBlank() ||
+            normalizedPageHost == "未知" ||
+            normalizedScriptHost == "未知"
+        ) return false
         if (normalizedPageHost == normalizedScriptHost) return false
 
         val normalizedMessage = message.lowercase(Locale.ROOT)
