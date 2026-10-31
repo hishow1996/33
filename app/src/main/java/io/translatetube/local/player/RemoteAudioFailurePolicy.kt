@@ -34,8 +34,12 @@ internal object RemoteAudioFailurePolicy {
                 Diagnosis("rate_limited", "请求受到站点限流", "请求频率过高或站点限制自动化访问", "减少重复检测，稍后重试并优先复用音轨缓存。")
             chain.any { it is SocketTimeoutException } || has("timed out", "timeout", "超时") ->
                 Diagnosis("network_timeout", "媒体请求超时", "网络慢、服务器无响应或分段请求卡住", "检查网络和代理状态，记录处理阶段后重试。")
-            chain.any { it is UnknownHostException || it is ConnectException || it is SSLException } ->
-                Diagnosis("network_connection", "无法连接媒体服务器", "DNS、连接或 TLS 握手失败", "检查网络、DNS、代理及 HTTPS 证书。")
+            chain.any { it is UnknownHostException } ->
+                Diagnosis("dns_resolution_failed", "DNS 解析失败", "无法解析媒体服务器域名，DNS 未返回可用 IP 地址", "检查当前网络的 DNS、代理或 VPN 路由；网络恢复后重试。")
+            chain.any { it is ConnectException } ->
+                Diagnosis("network_connection", "无法连接媒体服务器", "域名解析后仍无法建立网络连接", "检查移动网络、代理路由和媒体服务器连接状态。")
+            chain.any { it is SSLException } ->
+                Diagnosis("tls_handshake_failed", "HTTPS 安全连接失败", "TLS 握手或证书校验未能完成", "检查系统时间、证书链和 HTTPS 代理设置。")
             has("服务器返回了网页或 json", "登录页或错误文本", "text/html", "application/json", "challenge page") ->
                 Diagnosis("not_media_payload", "服务器返回的不是媒体数据", "实际响应可能是登录页、防盗链挑战页、网页或 JSON 错误", "检查 HTTP 状态、Content-Type、Referer、Cookie 和 User-Agent。")
             has("没有可提取的音频轨", "未找到音频轨", "无音频源", "no audio track") ->

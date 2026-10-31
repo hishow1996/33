@@ -3,9 +3,29 @@ package io.translatetube.local.player
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.io.IOException
+import java.net.ConnectException
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 
 class RemoteAudioFailurePolicyTest {
+    @Test fun categorizesDnsFailuresSeparatelyFromConnections() {
+        val diagnosis = RemoteAudioFailurePolicy.classify(
+            UnknownHostException("Unable to resolve host")
+        )
+        assertEquals("dns_resolution_failed", diagnosis.code)
+        assertEquals("DNS 解析失败", diagnosis.label)
+    }
+
+    @Test fun categorizesConnectionAndTlsFailuresSeparately() {
+        assertEquals("network_connection", RemoteAudioFailurePolicy.classify(
+            ConnectException("connection refused")
+        ).code)
+        assertEquals("tls_handshake_failed", RemoteAudioFailurePolicy.classify(
+            SSLException("handshake failed")
+        ).code)
+    }
+
     @Test fun categorizesExpiredLinks() {
         assertEquals("expired_or_missing", RemoteAudioFailurePolicy.classify(
             IllegalStateException("媒体地址不存在或已过期（HTTP 404）")).code)
