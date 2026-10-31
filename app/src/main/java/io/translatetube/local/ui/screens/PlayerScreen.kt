@@ -3124,7 +3124,6 @@ private fun StageProgressVisual(
             // 4. Translation — source text and Chinese output have separate visual lanes.
             3 -> {
                 val segments = 18
-                val laneGap = 2.2.dp.toPx()
                 val segmentGap = 2.dp.toPx()
                 val segmentWidth = (size.width - segmentGap * (segments - 1)) / segments
                 val laneHeight = 3.4.dp.toPx()
