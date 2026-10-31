@@ -3046,7 +3046,7 @@ private fun TranslationStageResultPreview(
     val preview = lines.mapNotNull { line ->
         SubtitleParsers.preferredTranslationText(line)?.let { translated -> line to translated }
     }.takeLast(2)
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Text(
             "翻译结果预览",
             color = Color(0xFF596B82),
@@ -3058,7 +3058,7 @@ private fun TranslationStageResultPreview(
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
-                .padding(horizontal = 10.dp, vertical = 9.dp),
+                .padding(horizontal = 9.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (preview.isEmpty()) {
