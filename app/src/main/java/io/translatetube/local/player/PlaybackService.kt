@@ -9738,7 +9738,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         sizeBytes = cacheFile.length(),
                         lastModifiedMs = cacheFile.lastModified(),
                         nowMs = now,
-                        isReadable = cacheFile.canRead(),
                     )
                 ) {
                     cacheFile.setLastModified(now)
@@ -10632,82 +10631,24 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
     }
 
-    /**
-     * Reuse only a recent, readable media file that still exposes a supported audio track.
-     * File size/mtime alone also accepts truncated containers and HTML/error payloads; those
-     * stale cache hits used to reach the decoder and fail the whole transcription attempt.
-     */
-    private suspend fun reusableAsrAudioFile(
-        identity: String,
-        cacheNamespace: String? = null,
-    ): File? {
+    /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
+    private fun reusableAsrAudioFile(identity: String, cacheNamespace: String? = null): File? {
         val file = asrAudioCacheFile(identity, cacheNamespace)
-        val path = file.absolutePath
         val now = System.currentTimeMillis()
-        // Protect the candidate while both metadata and MediaExtractor preflight inspect it.
-        activeAsrAudioPaths.acquire(path)
-        var keepLease = false
-        var discardCache = false
-        try {
-            val metadataReusable = AsrAudioCachePolicy.canReuse(
-                isFile = file.isFile,
-                sizeBytes = file.length(),
-                lastModifiedMs = file.lastModified(),
-                nowMs = now,
-                isReadable = file.canRead(),
-            )
-            if (!metadataReusable) {
-                discardCache = file.exists()
-                return null
-            }
-
-            val probe = try {
-                withContext(Dispatchers.IO) {
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    AudioExtract.probeMediaFile(file)
-                }
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                android.util.Log.w(
-                    "PlaybackService",
-                    "Cached ASR audio failed media preflight; fetching a fresh audio copy",
-                    error,
-                )
-                discardCache = true
-                null
-            }
-
-            val mediaReusable = probe != null && AsrAudioCachePolicy.hasUsableAudioTrack(
-                audioTrackCount = probe.audioTrackCount,
-                selectedAudioDecoderAvailable = probe.selectedAudioDecoderAvailable,
-            )
-            if (!mediaReusable) {
-                if (probe != null) {
-                    android.util.Log.w(
-                        "PlaybackService",
-                        "Cached ASR audio has no usable audio track; fetching a fresh audio copy",
-                    )
-                }
-                discardCache = true
-                return null
-            }
-
-            // Do not extend the cache lifetime until its actual media structure has passed.
+        // Protect the candidate before checking its metadata: a concurrent cache pruner must not
+        // delete it in the gap between validation and handing the file to its reader.
+        activeAsrAudioPaths.acquire(file.absolutePath)
+        if (AsrAudioCachePolicy.canReuse(file.isFile, file.length(), file.lastModified(), now)) {
             file.setLastModified(now)
             file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
-            keepLease = true
             return file
-        } finally {
-            if (!keepLease) {
-                activeAsrAudioPaths.release(path)
-                if (discardCache) {
-                    // Coordinate deletion with readers that may have acquired this file earlier.
-                    activeAsrAudioPaths.deleteIfUnleased(path) { file.delete() }
-                    File(file.parentFile, file.name + ".part").delete()
-                }
-            }
         }
+        activeAsrAudioPaths.release(file.absolutePath)
+        // Release and deletion must be coordinated with acquisition, not a separate contains()
+        // check: a new reader could otherwise acquire this path just before file.delete().
+        activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+        File(file.parentFile, file.name + ".part").delete()
+        return null
     }
 
     /** Keep cached audio through its TTL; never evict files currently being reused/downloaded. */

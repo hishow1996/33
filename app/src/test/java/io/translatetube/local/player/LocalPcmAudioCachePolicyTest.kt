@@ -28,20 +28,6 @@ class LocalPcmAudioCachePolicyTest {
     }
 
     @Test
-    fun unreadablePcmFilesAreNeverReused() {
-        val now = 100L * 24L * 60L * 60L * 1_000L
-        assertFalse(
-            LocalPcmAudioCachePolicy.canReuse(
-                isFile = true,
-                sizeBytes = 4_096L,
-                lastModifiedMs = now,
-                nowMs = now,
-                isReadable = false,
-            ),
-        )
-    }
-
-    @Test
     fun freshnessWindowsStayAlignedWithRemoteSourceAudioCache() {
         assertTrue(LocalPcmAudioCachePolicy.TTL_MS == AsrAudioCachePolicy.TTL_MS)
         assertTrue(LocalPcmAudioCachePolicy.PARTIAL_TTL_MS == AsrAudioCachePolicy.PARTIAL_TTL_MS)

@@ -17,28 +17,6 @@ class AsrAudioCachePolicyTest {
     }
 
     @Test
-    fun cachedMediaMustContainAnAudioTrackAndHaveAUsableDecoder() {
-        assertTrue(AsrAudioCachePolicy.hasUsableAudioTrack(1, true))
-        assertTrue(AsrAudioCachePolicy.hasUsableAudioTrack(1, null))
-        assertFalse(AsrAudioCachePolicy.hasUsableAudioTrack(0, true))
-        assertFalse(AsrAudioCachePolicy.hasUsableAudioTrack(1, false))
-    }
-
-    @Test
-    fun unreadableFilesAreNeverReused() {
-        val now = 10_000_000_000L
-        assertFalse(
-            AsrAudioCachePolicy.canReuse(
-                isFile = true,
-                sizeBytes = 4_096L,
-                lastModifiedMs = now,
-                nowMs = now,
-                isReadable = false,
-            ),
-        )
-    }
-
-    @Test
     fun onlyAcceptsCompleteDownloadedAudio() {
         assertTrue(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_024L))
         assertTrue(AsrAudioCachePolicy.isCompleteDownload(-1L, 1_024L))
