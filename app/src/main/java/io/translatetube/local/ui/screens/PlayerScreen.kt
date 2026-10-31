@@ -2712,29 +2712,36 @@ private fun VideoParsingPage(
                                 singlePercent,
                             ).joinToString(" · ").ifBlank { progressLabel }
                         } else if (index == 2) {
+                            // Normalize every transcription sub-step to one task label and one
+                            // percentage, matching the numeric value shown by the progress bar.
+                            val percentagePattern = Regex("""\d+(?:\.\d+)?%""")
                             val progressLabel = stageProgressCaption
-                            val percentage = Regex("""\d+(?:\.\d+)?%""")
-                                .find(progressLabel)?.value
-                            val segmentCount = percentage?.let { percent ->
-                                progressLabel.removeSuffix(" · $percent")
-                                    .removeSuffix(percent)
-                                    .trim()
-                                    .trimEnd('·')
-                                    .trim()
-                                    .takeIf { it.isNotBlank() }
-                            } ?: progressLabel.takeIf {
-                                it != "正在处理" &&
-                                    it != "处理失败" &&
-                                    it != "已暂停，等待继续" &&
-                                    it != "等待执行"
+                            val labelWithoutPercent = progressLabel
+                                .replace(percentagePattern, "")
+                                .replace(Regex("""\s*[·•]\s*"""), " · ")
+                                .trim()
+                                .trim('·')
+                                .trim()
+                            val taskLabel = compactProcessingProgress(
+                                progressText,
+                                Phase.TRANSCRIBING,
+                            ).takeIf { it.isNotBlank() && it != "识别语音" }
+                            val progressSummary = when {
+                                labelWithoutPercent.isNotBlank() -> labelWithoutPercent
+                                taskLabel != null -> taskLabel
+                                else -> "识别语音"
                             }
+                            val singlePercent = stageProgressValue
+                                ?.let { (it.coerceIn(0f, 1f) * 100f).roundToInt().toString() + "%" }
+                                ?: percentagePattern.find(progressLabel)?.value
+                                ?: percentagePattern.find(progressText)?.value
                             val audioElapsed = transcriptionAudioElapsed(progressText)
                             listOfNotNull(
-                                segmentCount,
+                                progressSummary,
                                 audioElapsed?.let { "音频$it" },
-                                percentage,
-                            ).joinToString(" · ").ifBlank { progressLabel }
-                        } else if (
+                                singlePercent,
+                            ).joinToString(" · ")
+                                                } else if (
                             stageProgressRow != null &&
                             stageProgressValue != null &&
                             !stageProgressCaption.contains('%')
