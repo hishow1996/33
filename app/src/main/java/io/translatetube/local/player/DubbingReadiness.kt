@@ -27,6 +27,8 @@ internal class DubbingReadiness {
 
     /** Number of ready cues, including out-of-order cues prioritized after a seek. */
     fun readyCount(): Int = states.size
+    /** Number of ready cues with usable audio; silent/source-fallback rows are excluded. */
+    fun audioReadyCount(): Int = states.values.count { it }
 
     fun isReady(index: Int): Boolean = index >= 0 && states.containsKey(index)
 

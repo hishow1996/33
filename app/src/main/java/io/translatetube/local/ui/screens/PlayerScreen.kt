@@ -1659,7 +1659,8 @@ private fun VideoParsingPage(
             !state.manualTranslationWaiting && state.totalLines > 0 ->
             "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
         displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
-            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+            "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
+                if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else ""
         state.progress.isNotBlank() || state.audioProgress != null ||
             state.transcriptionProgressPercent != null || state.transcriptionTotalSegments > 0 ->
             structuredProcessingProgress(state, displayPhase)

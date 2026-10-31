@@ -69,6 +69,26 @@ class DubbingReadinessTest {
     }
 
     @Test
+    fun audioReadyCountExcludesSilentRowsAndTracksRetries() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(0, hasAudio = true)
+        readiness.markPrepared(1, hasAudio = false)
+        readiness.markPrepared(2, hasAudio = true)
+
+        assertEquals(3, readiness.readyCount())
+        assertEquals(2, readiness.audioReadyCount())
+
+        readiness.markPending(0)
+        assertEquals(1, readiness.audioReadyCount())
+
+        readiness.markPrepared(1, hasAudio = true)
+        assertEquals(2, readiness.audioReadyCount())
+
+        readiness.clear()
+        assertEquals(0, readiness.audioReadyCount())
+    }
+
+    @Test
     fun readyCountTracksOutOfOrderCuesAndCacheInvalidation() {
         val readiness = DubbingReadiness()
         readiness.markPrepared(8, hasAudio = true)

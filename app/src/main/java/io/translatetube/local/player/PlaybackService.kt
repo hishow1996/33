@@ -550,6 +550,8 @@ data class PlayerUiState(
      */
     val captionOverride: String? = null,
     val preparedUntil: Int = 0,
+    /** Rows with playable audio; unlike preparedCount, excludes silent/source-fallback rows. */
+    val audioReadyCount: Int = 0,
     val preparedCount: Int = 0,
     val totalLines: Int = 0,
     val dubbingOn: Boolean = true,
@@ -1121,6 +1123,7 @@ class PlaybackService : MediaSessionService() {
             totalLines = 0,
             preparedUntil = 0,
             preparedCount = 0,
+            audioReadyCount = 0,
             sourceLang = "",
             waitingForTranscriptionEngine = false,
             waitingForDubbingEngine = false,
@@ -1137,6 +1140,7 @@ class PlaybackService : MediaSessionService() {
             translationRetryCount = 0,
             preparedUntil = 0,
             preparedCount = 0,
+            audioReadyCount = 0,
             waitingForTranscriptionEngine = false,
             waitingForDubbingEngine = false,
             dubbingHasErrors = false,
@@ -1147,6 +1151,7 @@ class PlaybackService : MediaSessionService() {
         EngineRestartStage.DUBBING -> state.copy(
             preparedUntil = 0,
             preparedCount = 0,
+            audioReadyCount = 0,
             waitingForTranscriptionEngine = false,
             waitingForDubbingEngine = false,
             dubbingHasErrors = false,
@@ -2243,13 +2248,14 @@ class PlaybackService : MediaSessionService() {
             val prepared = engine.preparedCount.value.coerceIn(0, lines.size)
             if (prepared != lastReportedCount) {
                 lastReportedCount = prepared
+                val audioReady = engine.audioReadyCount.value.coerceIn(0, lines.size)
                 updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                     state.copy(
                         phase = Phase.SYNTHESIZING,
                         progress = if (waitForCompleteQueue) {
-                            "正在合成中文配音（$prepared/${lines.size}），全部配音就绪后开始播放"
+                            "正在合成中文配音（已处理 $prepared/${lines.size}，可用配音 $audioReady 行），全部配音就绪后开始播放"
                         } else {
-                            "正在合成中文配音（$prepared/${lines.size}），前几句就绪即开始播放"
+                            "正在合成中文配音（已处理 $prepared/${lines.size}，可用配音 $audioReady 行），前几句就绪即开始播放"
                         },
                     )
                 }
@@ -3049,7 +3055,8 @@ class PlaybackService : MediaSessionService() {
                 if (state.totalLines > 0) "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
             }
             Phase.SYNTHESIZING -> "正在按时间轴生成中文配音" to if (state.totalLines > 0) {
-                "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+                "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
+                    (if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else "")
             } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> {
                 val waitTitle = VideoProcessingFlowPolicy.readyNotificationWaitTitle(
@@ -3068,7 +3075,8 @@ class PlaybackService : MediaSessionService() {
                         }
                     preparationIncomplete ->
                         (if (state.dubbingHasErrors) "配音部分失败 · 仍在准备" else if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
-                            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音" +
+                            "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
+                                (if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else "") +
                                 if (state.dubbingHasErrors) "；失败字幕暂用原声" else ""
                         } else state.progress.ifBlank { "正在生成中文配音" }
                     failureTitle != null -> failureTitle to (
@@ -3761,6 +3769,7 @@ class PlaybackService : MediaSessionService() {
                         totalLines = 0,
                         preparedUntil = 0,
                         preparedCount = 0,
+                        audioReadyCount = 0,
                         activeDubbingLine = -1,
                         currentLine = -1,
                         captionOverride = null,
@@ -4238,6 +4247,7 @@ class PlaybackService : MediaSessionService() {
                                     activeDubbingLine = -1,
                                     preparedUntil = 0,
                                     preparedCount = 0,
+                                    audioReadyCount = 0,
                                     sourceLang = "",
                                     translationCacheKey = "",
                                     processingFlow = ProcessingFlow.AUTO,
@@ -5098,6 +5108,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 translatedLineCount = 0,
                 preparedUntil = 0,
                 preparedCount = 0,
+                audioReadyCount = 0,
                 activeDubbingLine = -1,
                 currentLine = -1,
                 waitingForTranscriptionEngine = false,
@@ -5169,6 +5180,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         currentLine = -1,
                         preparedUntil = 0,
                         preparedCount = 0,
+                        audioReadyCount = 0,
                         sourceLang = "zh",
                         error = null,
                         noModelHint = null,
@@ -5245,10 +5257,10 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
-                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
-                        .collect { (prefix, readyCount) ->
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
                             updateUiForCurrentDubbingEngine(d, sessionKey) {
-                                it.copy(preparedUntil = prefix, preparedCount = readyCount)
+                                it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                             }
                         }
                 }
@@ -5274,6 +5286,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         totalLines = translatedLines.size,
                         preparedUntil = d.preparedUntil.value,
                         preparedCount = d.preparedCount.value,
+                        audioReadyCount = d.audioReadyCount.value,
                         sourceLang = "zh",
                     )
                 }
@@ -5535,6 +5548,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         translatedLineCount = 0,
                         preparedUntil = 0,
                         preparedCount = 0,
+                        audioReadyCount = 0,
                         activeDubbingLine = -1,
                         currentLine = -1,
                         waitingForTranscriptionEngine = false,
@@ -5790,10 +5804,10 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
-                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
-                        .collect { (prefix, readyCount) ->
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
                             updateUiForCurrentDubbingEngine(d, sessionKey) {
-                                it.copy(preparedUntil = prefix, preparedCount = readyCount)
+                                it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                             }
                         }
                 }
@@ -8374,10 +8388,10 @@ updateUiForSession(key, pipelineGeneration) {
                                 )
                             }
                             dubCollectJob = scope.launch {
-                                kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
-                                    .collect { (prefix, readyCount) ->
+                                kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                                    .collect { (prefix, readyCount, audioReadyCount) ->
                                         updateUiForCurrentDubbingEngine(d, key) {
-                                            it.copy(preparedUntil = prefix, preparedCount = readyCount)
+                                            it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                                         }
                                     }
                             }
@@ -11817,6 +11831,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             totalLines = updated.size,
                             preparedUntil = 0,
                             preparedCount = 0,
+                            audioReadyCount = 0,
                             currentLine = -1,
                         )
                     } else state
@@ -11862,11 +11877,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
-                        .collect { (prefix, readyCount) ->
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
                             updateUiForCurrentDubbingEngine(d, sessionKey) { state ->
                                 if (state.key == sessionKey) {
-                                    state.copy(preparedUntil = prefix, preparedCount = readyCount)
+                                    state.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                                 } else state
                             }
                         }
@@ -12068,6 +12083,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         lines = updated,
                         preparedUntil = 0,
                         preparedCount = 0,
+                        audioReadyCount = 0,
                         totalLines = updated.size,
                         currentLine = -1,
                         phase = Phase.SYNTHESIZING,
@@ -12101,12 +12117,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    kotlinx.coroutines.flow.combine(engine.preparedUntil, engine.preparedCount) { prefix, readyCount -> prefix to readyCount }
-                        .collect { (prefix, readyCount) ->
+                    kotlinx.coroutines.flow.combine(engine.preparedUntil, engine.preparedCount, engine.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
                             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                                 state.copy(
                                     preparedUntil = prefix,
                                     preparedCount = readyCount,
+                                    audioReadyCount = audioReadyCount,
                                     phase = if (prefix >= updated.size) Phase.READY else Phase.SYNTHESIZING,
                                     progress = if (prefix >= updated.size) "" else "正在准备多人物配音…",
                                 )

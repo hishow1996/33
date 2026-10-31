@@ -288,6 +288,9 @@ class DubbingEngine(
     private val _preparedCount = MutableStateFlow(0)
     /** Includes ready rows after the current gap, so progress remains useful after prioritizing a seek. */
     val preparedCount: StateFlow<Int> = _preparedCount
+    private val _audioReadyCount = MutableStateFlow(0)
+    /** Rows with playable audio; direct System TTS cues count as available without prebuilt PCM. */
+    val audioReadyCount: StateFlow<Int> = _audioReadyCount
     private val _totalLines = MutableStateFlow(0)
     val totalLines: StateFlow<Int> = _totalLines
 
@@ -1834,6 +1837,7 @@ class DubbingEngine(
     private fun publishReadinessProgress(snapshot: DubbingReadinessProgressSnapshot) {
         _preparedCount.value = snapshot.preparedCount
         _preparedUntil.value = snapshot.preparedUntil
+        _audioReadyCount.value = readiness.audioReadyCount()
     }
 
     private fun markCuePrepared(idx: Int, hasAudio: Boolean) {
