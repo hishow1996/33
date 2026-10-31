@@ -758,7 +758,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 onEnableManualTranslation = { PlaybackService.instance?.enableManualSubtitleTranslation() },
                 onCancelManualTranslation = { PlaybackService.instance?.cancelManualSubtitleTranslation() },
                 onExportOriginalSubtitle = { requestOriginalSubtitleExport() },
-                onExportAllSubtitles = { requestSubtitleExport(SubtitleExportFormat.BILINGUAL_SRT) },
                 onImportManualTranslatedSubtitle = { manualTranslatedSubPicker.launch(arrayOf("*/*")) },
                 onDownloadSubtitle = { track -> requestSubtitleDownload(track) },
                 onGoSettings = onGoSettings,
@@ -1446,7 +1445,6 @@ private fun VideoParsingPage(
     onEnableManualTranslation: () -> Unit,
     onCancelManualTranslation: () -> Unit,
     onExportOriginalSubtitle: () -> Unit,
-    onExportAllSubtitles: () -> Unit,
     onImportManualTranslatedSubtitle: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
     onGoSettings: () -> Unit,
@@ -1675,15 +1673,6 @@ private fun VideoParsingPage(
         VideoSourceKind.WEB -> "网页"
         VideoSourceKind.LOCAL -> "本地"
         VideoSourceKind.UNKNOWN -> "视频"
-    }
-    val subtitleHeadline = if (source == VideoSourceKind.YOUTUBE) "可用字幕" else "字幕生成状态"
-    val subtitleState = when {
-        isError -> if (source == VideoSourceKind.YOUTUBE) "未完成" else "需重试"
-        complete -> "已就绪"
-        waitingForTranscriptionEngine -> "等待转写"
-        state.availableSubtitleTracks.isNotEmpty() -> "已发现 ${state.availableSubtitleTracks.size} 条"
-        source == VideoSourceKind.YOUTUBE -> "查找中"
-        else -> "自动生成"
     }
     // YouTube、网页视频与本地视频始终展示完整处理阶段，不再折叠后续步骤。
     val visibleStages = steps.indices.toList()
@@ -2730,12 +2719,7 @@ private fun VideoParsingPage(
     if (allSubtitlesDialogVisible) {
         AllSubtitlesDialog(
             state = state,
-            subtitleHeadline = subtitleHeadline,
-            subtitleState = subtitleState,
-            isError = isError,
-            complete = complete,
             onDismiss = { allSubtitlesDialogVisible = false },
-            onDownloadAll = onExportAllSubtitles,
             onDownloadSubtitle = onDownloadSubtitle,
         )
     }
@@ -2744,14 +2728,12 @@ private fun VideoParsingPage(
 @Composable
 private fun AllSubtitlesDialog(
     state: PlayerUiState,
-    subtitleHeadline: String,
-    subtitleState: String,
-    isError: Boolean,
-    complete: Boolean,
     onDismiss: () -> Unit,
-    onDownloadAll: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
 ) {
+    val tracks = state.availableSubtitleTracks
+    val languageCount = tracks.map { LangMap.display(it.languageTag) }.distinct().size
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -2759,7 +2741,7 @@ private fun AllSubtitlesDialog(
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.96f)
-                .fillMaxHeight(0.9f),
+                .heightIn(min = 220.dp, max = 620.dp),
             shape = RoundedCornerShape(22.dp),
             color = Color.White,
             shadowElevation = 14.dp,
@@ -2775,17 +2757,17 @@ private fun AllSubtitlesDialog(
                 ) {
                     Column(
                         modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Text(
-                            "导出全部字幕",
+                            "视频包含的全部字幕",
                             color = Color(0xFF20324B),
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                             ),
                         )
                         Text(
-                            "${state.lines.size} 条字幕",
+                            "${tracks.size} 条字幕轨 · ${languageCount} 种语言",
                             color = Color(0xFF8491A4),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -2799,85 +2781,16 @@ private fun AllSubtitlesDialog(
                     }
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 9.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        subtitleHeadline,
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        subtitleState,
-                        color = when {
-                            isError -> Color(0xFFCB3E4D)
-                            complete -> Color(0xFF15996E)
-                            else -> Color(0xFF3268F5)
-                        },
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    isError -> Color(0xFFFFF0F0)
-                                    complete -> Color(0xFFE4F8EF)
-                                    else -> Color(0xFFEDF3FF)
-                                },
-                            )
-                            .padding(horizontal = 9.dp, vertical = 5.dp),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                        ),
-                    )
-                }
-
                 HorizontalDivider(color = Color(0xFFE9EDF3))
 
                 LazyColumn(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(top = 8.dp),
+                        .padding(top = 9.dp, bottom = 7.dp),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    item(key = "available-subtitle-tracks-title") {
-                        Column(
-                            modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 2.dp),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    "视频包含的全部字幕",
-                                    color = Color(0xFF34435A),
-                                    style = MaterialTheme.typography.labelLarge.copy(
-                                        fontWeight = FontWeight.Bold,
-                                    ),
-                                )
-                                Spacer(Modifier.weight(1f))
-                                Text(
-                                    "${state.availableSubtitleTracks.size} 条字幕轨 · ${state.availableSubtitleTracks.map { LangMap.display(it.languageTag) }.distinct().size} 种语言",
-                                    color = Color(0xFF8491A4),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            }
-                            if (state.availableSubtitleTracks.isNotEmpty()) {
-                                Text(
-                                    "日语、英语、韩语等原视频字幕均会列在这里，可分别下载。",
-                                    color = Color(0xFF8491A4),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 2,
-                                )
-                            }
-                        }
-                    }
-                    if (state.availableSubtitleTracks.isEmpty()) {
+                    if (tracks.isEmpty()) {
                         item(key = "available-subtitle-tracks-empty") {
                             Box(
                                 modifier = Modifier
@@ -2896,7 +2809,7 @@ private fun AllSubtitlesDialog(
                         }
                     } else {
                         itemsIndexed(
-                            items = state.availableSubtitleTracks,
+                            items = tracks,
                             key = { index, track -> "subtitle-track-${track.languageTag}-$index" },
                         ) { _, track ->
                             Row(
@@ -2965,135 +2878,16 @@ private fun AllSubtitlesDialog(
                             }
                         }
                     }
-
-                    item(key = "all-subtitles-title") {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 7.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                "当前处理字幕（原文 + 中文译文）",
-                                color = Color(0xFF34435A),
-                                style = MaterialTheme.typography.labelLarge.copy(
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                            )
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                "${state.lines.size} 条",
-                                color = Color(0xFF8491A4),
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
-                    }
-
-                    if (state.lines.isEmpty()) {
-                        item(key = "all-subtitles-empty") {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 28.dp),
-                                contentAlignment = androidx.compose.ui.Alignment.Center,
-                            ) {
-                                Text(
-                                    if (state.availableSubtitleTracks.isNotEmpty()) {
-                                        "当前处理字幕尚未生成；上方列出的是视频原本包含的各语言字幕轨。"
-                                    } else {
-                                        "当前还没有生成字幕内容。"
-                                    },
-                                    color = Color(0xFF8995A6),
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                    } else {
-                        itemsIndexed(
-                            items = state.lines,
-                            key = { index, line -> "subtitle-line-${line.index}-$index" },
-                        ) { index, line ->
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(13.dp))
-                                    .background(Color(0xFFF8FAFD))
-                                    .border(1.dp, Color(0xFFEAF0F7), RoundedCornerShape(13.dp))
-                                    .padding(horizontal = 11.dp, vertical = 9.dp),
-                                verticalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        "${index + 1}.",
-                                        color = Color(0xFF3268F5),
-                                        style = MaterialTheme.typography.labelMedium.copy(
-                                            fontWeight = FontWeight.Bold,
-                                        ),
-                                    )
-                                    Spacer(Modifier.weight(1f))
-                                    Text(
-                                        "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
-                                        color = Color(0xFF8995A6),
-                                        style = MaterialTheme.typography.labelSmall,
-                                    )
-                                }
-                                if (line.text.isNotBlank()) {
-                                    Text(
-                                        line.text,
-                                        color = Color(0xFF53647B),
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = 12.sp,
-                                            lineHeight = 17.sp,
-                                        ),
-                                    )
-                                }
-                                line.zh?.trim()?.takeIf { it.isNotEmpty() }?.let { translated ->
-                                    Text(
-                                        translated,
-                                        color = Color(0xFF263F70),
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = 12.sp,
-                                            lineHeight = 17.sp,
-                                            fontWeight = FontWeight.Medium,
-                                        ),
-                                    )
-                                }
-                            }
-                        }
-                    }
                 }
 
-                HorizontalDivider(
-                    modifier = Modifier.padding(top = 9.dp, bottom = 8.dp),
-                    color = Color(0xFFE9EDF3),
-                )
+                HorizontalDivider(color = Color(0xFFE9EDF3))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    horizontalArrangement = Arrangement.End,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 ) {
                     TextButton(onClick = onDismiss) {
                         Text("关闭", color = Color(0xFF64748B))
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Button(
-                        onClick = onDownloadAll,
-                        enabled = state.lines.isNotEmpty(),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 15.dp, vertical = 10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF3268F5),
-                            contentColor = Color.White,
-                            disabledContainerColor = Color(0xFFE8EDF5),
-                            disabledContentColor = Color(0xFF9AA6B7),
-                        ),
-                    ) {
-                        Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("下载当前双语字幕")
                     }
                 }
             }
