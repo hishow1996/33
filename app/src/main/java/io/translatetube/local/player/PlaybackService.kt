@@ -760,6 +760,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var processingEngineConfigFingerprint = ""
     // Track the engine domains that produced the current pipeline, even before a first successful snapshot exists.
     @Volatile private var processingEngineDomainFingerprints = EngineConfigFingerprints("", "", "")
+    /** Exact media-session identity used by the durable, unfinished processing checkpoint. */
+    @Volatile private var activeProcessingCheckpointIdentityKey = ""
+    private val processingCheckpointRestoreGeneration = java.util.concurrent.atomic.AtomicLong(0L)
     // Snapshot the configuration that produced the currently completed session. Unlike the
     // preference-listener baseline above, this value must not change just because settings are
     // edited while the READY player is idle on the Home screen.
@@ -1102,6 +1105,32 @@ class PlaybackService : MediaSessionService() {
         } catch (error: Exception) {
             android.util.Log.w("PlaybackService", "Unable to resume completed history session", error)
             false
+        }
+    }
+
+    /** Persist the current original timeline / partial Chinese translations for process-death recovery. */
+    private suspend fun persistInProgressProcessingCheckpoint(
+        sessionKey: String,
+        pipelineGeneration: Long,
+    ) {
+        ensureCurrentSession(sessionKey, pipelineGeneration)
+        val state = ui.value
+        if (state.key != sessionKey || state.lines.isEmpty()) return
+        val identityKey = activeProcessingCheckpointIdentityKey
+        val fingerprints = processingEngineDomainFingerprints
+        if (identityKey.isBlank() ||
+            fingerprints.transcription.isBlank() ||
+            fingerprints.translation.isBlank() ||
+            fingerprints.dubbing.isBlank()
+        ) return
+        withContext(Dispatchers.IO) {
+            InProgressProcessingCheckpointStore.save(
+                context = this@PlaybackService,
+                videoKey = sessionKey,
+                identityKey = identityKey,
+                state = state.copy(lines = state.lines.toList()),
+                fingerprints = fingerprints,
+            )
         }
     }
 
@@ -3827,7 +3856,13 @@ class PlaybackService : MediaSessionService() {
         forceYouTubeSubtitleRefresh: Boolean = false,
         precomputedLocalMediaIdentityKey: String? = null,
         localIdentityResolutionToken: Long? = null,
+        skipInProgressCheckpointRestore: Boolean = false,
     ) {
+        val checkpointLookupToken = if (skipInProgressCheckpointRestore) {
+            processingCheckpointRestoreGeneration.get()
+        } else {
+            processingCheckpointRestoreGeneration.incrementAndGet()
+        }
         val incomingSessionKey = ui.value.key
         if (incomingSessionKey != key) {
             playbackRecoveryInProgress = false
@@ -3919,6 +3954,7 @@ class PlaybackService : MediaSessionService() {
                             forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                             precomputedLocalMediaIdentityKey = identity,
                             localIdentityResolutionToken = identityToken,
+                            skipInProgressCheckpointRestore = skipInProgressCheckpointRestore,
                         )
                     }
                 }
@@ -3938,6 +3974,121 @@ class PlaybackService : MediaSessionService() {
             cookie = remoteMediaCookie,
             localMediaIdentityKey = localMediaIdentityKey,
         )
+
+        // A process restart loses PlaybackService.ui, but an unfinished source timeline and its
+        // partial translations must survive. Load that bounded checkpoint off the main thread
+        // before entering runPipeline; supplying resumeState makes the pipeline skip metadata
+        // discovery, webpage audio extraction and ASR entirely.
+        if (
+            !skipInProgressCheckpointRestore &&
+            resumeState == null &&
+            importedLines == null &&
+            !restoreReadySnapshot &&
+            !forceYouTubeSubtitleRefresh
+        ) {
+            scope.launch {
+                val checkpoint = withContext(Dispatchers.IO) {
+                    InProgressProcessingCheckpointStore.load(
+                        this@PlaybackService,
+                        key,
+                        readySnapshotIdentityKey,
+                    )
+                }
+                if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
+                    return@launch
+                }
+                val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                val checkpointState = checkpoint?.let { saved ->
+                    val restartStage = chooseEngineRestartStage(
+                        previous = saved.fingerprints,
+                        current = currentDomains,
+                        state = saved.state,
+                        ignoreTranscription = false,
+                    )
+                    when (restartStage) {
+                        // A changed ASR configuration invalidates the transcript, but the normal
+                        // audio cache still avoids downloading/extracting the webpage track again.
+                        EngineRestartStage.TRANSCRIPTION -> null
+                        EngineRestartStage.TRANSLATION ->
+                            stateForEngineRestart(saved.state, EngineRestartStage.TRANSLATION)
+                        EngineRestartStage.DUBBING,
+                        null -> saved.state
+                    }
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
+                        return@withContext
+                    }
+                    if (checkpointState != null) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "跨进程恢复未完成的字幕处理，跳过网页音轨提取和重复转写",
+                            diagnosticContext = mapOf(
+                                "视频来源" to when {
+                                    key.startsWith("remote:") -> "网页视频"
+                                    key.startsWith("youtube:") -> "YouTube"
+                                    else -> "本地视频"
+                                },
+                                "恢复字幕行数" to checkpointState.lines.size.toString(),
+                                "已完成译文行数" to checkpointState.lines.count { !it.zh.isNullOrBlank() }.toString(),
+                                "恢复阶段" to if (checkpointState.lines.any { needsSubtitleTranslation(it, checkpointState.sourceLang) }) {
+                                    "翻译"
+                                } else {
+                                    "配音"
+                                },
+                                "引擎配置变化" to when (
+                                    chooseEngineRestartStage(
+                                        checkpoint!!.fingerprints,
+                                        currentDomains,
+                                        checkpoint.state,
+                                        ignoreTranscription = false,
+                                    )
+                                ) {
+                                    EngineRestartStage.TRANSCRIPTION -> "转写"
+                                    EngineRestartStage.TRANSLATION -> "翻译"
+                                    EngineRestartStage.DUBBING -> "配音"
+                                    null -> "无"
+                                },
+                            ),
+                        )
+                    } else if (checkpoint != null) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "未复用旧的处理中间结果，按当前转写配置重新校验来源缓存",
+                            diagnosticContext = mapOf(
+                                "视频来源" to if (key.startsWith("remote:")) "网页视频" else if (key.startsWith("youtube:")) "YouTube" else "本地视频",
+                                "恢复原因" to "转写配置已变化",
+                                "音频缓存策略" to "优先复用原媒体音频缓存",
+                            ),
+                        )
+                    }
+                    open(
+                        key = key,
+                        videoId = videoId,
+                        localUri = localUri,
+                        importedLines = importedLines,
+                        resumeState = checkpointState,
+                        remoteMediaUrl = remoteMediaUrl,
+                        remoteMediaTitle = remoteMediaTitle,
+                        remoteMediaReferrer = remoteMediaReferrer,
+                        remoteMediaCookie = remoteMediaCookie,
+                        remoteMediaUserAgent = remoteMediaUserAgent,
+                        requestToken = requestToken,
+                        reuseMountedMediaForRestart = reuseMountedMediaForRestart,
+                        restoreReadySnapshot = restoreReadySnapshot,
+                        forceRegenerateDubbing = forceRegenerateDubbing,
+                        reuseMatchingDubbingCache = reuseMatchingDubbingCache,
+                        forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                        precomputedLocalMediaIdentityKey = localMediaIdentityKey,
+                        localIdentityResolutionToken = localIdentityResolutionToken,
+                        skipInProgressCheckpointRestore = true,
+                    )
+                }
+            }
+            return
+        }
         val localMediaChangedForActiveSession =
             localUri != null &&
                 key == videoKey &&
@@ -4093,6 +4244,7 @@ class PlaybackService : MediaSessionService() {
         }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = key)
         processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        activeProcessingCheckpointIdentityKey = readySnapshotIdentityKey
         activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
@@ -4402,6 +4554,19 @@ class PlaybackService : MediaSessionService() {
                 )
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
+                if (
+                    finishedState.key == key &&
+                    finishedState.phase == Phase.READY &&
+                    !finishedState.lines.any { needsSubtitleTranslation(it, finishedState.sourceLang) }
+                ) {
+                    withContext(Dispatchers.IO) {
+                        InProgressProcessingCheckpointStore.delete(
+                            this@PlaybackService,
+                            key,
+                            activeProcessingCheckpointIdentityKey,
+                        )
+                    }
+                }
                 if (
                     finishedState.key == key &&
                     finishedState.phase == Phase.READY &&
@@ -8128,6 +8293,8 @@ updateUiForSession(key, pipelineGeneration) {
                         )
                     } else state
                 }
+                // The source timeline is durable before the first translator request begins.
+                persistInProgressProcessingCheckpoint(key, pipelineGeneration)
             }
 
             // The engine may change while subtitles are being discovered, fetched, or transcribed.
@@ -8399,6 +8566,11 @@ updateUiForSession(key, pipelineGeneration) {
                         lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
                         progress = "", phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
                     )
+                }
+                if (!restoreCompletedSnapshot) {
+                    // Covers sessions that needed no translation calls, as well as the small gap
+                    // between the final translated line and stage-5 synthesis.
+                    persistInProgressProcessingCheckpoint(key, pipelineGeneration)
                 }
 
                 return finalLines
@@ -9466,6 +9638,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已翻译 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                     )
                 }
+                // Unlike the coarser Room cache checkpoint, persist each completed batch so
+                // force-stop recovery resumes from the exact remaining cue rather than from audio.
+                persistInProgressProcessingCheckpoint(key, pipelineGeneration)
                 // Keep structured logs bounded: record the first, final and periodic successful batches.
                 val completedBatchCount = batchIndex + 1
                 if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
