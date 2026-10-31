@@ -2282,7 +2282,7 @@ class PlaybackService : MediaSessionService() {
                 engine.isPrepared(index) || engine.isSilent(index)
             }
             if (readyAhead >= requiredStartupCues.size) break
-            if (System.nanoTime() >= deadlineNs) {
+            if (System.nanoTime() >= deadlineNs && !engine.isPreparing) {
                 val remaining = (requiredStartupCues.size - readyAhead).coerceAtLeast(0)
                 updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     state.copy(
