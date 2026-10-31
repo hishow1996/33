@@ -6302,10 +6302,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             resolveMetadataStage()
 
             // 解析视频时先列出所有字幕轨。下载是可选操作，不影响自动翻译/配音流程。
-            if (videoId != null && resumeState == null) {
+            if (videoId != null && (resumeState == null || resumeState.availableSubtitleTracks.isEmpty())) {
                 try {
                     awaitProcessingResumed(key, pipelineGeneration)
-                    updateUiForSession(key, pipelineGeneration) { it.copy(progress = "正在查找可用字幕轨…") }
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(progress = "正在查找视频包含的全部字幕轨…")
+                    }
                     val tracks = NewPipeRepo.subtitleTracks(requireNotNull(videoId))
                     awaitProcessingResumed(key, pipelineGeneration)
                     updateUiForSession(key, pipelineGeneration) {
