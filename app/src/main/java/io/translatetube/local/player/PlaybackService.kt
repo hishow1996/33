@@ -635,6 +635,8 @@ private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
 // Processing progress must use a distinct ID so BigTextStyle updates cannot replace MediaStyle.
 private const val PROCESSING_NOTIFICATION_ID = 1004
 private const val PROCESSING_NOTIFICATION_MIN_INTERVAL_MS = 750L
+/** Reassert the service's CPU/foreground protection even if Media3 or an OEM background manager demotes it. */
+private const val BACKGROUND_PROCESSING_GUARD_INTERVAL_MS = 10_000L
 private const val MAX_NOTIFICATION_AUDIT_EVENTS = 12
 
 class PlaybackService : MediaSessionService() {
@@ -653,6 +655,8 @@ class PlaybackService : MediaSessionService() {
     /** Keep processing in the foreground even when Media3 no longer needs a playback notification. */
     @Volatile private var processingForegroundActive = false
     @Volatile private var latestProcessingNotification: Notification? = null
+    /** Periodically revalidates background execution protection for every pipeline stage. */
+    private var backgroundProcessingGuardJob: Job? = null
     private val processingWakeLockLock = Any()
     private var processingWakeLock: PowerManager.WakeLock? = null
     @Volatile private var lastProcessingForegroundFailureKey: String? = null
@@ -2193,6 +2197,9 @@ class PlaybackService : MediaSessionService() {
             instance = this
             attachPendingVideoSurface()
             startPlaybackHintMonitor()
+            // Start only after PlayerManager/notification collection are ready. The watchdog
+            // belongs to the service scope, never to a Compose screen or Activity lifecycle.
+            startBackgroundProcessingGuard()
         } catch (e: Throwable) {
             if (e is VirtualMachineError || e is ThreadDeath) throw e
             playerReady = false
@@ -2938,6 +2945,63 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /**
+     * Keep long-running work independent from the visible Activity. The normal StateFlow
+     * notification path remains the primary updater; this watchdog is a recovery path for
+     * devices/Media3 transitions that temporarily demote the service or drop its CPU lock.
+     *
+     * It covers parsing, audio extraction, local/cloud transcription, translation and dubbing
+     * through the same phase policy. It never invents progress: it republishes the latest state.
+     */
+    private fun startBackgroundProcessingGuard() {
+        if (backgroundProcessingGuardJob?.isActive == true) return
+        backgroundProcessingGuardJob = scope.launch(Dispatchers.Default) {
+            while (!processingNotificationShuttingDown) {
+                delay(BACKGROUND_PROCESSING_GUARD_INTERVAL_MS)
+                if (processingNotificationShuttingDown) break
+
+                val observed = ui.value
+                if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                        observed.phase,
+                        isDubbingPreparationIncomplete(observed),
+                    )
+                ) continue
+
+                // WakeLock operations are synchronized and safe to call off the main thread.
+                // Paused work intentionally keeps its notification but does not hold the CPU awake.
+                if (!observed.isProcessingPaused) syncProcessingWakeLock(observed)
+
+                // Foreground-service promotion and notification updates are serialized on main,
+                // alongside Media3's notification callbacks.
+                processingNotificationHandler.post {
+                    if (processingNotificationShuttingDown) return@post
+                    val current = ui.value
+                    if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                            current.phase,
+                            isDubbingPreparationIncomplete(current),
+                        )
+                    ) return@post
+
+                    val previousPostCount = processingNotificationPostCount
+                    publishProcessingNotification(current)
+
+                    // A new notification fingerprint already promotes the service. When nothing
+                    // changed, explicitly reassert foreground status anyway; an unchanged
+                    // fingerprint must not be mistaken for proof that Android still keeps us foreground.
+                    if (processingNotificationPostCount == previousPostCount) {
+                        latestProcessingNotification?.let { notice ->
+                            promoteProcessingForeground(
+                                notice,
+                                current,
+                                "后台处理保护定时校验",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun releaseProcessingWakeLock() {
         synchronized(processingWakeLockLock) {
             val lock = processingWakeLock
@@ -3634,6 +3698,8 @@ class PlaybackService : MediaSessionService() {
         requestedVideoSurface = null
         boundVideoSurface = null
         processingNotificationShuttingDown = true
+        backgroundProcessingGuardJob?.cancel()
+        backgroundProcessingGuardJob = null
         releaseProcessingWakeLock()
         latestProcessingNotification = null
         processingForegroundActive = false

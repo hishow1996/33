@@ -602,6 +602,25 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun foregroundProtectionCoversEveryActiveProcessingStage() {
+        listOf(
+            Phase.PARSING,
+            Phase.DOWNLOADING_AUDIO,
+            Phase.TRANSCRIBING,
+            Phase.TRANSLATING,
+            Phase.SYNTHESIZING,
+        ).forEach { phase ->
+            assertTrue(
+                "Foreground protection must remain enabled during $phase",
+                VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                    phase = phase,
+                    dubbingPreparationIncomplete = false,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun playbackHintCannotRevealPlayerBeforeStartupBufferActuallyStarts() {
         // Video media may already be mounted and buffering during stage 5. Do not let that
         // transient hint replace the processing page before the startup PCM buffer is ready.
