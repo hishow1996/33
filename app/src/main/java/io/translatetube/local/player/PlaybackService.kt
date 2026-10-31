@@ -802,6 +802,7 @@ class PlaybackService : MediaSessionService() {
     private var speakerJob: Job? = null
     @Volatile private var subtitleDownloadJob: Job? = null
     private val asrAudioDownloadLocks = KeyedMutex<String>()
+    private val localAsrPcmLocks = KeyedMutex<String>()
     // Do not evict downloaded audio while MediaExtractor is actively reading it.
     private val activeAsrAudioPaths = ActiveFileLeaseRegistry()
 
@@ -6143,6 +6144,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
+        // Keep local PCM protected from concurrent pruning while the current ASR pass reads it.
+        var leasedLocalPcmCachePath: String? = null
         var transientCloudUploadAudio: File? = null
         // True once the pipeline reaches the dubbing-engine step. Only a failure from that point
         // on may be blamed on the text-to-speech setup; an earlier parse/download/transcribe/
@@ -6985,6 +6988,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     )
                     else -> localUri ?: throw IllegalStateException("无音频源")
                 }
+                val localPcmCacheFile = if (
+                    audioFile is Uri && localUri != null &&
+                    !cacheKeyBase.startsWith("local-media-unverified-v1:")
+                ) {
+                    localAsrPcmCacheFile("$cacheKeyBase|local-asr-pcm16-v1")
+                } else null
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
                     ?.absolutePath
@@ -7269,6 +7278,26 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                     }
                                 },
                             )
+                        } else if (localPcmCacheFile != null) {
+                            val prepared = obtainLocalAsrPcmFile(
+                                cacheFile = localPcmCacheFile,
+                                sessionKey = key,
+                                pipelineGeneration = pipelineGeneration,
+                            ) {
+                                AudioExtract.decodeTo16kMonoFile(
+                                    this@PlaybackService, audioFile as Uri, null,
+                                    checkActive = { pcmOwnerJob?.ensureActive() },
+                                    onProgressPercent = { percent ->
+                                        updateUiForSession(key, pipelineGeneration) { state ->
+                                            if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
+                                            } else state
+                                        }
+                                    },
+                                )
+                            }
+                            leasedLocalPcmCachePath = prepared.second
+                            prepared.first
                         } else {
                             AudioExtract.decodeTo16kMonoFile(
                                 this@PlaybackService, audioFile as Uri, null,
@@ -7327,7 +7356,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
                 // Claim ownership before any further suspension point; the outer finally block
                 // now cleans this file if HLS-cache cleanup or later ASR work is cancelled.
-                transientPcmFile = pcmFile
+                transientPcmFile = pcmFile.takeUnless { pcm ->
+                    leasedLocalPcmCachePath != null && pcm.file.absolutePath == leasedLocalPcmCachePath
+                }
                 decodedPcmHolder.set(null)
                 // Keep HLS parts when decoding fails so the next attempt can reuse downloaded
                 // segments. Once MediaExtractor has accepted the merged file, discard the copies.
@@ -8894,6 +8925,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
         } finally {
+            leasedLocalPcmCachePath?.let(::releaseLocalAsrPcmFile)
             transientPcmFile?.file?.delete()
             transientCloudUploadAudio?.delete()
             transientAudio?.delete()
@@ -9656,6 +9688,147 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
         } finally {
             if (qualityRecoveryJob === thisJob) qualityRecoveryJob = null
+        }
+    }
+
+    private fun localAsrPcmCacheDirectory(): File =
+        File(cacheDir, "local_asr_pcm16").apply { mkdirs() }
+
+    private fun localAsrPcmCacheFile(identity: String): File {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(identity.toByteArray(Charsets.UTF_8))
+        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return File(localAsrPcmCacheDirectory(), "$safeId.pcm16")
+    }
+
+    /**
+     * Reuse the decoded 16 kHz mono PCM for a verified local-media identity. A cache miss still
+     * runs the normal bounded decoder, then atomically renames its completed scratch file into the
+     * cache. Unverified document providers deliberately bypass this cache.
+     */
+    private suspend fun obtainLocalAsrPcmFile(
+        cacheFile: File,
+        sessionKey: String,
+        pipelineGeneration: Long,
+        decode: () -> AudioExtract.PcmFile,
+    ): Pair<AudioExtract.PcmFile, String?> {
+        val path = cacheFile.absolutePath
+        return localAsrPcmLocks.withLock(path) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration)
+            activeAsrAudioPaths.acquire(path)
+            var keepLease = false
+            try {
+                val now = System.currentTimeMillis()
+                if (LocalPcmAudioCachePolicy.canReuse(
+                        isFile = cacheFile.isFile,
+                        sizeBytes = cacheFile.length(),
+                        lastModifiedMs = cacheFile.lastModified(),
+                        nowMs = now,
+                    )
+                ) {
+                    cacheFile.setLastModified(now)
+                    pruneLocalAsrPcmCache(keep = cacheFile)
+                    updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                        if (state.key == sessionKey && state.phase == Phase.TRANSCRIBING) {
+                            state.copy(progress = "复用已解码音频缓存，跳过重复提取…")
+                        } else state
+                    }
+                    keepLease = true
+                    return@withLock AudioExtract.PcmFile(
+                        file = cacheFile,
+                        sampleCount = cacheFile.length() / 2L,
+                        sampleRate = 16_000,
+                    ) to path
+                }
+
+                // Drop this caller's temporary lease before coordinated deletion of a stale file.
+                activeAsrAudioPaths.release(path)
+                activeAsrAudioPaths.deleteIfUnleased(path) { cacheFile.delete() }
+                File(cacheFile.parentFile, cacheFile.name + ".part").delete()
+                activeAsrAudioPaths.acquire(path)
+
+                val decoded = decode()
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val decodedFile = decoded.file
+                val payloadIsValid = decoded.sampleRate == 16_000 &&
+                    decoded.sampleCount > 0L &&
+                    decoded.sampleCount <= Long.MAX_VALUE / 2L &&
+                    decodedFile.isFile &&
+                    decodedFile.length() == decoded.sampleCount * 2L &&
+                    decodedFile.length() <= LocalPcmAudioCachePolicy.MAX_CACHE_BYTES
+                if (!payloadIsValid) return@withLock decoded to null
+
+                cacheFile.parentFile?.mkdirs()
+                if (!decodedFile.renameTo(cacheFile)) {
+                    // Keep the working PCM for this run; failing to persist a cache must not turn
+                    // a successful local decode into a failed transcription.
+                    return@withLock decoded to null
+                }
+                cacheFile.setLastModified(System.currentTimeMillis())
+                pruneLocalAsrPcmCache(keep = cacheFile)
+                keepLease = true
+                AudioExtract.PcmFile(
+                    file = cacheFile,
+                    sampleCount = decoded.sampleCount,
+                    sampleRate = decoded.sampleRate,
+                ) to path
+            } finally {
+                if (!keepLease) activeAsrAudioPaths.release(path)
+            }
+        }
+    }
+
+    private fun releaseLocalAsrPcmFile(path: String) {
+        if (path.isBlank()) return
+        activeAsrAudioPaths.release(path)
+        val file = File(path)
+        if (file.isFile) file.setLastModified(System.currentTimeMillis())
+        pruneLocalAsrPcmCache(keep = file.takeIf { it.isFile })
+    }
+
+    /** Keep local PCM bounded by age, entry count and total bytes; active readers are never evicted. */
+    private fun pruneLocalAsrPcmCache(keep: File? = null) {
+        val directory = localAsrPcmCacheDirectory()
+        val files = directory.listFiles()?.filter { it.isFile } ?: return
+        val now = System.currentTimeMillis()
+        files.filter { file ->
+            file.name.endsWith(".part") &&
+                LocalPcmAudioCachePolicy.isStalePartial(file.lastModified(), now)
+        }.forEach { file ->
+            val destinationPath = file.absolutePath.removeSuffix(".part")
+            activeAsrAudioPaths.deleteIfUnleased(destinationPath) { file.delete() }
+        }
+
+        var completeFiles = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".pcm16") }
+            .orEmpty()
+        completeFiles.filter { file ->
+            file.absolutePath != keep?.absolutePath &&
+                !LocalPcmAudioCachePolicy.canReuse(
+                    isFile = file.isFile,
+                    sizeBytes = file.length(),
+                    lastModifiedMs = file.lastModified(),
+                    nowMs = now,
+                )
+        }.forEach { file ->
+            activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+        }
+
+        completeFiles = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".pcm16") }
+            .orEmpty()
+        var totalBytes = completeFiles.sumOf { it.length() }
+        var fileCount = completeFiles.size
+        val oldestFirst = completeFiles
+            .filter { it.absolutePath != keep?.absolutePath }
+            .sortedBy { it.lastModified() }
+        for (file in oldestFirst) {
+            if (!LocalPcmAudioCachePolicy.exceedsBudget(totalBytes, fileCount)) break
+            val bytes = file.length()
+            if (activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }) {
+                totalBytes = (totalBytes - bytes).coerceAtLeast(0L)
+                fileCount = (fileCount - 1).coerceAtLeast(0)
+            }
         }
     }
 
