@@ -14,16 +14,24 @@ class AsrTranscriptCheckpointPolicyTest {
         val key = "local:video|source|local-asr-sensevoice|asr-progress-v2"
 
         assertEquals(
-            "$key|chunk:",
+            "$key|chunk",
             AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(key),
         )
         assertEquals(
-            "$key|chunk:0",
+            "$key|chunk-v4:0",
             AsrTranscriptCheckpointPolicy.chunkCacheKey(key, 0),
         )
         assertEquals(
-            "$key|chunk:3",
+            "$key|chunk-v4:3",
             AsrTranscriptCheckpointPolicy.chunkCacheKey(key, 3),
+        )
+        assertEquals(
+            "$key|chunk:3",
+            AsrTranscriptCheckpointPolicy.legacyChunkCacheKey(key, 3),
+        )
+        assertEquals(
+            "$key|chunk:",
+            AsrTranscriptCheckpointPolicy.legacyChunkCacheKeyPrefix(key),
         )
         assertTrue(
             AsrTranscriptCheckpointPolicy.chunkCacheKey(key, 0) !=
@@ -31,9 +39,29 @@ class AsrTranscriptCheckpointPolicyTest {
         )
     }
 
+    @Test
+    fun everyNonNegativeSegmentCanHaveItsOwnCheckpointShard() {
+        assertEquals(
+            "checkpoint|chunk-v4:2",
+            AsrTranscriptCheckpointPolicy.chunkCacheKey("checkpoint", 2),
+        )
+    }
+
     @Test(expected = IllegalArgumentException::class)
-    fun chunkKeysRejectMisalignedSegmentStarts() {
-        AsrTranscriptCheckpointPolicy.chunkCacheKey("checkpoint", 2)
+    fun chunkKeysRejectNegativeSegmentStarts() {
+        AsrTranscriptCheckpointPolicy.chunkCacheKey("checkpoint", -1)
+    }
+
+    @Test
+    fun checkpointReaderAcceptsLegacyThreeSegmentAndNewSingleSegmentLayouts() {
+        assertEquals(1, AsrTranscriptCheckpointPolicy.checkpointChunkSize(2, null))
+        assertEquals(3, AsrTranscriptCheckpointPolicy.checkpointChunkSize(3, 3))
+        assertEquals(1, AsrTranscriptCheckpointPolicy.checkpointChunkSize(3, 1))
+        assertEquals(1, AsrTranscriptCheckpointPolicy.checkpointChunkSize(4, 1))
+        assertEquals(null, AsrTranscriptCheckpointPolicy.checkpointChunkSize(3, 2))
+        assertEquals(null, AsrTranscriptCheckpointPolicy.checkpointChunkSize(4, 3))
+        assertTrue(AsrTranscriptCheckpointPolicy.usesLegacyChunkKeys(3))
+        assertFalse(AsrTranscriptCheckpointPolicy.usesLegacyChunkKeys(4))
     }
 
     @Test

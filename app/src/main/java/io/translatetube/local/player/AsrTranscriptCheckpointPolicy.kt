@@ -4,20 +4,47 @@ import java.security.MessageDigest
 
 /** Stable identity and bounds for partial Whisper transcripts tied to a PCM/VAD layout. */
 internal object AsrTranscriptCheckpointPolicy {
-    /** Checkpoint groups align with the pipeline's periodic progress-save boundary. */
-    const val SEGMENTS_PER_CHECKPOINT = 3
+    /** Persist each completed VAD speech segment so a background interruption loses minimal work. */
+    const val SEGMENTS_PER_CHECKPOINT = 1
 
+    /** Previous app versions wrote groups of three segments under the unversioned cache prefix. */
+    const val LEGACY_SEGMENTS_PER_CHECKPOINT = 3
+
+    /** Broad prefix used when clearing both legacy and current checkpoint shards. */
     fun chunkCacheKeyPrefix(partialCacheKey: String): String {
+        require(partialCacheKey.isNotBlank()) { "ASR 检查点缓存键不能为空" }
+        return "$partialCacheKey|chunk"
+    }
+
+    fun legacyChunkCacheKeyPrefix(partialCacheKey: String): String {
         require(partialCacheKey.isNotBlank()) { "ASR 检查点缓存键不能为空" }
         return "$partialCacheKey|chunk:"
     }
 
+    fun legacyChunkCacheKey(partialCacheKey: String, startSegment: Int): String {
+        require(startSegment >= 0) { "ASR 检查点分段起点无效" }
+        return legacyChunkCacheKeyPrefix(partialCacheKey) + startSegment
+    }
+
+    /** New one-segment shards use a distinct namespace so migration cannot overwrite v3 groups. */
     fun chunkCacheKey(partialCacheKey: String, startSegment: Int): String {
-        require(startSegment >= 0 && startSegment % SEGMENTS_PER_CHECKPOINT == 0) {
+        require(startSegment in 0 until MAX_PROCESSED_SEGMENTS) {
             "ASR 检查点分段起点无效"
         }
-        return chunkCacheKeyPrefix(partialCacheKey) + startSegment
+        return "$partialCacheKey|chunk-v4:$startSegment"
     }
+
+    /** Resolve the shard size stored by a manifest without invalidating v3 checkpoints. */
+    fun checkpointChunkSize(manifestVersion: Int, savedChunkSize: Int?): Int? = when (manifestVersion) {
+        2 -> SEGMENTS_PER_CHECKPOINT
+        3 -> savedChunkSize?.takeIf {
+            it == LEGACY_SEGMENTS_PER_CHECKPOINT || it == SEGMENTS_PER_CHECKPOINT
+        }
+        4 -> SEGMENTS_PER_CHECKPOINT
+        else -> null
+    }
+
+    fun usesLegacyChunkKeys(manifestVersion: Int): Boolean = manifestVersion == 3
 
     private const val MAX_CHECKPOINT_ROWS = 100_000
     private const val MAX_PROCESSED_SEGMENTS = 100_000

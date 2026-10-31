@@ -7710,7 +7710,7 @@ updateUiForSession(key, pipelineGeneration) {
                     val restored = try {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
                         val checkpointVersion = checkpoint.optInt("version", -1)
-                        if (checkpointVersion !in 2..3) {
+                        if (checkpointVersion !in 2..4) {
                             throw IllegalStateException("ASR 检查点版本不兼容")
                         }
                         val processed = checkpoint.optInt("processedSegments", -1)
@@ -7746,7 +7746,11 @@ updateUiForSession(key, pipelineGeneration) {
                             }
                         }
 
-                        val checkpointChunkSize = AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT
+                        val savedChunkSize = checkpoint.optInt("chunkSize", -1)
+                        val checkpointChunkSize = AsrTranscriptCheckpointPolicy.checkpointChunkSize(
+                            checkpointVersion,
+                            savedChunkSize.takeIf { it > 0 },
+                        ) ?: throw IllegalStateException("ASR 分段检查点大小不兼容")
                         if (processed != total && processed % checkpointChunkSize != 0) {
                             throw IllegalStateException("ASR 检查点进度未对齐分段边界")
                         }
@@ -7757,20 +7761,26 @@ updateUiForSession(key, pipelineGeneration) {
                                 val maxRows = minOf(processed.toLong() * 64L, 100_000L).toInt()
                                 readCheckpointRows(savedRows, maxRows)
                             }
-                            3 -> {
-                                if (checkpoint.optInt("chunkSize", -1) != checkpointChunkSize) {
-                                    throw IllegalStateException("ASR 分段检查点大小不兼容")
-                                }
+                            3, 4 -> {
+                                val useLegacyKeys = AsrTranscriptCheckpointPolicy.usesLegacyChunkKeys(
+                                    checkpointVersion,
+                                )
                                 val combinedRows = ArrayList<Triple<Long, Long, String>>()
                                 var chunkStart = 0
                                 while (chunkStart < processed) {
                                     pcmOwnerJob?.ensureActive()
                                     val chunkEnd = minOf(chunkStart + checkpointChunkSize, processed)
-                                    val chunkEntity = db.subtitleCacheDao().get(
+                                    val chunkKey = if (useLegacyKeys) {
+                                        AsrTranscriptCheckpointPolicy.legacyChunkCacheKey(
+                                            partialAsrCacheKey, chunkStart,
+                                        )
+                                    } else {
                                         AsrTranscriptCheckpointPolicy.chunkCacheKey(
                                             partialAsrCacheKey, chunkStart,
                                         )
-                                    ) ?: throw IllegalStateException("ASR 分段检查点缺少第 ${chunkStart} 段的数据")
+                                    }
+                                    val chunkEntity = db.subtitleCacheDao().get(chunkKey)
+                                        ?: throw IllegalStateException("ASR 分段检查点缺少第 ${chunkStart} 段的数据")
                                     val chunk = org.json.JSONObject(chunkEntity.linesJson)
                                     if (chunk.optInt("version", -1) != 1 ||
                                         chunk.optString("signature") != savedSignature ||
@@ -7782,7 +7792,8 @@ updateUiForSession(key, pipelineGeneration) {
                                     val savedRows = chunk.optJSONArray("rows")
                                         ?: throw IllegalStateException("ASR 分段检查点缺少字幕列表")
                                     val maxRows = minOf(
-                                        (chunkEnd - chunkStart).toLong() * 64L,
+                                        (chunkEnd - chunkStart).toLong() *
+                                            if (checkpointVersion == 4) 256L else 64L,
                                         100_000L,
                                     ).toInt()
                                     combinedRows.addAll(readCheckpointRows(savedRows, maxRows))
@@ -7800,11 +7811,11 @@ updateUiForSession(key, pipelineGeneration) {
                             throw IllegalStateException("ASR 检查点包含重复、无效或未完成的字幕行")
                         }
 
-                        if (checkpointVersion == 2) {
-                            // Migrate older all-in-one checkpoints once. Build each shard by the
-                            // same chronological segment cursor as the validator; leave the v2
-                            // manifest in place until every shard has been committed.
-                            val rowsByChunk = mutableMapOf<Int, MutableList<Triple<Long, Long, String>>>()
+                        if (checkpointVersion in 2..3) {
+                            // Convert v2 monolithic rows and v3 three-segment shards into isolated
+                            // one-segment v4 shards. New keys keep the old manifest recoverable
+                            // until every new shard is committed and the v4 manifest is installed.
+                            val rowsBySegment = mutableMapOf<Int, MutableList<Triple<Long, Long, String>>>()
                             var segmentCursor = 0
                             for (row in restoredRows) {
                                 pcmOwnerJob?.ensureActive()
@@ -7814,15 +7825,12 @@ updateUiForSession(key, pipelineGeneration) {
                                 if (segmentCursor >= processed) {
                                     throw IllegalStateException("旧版 ASR 检查点字幕无法映射到已完成语音段")
                                 }
-                                val chunkStart =
-                                    (segmentCursor / checkpointChunkSize) * checkpointChunkSize
-                                rowsByChunk.getOrPut(chunkStart) { mutableListOf() }.add(row)
+                                rowsBySegment.getOrPut(segmentCursor) { mutableListOf() }.add(row)
                             }
-                            for (chunkStart in 0 until processed step checkpointChunkSize) {
+                            for (segmentIndex in 0 until processed) {
                                 pcmOwnerJob?.ensureActive()
-                                val chunkEnd = minOf(chunkStart + checkpointChunkSize, processed)
                                 val chunkRowsJson = org.json.JSONArray()
-                                for ((rowIndex, row) in rowsByChunk[chunkStart].orEmpty().withIndex()) {
+                                for ((rowIndex, row) in rowsBySegment[segmentIndex].orEmpty().withIndex()) {
                                     if ((rowIndex and 0xff) == 0) pcmOwnerJob?.ensureActive()
                                     chunkRowsJson.put(
                                         org.json.JSONObject()
@@ -7834,14 +7842,14 @@ updateUiForSession(key, pipelineGeneration) {
                                 db.subtitleCacheDao().put(
                                     io.translatetube.local.data.SubtitleCacheEntity(
                                         AsrTranscriptCheckpointPolicy.chunkCacheKey(
-                                            partialAsrCacheKey, chunkStart,
+                                            partialAsrCacheKey, segmentIndex,
                                         ),
                                         storedPartialAsr.srcLang,
                                         org.json.JSONObject()
                                             .put("version", 1)
                                             .put("signature", savedSignature)
-                                            .put("startSegment", chunkStart)
-                                            .put("endSegment", chunkEnd)
+                                            .put("startSegment", segmentIndex)
+                                            .put("endSegment", segmentIndex + 1)
                                             .put("rows", chunkRowsJson)
                                             .toString(),
                                         System.currentTimeMillis(),
@@ -7850,17 +7858,24 @@ updateUiForSession(key, pipelineGeneration) {
                                 )
                             }
                             val migratedManifest = org.json.JSONObject()
-                                .put("version", 3)
+                                .put("version", 4)
                                 .put("signature", savedSignature)
                                 .put("totalSegments", total)
                                 .put("processedSegments", processed)
-                                .put("chunkSize", checkpointChunkSize)
+                                .put(
+                                    "chunkSize",
+                                    AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT,
+                                )
                             pcmOwnerJob?.ensureActive()
                             db.subtitleCacheDao().put(
                                 storedPartialAsr.copy(
                                     linesJson = migratedManifest.toString(),
                                     updatedAt = System.currentTimeMillis(),
                                 )
+                            )
+                            // Manifest switch is the commit point; stale v2/v3 keys are now removable.
+                            db.subtitleCacheDao().deleteByCacheKeyPrefix(
+                                AsrTranscriptCheckpointPolicy.legacyChunkCacheKeyPrefix(partialAsrCacheKey),
                             )
                         }
 
@@ -7978,9 +7993,8 @@ updateUiForSession(key, pipelineGeneration) {
 
                                 if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                                     ensureCurrentSession(key, pipelineGeneration)
-                                    // Persist only the rows from this 3-segment group. The manifest
-                                    // is updated last, so a crash can never advertise a missing chunk
-                                    // as completed; on resume the unfinished chunk is recomputed.
+                                    // Persist this single completed speech segment before advancing
+                                    // the manifest. A crash can only require retrying the current segment.
                                     val chunkRowsJson = org.json.JSONArray()
                                     for ((rowIndex, row) in chunkRows.withIndex()) {
                                         if ((rowIndex and 0xff) == 0) ownerJob?.ensureActive()
@@ -8016,7 +8030,7 @@ updateUiForSession(key, pipelineGeneration) {
                                     ownerJob?.ensureActive()
                                     ensureCurrentSession(key, pipelineGeneration)
                                     val manifestJson = org.json.JSONObject()
-                                        .put("version", 3)
+                                        .put("version", 4)
                                         .put("signature", asrSignature)
                                         .put("totalSegments", segs.size)
                                         .put("processedSegments", processed)
