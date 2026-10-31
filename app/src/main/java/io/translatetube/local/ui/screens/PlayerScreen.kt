@@ -3053,7 +3053,10 @@ private fun StageProgressVisual(
     val dubbingWaveformPhase by transition.animateFloat(
         initialValue = 0f,
         targetValue = 6.2831855f,
-        animationSpec = if (stageIndex == 4 && isAnimating && !isIndeterminate) {
+        animationSpec = if (
+            stageIndex == 4 && isAnimating && !isIndeterminate &&
+            !isPaused && !isFailed && !isCompleted && !isSkipped
+        ) {
             infiniteRepeatable(
                 animation = tween(
                     durationMillis = 980,
