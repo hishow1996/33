@@ -2696,14 +2696,14 @@ private fun VideoParsingPage(
                             // Audio extraction can report both segment completion and byte
                             // completion. Keep the useful segment count, but show one canonical
                             // percentage based on the stage's measured progress.
-                            val percentagePattern = Regex("""\\d+(?:\\.\\d+)?%""")
+                            val percentagePattern = Regex("""\d+(?:\.\d+)?%""")
                             val progressLabel = stageProgressCaption
                             val singlePercent = stageProgressValue
                                 ?.let { "${(it.coerceIn(0f, 1f) * 100f).roundToInt()}%" }
                                 ?: percentagePattern.find(progressLabel)?.value
                             val labelWithoutPercent = progressLabel
                                 .replace(percentagePattern, "")
-                                .replace(Regex("""\\s*[·•]\\s*[·•]?\\s*"""), " · ")
+                                .replace(Regex("""\s*[·•]\s*[·•]?\s*"""), " · ")
                                 .trim()
                                 .trim('·')
                                 .trim()
