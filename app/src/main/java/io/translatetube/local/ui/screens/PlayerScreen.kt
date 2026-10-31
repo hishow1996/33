@@ -3092,6 +3092,7 @@ private fun StageProgressVisual(
         modifier = Modifier
             .fillMaxWidth()
             .height(when (stageIndex) {
+                4 -> 16.dp
                 1, 3 -> 14.dp
                 else -> 12.dp
             }),
