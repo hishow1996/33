@@ -6,9 +6,14 @@ import io.translatetube.local.subs.SubLine
 import io.translatetube.local.yt.SubtitleTrackOption
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.security.MessageDigest
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 
 /**
  * Durable checkpoint for an interrupted, not-yet-completed processing run.
@@ -26,8 +31,10 @@ internal data class InProgressProcessingCheckpoint(
 
 internal object InProgressProcessingCheckpointStore {
     private const val DIRECTORY_NAME = "in_progress_processing"
-    private const val VERSION = 1
+    // Version 2 stores gzip-compressed JSON. Version 1 plain JSON remains readable for upgrades.
+    private const val VERSION = 2
     private const val MAX_FILE_BYTES = 24L * 1024L * 1024L
+    private const val MAX_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BYTES = 96L * 1024L * 1024L
     private const val MAX_FILES = 24
     private const val MAX_LINES = 120_000
@@ -107,7 +114,14 @@ internal object InProgressProcessingCheckpointStore {
                         .put("processingFlow", state.processingFlow.name),
                 )
 
-            val bytes = root.toString().toByteArray(Charsets.UTF_8)
+            val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
+            if (jsonBytes.isEmpty() || jsonBytes.size.toLong() > MAX_UNCOMPRESSED_BYTES) {
+                return@runCatching false
+            }
+            val bytes = ByteArrayOutputStream().use { compressed ->
+                GZIPOutputStream(compressed).use { gzip -> gzip.write(jsonBytes) }
+                compressed.toByteArray()
+            }
             if (bytes.isEmpty() || bytes.size.toLong() > MAX_FILE_BYTES) {
                 return@runCatching false
             }
@@ -144,20 +158,33 @@ internal object InProgressProcessingCheckpointStore {
         }
 
         val root = runCatching {
-            AtomicFile(file).openRead().use { input ->
-                val bytes = input.readBytes()
-                require(bytes.isNotEmpty() && bytes.size.toLong() <= MAX_FILE_BYTES) {
-                    "处理中间检查点文件大小无效"
-                }
-                JSONObject(String(bytes, Charsets.UTF_8))
+            val storedBytes = AtomicFile(file).openRead().use { input ->
+                readBounded(input, MAX_FILE_BYTES)
             }
+            require(storedBytes.isNotEmpty()) { "处理中间检查点文件为空" }
+            val jsonBytes = if (
+                storedBytes.size >= 2 &&
+                storedBytes[0] == 0x1f.toByte() &&
+                storedBytes[1] == 0x8b.toByte()
+            ) {
+                GZIPInputStream(ByteArrayInputStream(storedBytes)).use { gzip ->
+                    readBounded(gzip, MAX_UNCOMPRESSED_BYTES)
+                }
+            } else {
+                // Backward compatibility with plain-JSON checkpoints written by version 1.
+                require(storedBytes.size.toLong() <= MAX_UNCOMPRESSED_BYTES) {
+                    "处理中间检查点文件超过解压大小限制"
+                }
+                storedBytes
+            }
+            JSONObject(String(jsonBytes, Charsets.UTF_8))
         }.getOrElse {
-            // A truncated or malformed JSON file must not poison every later resume attempt.
+            // A truncated, oversized or malformed file must not poison later resume attempts.
             discard(file)
             return null
         }
 
-        if (root.optInt("version", -1) != VERSION ||
+        if (root.optInt("version", -1) !in 1..VERSION ||
             root.optString("keyHash") != keyHash ||
             root.optString("identityHash") != identityHash
         ) {
@@ -275,6 +302,22 @@ internal object InProgressProcessingCheckpointStore {
 
     private fun discard(file: File) {
         runCatching { AtomicFile(file).delete() }
+    }
+
+    /** Read with a hard cap so a corrupted or hostile compressed payload cannot exhaust memory. */
+    private fun readBounded(input: InputStream, maxBytes: Long): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8 * 1024)
+        var total = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count == 0) continue
+            total += count
+            require(total <= maxBytes) { "处理中间检查点超过读取大小限制" }
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
     }
 
     private fun checkpointFile(context: Context, keyHash: String, identityHash: String): File =
