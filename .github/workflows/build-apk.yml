@@ -1,3 +1,4 @@
+# Explicit user-requested APK build trigger after aligning Cloud ASR guard unit-test signature (2026-11-01).
 # Explicit user-requested APK build trigger after Cloud ASR and nullable checkpoint compile fixes (2026-11-01).
 # Explicit user-requested APK build trigger (2026-11-01): build latest main through unit tests and both APK variants.
 # Retry APK build after fixing StageProgressVisual InfiniteTransition animation spec types (2026-10-31).
