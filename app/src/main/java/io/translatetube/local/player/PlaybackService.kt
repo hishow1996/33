@@ -762,6 +762,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var processingEngineDomainFingerprints = EngineConfigFingerprints("", "", "")
     /** Exact media-session identity used by the durable, unfinished processing checkpoint. */
     @Volatile private var activeProcessingCheckpointIdentityKey = ""
+    // Serialize checkpoint writes. A canceled pipeline may still finish a blocking AtomicFile write;
+    // the next generation must write after it, using a freshly sampled UI state and identity.
+    private val inProgressCheckpointWriteMutex = kotlinx.coroutines.sync.Mutex()
     private val processingCheckpointRestoreGeneration = java.util.concurrent.atomic.AtomicLong(0L)
     // Snapshot the configuration that produced the currently completed session. Unlike the
     // preference-listener baseline above, this value must not change just because settings are
@@ -1113,24 +1116,63 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
         pipelineGeneration: Long,
     ) {
-        ensureCurrentSession(sessionKey, pipelineGeneration)
-        val state = ui.value
-        if (state.key != sessionKey || state.lines.isEmpty()) return
-        val identityKey = activeProcessingCheckpointIdentityKey
-        val fingerprints = processingEngineDomainFingerprints
-        if (identityKey.isBlank() ||
-            fingerprints.transcription.isBlank() ||
-            fingerprints.translation.isBlank() ||
-            fingerprints.dubbing.isBlank()
-        ) return
-        withContext(Dispatchers.IO) {
-            InProgressProcessingCheckpointStore.save(
-                context = this@PlaybackService,
-                videoKey = sessionKey,
-                identityKey = identityKey,
-                state = state.copy(lines = state.lines.toList()),
-                fingerprints = fingerprints,
-            )
+        inProgressCheckpointWriteMutex.withLock {
+            // Re-check after waiting for the previous write: the UI may now belong to a newer
+            // pipeline generation, even when it is processing the same history key.
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            val state = ui.value
+            if (state.key != sessionKey || state.lines.isEmpty()) return@withLock
+            val identityKey = activeProcessingCheckpointIdentityKey
+            val fingerprints = processingEngineDomainFingerprints
+            if (identityKey.isBlank() ||
+                fingerprints.transcription.isBlank() ||
+                fingerprints.translation.isBlank() ||
+                fingerprints.dubbing.isBlank()
+            ) return@withLock
+
+            // AtomicFile protects against torn files, while this generation/identity check and the
+            // mutex prevent an older canceled run from winning a race against a newer checkpoint.
+            val saved = withContext(Dispatchers.IO) {
+                if (
+                    videoKey != sessionKey ||
+                    activePipelineGeneration != pipelineGeneration ||
+                    activeProcessingCheckpointIdentityKey != identityKey ||
+                    processingEngineDomainFingerprints != fingerprints
+                ) {
+                    null
+                } else {
+                    InProgressProcessingCheckpointStore.save(
+                        context = this@PlaybackService,
+                        videoKey = sessionKey,
+                        identityKey = identityKey,
+                        state = state.copy(lines = state.lines.toList()),
+                        fingerprints = fingerprints,
+                    )
+                }
+            }
+            if (
+                saved == false &&
+                videoKey == sessionKey &&
+                activePipelineGeneration == pipelineGeneration &&
+                activeProcessingCheckpointIdentityKey == identityKey
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackCheckpoint",
+                    "处理中间进度保存失败",
+                    diagnosticContext = mapOf(
+                        "视频来源" to when {
+                            sessionKey.startsWith("remote:", ignoreCase = true) -> "网页视频"
+                            sessionKey.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                            else -> "本地视频"
+                        },
+                        "当前阶段" to state.phase.name,
+                        "字幕行数" to state.lines.size.toString(),
+                        "检查点大小限制 MB" to "24",
+                        "失败处理代数" to pipelineGeneration.toString(),
+                    ),
+                )
+            }
         }
     }
 
