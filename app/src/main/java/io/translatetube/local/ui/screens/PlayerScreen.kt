@@ -758,6 +758,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 onEnableManualTranslation = { PlaybackService.instance?.enableManualSubtitleTranslation() },
                 onCancelManualTranslation = { PlaybackService.instance?.cancelManualSubtitleTranslation() },
                 onExportOriginalSubtitle = { requestOriginalSubtitleExport() },
+                onExportAllSubtitles = { requestSubtitleExport(SubtitleExportFormat.BILINGUAL_SRT) },
                 onImportManualTranslatedSubtitle = { manualTranslatedSubPicker.launch(arrayOf("*/*")) },
                 onDownloadSubtitle = { track -> requestSubtitleDownload(track) },
                 onGoSettings = onGoSettings,
@@ -1445,6 +1446,7 @@ private fun VideoParsingPage(
     onEnableManualTranslation: () -> Unit,
     onCancelManualTranslation: () -> Unit,
     onExportOriginalSubtitle: () -> Unit,
+    onExportAllSubtitles: () -> Unit,
     onImportManualTranslatedSubtitle: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
     onGoSettings: () -> Unit,
@@ -1523,6 +1525,7 @@ private fun VideoParsingPage(
     // Keep the full card design on larger screens; use a slightly denser rhythm on short phones.
     val compactLayout = screenConfig.screenHeightDp < 740 || screenConfig.screenWidthDp < 360
     var processingSettingsOpen by remember { mutableStateOf(false) }
+    var allSubtitlesDialogVisible by remember(state.key) { mutableStateOf(false) }
 
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
     val isError = state.phase == Phase.ERROR && !isCancelled
@@ -1745,6 +1748,17 @@ private fun VideoParsingPage(
                         modifier = Modifier.padding(start = 16.dp, top = 10.dp, bottom = 4.dp),
                         color = Color(0xFF7A8495),
                         style = MaterialTheme.typography.labelMedium,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导出全部字幕", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, tint = Color(0xFF3268F5))
+                        },
+                        onClick = {
+                            processingSettingsOpen = false
+                            allSubtitlesDialogVisible = true
+                        },
+                        contentPadding = PaddingValues(horizontal = 14.dp),
                     )
                     if (externalTranslationCardVisible) {
                         DropdownMenuItem(
@@ -2711,130 +2725,339 @@ private fun VideoParsingPage(
             }
         }
 
-        Row(
+    }
+
+    if (allSubtitlesDialogVisible) {
+        AllSubtitlesDialog(
+            state = state,
+            subtitleHeadline = subtitleHeadline,
+            subtitleState = subtitleState,
+            isError = isError,
+            complete = complete,
+            onDismiss = { allSubtitlesDialogVisible = false },
+            onDownloadAll = onExportAllSubtitles,
+            onDownloadSubtitle = onDownloadSubtitle,
+        )
+    }
+}
+
+@Composable
+private fun AllSubtitlesDialog(
+    state: PlayerUiState,
+    subtitleHeadline: String,
+    subtitleState: String,
+    isError: Boolean,
+    complete: Boolean,
+    onDismiss: () -> Unit,
+    onDownloadAll: () -> Unit,
+    onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 5.dp, vertical = 12.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.9f),
+            shape = RoundedCornerShape(22.dp),
+            color = Color.White,
+            shadowElevation = 14.dp,
         ) {
-            Icon(
-                Icons.Filled.Subtitles,
-                contentDescription = null,
-                tint = Color(0xFF64748B),
-                modifier = Modifier.size(20.dp),
-            )
-            Text(
-                subtitleHeadline,
-                color = Color(0xFF34435A),
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                subtitleState,
-                color = when {
-                    isError -> Color(0xFFCB3E4D)
-                    complete -> Color(0xFF15996E)
-                    else -> Color(0xFF3268F5)
-                },
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            isError -> Color(0xFFFFF0F0)
-                            complete -> Color(0xFFE4F8EF)
-                            else -> Color(0xFFEDF3FF)
-                        },
-                    )
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
-                maxLines = 1,
-            )
-        }
-        if (state.availableSubtitleTracks.isNotEmpty()) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White)
-                    .border(1.dp, Color(0xFFE5EAF2), RoundedCornerShape(16.dp)),
+                    .fillMaxSize()
+                    .padding(horizontal = 15.dp, vertical = 13.dp),
             ) {
-                state.availableSubtitleTracks.forEachIndexed { index, track ->
-                    if (index > 0) {
-                        HorizontalDivider(
-                            modifier = Modifier.padding(start = 58.dp),
-                            color = Color(0xFFEEF1F6),
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            "导出全部字幕",
+                            color = Color(0xFF20324B),
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
+                        )
+                        Text(
+                            "${state.lines.size} 条字幕",
+                            color = Color(0xFF8491A4),
+                            style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    Row(
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "关闭",
+                            tint = Color(0xFF64748B),
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 9.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        subtitleHeadline,
+                        color = Color(0xFF64748B),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        subtitleState,
+                        color = when {
+                            isError -> Color(0xFFCB3E4D)
+                            complete -> Color(0xFF15996E)
+                            else -> Color(0xFF3268F5)
+                        },
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 11.dp, vertical = 9.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(11.dp))
-                                .background(Color(0xFFEEF3FF)),
-                            contentAlignment = androidx.compose.ui.Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Filled.Subtitles,
-                                contentDescription = null,
-                                tint = Color(0xFF3268F5),
-                                modifier = Modifier.size(19.dp),
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    isError -> Color(0xFFFFF0F0)
+                                    complete -> Color(0xFFE4F8EF)
+                                    else -> Color(0xFFEDF3FF)
+                                },
                             )
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                        ),
+                    )
+                }
+
+                HorizontalDivider(color = Color(0xFFE9EDF3))
+
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    if (state.availableSubtitleTracks.isNotEmpty()) {
+                        item(key = "available-subtitle-tracks-title") {
                             Text(
-                                track.languageTag,
-                                color = Color(0xFF26354B),
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 13.sp,
+                                "可下载字幕轨",
+                                color = Color(0xFF34435A),
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.Bold,
                                 ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                if (track.isAutoGenerated) "自动生成字幕" else "人工字幕",
-                                color = Color(0xFF7A8799),
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                maxLines = 1,
+                                modifier = Modifier.padding(top = 2.dp, bottom = 1.dp),
                             )
                         }
-                        FilledTonalButton(
-                            onClick = { onDownloadSubtitle(track) },
-                            modifier = Modifier.height(36.dp),
-                            shape = RoundedCornerShape(11.dp),
-                            contentPadding = PaddingValues(horizontal = 11.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = Color(0xFFEAF1FF),
-                                contentColor = Color(0xFF3268F5),
-                            ),
+                        itemsIndexed(
+                            items = state.availableSubtitleTracks,
+                            key = { index, track -> "subtitle-track-${track.languageTag}-$index" },
+                        ) { _, track ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(13.dp))
+                                    .background(Color(0xFFF8FAFD))
+                                    .border(1.dp, Color(0xFFEAF0F7), RoundedCornerShape(13.dp))
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(9.dp),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFFEEF3FF)),
+                                    contentAlignment = androidx.compose.ui.Alignment.Center,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Subtitles,
+                                        contentDescription = null,
+                                        tint = Color(0xFF3268F5),
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        track.languageTag,
+                                        color = Color(0xFF26354B),
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 12.sp,
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        if (track.isAutoGenerated) "自动生成" else "人工字幕",
+                                        color = Color(0xFF7A8799),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                    )
+                                }
+                                FilledTonalButton(
+                                    onClick = { onDownloadSubtitle(track) },
+                                    modifier = Modifier.height(34.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp),
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = Color(0xFFEAF1FF),
+                                        contentColor = Color(0xFF3268F5),
+                                    ),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.FileDownload,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("下载", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+
+                    item(key = "all-subtitles-title") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = if (state.availableSubtitleTracks.isNotEmpty()) 5.dp else 2.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                         ) {
-                            Icon(
-                                Icons.Filled.FileDownload,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
+                            Text(
+                                "全部字幕内容",
+                                color = Color(0xFF34435A),
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                ),
                             )
-                            Spacer(Modifier.width(5.dp))
-                            Text("下载", style = MaterialTheme.typography.labelLarge)
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "${state.lines.size} 条",
+                                color = Color(0xFF8491A4),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
+                    }
+
+                    if (state.lines.isEmpty()) {
+                        item(key = "all-subtitles-empty") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 28.dp),
+                                contentAlignment = androidx.compose.ui.Alignment.Center,
+                            ) {
+                                Text(
+                                    if (state.availableSubtitleTracks.isNotEmpty()) {
+                                        "字幕内容尚未生成，可先下载上方的字幕轨。"
+                                    } else {
+                                        "暂无字幕内容，等待转写或字幕读取完成后会显示在这里。"
+                                    },
+                                    color = Color(0xFF8995A6),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    } else {
+                        itemsIndexed(
+                            items = state.lines,
+                            key = { index, line -> "subtitle-line-${line.index}-$index" },
+                        ) { index, line ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(13.dp))
+                                    .background(Color(0xFFF8FAFD))
+                                    .border(1.dp, Color(0xFFEAF0F7), RoundedCornerShape(13.dp))
+                                    .padding(horizontal = 11.dp, vertical = 9.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        "${index + 1}.",
+                                        color = Color(0xFF3268F5),
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                        ),
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
+                                        color = Color(0xFF8995A6),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                                if (line.text.isNotBlank()) {
+                                    Text(
+                                        line.text,
+                                        color = Color(0xFF53647B),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.sp,
+                                            lineHeight = 17.sp,
+                                        ),
+                                    )
+                                }
+                                line.zh?.trim()?.takeIf { it.isNotEmpty() }?.let { translated ->
+                                    Text(
+                                        translated,
+                                        color = Color(0xFF263F70),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.sp,
+                                            lineHeight = 17.sp,
+                                            fontWeight = FontWeight.Medium,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(top = 9.dp, bottom = 8.dp),
+                    color = Color(0xFFE9EDF3),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("关闭", color = Color(0xFF64748B))
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Button(
+                        onClick = onDownloadAll,
+                        enabled = state.lines.isNotEmpty(),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 15.dp, vertical = 10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF3268F5),
+                            contentColor = Color.White,
+                            disabledContainerColor = Color(0xFFE8EDF5),
+                            disabledContentColor = Color(0xFF9AA6B7),
+                        ),
+                    ) {
+                        Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("下载全部字幕")
                     }
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
     }
-
-
 }
 
 @Composable
