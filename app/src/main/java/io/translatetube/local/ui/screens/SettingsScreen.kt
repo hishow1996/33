@@ -335,6 +335,16 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                 ?.takeIf { it.isNotBlank() }
             ?: "Google 翻译"
 
+        // Enter the engine manager on the tab matching the currently selected translation engine.
+        // The workbench must not route the dubbing card through translation settings.
+        val openTranslationEngineManager = {
+            if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeApiId)) {
+                onLocalTranslationManager()
+            } else {
+                onApiManager()
+            }
+        }
+
         // Settings overview: surface the active engines before the detailed sections.
         Box(
             modifier = Modifier
@@ -357,13 +367,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                     Column(
                         Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
                             .background(Color.White.copy(alpha = 0.14f))
-                            .clickable {
-                                if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeApiId)) {
-                                    onLocalTranslationManager()
-                                } else {
-                                    dubbingSectionExpandRequest += 1
-                                }
-                            }
+                            .clickable { dubbingSectionExpandRequest += 1 }
                             .padding(9.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
@@ -403,7 +407,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
                         .background(Color.White.copy(alpha = 0.14f))
-                        .clickable(onClick = onApiManager)
+                        .clickable(onClick = openTranslationEngineManager)
                         .padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -431,7 +435,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
 
         Spacer(Modifier.height(2.dp))
 
-Section("翻译引擎", onHeaderClick = onApiManager) {}
+Section("翻译引擎", onHeaderClick = openTranslationEngineManager) {}
 
 Section("YouTube 解析") {
     Text("字幕语言", color = OnBg, style = MaterialTheme.typography.titleSmall)
