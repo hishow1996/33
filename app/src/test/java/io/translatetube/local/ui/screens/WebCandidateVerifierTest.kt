@@ -13,6 +13,85 @@ import org.junit.Test
 class WebCandidateVerifierTest {
 
     @Test
+    fun rejectsHtmlResponseEvenWhenCandidateUrlLooksLikeHls() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "text/html")
+                    .setBody("<html>login required</html>")
+                    .setHeader("Content-Length", "123")
+                    .setHeader("Accept-Ranges", "bytes")
+            )
+
+            val result = WebCandidateVerifier.verifyDetailed(
+                client = WebCandidateVerifier.buildClient(),
+                url = server.url("/index.m3u8?token=must-not-be-logged").toString(),
+                referer = "https://example.com/watch",
+                cookie = null,
+                userAgent = null,
+            )
+
+            assertEquals(false, result.verified)
+            assertEquals("HEAD", result.method)
+            assertTrue(result.reason.contains("网页或文本响应"))
+            assertEquals(200, result.httpStatus)
+            assertEquals("text/html", result.contentType)
+            assertEquals(server.url("/").host, result.responseHost)
+            assertEquals(123L, result.contentLengthBytes)
+            assertEquals("bytes", result.acceptRanges)
+            assertEquals(false, result.redirected)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun extensionlessBinaryCandidateUsesRangeGetAndCapturesFinalResponseEvidence() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/octet-stream")
+                    .setHeader("Content-Length", "4096")
+            )
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(206)
+                    .setHeader("Content-Type", "audio/mpeg")
+                    .setHeader("Content-Length", "1")
+                    .setHeader("Content-Range", "bytes 0-0/4096")
+                    .setBody("x")
+            )
+
+            val result = WebCandidateVerifier.verifyDetailed(
+                client = WebCandidateVerifier.buildClient(),
+                url = server.url("/stream?token=must-not-be-logged").toString(),
+                referer = "https://example.com/watch",
+                cookie = null,
+                userAgent = null,
+            )
+
+            assertTrue(result.verified)
+            assertEquals("Range GET", result.method)
+            assertEquals(206, result.httpStatus)
+            assertEquals("audio/mpeg", result.contentType)
+            assertEquals(200, result.headStatus)
+            assertEquals("application/octet-stream", result.headContentType)
+            assertEquals("bytes 0-0/4096", result.contentRange)
+            assertEquals(1L, result.contentLengthBytes)
+            assertEquals("HEAD", server.takeRequest().method)
+            assertEquals("GET", server.takeRequest().method)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun hlsHintStartsInAnExplicitDetectingState() {
         val hint = WebCandidateVerifier.initialAudioHint("https://cdn.example/master.m3u8")
 

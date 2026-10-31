@@ -5,6 +5,7 @@ import io.translatetube.local.web.WebMediaUrlPolicy
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /** Detailed HTTP evidence for a candidate source check, without retaining its full URL. */
@@ -16,6 +17,11 @@ internal data class WebCandidateVerificationResult(
     val reason: String,
     val headStatus: Int? = null,
     val headContentType: String = "",
+    val responseHost: String = "",
+    val redirected: Boolean = false,
+    val contentLengthBytes: Long? = null,
+    val acceptRanges: String = "",
+    val contentRange: String = "",
     val failure: Throwable? = null,
 )
 
@@ -80,13 +86,38 @@ internal object WebCandidateVerifier {
                     builder.head()
                 }
                 headers.forEach { (name, value) -> builder.header(name, value) }
-                client.newCall(builder.build()).execute().use { response ->
+                val request = builder.build()
+                client.newCall(request).execute().use { response ->
+                    val rawAcceptRanges = response.header("Accept-Ranges").orEmpty()
+                        .trim()
+                        .lowercase(Locale.ROOT)
+                    val safeAcceptRanges = when (rawAcceptRanges) {
+                        "bytes" -> "bytes"
+                        "none" -> "none"
+                        else -> ""
+                    }
+                    val rawContentRange = response.header("Content-Range").orEmpty().trim()
+                    val safeContentRange = if (
+                        Regex("""(?i)^bytess+(?:d+-d+|*)/(?:d+|*)$""")
+                            .matches(rawContentRange)
+                    ) {
+                        rawContentRange.take(80)
+                    } else {
+                        if (rawContentRange.isBlank()) "" else "格式异常"
+                    }
                     WebCandidateVerificationResult(
                         verified = false,
                         method = method,
                         httpStatus = response.code,
-                        contentType = response.header("Content-Type").orEmpty(),
+                        contentType = response.header("Content-Type").orEmpty().take(160),
                         reason = "HTTP ${response.code}",
+                        responseHost = response.request.url.host.take(120),
+                        redirected = response.priorResponse != null,
+                        contentLengthBytes = response.header("Content-Length")
+                            ?.toLongOrNull()
+                            ?.takeIf { it >= 0L },
+                        acceptRanges = safeAcceptRanges,
+                        contentRange = safeContentRange,
                     )
                 }
             } catch (failure: Exception) {
@@ -101,16 +132,22 @@ internal object WebCandidateVerifier {
 
         val head = probe("HEAD", rangeGet = false)
         if (head.httpStatus?.let { it in 200..299 } == true) {
-            if (isMediaContentType(head.contentType) || hasMediaExtension(url)) {
+            if (isMediaContentType(head.contentType)) {
                 return head.copy(
                     verified = true,
-                    reason = "HEAD 响应可访问，Content-Type 或媒体扩展名符合媒体源特征",
+                    reason = "HEAD 响应可访问，Content-Type 确认为媒体类型",
                 )
             }
-            if (head.contentType.isNotBlank() && !isMediaContentType(head.contentType)) {
+            if (hasMediaExtension(url) && !isClearlyNonMediaContentType(head.contentType)) {
+                return head.copy(
+                    verified = true,
+                    reason = "HEAD 响应可访问，媒体扩展名符合媒体源特征且未返回网页错误类型",
+                )
+            }
+            if (isClearlyNonMediaContentType(head.contentType)) {
                 return head.copy(
                     verified = false,
-                    reason = "HEAD 返回的 Content-Type 不是媒体类型",
+                    reason = "HEAD 返回网页或文本响应，不作为可播放媒体源",
                 )
             }
         }
@@ -118,7 +155,8 @@ internal object WebCandidateVerifier {
         // HEAD 不可用、无内容类型或被服务器拒绝时，仅请求 1 字节确认媒体响应。
         val range = probe("Range GET", rangeGet = true)
         if (range.httpStatus?.let { it in 200..299 } == true &&
-            (isMediaContentType(range.contentType) || hasMediaExtension(url))
+            (isMediaContentType(range.contentType) ||
+                (hasMediaExtension(url) && !isClearlyNonMediaContentType(range.contentType)))
         ) {
             return range.copy(
                 verified = true,
@@ -128,13 +166,16 @@ internal object WebCandidateVerifier {
             )
         }
 
-        val statusReason = when (range.httpStatus) {
-            401 -> "Range GET 返回 HTTP 401：请求未通过身份验证，可能需要登录或 Cookie"
-            403 -> "Range GET 返回 HTTP 403：服务器拒绝访问，可能有防盗链、权限或签名限制"
-            404 -> "Range GET 返回 HTTP 404：媒体地址不存在或已过期"
-            410 -> "Range GET 返回 HTTP 410：资源已失效"
-            429 -> "Range GET 返回 HTTP 429：请求过于频繁，可能触发站点限流"
-            null -> "Range GET 没有收到有效 HTTP 响应"
+        val statusReason = when {
+            range.httpStatus?.let { it in 200..299 } == true &&
+                isClearlyNonMediaContentType(range.contentType) ->
+                "Range GET 返回网页或文本响应，不作为可播放媒体源"
+            range.httpStatus == 401 -> "Range GET 返回 HTTP 401：请求未通过身份验证，可能需要登录或 Cookie"
+            range.httpStatus == 403 -> "Range GET 返回 HTTP 403：服务器拒绝访问，可能有防盗链、权限或签名限制"
+            range.httpStatus == 404 -> "Range GET 返回 HTTP 404：媒体地址不存在或已过期"
+            range.httpStatus == 410 -> "Range GET 返回 HTTP 410：资源已失效"
+            range.httpStatus == 429 -> "Range GET 返回 HTTP 429：请求过于频繁，可能触发站点限流"
+            range.httpStatus == null -> "Range GET 没有收到有效 HTTP 响应"
             else -> "Range GET 未能确认媒体响应（HTTP ${range.httpStatus}）"
         }
         return range.copy(
@@ -147,10 +188,24 @@ internal object WebCandidateVerifier {
     }
 
     private fun isMediaContentType(contentType: String): Boolean {
-        val ct = contentType.substringBefore(';').trim().lowercase()
+        val ct = contentType.substringBefore(';').trim().lowercase(Locale.ROOT)
         if (ct.startsWith("video/") || ct.startsWith("audio/")) return true
         if (ct.contains("mpegurl") || ct.contains("dash+xml")) return true
         return false
+    }
+
+    /** Explicit document/error types must never be accepted solely because a URL ends in .mp4/.m3u8. */
+    private fun isClearlyNonMediaContentType(contentType: String): Boolean {
+        val ct = contentType.substringBefore(';').trim().lowercase(Locale.ROOT)
+        return ct == "text/html" ||
+            ct == "application/xhtml+xml" ||
+            ct == "text/plain" ||
+            ct == "application/json" ||
+            ct == "text/json" ||
+            ct == "application/xml" ||
+            ct == "text/xml" ||
+            ct.endsWith("+json") ||
+            ct.endsWith("+xml")
     }
 
     private fun hasMediaExtension(url: String): Boolean {

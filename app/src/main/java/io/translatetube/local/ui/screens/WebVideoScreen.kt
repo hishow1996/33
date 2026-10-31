@@ -502,6 +502,11 @@ fun WebVideoScreen(
                     "校验原因" to result.reason,
                     "最终 HTTP 状态码" to (result.httpStatus?.toString() ?: "未返回"),
                     "最终 Content-Type" to result.contentType.ifBlank { "未返回" },
+                    "最终响应主机名" to result.responseHost.ifBlank { "未返回" },
+                    "是否发生 HTTP 重定向" to result.redirected.toString(),
+                    "最终 Content-Length（字节）" to (result.contentLengthBytes?.toString() ?: "未返回"),
+                    "最终 Accept-Ranges" to result.acceptRanges.ifBlank { "未提供" },
+                    "最终 Content-Range" to result.contentRange.ifBlank { "未提供" },
                     "HEAD 状态码" to (result.headStatus?.toString() ?: "未返回"),
                     "HEAD Content-Type" to result.headContentType.ifBlank { "未返回" },
                     "页面导航代数" to verificationGeneration.toString(),
@@ -1713,6 +1718,22 @@ fun WebVideoScreen(
                             }
 
                             override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
+                                val consolePageHost = webSourceHost(currentPage)
+                                val consoleScriptHost = webSourceHost(message.sourceId())
+                                if (
+                                    message.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR &&
+                                    WebConsoleErrorPolicy.shouldIgnoreKnownThirdPartyError(
+                                        message = message.message(),
+                                        pageHost = consolePageHost,
+                                        scriptHost = consoleScriptHost,
+                                    )
+                                ) {
+                                    Log.d(
+                                        TAG_WEB,
+                                        "Ignored known third-party browser-capability probe error from $consoleScriptHost",
+                                    )
+                                    return true
+                                }
                                 Log.d(TAG_WEB, "Web console ${message.messageLevel()}: ${message.message()}")
                                 if (message.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) {
                                     io.translatetube.local.util.AppLogStore.warning(
@@ -1720,9 +1741,9 @@ fun WebVideoScreen(
                                         tag = "WebPlayerConsole",
                                         message = "网页播放器 JavaScript 报错",
                                         diagnosticContext = mapOf(
-                                            "页面主机名" to webSourceHost(currentPage),
+                                            "页面主机名" to consolePageHost,
                                             "错误内容" to message.message().take(300),
-                                            "脚本主机名" to webSourceHost(message.sourceId()),
+                                            "脚本主机名" to consoleScriptHost,
                                             "脚本行号" to message.lineNumber().toString(),
                                             "控制台级别" to message.messageLevel().name,
                                             "页面导航代数" to pageGeneration.get().toString(),
@@ -1735,11 +1756,11 @@ fun WebVideoScreen(
                                                 "当前 Android API 不提供此接口"
                                             },
                                             "当前 UA 是否带 wv 标记" to (webViewState.value?.settings?.userAgentString?.contains("; wv)", ignoreCase = true) == true).toString(),
-                                            "脚本来源与页面是否同主机" to (webSourceHost(message.sourceId()) == webSourceHost(currentPage)).toString(),
+                                            "脚本来源与页面是否同主机" to (consoleScriptHost == consolePageHost).toString(),
                                         ),
                                         issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
                                             "WebPlayerConsole",
-                                            webSourceHost(currentPage) + "|javascript-error",
+                                            consolePageHost + "|javascript-error",
                                         ),
                                     )
                                 }
