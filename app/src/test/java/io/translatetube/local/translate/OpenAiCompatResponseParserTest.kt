@@ -234,4 +234,29 @@ class OpenAiCompatResponseParserTest {
         assertTrue(error is IllegalStateException)
         assertTrue(error?.message.orEmpty().contains("不是有效的 JSON"))
     }
+
+    @Test
+    fun summarizesResponseShapeWithoutIncludingReturnedSubtitleText() {
+        val summary = openAiCompatResponseSummary(
+            """{
+              "id": "chatcmpl-test",
+              "object": "chat.completion",
+              "choices": [{
+                "finish_reason": "length",
+                "message": {
+                  "role": "assistant",
+                  "content": "0|这是一条译文"
+                }
+              }]
+            }"""
+        )
+
+        assertTrue(summary.contains("finish_reason=length"))
+        assertTrue(summary.contains("content_type=string"))
+        assertTrue(summary.contains("content_chars=8"))
+        assertTrue(!summary.contains("这是一条译文"))
+        assertTrue(!summary.contains("chatcmpl-test"))
+    }
+
+
 }

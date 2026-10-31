@@ -143,11 +143,12 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     isAcceptableTranslation: (source: String, translation: String) -> Boolean = { _, translation ->
         translation.isNotBlank()
     },
+    retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)? = null,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
     return translateBatchWithAdaptiveRecoveryInternal(
-        lines, context, isAcceptableTranslation, translate, TranslationRecoveryBudget(),
+        lines, context, isAcceptableTranslation, retrySingle, translate, TranslationRecoveryBudget(),
     )
 }
 
@@ -155,6 +156,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     lines: List<String>,
     context: Pair<List<String>, List<String>>?,
     isAcceptableTranslation: (source: String, translation: String) -> Boolean,
+    retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)?,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
     budget: TranslationRecoveryBudget,
 ): List<String> {
@@ -221,6 +223,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                     lines.subList(missingStart, cursor),
                     retryContext,
                     isAcceptableTranslation,
+                    retrySingle,
                     translate,
                     budget,
                 )
@@ -237,35 +240,45 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     if (lines.size == 1) {
         // Even an isolated cue gets one retry: source-echo validation happens inside this helper,
         // so otherwise a single echoed cue would fail before the caller can recover it.
-        val retry = try {
+        val retryCandidate = try {
             budget.consumeAttempt()
-            translate(lines, context)
+            if (retrySingle != null) {
+                retrySingle(lines.single(), context)
+            } else {
+                translate(lines, context).singleOrNull()
+            }
         } catch (error: IllegalStateException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (!isRecoverableTranslationFormatError(error)) throw error
             null
-        }
-        val candidate = retry?.singleOrNull()?.trim()
+        }?.trim()
         if (lines.single().isBlank()) return listOf("")
-        if (!candidate.isNullOrBlank() &&
-            isAcceptableTranslation(lines.single(), candidate)
+        if (!retryCandidate.isNullOrBlank() &&
+            isAcceptableTranslation(lines.single(), retryCandidate)
         ) {
-            return listOf(candidate)
+            return listOf(retryCandidate)
         }
-        throw IllegalStateException("翻译服务重试后仍未能完整返回单条字幕的有效译文，请重试或更换翻译模型")
+        val failureReason = when {
+            retryCandidate.isNullOrBlank() -> "单条恢复请求仍未返回可用文本"
+            else -> "单条恢复请求仍与原文相同或未通过译文质量校验"
+        }
+        throw IllegalStateException(
+            "单条字幕翻译恢复失败：$failureReason；原文字符数=${lines.single().length}。" +
+                "已保留同批次其他有效译文，请检查模型输出或更换模型。"
+        )
     }
 
     val midpoint = lines.size / 2
     val leftSource = lines.subList(0, midpoint)
     val rightSource = lines.subList(midpoint, lines.size)
     val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        leftSource, context, isAcceptableTranslation, translate, budget,
+        leftSource, context, isAcceptableTranslation, retrySingle, translate, budget,
     )
     val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
     val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
     val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
     val rightTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        rightSource, rightContext, isAcceptableTranslation, translate, budget,
+        rightSource, rightContext, isAcceptableTranslation, retrySingle, translate, budget,
     )
     return leftTranslation + rightTranslation
 }
@@ -917,6 +930,52 @@ private fun findReasoningFields(root: Any?): List<String> {
     return found.toList()
 }
 
+/**
+ * Return safe, content-free diagnostics for an OpenAI-compatible response.
+ * Never log subtitle text, API keys, or authorization headers.
+ */
+internal fun openAiCompatResponseSummary(body: String): String {
+    val root = runCatching { JSONObject(body) }.getOrNull()
+        ?: return "json=invalid"
+    val choices = root.optJSONArray("choices")
+    val firstChoice = choices?.optJSONObject(0)
+    val message = firstChoice?.optJSONObject("message")
+    val rawContent = message?.opt("content")
+    val contentKind = when (rawContent) {
+        is String -> "string"
+        is JSONArray -> "array"
+        is JSONObject -> "object"
+        null, JSONObject.NULL -> "missing"
+        else -> rawContent.javaClass.simpleName
+    }
+    val contentChars = if (rawContent == null || rawContent == JSONObject.NULL) {
+        0
+    } else {
+        runCatching { extractTextFromContentValue(rawContent).length }.getOrDefault(-1)
+    }
+    val messageFields = message?.let { value ->
+        val fields = mutableListOf<String>()
+        val iterator = value.keys()
+        while (iterator.hasNext()) fields += iterator.next()
+        fields.sorted().joinToString(",")
+    }.orEmpty()
+    val reasoningFields = findReasoningFields(root).joinToString(",")
+    val errorObject = root.optJSONObject("error")
+    val errorCode = errorObject?.opt("code")?.toString()?.take(80).orEmpty()
+    return buildString {
+        append("object=").append(root.optString("object", "unknown"))
+        append(", choices=").append(choices?.length() ?: 0)
+        append(", finish_reason=").append(firstChoice?.optString("finish_reason", "missing") ?: "missing")
+        append(", message_fields=[").append(messageFields).append(']')
+        append(", content_type=").append(contentKind)
+        append(", content_chars=").append(contentChars)
+        append(", reasoning_fields=[").append(reasoningFields).append(']')
+        if (errorCode.isNotBlank() && errorCode != "null") {
+            append(", provider_error_code=").append(errorCode)
+        }
+    }
+}
+
 /** Extract text from a non-streaming OpenAI-compatible chat-completion response. */
 internal fun extractOpenAiCompatContent(body: String): String {
     val root = try {
@@ -1139,6 +1198,11 @@ class OpenAiCompatEngine(
                     ownerJob,
                 )
                 val elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000L
+                android.util.Log.d(
+                    "TranslationAPI",
+                    "Response metadata: model=${model.take(100)}, thinkingControl=$style, " +
+                        "elapsedMs=$elapsedMs, ${openAiCompatResponseSummary(responseBody)}",
+                )
                 if (elapsedMs >= SLOW_TRANSLATION_REQUEST_WARNING_MS) {
                     android.util.Log.w(
                         "TranslationAPI",
@@ -1254,6 +1318,15 @@ class OpenAiCompatEngine(
                 isAcceptableTranslation = { original, candidate ->
                     !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang)
                 },
+                retrySingle = { source, cueContext ->
+                    translateBatch(
+                        listOf(source),
+                        srcLang,
+                        tgtLang,
+                        cueContext,
+                        forceTranslate = true,
+                    ).singleOrNull()
+                },
             ) { rows, cueContext ->
                 translateBatch(rows, srcLang, tgtLang, cueContext)
             }
@@ -1270,6 +1343,7 @@ class OpenAiCompatEngine(
         srcLang: String,
         tgtLang: String,
         context: Pair<List<String>, List<String>>? = null,
+        forceTranslate: Boolean = false,
     ): List<String> {
         if (apiKey.isBlank()) {
             throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
@@ -1281,7 +1355,12 @@ class OpenAiCompatEngine(
             append("You are a professional subtitle translator. These numbered lines are consecutive subtitle cues from one video. ")
             append("Translate each numbered line from $src to $tgt. ")
             append("Reply with the exact same `index|translation` format, one per line, nothing else. ")
-            append("Include every input index exactly once; never return progress/status text. If unsure, keep the original line after the separator. ")
+            append("Include every input index exactly once; never return progress/status text. ")
+            append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
+            append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
+            if (forceTranslate) {
+                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
+            }
             append("Translate as coherent dialogue: keep pronouns, references and tone consistent across lines. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
@@ -1300,7 +1379,28 @@ class OpenAiCompatEngine(
         params.temperature?.let { payload.put("temperature", it) }
         payload.put(if (params.useMaxCompletionTokens) "max_completion_tokens" else "max_tokens", params.maxTokens)
         val content = requestTranslationContent(payload)
-        return parseNumbered(content, lines.size)
+        val translated = try {
+            parseNumbered(content, lines.size)
+        } catch (error: Exception) {
+            android.util.Log.w(
+                "TranslationAPI",
+                "Subtitle response parse failed: model=${model.take(100)}, expectedRows=${lines.size}, " +
+                    "contentChars=${content.length}, contentLines=${content.lines().size}, " +
+                    "errorType=${error.javaClass.simpleName}, detail=${error.message.orEmpty().take(180)}",
+            )
+            throw error
+        }
+        val nonBlankRows = translated.count { it.isNotBlank() }
+        val echoedRows = translated.indices.count { index ->
+            translated[index].isNotBlank() &&
+                SubtitleTranslationQualityPolicy.isSourceEcho(lines[index], translated[index], srcLang)
+        }
+        android.util.Log.d(
+            "TranslationAPI",
+            "Subtitle response parsed: model=${model.take(100)}, expectedRows=${lines.size}, " +
+                "parsedRows=${translated.size}, nonBlankRows=$nonBlankRows, sourceEchoRows=$echoedRows",
+        )
+        return translated
     }
 
     private fun parseNumbered(content: String, size: Int): List<String> =
@@ -1371,6 +1471,15 @@ class GeminiEngine(
                 isAcceptableTranslation = { original, candidate ->
                     !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang)
                 },
+                retrySingle = { source, cueContext ->
+                    translateBatch(
+                        listOf(source),
+                        srcLang,
+                        tgtLang,
+                        cueContext,
+                        forceTranslate = true,
+                    ).singleOrNull()
+                },
             ) { rows, cueContext ->
                 translateBatch(rows, srcLang, tgtLang, cueContext)
             }
@@ -1387,6 +1496,7 @@ class GeminiEngine(
         srcLang: String,
         tgtLang: String,
         context: Pair<List<String>, List<String>>? = null,
+        forceTranslate: Boolean = false,
     ): List<String> {
         if (normalizedApiKey.isBlank()) {
             throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
@@ -1397,6 +1507,11 @@ class GeminiEngine(
         val sys = buildString {
             append("Translate each numbered subtitle line from $src to $tgt. ")
             append("Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. ")
+            append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
+            append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
+            if (forceTranslate) {
+                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
+            }
             append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines, ")
             append("and render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")

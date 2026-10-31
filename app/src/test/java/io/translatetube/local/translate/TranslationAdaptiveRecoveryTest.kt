@@ -151,4 +151,43 @@ class TranslationAdaptiveRecoveryTest {
         assertEquals(2, calls)
     }
 
+
+    @Test
+    fun retriesAnEchoedSingleCueWithAForcedTranslationRequest() = runBlocking {
+        val calls = mutableListOf<String>()
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = listOf("Thanks"),
+            isAcceptableTranslation = { source, candidate -> source != candidate },
+            retrySingle = { source, _ ->
+                calls += "strict:$source"
+                "谢谢"
+            },
+            translate = { rows, _ ->
+                calls += "normal:${rows.size}"
+                rows
+            },
+        )
+
+        assertEquals(listOf("谢谢"), result)
+        assertEquals(listOf("normal:1", "strict:Thanks"), calls)
+    }
+
+    @Test
+    fun reportsWhySingleCueRecoveryWasRejectedWithoutLoggingSubtitleText() = runBlocking {
+        val error = runCatching {
+            translateBatchWithAdaptiveRecovery(
+                lines = listOf("Thanks"),
+                isAcceptableTranslation = { source, candidate -> source != candidate },
+                retrySingle = { source, _ -> source },
+                translate = { rows, _ -> rows },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("单条恢复请求仍与原文相同"))
+        assertTrue(error?.message.orEmpty().contains("原文字符数=6"))
+        assertTrue(!error?.message.orEmpty().contains("Thanks"))
+    }
+
+
 }
