@@ -2475,11 +2475,6 @@ private fun VideoParsingPage(
                                     else -> "等待提取音频"
                                 }
                                 add("当前任务" to audioTask)
-                                val audioPercent = state.audioProgress?.fraction()
-                                    ?.let { (it * 100f).roundToInt() }
-                                    ?: Regex("""(\d{1,3})%""").find(progressText)
-                                        ?.groupValues?.get(1)?.toIntOrNull()
-                                audioPercent?.takeIf { it in 0..100 }?.let { add("提取进度" to "$it%") }
                                 state.audioTrackLanguage.trim().takeIf {
                                     it.isNotBlank() && it.lowercase(java.util.Locale.ROOT) !in
                                         setOf("und", "unknown", "undefined")
@@ -2704,12 +2699,14 @@ private fun VideoParsingPage(
                             it.first in fullWidthDetailLabels
                         }
                         val stageProgressText = if (
-                            stageProgressRow != null && stageProgressValue != null
-                        ) {
-                            stageProgressCaption + " · " + (stageProgressValue * 100f).roundToInt() + "%"
-                        } else {
-                            stageProgressCaption
-                        }
+    stageProgressRow != null &&
+    stageProgressValue != null &&
+    !stageProgressCaption.contains('%')
+) {
+    stageProgressCaption + " · " + (stageProgressValue * 100f).roundToInt() + "%"
+} else {
+    stageProgressCaption
+}
 
                         Column(
                             modifier = Modifier
