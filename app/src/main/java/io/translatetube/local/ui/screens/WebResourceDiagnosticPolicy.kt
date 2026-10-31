@@ -51,6 +51,229 @@ internal object WebResourceDiagnosticPolicy {
         }
     }
 
+    /** Summarize request headers without retaining cookie, authorization, or signed values. */
+    fun summarizeRequestHeaders(
+        headers: Map<String, String>,
+        pageUrl: String,
+    ): Map<String, String> {
+        fun get(name: String): String? = headers.entries
+            .firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+
+        val refererHost = hostFromUrl(get("Referer")).orEmpty()
+        val originValue = get("Origin").orEmpty()
+        val originHost = if (originValue.equals("null", ignoreCase = true)) {
+            "null"
+        } else {
+            hostFromUrl(originValue).orEmpty()
+        }
+        val pageHost = hostFromUrl(pageUrl).orEmpty()
+        val range = get("Range")
+
+        return linkedMapOf(
+            "Referer 是否存在" to (get("Referer") != null).toString(),
+            "Referer 主机名" to refererHost.ifBlank { "未提供" },
+            "Referer 与页面主机是否一致" to (
+                refererHost.isNotBlank() && pageHost.isNotBlank() &&
+                    refererHost.equals(pageHost, ignoreCase = true)
+                ).toString(),
+            "Origin 是否存在" to (get("Origin") != null).toString(),
+            "Origin 主机名" to originHost.ifBlank { "未提供" },
+            "Origin 与页面主机是否一致" to (
+                originHost.isNotBlank() && pageHost.isNotBlank() &&
+                    originHost.equals(pageHost, ignoreCase = true)
+                ).toString(),
+            "请求头集合是否显式包含 Cookie" to (get("Cookie") != null).toString(),
+            "请求头集合是否显式包含 Authorization" to (get("Authorization") != null).toString(),
+            "User-Agent 是否存在" to (get("User-Agent") != null).toString(),
+            "Accept 是否存在" to (get("Accept") != null).toString(),
+            "Range 是否存在" to (range != null).toString(),
+            "Range 类型" to describeRange(range),
+            "Sec-Fetch-Site" to safeToken(
+                get("Sec-Fetch-Site"),
+                setOf("same-origin", "same-site", "cross-site", "none"),
+            ),
+            "Sec-Fetch-Mode" to safeToken(
+                get("Sec-Fetch-Mode"),
+                setOf("cors", "no-cors", "same-origin", "navigate", "websocket"),
+            ),
+            "Sec-Fetch-Dest" to safeToken(
+                get("Sec-Fetch-Dest"),
+                setOf("audio", "video", "empty", "document", "image", "script", "style"),
+            ),
+        )
+    }
+
+    /** Only recognized cache directives and numeric ages are retained. */
+    fun summarizeCacheControl(value: String?): String {
+        val raw = value?.trim().orEmpty()
+        if (raw.isBlank()) return "未提供"
+        val allowed = setOf(
+            "public", "private", "no-cache", "no-store", "no-transform",
+            "must-revalidate", "proxy-revalidate", "immutable",
+        )
+        val values = raw.split(',')
+            .mapNotNull { directive ->
+                val part = directive.trim().trim('"')
+                val name = part.substringBefore('=').trim().lowercase(Locale.ROOT)
+                when {
+                    name in allowed -> name
+                    name in setOf("max-age", "s-maxage", "stale-while-revalidate", "stale-if-error") -> {
+                        val age = part.substringAfter('=', "").trim().trim('"').toLongOrNull()
+                        if (age != null && age >= 0L && age <= 315360000L) "$name=$age" else null
+                    }
+                    else -> null
+                }
+            }
+            .distinct()
+            .take(8)
+        return values.joinToString(", ").ifBlank { "已提供（未识别的策略）" }
+    }
+
+    /** Server software is mapped to a short allowlist; arbitrary header text/version is not saved. */
+    fun summarizeServer(value: String?): String {
+        val raw = value?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        if (raw.isBlank()) return "未提供"
+        val known = listOf(
+            "cloudflare", "nginx", "openresty", "apache", "envoy",
+            "varnish", "microsoft-iis", "litespeed", "akamai", "caddy", "gws",
+        )
+        val detected = known.filter { raw.contains(it) }
+        return detected.joinToString(", ").ifBlank { "已提供（未识别）" }
+    }
+
+    fun summarizeAuthScheme(value: String?): String {
+        val scheme = value?.trim()?.substringBefore(' ')?.takeIf { it.isNotBlank() }
+            ?: return "未提供"
+        return when (scheme.lowercase(Locale.ROOT)) {
+            "basic" -> "Basic"
+            "bearer" -> "Bearer"
+            "digest" -> "Digest"
+            "negotiate" -> "Negotiate"
+            "ntlm" -> "NTLM"
+            else -> "其他/未识别"
+        }
+    }
+
+    /** Origin is reduced to a category and host only; never store a complete URL. */
+    fun summarizeAccessControlOrigin(value: String?): String {
+        val raw = value?.trim().orEmpty()
+        if (raw.isBlank()) return "未提供"
+        if (raw == "*") return "*"
+        if (raw.equals("null", ignoreCase = true)) return "null"
+        val host = hostFromUrl(raw)
+        return host?.let { "指定来源（$it）" } ?: "已提供（未识别）"
+    }
+
+    fun sanitizeContentRange(value: String?): String {
+        val raw = value?.trim().orEmpty()
+        if (raw.isBlank()) return "未提供"
+        if (!raw.startsWith("bytes ", ignoreCase = true)) return "格式异常"
+        val pair = raw.substringAfter(' ', "").split('/', limit = 2)
+        if (pair.size != 2) return "格式异常"
+        val rangePart = pair[0].trim()
+        val totalPart = pair[1].trim()
+        val validRange = if (rangePart == "*") true else {
+            val separator = rangePart.indexOf('-')
+            if (separator <= 0 || separator != rangePart.lastIndexOf('-')) false else {
+                val start = rangePart.substring(0, separator).toLongOrNull()
+                val end = rangePart.substring(separator + 1).toLongOrNull()
+                start != null && end != null && start <= end
+            }
+        }
+        val validTotal = totalPart == "*" || totalPart.toLongOrNull() != null
+        return if (validRange && validTotal) raw.take(80) else "格式异常"
+    }
+
+    fun summarizeResponseHeaders(
+        requestUrl: String,
+        headers: Map<String, String>,
+    ): Map<String, String> {
+        fun get(name: String): String? = headers.entries
+            .firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+
+        val length = get("Content-Length")?.toLongOrNull()?.takeIf { it >= 0L }
+        val acceptRanges = when (get("Accept-Ranges")?.trim()?.lowercase(Locale.ROOT)) {
+            "bytes" -> "bytes"
+            "none" -> "none"
+            null -> "未提供"
+            else -> "已提供（值未识别）"
+        }
+        val location = get("Location")
+        val locationHost = location?.let { resolveHost(requestUrl, it) }.orEmpty()
+        val varyAllowed = setOf(
+            "accept", "accept-encoding", "origin", "referer", "cookie", "user-agent",
+        )
+        val vary = get("Vary")?.split(',')
+            ?.map { it.trim().lowercase(Locale.ROOT) }
+            ?.filter { it == "*" || it in varyAllowed }
+            ?.distinct()
+            ?.joinToString(", ")
+            ?.ifBlank { "已提供（含其他字段）" }
+            ?: "未提供"
+        val allowCredentials = when (get("Access-Control-Allow-Credentials")?.trim()?.lowercase(Locale.ROOT)) {
+            "true" -> "true"
+            "false" -> "false"
+            null -> "未提供"
+            else -> "已提供（值未识别）"
+        }
+
+        return linkedMapOf(
+            "Content-Length（字节）" to (length?.toString() ?: "未提供或非数字"),
+            "Content-Range" to sanitizeContentRange(get("Content-Range")),
+            "Accept-Ranges" to acceptRanges,
+            "Server 标识" to summarizeServer(get("Server")),
+            "Cache-Control 策略" to summarizeCacheControl(get("Cache-Control")),
+            "Location 是否存在" to (location != null).toString(),
+            "Location 目标主机名" to locationHost.ifBlank {
+                if (location == null) "未提供" else "无法解析"
+            },
+            "WWW-Authenticate 认证方案" to summarizeAuthScheme(get("WWW-Authenticate")),
+            "Access-Control-Allow-Origin" to summarizeAccessControlOrigin(get("Access-Control-Allow-Origin")),
+            "Access-Control-Allow-Credentials" to allowCredentials,
+            "Vary" to vary,
+            "ETag 是否存在" to (get("ETag") != null).toString(),
+            "Last-Modified 是否存在" to (get("Last-Modified") != null).toString(),
+        )
+    }
+
+    fun describeHttpReason(statusCode: Int, reasonPhrase: String?): String {
+        val reason = reasonPhrase?.trim().orEmpty()
+        if (reason.isNotBlank()) {
+            val safe = reason.filter { it.isLetterOrDigit() || it in " ._-" }.take(80)
+            if (safe.isNotBlank()) return safe
+        }
+        return "未提供（HTTP/2 响应可不包含原因短语；状态码 $statusCode）"
+    }
+
+    fun explainHttpFailure(statusCode: Int): String = when (statusCode) {
+        401 -> "服务器要求身份验证或当前凭据未通过验证；需结合 WWW-Authenticate 方案判断。"
+        403 -> "服务器明确拒绝访问。可能涉及权限、防盗链、签名或 CDN 访问策略，但 403 本身不能确定具体原因。"
+        404 -> "服务器未找到该资源；可能是路径失效或资源已被移除。"
+        410 -> "服务器明确表示资源已失效。"
+        416 -> "服务器拒绝当前字节范围请求；需检查 Range 和 Content-Range。"
+        429 -> "请求频率受到限制；应避免立即重复请求。"
+        in 500..599 -> "媒体服务器或其上游服务返回服务端错误。"
+        else -> "需结合响应头、候选源校验结果和实际播放请求进一步判断。"
+    }
+
+    private fun safeToken(value: String?, allowed: Set<String>): String {
+        val raw = value?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        if (raw.isBlank()) return "未提供"
+        return if (raw in allowed) raw else "其他/未识别"
+    }
+
+    private fun hostFromUrl(value: String?): String? = runCatching {
+        URI(value?.trim().orEmpty()).host?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    private fun resolveHost(baseUrl: String, target: String): String? = runCatching {
+        URI(baseUrl).resolve(target).host?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+
     fun classifyFailure(
         errorCode: Int,
         description: String,

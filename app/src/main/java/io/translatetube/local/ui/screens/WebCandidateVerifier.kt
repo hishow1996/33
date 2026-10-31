@@ -22,6 +22,9 @@ internal data class WebCandidateVerificationResult(
     val contentLengthBytes: Long? = null,
     val acceptRanges: String = "",
     val contentRange: String = "",
+    val requestHeaderSummary: Map<String, String> = emptyMap(),
+    val responseHeaderSummary: Map<String, String> = emptyMap(),
+    val headResponseHeaderSummary: Map<String, String> = emptyMap(),
     val failure: Throwable? = null,
 )
 
@@ -76,6 +79,10 @@ internal object WebCandidateVerifier {
             cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             userAgent?.takeIf { it.isNotBlank() }?.let { put("User-Agent", it) }
         }
+        val requestHeaderSummary = WebResourceDiagnosticPolicy.summarizeRequestHeaders(
+            headers = headers,
+            pageUrl = referer,
+        )
 
         fun probe(method: String, rangeGet: Boolean): WebCandidateVerificationResult {
             return try {
@@ -110,6 +117,15 @@ internal object WebCandidateVerifier {
                             ?.takeIf { it >= 0L },
                         acceptRanges = safeAcceptRanges,
                         contentRange = safeContentRange,
+                        requestHeaderSummary = requestHeaderSummary + (
+                            "校验 Range 请求" to rangeGet.toString()
+                        ),
+                        responseHeaderSummary = WebResourceDiagnosticPolicy.summarizeResponseHeaders(
+                            requestUrl = response.request.url.toString(),
+                            headers = response.headers.names().associateWith { name ->
+                                response.header(name).orEmpty()
+                            },
+                        ),
                     )
                 }
             } catch (failure: Exception) {
@@ -155,6 +171,7 @@ internal object WebCandidateVerifier {
                 reason = "Range GET 响应可访问，Content-Type 或媒体扩展名符合媒体源特征",
                 headStatus = head.httpStatus,
                 headContentType = head.contentType,
+                headResponseHeaderSummary = head.responseHeaderSummary,
             )
         }
 
@@ -175,6 +192,7 @@ internal object WebCandidateVerifier {
             reason = if (range.failure != null) "Range GET 请求异常" else statusReason,
             headStatus = head.httpStatus,
             headContentType = head.contentType,
+            headResponseHeaderSummary = head.responseHeaderSummary,
             failure = range.failure ?: head.failure,
         )
     }

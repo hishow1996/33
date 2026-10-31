@@ -159,6 +159,11 @@ internal data class WebVideoCandidate(
     val verified: Boolean = false,
 )
 
+private data class WebCandidateVerificationSnapshot(
+    val result: WebCandidateVerificationResult,
+    val checkedAtMs: Long,
+)
+
 /** The compact card shows only the detected audio-track type. */
 private fun WebCandidateAudioHint.compactSummary(): String = when (kind) {
     WebCandidateAudioHintKind.DETECTING -> "检测中"
@@ -285,6 +290,9 @@ fun WebVideoScreen(
     var rulesUpdatedForRetry by remember(initialUrl) { mutableStateOf(false) }
     // ---- 候选验证：后台 HEAD/Range 请求确认媒体源是否可访问；来源由用户手动选择。 ----
     var verifiedUrls by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
+    val candidateVerificationSnapshots = remember(initialUrl) {
+        java.util.concurrent.ConcurrentHashMap<String, WebCandidateVerificationSnapshot>()
+    }
     var sourceHints by remember(initialUrl) { mutableStateOf<Map<String, WebCandidateAudioHint>>(emptyMap()) }
     var sourceHintAttempts by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     val sourceProbeSemaphore = remember(initialUrl) { kotlinx.coroutines.sync.Semaphore(permits = 3) }
@@ -491,8 +499,14 @@ fun WebVideoScreen(
                         failure = error,
                     )
                 }
+                val candidateFingerprint = webSourceFingerprint(candidateUrl)
+                candidateVerificationSnapshots[candidateFingerprint] = WebCandidateVerificationSnapshot(
+                    result = result,
+                    checkedAtMs = System.currentTimeMillis(),
+                )
                 val issueKey = webSourceIssueKey("candidate-verify", candidateUrl)
-                val diagnostics = mapOf(
+                val diagnostics = linkedMapOf<String, String>().apply {
+                    putAll(mapOf(
                     "页面主机名" to webSourceHost(verificationPageUrl),
                     "媒体源主机名" to webSourceHost(candidateUrl),
                     "候选源诊断编号" to webSourceFingerprint(candidateUrl),
@@ -512,7 +526,18 @@ fun WebVideoScreen(
                     "页面导航代数" to verificationGeneration.toString(),
                     "候选总数" to candidatesState.value.size.toString(),
                     "带 Cookie 请求" to (!runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull().isNullOrBlank()).toString(),
-                )
+
+                ))
+                    result.requestHeaderSummary.forEach { (key, value) ->
+                        put("校验请求$key", value)
+                    }
+                    result.responseHeaderSummary.forEach { (key, value) ->
+                        put("校验响应$key", value)
+                    }
+                    result.headResponseHeaderSummary.forEach { (key, value) ->
+                        put("HEAD 校验响应$key", value)
+                    }
+                }
                 val hasHttpError =
                     result.httpStatus?.let { it in 400..599 } == true ||
                         result.headStatus?.let { it in 400..599 } == true
@@ -2206,28 +2231,145 @@ fun WebVideoScreen(
                                 } else {
                                     webSourceIssueKey("http-response", failedUrl)
                                 }
+                                val candidateFingerprint = if (request.isForMainFrame) {
+                                    "网页主文档"
+                                } else {
+                                    webSourceFingerprint(failedUrl)
+                                }
+                                val requestHeaderSummary = WebResourceDiagnosticPolicy.summarizeRequestHeaders(
+                                    headers = request.requestHeaders,
+                                    pageUrl = currentPage,
+                                )
+                                val requestHeaders = request.requestHeaders
+                                fun requestHeader(name: String): String? = requestHeaders.entries
+                                    .firstOrNull { it.key.equals(name, ignoreCase = true) }
+                                    ?.value
+                                    ?.takeIf { it.isNotBlank() }
+                                val cookieManagerHasCookie = runCatching {
+                                    !CookieManager.getInstance().getCookie(failedUrl).isNullOrBlank()
+                                }.getOrDefault(false)
+                                val redirectFlag = if (
+                                    android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
+                                ) {
+                                    request.isRedirect.toString()
+                                } else {
+                                    "当前系统版本不可用"
+                                }
+                                val responseHeaderMap = errorResponse.responseHeaders.orEmpty()
+                                val responseHeaderSummary = WebResourceDiagnosticPolicy.summarizeResponseHeaders(
+                                    requestUrl = failedUrl,
+                                    headers = responseHeaderMap,
+                                )
+                                val contentType = responseHeaderMap.entries
+                                    .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+                                    ?.value
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: errorResponse.mimeType
+                                    ?: "未提供"
+                                val verificationSnapshot = if (request.isForMainFrame) {
+                                    null
+                                } else {
+                                    candidateVerificationSnapshots[candidateFingerprint]
+                                }
+                                val verificationResult = verificationSnapshot?.result
+                                val verificationAgeSeconds = verificationSnapshot?.let {
+                                    ((System.currentTimeMillis() - it.checkedAtMs).coerceAtLeast(0L) / 1000L).toString()
+                                } ?: "无记录"
+                                val verificationState = when {
+                                    verificationResult == null -> "没有关联到候选源校验结果"
+                                    verificationResult.verified -> "最近一次校验通过"
+                                    verificationResult.httpStatus == errorResponse.statusCode ||
+                                        verificationResult.headStatus == errorResponse.statusCode ->
+                                        "候选源校验也返回 HTTP ${errorResponse.statusCode}"
+                                    verificationResult.httpStatus != null ->
+                                        "候选源校验返回 HTTP ${verificationResult.httpStatus}"
+                                    verificationResult.failure != null -> "候选源校验期间发生请求异常"
+                                    else -> "候选源校验未确认可访问"
+                                }
+                                val diagnostics = linkedMapOf<String, String>().apply {
+                                    putAll(
+                                        mapOf(
+                                            "资源主机名" to webSourceHost(failedUrl),
+                                            "候选源诊断编号" to candidateFingerprint,
+                                            "资源类型" to if (request.isForMainFrame) "网页文档" else webSourceType(failedUrl),
+                                            "HTTP 状态码" to errorResponse.statusCode.toString(),
+                                            "HTTP 原因" to WebResourceDiagnosticPolicy.describeHttpReason(
+                                                errorResponse.statusCode,
+                                                errorResponse.reasonPhrase,
+                                            ),
+                                            "HTTP 状态说明" to WebResourceDiagnosticPolicy.explainHttpFailure(
+                                                errorResponse.statusCode
+                                            ),
+                                            "HTTP 方法" to request.method,
+                                            "是否主文档请求" to request.isForMainFrame.toString(),
+                                            "是否用户手势触发" to request.hasGesture().toString(),
+                                            "是否 HTTP 重定向" to redirectFlag,
+                                            "响应 Content-Type" to contentType,
+                                            "页面导航代数" to pageGeneration.get().toString(),
+                                            "WebView CookieManager 是否存在该媒体源 Cookie" to cookieManagerHasCookie.toString(),
+                                            "Referer 是否由页面主机发出" to (
+                                                requestHeaderSummary["Referer 与页面主机是否一致"] ?: "未知"
+                                            ),
+                                            "Origin 是否与页面主机一致" to (
+                                                requestHeaderSummary["Origin 与页面主机是否一致"] ?: "未知"
+                                            ),
+                                            "请求头集合显式包含 Cookie" to (
+                                                requestHeaderSummary["请求头集合是否显式包含 Cookie"] ?: "false"
+                                            ),
+                                            "请求头集合显式包含 Authorization" to (
+                                                requestHeaderSummary["请求头集合是否显式包含 Authorization"] ?: "false"
+                                            ),
+                                            "请求是否携带 Range" to (
+                                                requestHeaderSummary["Range 是否存在"] ?: "false"
+                                            ),
+                                            "Range 类型" to (
+                                                requestHeaderSummary["Range 类型"] ?: "未提供"
+                                            ),
+                                            "请求 Sec-Fetch-Site" to (
+                                                requestHeaderSummary["Sec-Fetch-Site"] ?: "未提供"
+                                            ),
+                                            "请求 Sec-Fetch-Mode" to (
+                                                requestHeaderSummary["Sec-Fetch-Mode"] ?: "未提供"
+                                            ),
+                                            "请求 Sec-Fetch-Dest" to (
+                                                requestHeaderSummary["Sec-Fetch-Dest"] ?: "未提供"
+                                            ),
+                                            "关联候选源校验状态" to verificationState,
+                                            "关联候选源校验方式" to (verificationResult?.method ?: "未执行/未关联"),
+                                            "关联候选源校验 HTTP 状态码" to (
+                                                verificationResult?.httpStatus?.toString() ?: "未返回"
+                                            ),
+                                            "关联候选源 HEAD 状态码" to (
+                                                verificationResult?.headStatus?.toString() ?: "未返回"
+                                            ),
+                                            "关联候选源 HEAD Content-Type" to (
+                                                verificationResult?.headContentType?.ifBlank { "未返回" } ?: "未返回"
+                                            ),
+                                            "关联候选源最终响应主机名" to (
+                                                verificationResult?.responseHost?.ifBlank { "未返回" } ?: "未返回"
+                                            ),
+                                            "关联候选源校验结果距当前秒" to verificationAgeSeconds,
+                                            "页面主机名" to webSourceHost(currentPage),
+                                        )
+                                    )
+                                    requestHeaderSummary.forEach { (key, value) ->
+                                        put("请求$key", value)
+                                    }
+                                    responseHeaderSummary.forEach { (key, value) ->
+                                        put("响应$key", value)
+                                    }
+                                    verificationResult?.responseHeaderSummary?.forEach { (key, value) ->
+                                        put("关联校验响应$key", value)
+                                    }
+                                    verificationResult?.headResponseHeaderSummary?.forEach { (key, value) ->
+                                        put("关联校验 HEAD 响应$key", value)
+                                    }
+                                }
                                 io.translatetube.local.util.AppLogStore.warning(
                                     context = appCtx,
                                     tag = "WebSourceHttp",
                                     message = if (request.isForMainFrame) "网页主文档返回 HTTP 错误" else "媒体候选请求返回 HTTP 错误",
-                                    diagnosticContext = mapOf(
-                                        "资源主机名" to webSourceHost(failedUrl),
-                                        "候选源诊断编号" to if (request.isForMainFrame) "网页主文档" else webSourceFingerprint(failedUrl),
-                                        "资源类型" to if (request.isForMainFrame) "网页文档" else webSourceType(failedUrl),
-                                        "HTTP 状态码" to errorResponse.statusCode.toString(),
-                                        "HTTP 原因" to errorResponse.reasonPhrase.take(200),
-                                        "HTTP 方法" to request.method,
-                                        "是否主文档请求" to request.isForMainFrame.toString(),
-                                        "响应 Content-Type" to (errorResponse.mimeType ?: "未提供"),
-                                        "页面导航代数" to pageGeneration.get().toString(),
-                                        "可能原因" to when (errorResponse.statusCode) {
-                                            401 -> "需要登录或身份验证"
-                                            403 -> "服务器拒绝访问，可能涉及防盗链、权限或签名限制"
-                                            404 -> "地址不存在或媒体签名已过期"
-                                            429 -> "请求过于频繁或触发站点限流"
-                                            else -> "需结合响应状态、来源类型和候选校验日志进一步判断"
-                                        },
-                                    ),
+                                    diagnosticContext = diagnostics,
                                     issueKey = issueKey,
                                 )
                                 if (request.isForMainFrame) {
