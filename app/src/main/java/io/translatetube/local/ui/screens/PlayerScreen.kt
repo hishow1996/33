@@ -2300,7 +2300,7 @@ private fun VideoParsingPage(
         // Five consistent, independently expandable cards. The active stage opens by default.
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             visibleStages.forEach { index ->
                 val stageSkipped = when (flow) {
@@ -2626,13 +2626,13 @@ private fun VideoParsingPage(
                             .clickable {
                                 expandedStageIndex = if (expanded) -1 else index
                             }
-                            .padding(horizontal = 12.dp, vertical = if (compactLayout) 11.dp else 13.dp),
+                            .padding(horizontal = 11.dp, vertical = if (compactLayout) 7.dp else 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(if (compactLayout) 31.dp else 35.dp)
+                                .size(if (compactLayout) 27.dp else 30.dp)
                                 .clip(CircleShape)
                                 .background(markerBg)
                                 .border(1.dp, Color.White, CircleShape),
@@ -2681,7 +2681,7 @@ private fun VideoParsingPage(
                                     fontSize = if (compactLayout) 11.sp else 12.sp,
                                     lineHeight = 16.sp,
                                 ),
-                                maxLines = 2,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
@@ -2695,7 +2695,7 @@ private fun VideoParsingPage(
                                 modifier = Modifier
                                     .clip(CircleShape)
                                     .background(stageBadgeBg)
-                                    .padding(horizontal = 9.dp, vertical = 5.dp),
+                                    .padding(horizontal = 7.dp, vertical = 4.dp),
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = if (compactLayout) 9.sp else 10.sp,
                                     fontWeight = FontWeight.Bold,
@@ -2713,16 +2713,38 @@ private fun VideoParsingPage(
                         }
                     }
 
+
                     AnimatedVisibility(
                         visible = expanded,
-                        enter = fadeIn(tween(160)) + expandVertically(animationSpec = tween(190)),
-                        exit = fadeOut(tween(100)) + shrinkVertically(animationSpec = tween(150)),
+                        enter = fadeIn(tween(150)) + expandVertically(animationSpec = tween(170)),
+                        exit = fadeOut(tween(90)) + shrinkVertically(animationSpec = tween(130)),
                     ) {
+                        val fullWidthDetailLabels = when (index) {
+                            0 -> setOf("视频标题", "当前状态", "处理说明")
+                            1 -> setOf("当前任务", "处理说明")
+                            2 -> setOf("当前任务", "处理说明")
+                            3 -> setOf("当前状态", "处理说明")
+                            else -> setOf("合成任务", "引擎状态", "处理说明")
+                        }
+                        val gridRows = stageDetailRows.filter {
+                            it != stageProgressRow && it.first !in fullWidthDetailLabels
+                        }
+                        val fullWidthRows = stageDetailRows.filter {
+                            it.first in fullWidthDetailLabels
+                        }
+                        val stageProgressText = if (
+                            stageProgressRow != null && stageProgressValue != null
+                        ) {
+                            stageProgressCaption + " · " + (stageProgressValue * 100f).roundToInt() + "%"
+                        } else {
+                            stageProgressCaption
+                        }
+
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 13.dp, end = 13.dp, top = 0.dp, bottom = 13.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                .padding(start = 11.dp, end = 11.dp, top = 0.dp, bottom = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             HorizontalDivider(color = Color(0xFFE6ECF5))
                             Text(
@@ -2734,59 +2756,66 @@ private fun VideoParsingPage(
                                     else -> "配音详情"
                                 },
                                 color = Color(0xFF52637B),
-                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                ),
                             )
 
-                            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        "处理进度",
-                                        color = Color(0xFF17243B),
-                                        style = MaterialTheme.typography.titleSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                        ),
-                                    )
-                                    Text(
-                                        stageProgressCaption,
-                                        color = if (failed) Color(0xFFCB3E4D) else Color(0xFF3268F5),
-                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                when {
-                                    stageProgressValue != null -> LinearProgressIndicator(
-                                        progress = { stageProgressValue },
-                                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                                        color = if (failed) Color(0xFFD74655) else Color(0xFF3268F5),
-                                        trackColor = Color(0xFFE2EAF8),
-                                    )
-                                    active && !paused -> LinearProgressIndicator(
-                                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                                        color = Color(0xFF3268F5),
-                                        trackColor = Color(0xFFE2EAF8),
-                                    )
-                                    else -> LinearProgressIndicator(
-                                        progress = { 0f },
-                                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                                        color = Color(0xFF3268F5),
-                                        trackColor = Color(0xFFE2EAF8),
-                                    )
+                            if (gridRows.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                    gridRows.chunked(2).forEach { rowItems ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.Top,
+                                        ) {
+                                            rowItems.forEach { (label, value) ->
+                                                Column(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(Color(0xFFF1F5FB))
+                                                        .padding(horizontal = 9.dp, vertical = 7.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                                ) {
+                                                    Text(
+                                                        label,
+                                                        color = Color(0xFF8794A8),
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            fontSize = 10.sp,
+                                                            lineHeight = 13.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                        ),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                    Text(
+                                                        value,
+                                                        color = Color(0xFF283B57),
+                                                        style = MaterialTheme.typography.bodySmall.copy(
+                                                            fontSize = 12.sp,
+                                                            lineHeight = 16.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                        ),
+                                                    )
+                                                }
+                                            }
+                                            if (rowItems.size == 1) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
-                            stageDetailRows.filterNot { it == stageProgressRow }.forEach { (label, value) ->
+                            fullWidthRows.forEach { (label, value) ->
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(11.dp))
+                                        .clip(RoundedCornerShape(10.dp))
                                         .background(Color(0xFFF1F5FB))
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        .padding(horizontal = 9.dp, vertical = 7.dp),
                                     verticalArrangement = Arrangement.spacedBy(3.dp),
                                 ) {
                                     Text(
@@ -2799,16 +2828,66 @@ private fun VideoParsingPage(
                                     )
                                     Text(
                                         value,
-                                        color = if (label.contains("进度") || label == "配音准备") {
-                                            Color(0xFF315FB7)
-                                        } else {
-                                            Color(0xFF3D4E65)
-                                        },
+                                        color = Color(0xFF3D4E65),
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             fontSize = 12.sp,
                                             lineHeight = 17.sp,
-                                            fontWeight = if (label.contains("进度")) FontWeight.SemiBold else FontWeight.Normal,
                                         ),
+                                    )
+                                }
+                            }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        "处理进度",
+                                        color = Color(0xFF17243B),
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                        ),
+                                    )
+                                    Text(
+                                        stageProgressText,
+                                        color = if (failed) Color(0xFFCB3E4D) else Color(0xFF3268F5),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                when {
+                                    stageProgressValue != null -> LinearProgressIndicator(
+                                        progress = { stageProgressValue },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(7.dp)
+                                            .clip(CircleShape),
+                                        color = if (failed) Color(0xFFD74655) else Color(0xFF3268F5),
+                                        trackColor = Color(0xFFE2EAF8),
+                                    )
+                                    active && !paused -> LinearProgressIndicator(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(7.dp)
+                                            .clip(CircleShape),
+                                        color = Color(0xFF3268F5),
+                                        trackColor = Color(0xFFE2EAF8),
+                                    )
+                                    else -> LinearProgressIndicator(
+                                        progress = { 0f },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(7.dp)
+                                            .clip(CircleShape),
+                                        color = Color(0xFF3268F5),
+                                        trackColor = Color(0xFFE2EAF8),
                                     )
                                 }
                             }
