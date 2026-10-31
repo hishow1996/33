@@ -172,16 +172,21 @@ object CloudTranscription {
      */
     internal const val MAX_CLOUD_SUBMISSION_RETRIES = 2
 
+    internal fun cloudSubmissionHttpStatus(error: Throwable): Int? {
+        val messages = causeChain(error).mapNotNull { it.message }.joinToString(" ")
+        return Regex("""HTTP\s*(\d{3})""", RegexOption.IGNORE_CASE)
+            .find(messages)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    internal fun isDefinitiveCloudSubmissionRejection(error: Throwable): Boolean {
+        val statusCode = cloudSubmissionHttpStatus(error) ?: return false
+        return statusCode in 400..499 && statusCode !in setOf(408, 425)
+    }
+
     internal fun shouldRetryCloudSubmission(error: Throwable): Boolean {
         val chain = causeChain(error)
         if (chain.any { it is java.util.concurrent.CancellationException }) return false
-        val messages = chain.mapNotNull { it.message }.joinToString(" ")
-        // Retry only an explicit transient provider response. A dropped connection after upload
-        // is ambiguous and must not automatically submit a potentially billable transcription twice.
-        if (!messages.contains("云端转写失败")) return false
-        val statusCode = Regex("""HTTP\s*(\d{3})""", RegexOption.IGNORE_CASE)
-            .find(messages)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        return statusCode in setOf(408, 425, 429, 500, 502, 503, 504)
+        return cloudSubmissionHttpStatus(error) == 429
     }
 
     internal fun shouldRetryKawaPoll(error: Throwable): Boolean {
@@ -462,6 +467,8 @@ object CloudTranscription {
         checkpointIdentity: String? = null,
         /** App-private directory shared by normal WAV and direct-upload paths. */
         checkpointDirectory: File? = null,
+        /** True only after the user explicitly confirms resubmitting an unresolved prior request. */
+        allowUncertainRetry: Boolean = false,
     ): Result {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
@@ -492,34 +499,34 @@ object CloudTranscription {
         val stableCheckpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() }
         var responseCheckpointFile: File? = null
         var responseAudioDigest: String? = null
+        var submissionGuardFile: File? = null
         if (stableCheckpointIdentity != null) {
-            try {
-                val directoryRoot = checkpointDirectory ?: wavFile.absoluteFile.parentFile
-                    ?: throw IOException("云端转写检查点目录无效")
-                val directory = File(directoryRoot, "cloud_asr_response_checkpoints")
-                CloudAsrResponseCheckpointStore.cleanupStale(directory)
-                responseAudioDigest = CloudAsrResponseCheckpointStore.digestAudioFile(wavFile, checkActive)
-                responseCheckpointFile = CloudAsrResponseCheckpointStore.fileFor(
-                    directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
-                )
-                val savedResponse = CloudAsrResponseCheckpointStore.read(
-                    requireNotNull(responseCheckpointFile),
-                    provider,
-                    stableCheckpointIdentity,
-                    requireNotNull(responseAudioDigest),
-                    durationMs,
-                )
-                if (savedResponse != null) {
-                    onProgress("已恢复上次云端转写结果，正在整理字幕…")
-                    return parseProviderResponse(savedResponse, durationMs, checkActive)
-                }
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                android.util.Log.w("CloudTranscription", "Cloud ASR response checkpoint lookup failed", error)
-                responseCheckpointFile = null
-                responseAudioDigest = null
+            val directoryRoot = checkpointDirectory ?: wavFile.absoluteFile.parentFile
+                ?: throw IOException("云端转写检查点目录无效")
+            val directory = File(directoryRoot, "cloud_asr_response_checkpoints")
+            runCatching { CloudAsrResponseCheckpointStore.cleanupStale(directory) }
+            responseAudioDigest = CloudAsrResponseCheckpointStore.digestAudioFile(wavFile, checkActive)
+            responseCheckpointFile = CloudAsrResponseCheckpointStore.fileFor(
+                directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
+            )
+            submissionGuardFile = CloudAsrSubmissionGuardStore.fileFor(
+                directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
+            )
+            val savedResponse = CloudAsrResponseCheckpointStore.read(
+                requireNotNull(responseCheckpointFile), provider, stableCheckpointIdentity,
+                requireNotNull(responseAudioDigest), durationMs,
+            )
+            if (savedResponse != null) {
+                runCatching { CloudAsrSubmissionGuardStore.clear(requireNotNull(submissionGuardFile)) }
+                onProgress("已恢复上次云端转写结果，正在整理字幕…")
+                return parseProviderResponse(savedResponse, durationMs, checkActive)
             }
+            if (CloudAsrSubmissionGuardStore.hasPendingSubmission(requireNotNull(submissionGuardFile)) &&
+                !allowUncertainRetry
+            ) {
+                throw CloudAsrSubmissionUncertainException(providerName)
+            }
+            // On explicit approval the old marker stays until refreshed immediately before POST.
         }
         onProgress("正在上传音频并提交 $providerName 转写任务…")
         val form = MultipartBody.Builder()
@@ -564,6 +571,7 @@ object CloudTranscription {
         var retriesUsed = 0
         while (responseText == null) {
             checkActive()
+            submissionGuardFile?.let { CloudAsrSubmissionGuardStore.markInFlight(it) }
             try {
                 responseText = executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
                     val body = readResponseBody(response.body, checkActive)
@@ -590,9 +598,20 @@ object CloudTranscription {
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
-                if (retriesUsed >= MAX_CLOUD_SUBMISSION_RETRIES ||
-                    !shouldRetryCloudSubmission(error)
-                ) throw error
+                val statusCode = cloudSubmissionHttpStatus(error)
+                when {
+                    statusCode == 429 -> {
+                        submissionGuardFile?.let { CloudAsrSubmissionGuardStore.clear(it) }
+                        if (retriesUsed >= MAX_CLOUD_SUBMISSION_RETRIES ||
+                            !shouldRetryCloudSubmission(error)
+                        ) throw error
+                    }
+                    isDefinitiveCloudSubmissionRejection(error) -> {
+                        submissionGuardFile?.let { CloudAsrSubmissionGuardStore.clear(it) }
+                        throw error
+                    }
+                    else -> throw CloudAsrSubmissionUncertainException(providerName, error)
+                }
                 retriesUsed++
                 val waitMs = 750L shl (retriesUsed - 1)
                 onProgress(
@@ -607,11 +626,12 @@ object CloudTranscription {
         checkActive()
         val completedResponseText = responseText ?: throw IOException("云端转写没有返回响应")
         onProgress("$providerName 云端已返回结果，正在保存恢复点…")
+        var durableResponseSaved = false
         if (responseCheckpointFile != null && responseAudioDigest != null &&
             stableCheckpointIdentity != null
         ) {
             try {
-                val saved = CloudAsrResponseCheckpointStore.write(
+                durableResponseSaved = CloudAsrResponseCheckpointStore.write(
                     file = requireNotNull(responseCheckpointFile),
                     provider = provider,
                     identity = stableCheckpointIdentity,
@@ -620,14 +640,21 @@ object CloudTranscription {
                     responseText = completedResponseText,
                     checkActive = checkActive,
                 )
-                if (saved) onProgress("$providerName 转写结果已保存，正在整理词级时间戳…")
+                if (durableResponseSaved) {
+                    submissionGuardFile?.let { runCatching { CloudAsrSubmissionGuardStore.clear(it) } }
+                    onProgress("$providerName 转写结果已保存，正在整理词级时间戳…")
+                }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 android.util.Log.w("CloudTranscription", "Cloud ASR response checkpoint write failed", error)
             }
         }
-        return parseProviderResponse(completedResponseText, durationMs, checkActive)
+        val parsedResult = parseProviderResponse(completedResponseText, durationMs, checkActive)
+        if (!durableResponseSaved) {
+            submissionGuardFile?.let { runCatching { CloudAsrSubmissionGuardStore.clear(it) } }
+        }
+        return parsedResult
     }
 
     private fun parseProviderResponse(

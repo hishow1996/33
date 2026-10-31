@@ -73,18 +73,22 @@ class CloudTranscriptionTest {
     }
 
     @Test
-    fun cloudSubmissionRetriesOnlyTransientExplicitHttpFailures() {
+    fun cloudSubmissionRetriesOnlyDefiniteRateLimitRejections() {
         assertTrue(CloudTranscription.shouldRetryCloudSubmission(IOException("ElevenLabs 云端转写失败（HTTP 429）：限流")))
-        assertTrue(CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 503）：服务暂不可用")))
-        assertTrue(CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 502）：网关错误")))
+        assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 503）：服务暂不可用")))
+        assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 502）：网关错误")))
+        assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 408）：请求超时")))
         assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 401）：Key 无效")))
         assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(IOException("connection reset")))
-        assertEquals(
-            false,
-            CloudTranscription.shouldRetryCloudSubmission(
-                IOException("request cancelled", java.util.concurrent.CancellationException("cancelled"))
-            ),
-        )
+        assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(
+            IOException("request cancelled", java.util.concurrent.CancellationException("cancelled"))
+        ))
+        assertEquals(true, CloudTranscription.isDefinitiveCloudSubmissionRejection(
+            IOException("Cartesia 云端转写失败（HTTP 413）：文件过大")
+        ))
+        assertEquals(false, CloudTranscription.isDefinitiveCloudSubmissionRejection(
+            IOException("Cartesia 云端转写失败（HTTP 503）：网关错误")
+        ))
     }
 
     @Test

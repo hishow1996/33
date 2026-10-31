@@ -228,6 +228,9 @@ fun PlayerScreen(
         val key = requestKey
         val current = PlaybackService.ui.value
         val service = PlaybackService.instance
+        if (current.key == key && current.cloudAsrSubmissionUncertain) {
+            PlaybackService.confirmUncertainCloudAsrResubmission()
+        }
         val canResumeExistingWork = current.key == key &&
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
@@ -2968,7 +2971,14 @@ private fun VideoParsingPage(
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(7.dp))
-                        Text(if (isCancelled) "重新开始处理" else "重试当前处理", fontWeight = FontWeight.Bold)
+                        Text(
+                            when {
+                                isCancelled -> "重新开始处理"
+                                state.cloudAsrSubmissionUncertain -> "确认重新提交"
+                                else -> "重试当前处理"
+                            },
+                            fontWeight = FontWeight.Bold,
+                        )
                     }
                 }
             }

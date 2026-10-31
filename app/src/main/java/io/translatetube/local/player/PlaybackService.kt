@@ -565,6 +565,7 @@ data class PlayerUiState(
     val dubbingVolume: Float = 1f,
     val audioOnly: Boolean = false,
     val error: String? = null,
+    val cloudAsrSubmissionUncertain: Boolean = false,
     val sourceLang: String = "",
     val engineName: String = "",
     /** Translation cache identity is carried through retries so imported sources keep their fingerprint. */
@@ -827,10 +828,19 @@ class PlaybackService : MediaSessionService() {
 
         @Volatile var instance: PlaybackService? = null
             private set
+        private val cloudAsrResubmissionConsentKeys =
+            java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val ui = MutableStateFlow(PlayerUiState())
         private val _playbackHint = MutableStateFlow<PlaybackHint?>(null)
         internal val playbackHint: StateFlow<PlaybackHint?> = _playbackHint
         fun state(): StateFlow<PlayerUiState> = ui
+
+        fun confirmUncertainCloudAsrResubmission() {
+            val current = ui.value
+            if (current.cloudAsrSubmissionUncertain && current.key.isNotBlank()) {
+                cloudAsrResubmissionConsentKeys.add(current.key)
+            }
+        }
 
         /**
          * A privacy-safe runtime snapshot attached to uncaught-crash records. Never include raw
@@ -3674,7 +3684,11 @@ class PlaybackService : MediaSessionService() {
                         updated.phase == Phase.ERROR && current.phase != Phase.ERROR ->
                             updated.copy(failedPhase = current.phase, failedProgress = current.progress)
                         updated.phase != Phase.ERROR ->
-                            updated.copy(failedPhase = null, failedProgress = "")
+                            updated.copy(
+                                failedPhase = null,
+                                failedProgress = "",
+                                cloudAsrSubmissionUncertain = false,
+                            )
                         else -> updated
                     }
                 }
@@ -6716,6 +6730,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val asrProvider = storedAsrProvider.takeIf {
                 it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
             } ?: "local"
+            val allowCloudAsrResubmission = if (asrProvider == "elevenlabs" || asrProvider == "cartesia") {
+                cloudAsrResubmissionConsentKeys.remove(key)
+            } else false
             val localAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this)
             val transcriptionEngineDisplayName = when (asrProvider) {
                 "local" -> "本地 " + io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
@@ -7556,6 +7573,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 encodedAudio = encodedInput,
                                 checkpointIdentity = sourceSubtitleCacheKey,
                                 checkpointDirectory = cacheDir,
+                                allowUncertainRetry = allowCloudAsrResubmission,
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) {
@@ -8209,6 +8227,7 @@ updateUiForSession(key, pipelineGeneration) {
                                 },
                                 checkpointIdentity = sourceSubtitleCacheKey,
                                 checkpointDirectory = cacheDir,
+                                allowUncertainRetry = allowCloudAsrResubmission,
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) { it.copy(
@@ -9122,6 +9141,8 @@ updateUiForSession(key, pipelineGeneration) {
                 return
             }
             val failureState = ui.value
+            val cloudAsrSubmissionUncertain =
+                e is io.translatetube.local.asr.CloudAsrSubmissionUncertainException
             io.translatetube.local.util.AppLogStore.error(
                 this@PlaybackService,
                 "PlaybackPipeline",
@@ -9176,7 +9197,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
-                        error = pipelineFailureMessage(e, failureState.phase, "视频解析或配音初始化失败"),
+                        error = if (cloudAsrSubmissionUncertain) {
+                            e.message ?: "云端转写状态不确定，请确认后再重新提交"
+                        } else pipelineFailureMessage(e, failureState.phase, "视频解析或配音初始化失败"),
+                        cloudAsrSubmissionUncertain = cloudAsrSubmissionUncertain,
                         noModelHint = if (dubbingStageEntered) {
                             "配音初始化失败，已恢复视频原声以避免无声播放。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。"
                         } else {
@@ -9187,7 +9211,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
             } else {
                 updateUiForSession(key, pipelineGeneration) {
-                    it.copy(phase = Phase.ERROR, progress = "", error = pipelineFailureMessage(e, failureState.phase, "视频解析失败"))
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = if (cloudAsrSubmissionUncertain) {
+                            e.message ?: "云端转写状态不确定，请确认后再重新提交"
+                        } else pipelineFailureMessage(e, failureState.phase, "视频解析失败"),
+                        cloudAsrSubmissionUncertain = cloudAsrSubmissionUncertain,
+                    )
                 }
             }
             }
