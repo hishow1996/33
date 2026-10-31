@@ -2927,18 +2927,32 @@ private fun TranscriptionStageResultPreview(
             } else {
                 preview.forEachIndexed { index, line ->
                     if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
-                    Text(
-                        "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
-                        color = Color(0xFF9AA5B4),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    )
-                    Text(
-                        line.text,
-                        color = Color(0xFF39485B),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Text(
+                            "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
+                            modifier = Modifier.width(82.dp),
+                            color = Color(0xFF8B98AA),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 10.sp,
+                                lineHeight = 15.sp,
+                            ),
+                        )
+                        Text(
+                            line.text,
+                            modifier = Modifier.weight(1f),
+                            color = Color(0xFF39485B),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                            ),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
