@@ -10,11 +10,19 @@ internal object AsrAudioCachePolicy {
         sizeBytes: Long,
         lastModifiedMs: Long,
         nowMs: Long,
+        isReadable: Boolean = true,
     ): Boolean {
-        if (!isFile || sizeBytes <= 0L) return false
+        if (!isFile || !isReadable || sizeBytes <= 0L) return false
         if (lastModifiedMs <= 0L || nowMs < lastModifiedMs) return false
         return nowMs - lastModifiedMs <= TTL_MS
     }
+
+    /** A cached media container must expose an audio track usable by this device. */
+    fun hasUsableAudioTrack(
+        audioTrackCount: Int,
+        selectedAudioDecoderAvailable: Boolean?,
+    ): Boolean =
+        audioTrackCount > 0 && selectedAudioDecoderAvailable != false
 
     /** Accept any non-empty audio file, while refusing byte-counter overflow. */
     fun canAppendBytes(currentBytes: Long, appendBytes: Long): Boolean =

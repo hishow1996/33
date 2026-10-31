@@ -14,13 +14,15 @@ internal object LocalPcmAudioCachePolicy {
         sizeBytes: Long,
         lastModifiedMs: Long,
         nowMs: Long,
+        isReadable: Boolean = true,
     ): Boolean {
-        if (sizeBytes % 2L != 0L || sizeBytes > MAX_CACHE_BYTES) return false
+        if (!isReadable || sizeBytes % 2L != 0L || sizeBytes > MAX_CACHE_BYTES) return false
         return AsrAudioCachePolicy.canReuse(
             isFile = isFile,
             sizeBytes = sizeBytes,
             lastModifiedMs = lastModifiedMs,
             nowMs = nowMs,
+            isReadable = isReadable,
         )
     }
 
