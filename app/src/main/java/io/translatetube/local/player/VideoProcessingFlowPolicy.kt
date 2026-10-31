@@ -27,11 +27,16 @@ object VideoProcessingFlowPolicy {
         else -> VideoSourceKind.UNKNOWN
     }
 
-    /** Web videos must finish the complete generated-PCM queue before playback is allowed. */
+    /**
+     * YouTube, webpage and local videos all wait for the complete generated-PCM dubbing queue.
+     * This keeps the processing page visible until the actual fifth-stage work is finished.
+     */
     fun requiresCompleteDubbingBeforePlayback(source: VideoSourceKind): Boolean =
-        source == VideoSourceKind.WEB
+        source == VideoSourceKind.YOUTUBE ||
+            source == VideoSourceKind.WEB ||
+            source == VideoSourceKind.LOCAL
 
-    /** Keep progressive startup for other sources, but never expose a web player on a partial queue. */
+    /** Only non-video/import flows may use progressive player entry. */
     fun allowsProgressiveTtsPlayback(source: VideoSourceKind, hasTtsEngine: Boolean): Boolean =
         hasTtsEngine && !requiresCompleteDubbingBeforePlayback(source)
 

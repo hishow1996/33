@@ -714,8 +714,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         totalLines = state.totalLines,
         preparedCount = state.preparedCount,
     )
-    // The service gives the first usable cue a short startup window; once playback starts,
-    // later cues can continue generating PCM in the background for Kokoro, Piper and System TTS.
+    // YouTube, webpage and local video must finish the generated-PCM queue before player entry.
+    // Direct System TTS remains an immediate timeline mode and is handled by its own startup buffer.
     val progressiveTtsPlayback = VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
         source = VideoProcessingFlowPolicy.sourceKind(state.key),
         hasTtsEngine = state.ttsEngineName.isNotBlank(),

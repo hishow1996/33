@@ -417,44 +417,49 @@ class VideoProcessingFlowPolicyTest {
         )
     }
     @Test
-    fun webVideosRequireCompleteDubbingAndDisableProgressivePlayerEntry() {
-        assertTrue(
-            VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(VideoSourceKind.WEB),
-        )
-        assertFalse(
-            VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(VideoSourceKind.YOUTUBE),
-        )
-        assertFalse(
-            VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(VideoSourceKind.LOCAL),
+    fun allVideoSourcesRequireCompleteDubbingBeforePlayerEntry() {
+        val videoSources = listOf(
+            VideoSourceKind.YOUTUBE,
+            VideoSourceKind.WEB,
+            VideoSourceKind.LOCAL,
         )
 
-        assertFalse(
-            VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
-                VideoSourceKind.WEB,
-                hasTtsEngine = true,
-            ),
-        )
-        assertTrue(
-            VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
-                VideoSourceKind.YOUTUBE,
-                hasTtsEngine = true,
-            ),
-        )
+        videoSources.forEach { source ->
+            assertTrue(
+                "$source must wait for its complete dubbing queue",
+                VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(source),
+            )
+            assertFalse(
+                "$source must not enter the player progressively",
+                VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(source, hasTtsEngine = true),
+            )
+        }
+
         assertFalse(
             VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
                 VideoSourceKind.YOUTUBE,
                 hasTtsEngine = false,
             ),
         )
-
-        // A transient READY state must not reveal a web player while any dubbing row is pending.
         assertTrue(
-            VideoProcessingFlowPolicy.shouldShowProcessingPage(
-                phase = Phase.READY,
-                progressiveTtsPlayback = false,
-                dubbingPreparationIncomplete = true,
+            VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
+                VideoSourceKind.UNKNOWN,
+                hasTtsEngine = true,
             ),
         )
+
+        // A transient READY state must not reveal any video player while dubbing rows are pending.
+        videoSources.forEach { source ->
+            assertTrue(
+                "$source must keep the processing page visible",
+                VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                    phase = Phase.READY,
+                    progressiveTtsPlayback = VideoProcessingFlowPolicy
+                        .allowsProgressiveTtsPlayback(source, hasTtsEngine = true),
+                    dubbingPreparationIncomplete = true,
+                ),
+            )
+        }
     }
 
     @Test
