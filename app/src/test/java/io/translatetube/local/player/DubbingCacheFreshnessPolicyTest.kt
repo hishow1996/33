@@ -6,19 +6,15 @@ import org.junit.Test
 
 class DubbingCacheFreshnessPolicyTest {
     @Test
-    fun engineOrVoiceRestartCanReuseAnExactSuccessfulCache() {
-        assertFalse(
-            DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
-                forceRegenerateDubbing = true,
-                reuseMatchingDubbingCache = true,
-            ),
+    fun engineOrVoiceRestartMustRegenerateEvenAnExactSuccessfulCache() {
+        val forceFresh = DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
+            forceRegenerateDubbing = true,
+            reuseMatchingDubbingCache = true,
         )
-        assertTrue(
+        assertTrue(forceFresh)
+        assertFalse(
             DubbingCacheFreshnessPolicy.canReadCache(
-                forceFreshSynthesis = DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
-                    forceRegenerateDubbing = true,
-                    reuseMatchingDubbingCache = true,
-                ),
+                forceFreshSynthesis = forceFresh,
                 wasWrittenByCurrentRun = false,
             ),
         )
