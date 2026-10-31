@@ -3359,7 +3359,7 @@ private fun TranscriptionStageResultPreview(
     emptyText: String,
 ) {
     val preview = lines.takeLast(2)
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             "实时识别结果",
             color = Color(0xFF596B82),
@@ -3372,8 +3372,8 @@ private fun TranscriptionStageResultPreview(
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
-                .padding(horizontal = 9.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.Center,
+                .padding(start = 9.dp, end = 9.dp, top = 3.dp, bottom = 7.dp),
+            verticalArrangement = Arrangement.Top,
         ) {
             if (preview.isEmpty()) {
                 Box(
