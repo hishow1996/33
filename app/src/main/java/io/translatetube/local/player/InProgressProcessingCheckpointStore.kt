@@ -27,7 +27,7 @@ internal data class InProgressProcessingCheckpoint(
     val state: PlayerUiState,
     val fingerprints: EngineConfigFingerprints,
     val savedAt: Long,
-    val requireFreshDubbing: Boolean,
+    val requireFreshDubbing: Boolean = false,
 )
 
 internal object InProgressProcessingCheckpointStore {
@@ -48,7 +48,7 @@ internal object InProgressProcessingCheckpointStore {
         identityKey: String,
         state: PlayerUiState,
         fingerprints: EngineConfigFingerprints,
-        requireFreshDubbing: Boolean,
+        requireFreshDubbing: Boolean = false,
     ): Boolean {
         if (!isSupportedKey(videoKey) ||
             identityKey.isBlank() ||
