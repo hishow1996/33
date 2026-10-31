@@ -2979,6 +2979,24 @@ private fun StageProgressVisual(
         },
         label = "stageProgressScan",
     )
+    // Keep the whole completed audio range alive: a travelling wave repeatedly
+    // changes every lit bar's height instead of pulsing only the final bar.
+    val waveformPhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6.2831855f,
+        animationSpec = if (stageIndex == 1 && isAnimating && !isIndeterminate) {
+            infiniteRepeatable(
+                animation = tween(
+                    durationMillis = 1350,
+                    easing = androidx.compose.animation.core.LinearEasing,
+                ),
+                repeatMode = RepeatMode.Restart,
+            )
+        } else {
+            tween(durationMillis = 0)
+        },
+        label = "audioWaveformPhase",
+    )
 
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
@@ -3001,7 +3019,10 @@ private fun StageProgressVisual(
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (stageIndex == 3) 14.dp else 12.dp),
+            .height(when (stageIndex) {
+                1, 3 -> 14.dp
+                else -> 12.dp
+            }),
     ) {
         val gap = 2.5.dp.toPx()
         val fill = if (isSkipped) Color(0xFFAEB8C6) else primaryColor
@@ -3070,10 +3091,20 @@ private fun StageProgressVisual(
                 val scanIndex = (scanPosition * count).toInt().coerceIn(0, count - 1)
                 heights.forEachIndexed { i, heightFactor ->
                     val isCurrent = isIndeterminate && i == scanIndex
-                    val pulseFactor = if (
-                        isAnimating && !isIndeterminate && i == (completedBars - 1).coerceAtLeast(0)
-                    ) pulse else 1f
-                    val barHeight = (size.height * heightFactor * pulseFactor).coerceAtLeast(2.dp.toPx())
+                    val wave = if (isAnimating && !isIndeterminate && i < completedBars) {
+                        (kotlin.math.sin(waveformPhase - i * 0.78f) + 1f) / 2f
+                    } else {
+                        1f
+                    }
+                    // A slightly wider height range makes the moving waveform easy to notice,
+                    // while the cap keeps the tallest bars inside the progress track.
+                    val pulseFactor = if (isAnimating && !isIndeterminate && i < completedBars) {
+                        0.70f + wave * 0.46f
+                    } else {
+                        1f
+                    }
+                    val barHeight = (size.height * heightFactor * pulseFactor)
+                        .coerceIn(2.dp.toPx(), size.height * 0.97f)
                     val left = i * (barWidth + barGap)
                     val top = (size.height - barHeight) / 2f
                     drawRoundRect(
