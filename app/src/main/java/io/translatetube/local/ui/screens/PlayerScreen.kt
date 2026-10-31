@@ -728,7 +728,13 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             state.progress.startsWith("视频地址已失效，正在重新获取") ||
             state.progress.startsWith("正在尝试兼容清晰度 ")
         )
-    val showProcessingPage = if (playbackHint?.keepPlayerVisible == true) {
+    val hintKeepsPlayerVisible = playbackHint?.keepPlayerVisible == true &&
+        VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
+            phase = state.phase,
+            progressiveTtsPlayback = progressiveTtsPlayback,
+            playbackHasEnteredPlayer = playbackHasStarted || state.isPlaying,
+        )
+    val showProcessingPage = if (hintKeepsPlayerVisible) {
         false
     } else {
         VideoProcessingFlowPolicy.shouldShowProcessingPage(

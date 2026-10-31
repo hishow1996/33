@@ -569,4 +569,39 @@ class VideoProcessingFlowPolicyTest {
         assertEquals("字幕处理失败",
             VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB, ProcessingFlow.IMPORTED_SUBTITLES, failed = true))
     }
+
+    @Test
+    fun playbackHintCannotPullCompleteQueueSourcesOutOfStageFive() {
+        // Web/YouTube/local video: media is mounted while dubbing is still being synthesized.
+        // A "视频加载中…" hint must not flash the player before every cue is ready.
+        assertFalse(
+            VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
+                phase = Phase.SYNTHESIZING,
+                progressiveTtsPlayback = false,
+                playbackHasEnteredPlayer = false,
+            ),
+        )
+        // READY (all dubbing done) and already-started playback keep the hint behaviour.
+        assertTrue(
+            VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
+                phase = Phase.READY,
+                progressiveTtsPlayback = false,
+                playbackHasEnteredPlayer = false,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
+                phase = Phase.SYNTHESIZING,
+                progressiveTtsPlayback = false,
+                playbackHasEnteredPlayer = true,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
+                phase = Phase.SYNTHESIZING,
+                progressiveTtsPlayback = true,
+                playbackHasEnteredPlayer = false,
+            ),
+        )
+    }
 }

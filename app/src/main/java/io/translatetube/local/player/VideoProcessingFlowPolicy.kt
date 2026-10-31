@@ -259,6 +259,23 @@ object VideoProcessingFlowPolicy {
         return phase != Phase.READY || (!progressiveTtsPlayback && dubbingPreparationIncomplete)
     }
 
+    /**
+     * A playback hint such as "视频加载中…" normally keeps the player on screen. It must not do
+     * that while a complete-queue source (YouTube/web/local) is still in stage 5: the media is
+     * already mounted and may be buffering, but the person has to stay on the processing page
+     * until every dubbed cue is ready. Otherwise the player flashes for about a second (the hint
+     * dwell time) and then drops back to the processing page.
+     */
+    fun playbackHintMayKeepPlayerVisible(
+        phase: Phase,
+        progressiveTtsPlayback: Boolean,
+        playbackHasEnteredPlayer: Boolean,
+    ): Boolean = !(
+        phase == Phase.SYNTHESIZING &&
+            !progressiveTtsPlayback &&
+            !playbackHasEnteredPlayer
+        )
+
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
         if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null
 

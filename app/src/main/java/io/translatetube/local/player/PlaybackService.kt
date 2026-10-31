@@ -2444,7 +2444,13 @@ class PlaybackService : MediaSessionService() {
         val isPlaying = runCatching { player.isPlaying }.getOrDefault(false)
         val firstFrame = pm.hasRenderedFirstFrame.value
         val mediaAttached = runCatching { player.mediaItemCount > 0 }.getOrDefault(false)
-        val playerPhase = state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING
+        // YouTube/web/local videos stay on the processing page for the whole of stage 5, so the
+        // already-mounted media must not raise player hints ("视频加载中…") during SYNTHESIZING.
+        val waitsForCompleteDubbing = VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(
+            VideoProcessingFlowPolicy.sourceKind(state.key),
+        )
+        val playerPhase = state.phase == Phase.READY ||
+            (state.phase == Phase.SYNTHESIZING && !waitsForCompleteDubbing)
         val screenEligible = playerPhase || playbackRecoveryInProgress ||
             playbackRecoveryFailure != null || playbackRestoreRequested ||
             (state.key == videoKey && state.playBlockedHint != null)
