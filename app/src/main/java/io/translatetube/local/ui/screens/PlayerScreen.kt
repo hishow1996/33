@@ -1813,6 +1813,17 @@ private fun VideoParsingPage(
                         )
                     }
                     DropdownMenuItem(
+                        text = { Text("导出全部字幕", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, tint = Color(0xFF3268F5))
+                        },
+                        onClick = {
+                            processingSettingsOpen = false
+                            allSubtitlesDialogVisible = true
+                        },
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                    )
+                    DropdownMenuItem(
                         text = { Text("导出原文字幕（SRT）", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         leadingIcon = {
                             Icon(Icons.Filled.FileDownload, contentDescription = null, tint = Color(0xFF3268F5))
@@ -1821,17 +1832,6 @@ private fun VideoParsingPage(
                         onClick = {
                             processingSettingsOpen = false
                             onExportOriginalSubtitle()
-                        },
-                        contentPadding = PaddingValues(horizontal = 14.dp),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("导出全部字幕", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        leadingIcon = {
-                            Icon(Icons.Filled.FileDownload, contentDescription = null, tint = Color(0xFF3268F5))
-                        },
-                        onClick = {
-                            processingSettingsOpen = false
-                            allSubtitlesDialogVisible = true
                         },
                         contentPadding = PaddingValues(horizontal = 14.dp),
                     )
