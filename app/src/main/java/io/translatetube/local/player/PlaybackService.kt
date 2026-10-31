@@ -762,6 +762,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var processingEngineDomainFingerprints = EngineConfigFingerprints("", "", "")
     /** Exact media-session identity used by the durable, unfinished processing checkpoint. */
     @Volatile private var activeProcessingCheckpointIdentityKey = ""
+    // A downstream engine may change while source preparation is intentionally allowed to finish.
+    // Keep that decision attached to this pipeline generation so stage 5 still bypasses old PCM.
+    @Volatile private var forceFreshDubbingPipelineGeneration = 0L
     // Serialize checkpoint writes. A canceled pipeline may still finish a blocking AtomicFile write;
     // the next generation must write after it, using a freshly sampled UI state and identity.
     private val inProgressCheckpointWriteMutex = kotlinx.coroutines.sync.Mutex()
@@ -1426,6 +1429,9 @@ class PlaybackService : MediaSessionService() {
                                 ignoreTranscription = ignoreTranscriptionForCurrentFlow,
                             )
                         if (importingTranslatedFile || importedTranslationSettingsAreIrrelevant) {
+                            if (hasRelevantEngineConfigChange) {
+                                forceFreshDubbingPipelineGeneration = changedPipelineGeneration
+                            }
                             // During the file-read phase there is no reusable subtitle timeline yet.
                             // Keep the import alive for any engine setting change; the new TTS setting
                             // is read when synthesis starts. After import, only a relevant TTS change
@@ -1581,6 +1587,9 @@ class PlaybackService : MediaSessionService() {
                                 current = sourcePreparationCurrentDomains,
                             )
                         ) {
+                            // Keep source preparation running, but make the later stage-5 attach a
+                            // fresh synthesis even when this exact engine/voice has an older PCM file.
+                            forceFreshDubbingPipelineGeneration = changedPipelineGeneration
                             // Translation and TTS are read when their stages start. Do not cancel ASR
                             // just because a downstream engine changed while audio is being prepared
                             // or transcribed; doing so wastes work and can discard an active checkpoint.
@@ -4157,8 +4166,11 @@ class PlaybackService : MediaSessionService() {
                         requestToken = requestToken,
                         reuseMountedMediaForRestart = reuseMountedMediaForRestart,
                         restoreReadySnapshot = restoreReadySnapshot,
-                        forceRegenerateDubbing = forceRegenerateDubbing,
-                        reuseMatchingDubbingCache = reuseMatchingDubbingCache,
+                        // A changed transcription/translation/TTS fingerprint means this is
+                        // a new output run. Carry the fresh-synthesis requirement across process
+                        // death and checkpoint restoration instead of reviving old dubbing PCM.
+                        forceRegenerateDubbing = forceRegenerateDubbing || checkpointRestartStage != null,
+                        reuseMatchingDubbingCache = false,
                         forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                         precomputedLocalMediaIdentityKey = localMediaIdentityKey,
                         localIdentityResolutionToken = localIdentityResolutionToken,
@@ -4300,6 +4312,7 @@ class PlaybackService : MediaSessionService() {
             key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
+        forceFreshDubbingPipelineGeneration = if (regenerateDubbingThisRun) pipelineGeneration else 0L
         // A delayed resume from an earlier seek must not restart the previous playback while this
         // request is rebuilding the subtitle/dubbing pipeline.
         cancelPendingSeekResume()
@@ -8777,11 +8790,21 @@ updateUiForSession(key, pipelineGeneration) {
                             }
                             registerDubbingFailureHandler(d, tts, key)
                             try {
+                                // Re-read the generation marker immediately before stage 5. A
+                                // translation/TTS change may have been deferred while ASR was
+                                // running, after this local pipeline variable was initialized.
+                                val forceFreshForCurrentGeneration =
+                                    forceFreshPcmSynthesisForThisRun ||
+                                        forceFreshDubbingPipelineGeneration == pipelineGeneration
+                                forceFreshPcmSynthesisForThisRun = forceFreshForCurrentGeneration
+                                if (forceFreshForCurrentGeneration) {
+                                    restartPlaybackFromBeginningForThisRun = true
+                                }
                                 d.attach(
                             tts,
                             finalLines,
                             sourceLanguage = srcLang,
-                            forceRegenerateDubbing = forceFreshPcmSynthesisForThisRun,
+                            forceRegenerateDubbing = forceFreshForCurrentGeneration,
                         )
                             } catch (e: Exception) {
                                 retireDubbing(d)
