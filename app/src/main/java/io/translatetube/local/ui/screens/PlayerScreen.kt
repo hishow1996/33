@@ -2729,7 +2729,7 @@ private fun VideoParsingPage(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(start = 11.dp, end = 11.dp, top = 0.dp, bottom = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(if (index == 2) 5.dp else 8.dp),
                         ) {
                             HorizontalDivider(color = Color(0xFFE6ECF5))
                             Text(
