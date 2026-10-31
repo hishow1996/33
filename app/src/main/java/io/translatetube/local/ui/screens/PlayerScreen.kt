@@ -77,6 +77,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
@@ -3043,6 +3048,25 @@ private fun StageProgressVisual(
         label = "audioWaveformPhase",
     )
 
+    // The dubbing ECG breathes as one continuous signal across the entire
+    // completed range. Its clip boundary still follows the real synthesis progress.
+    val dubbingWaveformPhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6.2831855f,
+        animationSpec = if (stageIndex == 4 && isAnimating && !isIndeterminate) {
+            infiniteRepeatable(
+                animation = tween(
+                    durationMillis = 980,
+                    easing = androidx.compose.animation.core.LinearEasing,
+                ),
+                repeatMode = RepeatMode.Restart,
+            )
+        } else {
+            tween(durationMillis = 0)
+        },
+        label = "dubbingEcgWaveformPhase",
+    )
+
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
         isFailed -> Color(0xFFD74655)
@@ -3242,39 +3266,83 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 5. Dubbing — speech bubbles light up one by one as audio lines are prepared.
+            // 5. Dubbing — a continuous ECG line. The whole completed section
+            // rhythmically breathes; only its right edge follows the actual progress.
             else -> {
-                val count = 12
-                val bubbleGap = 3.dp.toPx()
-                val bubbleWidth = (size.width - bubbleGap * (count - 1)) / count
-                val bubbleHeight = 7.dp.toPx()
-                val top = 0.7.dp.toPx()
-                val completedBubbles = (fraction * count).toInt()
-                val scanIndex = (scanPosition * count).toInt().coerceIn(0, count - 1)
-                repeat(count) { i ->
-                    val left = i * (bubbleWidth + bubbleGap)
-                    val filled = i < completedBubbles
-                    val scanning = isIndeterminate && i == scanIndex
-                    val bubbleColor = when {
-                        filled -> fill
-                        scanning -> fill.copy(alpha = pulseAlpha)
-                        else -> trackColor
+                val centerY = size.height / 2f
+                val cycleWidth = 25.dp.toPx().coerceAtLeast(1f)
+                val amplitude = size.height * 0.43f
+                val breathe = if (isAnimating && !isIndeterminate && !isPaused && !isFailed) {
+                    0.72f + 0.28f * ((kotlin.math.sin(dubbingWaveformPhase) + 1f) / 2f)
+                } else {
+                    1f
+                }
+                val activeAmplitude = amplitude * breathe
+                val ecgPoints = floatArrayOf(
+                    0.00f, 0.50f,
+                    0.15f, 0.50f,
+                    0.22f, 0.40f,
+                    0.29f, 0.50f,
+                    0.36f, 0.50f,
+                    0.42f, 0.08f,
+                    0.48f, 0.92f,
+                    0.54f, 0.50f,
+                    0.68f, 0.50f,
+                    0.75f, 0.40f,
+                    0.82f, 0.50f,
+                    1.00f, 0.50f,
+                )
+
+                fun buildEcgPath(waveAmplitude: Float): Path {
+                    return Path().apply {
+                        val cycles = (size.width / cycleWidth).toInt() + 1
+                        repeat(cycles) { cycle ->
+                            var point = 0
+                            while (point < ecgPoints.size) {
+                                val x = cycle * cycleWidth + ecgPoints[point] * cycleWidth
+                                val y = centerY + (ecgPoints[point + 1] - 0.5f) * 1.15f * waveAmplitude
+                                if (cycle == 0 && point == 0) {
+                                    moveTo(x, y)
+                                } else {
+                                    lineTo(x, y)
+                                }
+                                point += 2
+                            }
+                        }
                     }
-                    drawRoundRect(
-                        color = bubbleColor,
-                        topLeft = Offset(left, top),
-                        size = Size(bubbleWidth, bubbleHeight),
-                        cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
-                    )
-                    val tailRadius = 1.15.dp.toPx()
-                    drawCircle(
-                        color = bubbleColor,
-                        radius = tailRadius,
-                        center = Offset(
-                            left + bubbleWidth * 0.28f,
-                            top + bubbleHeight - 0.15.dp.toPx(),
-                        ),
-                    )
+                }
+
+                // Keep the unfinished track completely still while only the
+                // blue/red/amber/green completed segment receives the pulse.
+                val trackPath = buildEcgPath(amplitude)
+                val activePath = buildEcgPath(activeAmplitude)
+                val stroke = Stroke(
+                    width = 1.8.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                )
+                drawPath(
+                    path = trackPath,
+                    color = trackColor,
+                    style = stroke,
+                )
+
+                when {
+                    isIndeterminate && isAnimating -> {
+                        val sweepWidth = size.width * 0.22f
+                        val sweepCenter = scanPosition * (size.width + sweepWidth) - sweepWidth / 2f
+                        clipRect(
+                            left = (sweepCenter - sweepWidth / 2f).coerceAtLeast(0f),
+                            right = (sweepCenter + sweepWidth / 2f).coerceAtMost(size.width),
+                        ) {
+                            drawPath(activePath, fill, style = stroke)
+                        }
+                    }
+                    fraction > 0f -> {
+                        clipRect(right = size.width * fraction) {
+                            drawPath(activePath, fill, style = stroke)
+                        }
+                    }
                 }
             }
         }
