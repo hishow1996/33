@@ -3193,35 +3193,44 @@ private fun AllSubtitlesDialog(
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        @Composable
-                        fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
+                        Surface(
+                            onClick = { selectedFilter = 0 },
+                            shape = RoundedCornerShape(50),
+                            color = if (selectedFilter == 0) Color(0xFF3268F5) else Color(0xFFF1F4F9),
+                        ) {
+                            Text(
+                                "全部 ${tracks.size}",
+                                modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
+                                color = if (selectedFilter == 0) Color.White else Color(0xFF53647C),
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            )
+                        }
+                        if (manualCount > 0) {
                             Surface(
-                                onClick = onClick,
+                                onClick = { selectedFilter = 1 },
                                 shape = RoundedCornerShape(50),
-                                color = if (selected) Color(0xFF3268F5) else Color(0xFFF1F4F9),
+                                color = if (selectedFilter == 1) Color(0xFF3268F5) else Color(0xFFF1F4F9),
                             ) {
                                 Text(
-                                    label,
+                                    "人工字幕 $manualCount",
                                     modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
-                                    color = if (selected) Color.White else Color(0xFF53647C),
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontWeight = FontWeight.SemiBold,
-                                    ),
+                                    color = if (selectedFilter == 1) Color.White else Color(0xFF53647C),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                                 )
                             }
                         }
-
-                        FilterPill("全部 ${tracks.size}", selectedFilter == 0) {
-                            selectedFilter = 0
-                        }
-                        if (manualCount > 0) {
-                            FilterPill("人工字幕 $manualCount", selectedFilter == 1) {
-                                selectedFilter = 1
-                            }
-                        }
                         if (automaticCount > 0) {
-                            FilterPill("自动字幕 $automaticCount", selectedFilter == 2) {
-                                selectedFilter = 2
+                            Surface(
+                                onClick = { selectedFilter = 2 },
+                                shape = RoundedCornerShape(50),
+                                color = if (selectedFilter == 2) Color(0xFF3268F5) else Color(0xFFF1F4F9),
+                            ) {
+                                Text(
+                                    "自动字幕 $automaticCount",
+                                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
+                                    color = if (selectedFilter == 2) Color.White else Color(0xFF53647C),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                )
                             }
                         }
                     }
@@ -3233,7 +3242,7 @@ private fun AllSubtitlesDialog(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        visibleTracks.forEachIndexed { index, track ->
+                        visibleTracks.forEach { track ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
