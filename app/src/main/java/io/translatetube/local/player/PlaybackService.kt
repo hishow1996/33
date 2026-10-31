@@ -1150,6 +1150,8 @@ class PlaybackService : MediaSessionService() {
                         identityKey = identityKey,
                         state = state.copy(lines = state.lines.toList()),
                         fingerprints = fingerprints,
+                        requireFreshDubbing =
+                            forceFreshDubbingPipelineGeneration == pipelineGeneration,
                     )
                 }
             }
@@ -4169,7 +4171,9 @@ class PlaybackService : MediaSessionService() {
                         // A changed transcription/translation/TTS fingerprint means this is
                         // a new output run. Carry the fresh-synthesis requirement across process
                         // death and checkpoint restoration instead of reviving old dubbing PCM.
-                        forceRegenerateDubbing = forceRegenerateDubbing || checkpointRestartStage != null,
+                        forceRegenerateDubbing = forceRegenerateDubbing ||
+                            checkpointRestartStage != null ||
+                            checkpoint?.requireFreshDubbing == true,
                         reuseMatchingDubbingCache = false,
                         forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                         precomputedLocalMediaIdentityKey = localMediaIdentityKey,
