@@ -2809,34 +2809,6 @@ private fun VideoParsingPage(
                                 }
                             }
 
-                            fullWidthRows.forEach { (label, value) ->
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(Color(0xFFF1F5FB))
-                                        .padding(horizontal = 9.dp, vertical = 7.dp),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                                ) {
-                                    Text(
-                                        label,
-                                        color = Color(0xFF8794A8),
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Medium,
-                                        ),
-                                    )
-                                    Text(
-                                        value,
-                                        color = Color(0xFF3D4E65),
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = 12.sp,
-                                            lineHeight = 17.sp,
-                                        ),
-                                    )
-                                }
-                            }
-
                             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -2888,6 +2860,34 @@ private fun VideoParsingPage(
                                             .clip(CircleShape),
                                         color = Color(0xFF3268F5),
                                         trackColor = Color(0xFFE2EAF8),
+                                    )
+                                }
+                            }
+
+                            fullWidthRows.forEach { (label, value) ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFFF1F5FB))
+                                        .padding(horizontal = 9.dp, vertical = 7.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                ) {
+                                    Text(
+                                        label,
+                                        color = Color(0xFF8794A8),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Medium,
+                                        ),
+                                    )
+                                    Text(
+                                        value,
+                                        color = Color(0xFF3D4E65),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.sp,
+                                            lineHeight = 17.sp,
+                                        ),
                                     )
                                 }
                             }
@@ -2984,7 +2984,7 @@ private fun TranscriptionStageResultPreview(
     val preview = lines.takeLast(2)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "识别结果",
+            "实时识别结果",
             color = Color(0xFF596B82),
             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
         )
@@ -2994,7 +2994,7 @@ private fun TranscriptionStageResultPreview(
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
-                .padding(horizontal = 10.dp, vertical = 9.dp),
+                .padding(horizontal = 9.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (preview.isEmpty()) {
@@ -3048,7 +3048,7 @@ private fun TranslationStageResultPreview(
     }.takeLast(2)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "翻译结果",
+            "翻译结果预览",
             color = Color(0xFF596B82),
             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
         )
