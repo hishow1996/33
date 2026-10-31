@@ -48,7 +48,10 @@ internal object InProgressProcessingCheckpointStore {
             state.sourceLang.isBlank() ||
             state.manualTranslationWaiting ||
             state.phase !in setOf(Phase.TRANSLATING, Phase.SYNTHESIZING) ||
-            state.lines.any { it.startMs < 0L || it.endMs <= it.startMs || it.text.isBlank() }
+            state.lines.any { it.startMs < 0L || it.endMs <= it.startMs || it.text.isBlank() } ||
+            state.lines.zipWithNext().any { (previous, current) ->
+                current.startMs < previous.startMs
+            }
         ) return false
 
         return runCatching {
@@ -134,15 +137,25 @@ internal object InProgressProcessingCheckpointStore {
         val keyHash = sha256(videoKey)
         val identityHash = sha256(identityKey)
         val file = checkpointFile(context, keyHash, identityHash)
-        if (!file.isFile || file.length() !in 1L..MAX_FILE_BYTES) return null
+        if (!file.isFile) return null
+        if (file.length() !in 1L..MAX_FILE_BYTES) {
+            discard(file)
+            return null
+        }
 
         val root = runCatching {
             AtomicFile(file).openRead().use { input ->
                 val bytes = input.readBytes()
-                if (bytes.isEmpty() || bytes.size.toLong() > MAX_FILE_BYTES) return null
+                require(bytes.isNotEmpty() && bytes.size.toLong() <= MAX_FILE_BYTES) {
+                    "处理中间检查点文件大小无效"
+                }
                 JSONObject(String(bytes, Charsets.UTF_8))
             }
-        }.getOrNull() ?: return null
+        }.getOrElse {
+            // A truncated or malformed JSON file must not poison every later resume attempt.
+            discard(file)
+            return null
+        }
 
         if (root.optInt("version", -1) != VERSION ||
             root.optString("keyHash") != keyHash ||
@@ -158,9 +171,12 @@ internal object InProgressProcessingCheckpointStore {
             return null
         }
 
-        val stateObject = root.optJSONObject("state") ?: return null
+        val stateObject = root.optJSONObject("state") ?: run {
+            discard(file)
+            return null
+        }
         val restored = decodeState(videoKey, stateObject) ?: run {
-            runCatching { AtomicFile(file).delete() }
+            discard(file)
             return null
         }
         val fingerprints = EngineConfigFingerprints(
@@ -171,7 +187,10 @@ internal object InProgressProcessingCheckpointStore {
         if (fingerprints.transcription.isBlank() ||
             fingerprints.translation.isBlank() ||
             fingerprints.dubbing.isBlank()
-        ) return null
+        ) {
+            discard(file)
+            return null
+        }
 
         runCatching { file.setLastModified(now) }
         return InProgressProcessingCheckpoint(restored, fingerprints, savedAt)
@@ -187,12 +206,14 @@ internal object InProgressProcessingCheckpointStore {
         val rows = obj.optJSONArray("lines") ?: return null
         if (rows.length() !in 1..MAX_LINES) return null
         val lines = ArrayList<SubLine>(rows.length())
+        var previousStartMs = -1L
         for (index in 0 until rows.length()) {
             val row = rows.optJSONObject(index) ?: return null
             val start = row.optLong("s", -1L)
             val end = row.optLong("e", -1L)
             val original = row.optString("t")
-            if (start < 0L || end <= start || original.isBlank()) return null
+            if (start < 0L || end <= start || original.isBlank() || start < previousStartMs) return null
+            previousStartMs = start
             val rawTranslation = row.opt("zh")
             val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) {
                 null
@@ -251,6 +272,10 @@ internal object InProgressProcessingCheckpointStore {
             processingFlow = flow,
         )
     }.getOrNull()
+
+    private fun discard(file: File) {
+        runCatching { AtomicFile(file).delete() }
+    }
 
     private fun checkpointFile(context: Context, keyHash: String, identityHash: String): File =
         File(directory(context), "progress_${keyHash.take(24)}_${identityHash.take(24)}.json")
