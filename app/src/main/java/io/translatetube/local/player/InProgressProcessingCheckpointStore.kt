@@ -27,12 +27,14 @@ internal data class InProgressProcessingCheckpoint(
     val state: PlayerUiState,
     val fingerprints: EngineConfigFingerprints,
     val savedAt: Long,
+    val requireFreshDubbing: Boolean,
 )
 
 internal object InProgressProcessingCheckpointStore {
     private const val DIRECTORY_NAME = "in_progress_processing"
-    // Version 2 stores gzip-compressed JSON. Version 1 plain JSON remains readable for upgrades.
-    private const val VERSION = 2
+    // Version 2 introduced gzip compression; version 3 persists the fresh-dubbing requirement.
+    // Version 1 plain JSON and version 2 compressed checkpoints remain readable for upgrades.
+    private const val VERSION = 3
     private const val MAX_FILE_BYTES = 24L * 1024L * 1024L
     private const val MAX_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BYTES = 96L * 1024L * 1024L
@@ -46,6 +48,7 @@ internal object InProgressProcessingCheckpointStore {
         identityKey: String,
         state: PlayerUiState,
         fingerprints: EngineConfigFingerprints,
+        requireFreshDubbing: Boolean,
     ): Boolean {
         if (!isSupportedKey(videoKey) ||
             identityKey.isBlank() ||
@@ -94,6 +97,7 @@ internal object InProgressProcessingCheckpointStore {
                 .put("transcriptionFingerprint", fingerprints.transcription)
                 .put("translationFingerprint", fingerprints.translation)
                 .put("dubbingFingerprint", fingerprints.dubbing)
+                .put("requireFreshDubbing", requireFreshDubbing)
                 .put(
                     "state",
                     JSONObject()
@@ -220,7 +224,12 @@ internal object InProgressProcessingCheckpointStore {
         }
 
         runCatching { file.setLastModified(now) }
-        return InProgressProcessingCheckpoint(restored, fingerprints, savedAt)
+        return InProgressProcessingCheckpoint(
+            state = restored,
+            fingerprints = fingerprints,
+            savedAt = savedAt,
+            requireFreshDubbing = root.optBoolean("requireFreshDubbing", false),
+        )
     }
 
     fun delete(context: Context, videoKey: String, identityKey: String) {
