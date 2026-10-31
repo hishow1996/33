@@ -2355,30 +2355,6 @@ private fun VideoParsingPage(
                 }
                 val dubbingEngineSummary = state.ttsEngineName.trim().ifBlank { selectedTtsEngineName }
 
-                val stageSummary = when {
-                    stageSkipped -> "本次处理流程无需执行此阶段"
-                    index == 0 -> listOfNotNull(
-                        sourceSummary,
-                        state.title.trim().takeIf { it.isNotBlank() },
-                        state.durationMs.takeIf { it > 0L }?.let { formatFloatingTime(it) },
-                    ).joinToString(" · ").ifBlank { "等待解析视频信息" }
-                    index == 1 -> audioSummary.ifBlank {
-                        if (done) "音轨已提取" else if (active) "正在提取视频音轨" else "等待提取音频"
-                    }
-                    index == 2 -> listOf(
-                        transcriptionEngineSummary,
-                        state.sourceLang.trim().takeIf { it.isNotBlank() }?.let { LangMap.display(it) } ?: "自动识别",
-                    ).joinToString(" · ")
-                    index == 3 -> listOf(
-                        translationEngineSummary,
-                        sourceLanguageDisplay + " → 简体中文",
-                    ).joinToString(" · ")
-                    else -> listOf(
-                        dubbingEngineSummary,
-                        dubbingVoiceDisplay,
-                    ).joinToString(" · ")
-                }
-
                 val markerBg = when {
                     done -> Color(0xFFE8F8F1)
                     failed -> Color(0xFFFFE4E6)
@@ -2673,18 +2649,7 @@ private fun VideoParsingPage(
                                 ),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                stageSummary,
-                                color = Color(0xFF63738E),
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = if (compactLayout) 11.sp else 12.sp,
-                                    lineHeight = 16.sp,
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                            )                        }
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(5.dp),
