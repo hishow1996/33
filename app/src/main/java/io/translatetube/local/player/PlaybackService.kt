@@ -7505,6 +7505,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                     }
                                 },
                                 encodedAudio = encodedInput,
+                                checkpointIdentity = sourceSubtitleCacheKey,
+                                checkpointDirectory = cacheDir,
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) {
@@ -8156,7 +8158,8 @@ updateUiForSession(key, pipelineGeneration) {
                                         } else state
                                     }
                                 },
-                                checkpointIdentity = sourceSubtitleCacheKey.takeIf { asrProvider == "kawa" },
+                                checkpointIdentity = sourceSubtitleCacheKey,
+                                checkpointDirectory = cacheDir,
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) { it.copy(

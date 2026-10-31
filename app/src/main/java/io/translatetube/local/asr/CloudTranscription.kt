@@ -458,8 +458,10 @@ object CloudTranscription {
         checkActive: () -> Unit = {},
         onProgress: (String) -> Unit = {},
         encodedAudio: EncodedAudioInput? = null,
-        /** Stable source + ASR configuration identity; used only for resumable Kawa chunk results. */
+        /** Stable source + ASR configuration identity; used for durable provider response checkpoints. */
         checkpointIdentity: String? = null,
+        /** App-private directory shared by normal WAV and direct-upload paths. */
+        checkpointDirectory: File? = null,
     ): Result {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
@@ -487,6 +489,38 @@ object CloudTranscription {
         }
 
         val providerName = if (provider == "elevenlabs") "ElevenLabs" else "Cartesia"
+        val stableCheckpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() }
+        var responseCheckpointFile: File? = null
+        var responseAudioDigest: String? = null
+        if (stableCheckpointIdentity != null) {
+            try {
+                val directoryRoot = checkpointDirectory ?: wavFile.absoluteFile.parentFile
+                    ?: throw IOException("云端转写检查点目录无效")
+                val directory = File(directoryRoot, "cloud_asr_response_checkpoints")
+                CloudAsrResponseCheckpointStore.cleanupStale(directory)
+                responseAudioDigest = CloudAsrResponseCheckpointStore.digestAudioFile(wavFile, checkActive)
+                responseCheckpointFile = CloudAsrResponseCheckpointStore.fileFor(
+                    directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
+                )
+                val savedResponse = CloudAsrResponseCheckpointStore.read(
+                    requireNotNull(responseCheckpointFile),
+                    provider,
+                    stableCheckpointIdentity,
+                    requireNotNull(responseAudioDigest),
+                    durationMs,
+                )
+                if (savedResponse != null) {
+                    onProgress("已恢复上次云端转写结果，正在整理字幕…")
+                    return parseProviderResponse(savedResponse, durationMs, checkActive)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("CloudTranscription", "Cloud ASR response checkpoint lookup failed", error)
+                responseCheckpointFile = null
+                responseAudioDigest = null
+            }
+        }
         onProgress("正在上传音频并提交 $providerName 转写任务…")
         val form = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -571,10 +605,39 @@ object CloudTranscription {
         }
 
         checkActive()
-        onProgress("$providerName 云端已返回结果，正在整理词级时间戳…")
         val completedResponseText = responseText ?: throw IOException("云端转写没有返回响应")
+        onProgress("$providerName 云端已返回结果，正在保存恢复点…")
+        if (responseCheckpointFile != null && responseAudioDigest != null &&
+            stableCheckpointIdentity != null
+        ) {
+            try {
+                val saved = CloudAsrResponseCheckpointStore.write(
+                    file = requireNotNull(responseCheckpointFile),
+                    provider = provider,
+                    identity = stableCheckpointIdentity,
+                    audioDigest = requireNotNull(responseAudioDigest),
+                    durationMs = durationMs,
+                    responseText = completedResponseText,
+                    checkActive = checkActive,
+                )
+                if (saved) onProgress("$providerName 转写结果已保存，正在整理词级时间戳…")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("CloudTranscription", "Cloud ASR response checkpoint write failed", error)
+            }
+        }
+        return parseProviderResponse(completedResponseText, durationMs, checkActive)
+    }
+
+    private fun parseProviderResponse(
+        responseText: String,
+        durationMs: Long,
+        checkActive: () -> Unit,
+    ): Result {
+        checkActive()
         val root = try {
-            JSONObject(completedResponseText)
+            JSONObject(responseText)
         } catch (error: Exception) {
             throw IOException("云端转写返回的内容无法解析", error)
         }
@@ -586,19 +649,19 @@ object CloudTranscription {
         }
         val safeDuration = durationMs.coerceAtLeast(1L)
         val words = ArrayList<TimedWord>(wordsArray.length())
-
         for (index in 0 until wordsArray.length()) {
             if ((index and 0xff) == 0) checkActive()
             val item = wordsArray.optJSONObject(index) ?: continue
             if (item.optString("type") == "spacing" || item.optString("type") == "audio_event") continue
             val token = item.optString("text").trim().ifBlank { item.optString("word").trim() }
             if (token.isBlank()) continue
-            val startSeconds = item.optDouble("start", Double.NaN)
-            val endSeconds = item.optDouble("end", Double.NaN)
-            val interval = providerWordRange(startSeconds, endSeconds, safeDuration) ?: continue
+            val interval = providerWordRange(
+                item.optDouble("start", Double.NaN),
+                item.optDouble("end", Double.NaN),
+                safeDuration,
+            ) ?: continue
             words += TimedWord(token, interval.first, interval.second)
         }
-
         val cues = groupWords(words, safeDuration, checkActive)
         if (cues.isEmpty()) {
             throw IOException("云端识别没有生成有效时间轴字幕；可切回本地 Whisper 重试")
@@ -610,7 +673,6 @@ object CloudTranscription {
         }
         return Result(cues, language)
     }
-
 
     /** Kawa limits uploads to 10 MB. Process one 8 MiB PCM chunk at a time to bound disk usage. */
     private suspend fun transcribeKawa(
