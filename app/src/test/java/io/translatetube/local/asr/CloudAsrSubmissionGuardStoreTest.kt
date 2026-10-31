@@ -21,17 +21,16 @@ class CloudAsrSubmissionGuardStoreTest {
     }
 
     @Test
-    fun markerIdentitySeparatesProviderConfigurationAndAudio() {
+    fun markerIdentityStaysStableAcrossConfigurationAndUploadChanges() {
         val directory = createTempDir(prefix = "cloud-asr-pending-identity")
         try {
-            val same = CloudAsrSubmissionGuardStore.fileFor(directory, "cartesia", "source|config-a", "b".repeat(64))
-            val changedConfig = CloudAsrSubmissionGuardStore.fileFor(directory, "cartesia", "source|config-b", "b".repeat(64))
-            val changedAudio = CloudAsrSubmissionGuardStore.fileFor(directory, "cartesia", "source|config-a", "c".repeat(64))
-            val changedProvider = CloudAsrSubmissionGuardStore.fileFor(directory, "elevenlabs", "source|config-a", "b".repeat(64))
-            assertEquals(same, CloudAsrSubmissionGuardStore.fileFor(directory, "cartesia", "source|config-a", "b".repeat(64)))
-            assertFalse(same.name == changedConfig.name)
-            assertFalse(same.name == changedAudio.name)
-            assertFalse(same.name == changedProvider.name)
+            val sameSource = CloudAsrSubmissionGuardStore.fileFor(directory, "cartesia", "remote-session|media")
+            val changedSource = CloudAsrSubmissionGuardStore.fileFor(directory, "cartesia", "remote-session|other-media")
+            val changedProvider = CloudAsrSubmissionGuardStore.fileFor(directory, "elevenlabs", "remote-session|media")
+            // ASR language, API key and temporary upload encoding are deliberately excluded.
+            assertEquals(sameSource, CloudAsrSubmissionGuardStore.fileFor(directory, "cartesia", "remote-session|media"))
+            assertFalse(sameSource.name == changedSource.name)
+            assertFalse(sameSource.name == changedProvider.name)
         } finally { directory.deleteRecursively() }
     }
 
@@ -41,7 +40,7 @@ class CloudAsrSubmissionGuardStoreTest {
         try {
             val identity = "https://example.invalid/private/video?token=secret"
             val digest = "d".repeat(64)
-            val marker = CloudAsrSubmissionGuardStore.fileFor(directory, "elevenlabs", identity, digest)
+            val marker = CloudAsrSubmissionGuardStore.fileFor(directory, "elevenlabs", identity)
             assertFalse(marker.name.contains("example"))
             assertFalse(marker.name.contains("secret"))
             assertFalse(marker.name.contains(digest))

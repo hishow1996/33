@@ -7574,6 +7574,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 checkpointIdentity = sourceSubtitleCacheKey,
                                 checkpointDirectory = cacheDir,
                                 allowUncertainRetry = allowCloudAsrResubmission,
+                                submissionGuardIdentity = cacheKeyBase,
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) {
@@ -8228,6 +8229,7 @@ updateUiForSession(key, pipelineGeneration) {
                                 checkpointIdentity = sourceSubtitleCacheKey,
                                 checkpointDirectory = cacheDir,
                                 allowUncertainRetry = allowCloudAsrResubmission,
+                                submissionGuardIdentity = cacheKeyBase,
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) { it.copy(

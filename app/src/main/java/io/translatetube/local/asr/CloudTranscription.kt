@@ -469,6 +469,8 @@ object CloudTranscription {
         checkpointDirectory: File? = null,
         /** True only after the user explicitly confirms resubmitting an unresolved prior request. */
         allowUncertainRetry: Boolean = false,
+        /** Stable source identity, independent of language, credentials or generated upload encoding. */
+        submissionGuardIdentity: String? = null,
     ): Result {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
@@ -509,8 +511,10 @@ object CloudTranscription {
             responseCheckpointFile = CloudAsrResponseCheckpointStore.fileFor(
                 directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
             )
+            val stableSubmissionGuardIdentity = submissionGuardIdentity
+                ?.takeIf { it.isNotBlank() } ?: stableCheckpointIdentity
             submissionGuardFile = CloudAsrSubmissionGuardStore.fileFor(
-                directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
+                directory, provider, stableSubmissionGuardIdentity,
             )
             val savedResponse = CloudAsrResponseCheckpointStore.read(
                 requireNotNull(responseCheckpointFile), provider, stableCheckpointIdentity,
