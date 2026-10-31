@@ -714,8 +714,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         totalLines = state.totalLines,
         preparedCount = state.preparedCount,
     )
-    // YouTube, webpage and local video must finish the generated-PCM queue before player entry.
-    // Direct System TTS remains an immediate timeline mode and is handled by its own startup buffer.
+    // Enter after the initial generated-PCM buffer is ready; remaining cues continue in the background.
     val progressiveTtsPlayback = VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(
         source = VideoProcessingFlowPolicy.sourceKind(state.key),
         hasTtsEngine = state.ttsEngineName.isNotBlank(),

@@ -2229,12 +2229,12 @@ class PlaybackService : MediaSessionService() {
     }
 
     /**
-     * YouTube, webpage and local videos wait for the full generated-PCM queue before playback so
-     * the player cannot open while stage 5 is still running. Direct System TTS speaks live on the
-     * timeline and has no PCM batch to wait for. Failed cues are counted as prepared and safely
-     * fall back to source audio.
+     * Wait only for a small initial PCM buffer before starting video playback. The DubbingEngine
+     * keeps the rest of the queue running in its service scope, so later cues are synthesized
+     * while the video and already-ready Chinese speech are playing. Failed cues are counted as
+     * prepared but the first audible cue is still required to contain valid audio.
      */
-    private suspend fun awaitDubbingSynthesisBeforePlayback(
+    private suspend fun awaitInitialDubbingBufferBeforePlayback(
         sessionKey: String,
         pipelineGeneration: Long,
         engine: DubbingEngine,
@@ -2244,19 +2244,20 @@ class PlaybackService : MediaSessionService() {
 
         val spokenIndices = DubbingStartupBufferPolicy.spokenCueIndices(lines)
         val firstSpeechCue = spokenIndices.firstOrNull() ?: return
+        val startupPlan = DubbingStartupBufferPolicy.plan(
+            lines = lines,
+            spokenCueIndices = spokenIndices,
+            immediateMode = false,
+            synthesisTimelineLagFactor = engine.synthesisTimelineLagFactor,
+            synthesisSampleCount = engine.synthesisTimelineLagSampleCount,
+        )
+        val requiredStartupCues = startupPlan.lineIndices
+            .take(startupPlan.minimumCueCount.coerceAtLeast(1))
+            .ifEmpty { listOf(firstSpeechCue) }
         engine.prioritizeAround(firstSpeechCue, lookAhead = 12)
 
-        val waitForCompleteQueue = VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(
-            VideoProcessingFlowPolicy.sourceKind(sessionKey),
-        )
-        // Video playback must not start after only the first few cues: keep stage 5 active
-        // until every subtitle row has a prepared PCM result (including rows safely marked silent).
-        val needReady = minOf(6, spokenIndices.size)
-        val deadlineNs = if (waitForCompleteQueue) {
-            Long.MAX_VALUE
-        } else {
-            System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(30_000L)
-        }
+        val deadlineNs = System.nanoTime() +
+            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupPlan.waitTimeoutMs.coerceAtLeast(1L))
         var lastReportedCount = -1
         while (true) {
             awaitProcessingResumed(sessionKey, pipelineGeneration)
@@ -2272,47 +2273,21 @@ class PlaybackService : MediaSessionService() {
                 updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                     state.copy(
                         phase = Phase.SYNTHESIZING,
-                        progress = if (waitForCompleteQueue) {
-                            "正在合成中文配音（已处理 $prepared/${lines.size}，可用配音 $audioReady 行），全部配音就绪后开始播放"
-                        } else {
-                            "正在合成中文配音（已处理 $prepared/${lines.size}，可用配音 $audioReady 行），前几句就绪即开始播放"
-                        },
+                        progress = "正在合成中文配音（已处理 $prepared/${lines.size}，可用配音 $audioReady 行），首批配音就绪即开始播放",
                     )
                 }
             }
-            if (waitForCompleteQueue) {
-                if (prepared >= lines.size) break
-                // A terminal provider/runtime stop must never fall through to playback with a
-                // partially prepared web queue. Keep the user on stage 5 and preserve the hint.
-                if (!engine.isPreparing) {
-                    val remaining = (lines.size - prepared).coerceAtLeast(0)
-                    updateUiForSession(sessionKey, pipelineGeneration) { state ->
-                        state.copy(
-                            waitingForDubbingEngine = true,
-                            dubbingStatus = "${state.ttsEngineName.ifBlank { "配音引擎" }} 尚有 ${remaining} 行未准备完成",
-                            progress = "中文配音尚有 ${remaining} 行未完成，视频保持暂停",
-                            noModelHint = state.noModelHint
-                                ?: "视频需要全部中文配音准备完成后才会播放。当前配音任务已停止，请检查网络或配音引擎后重试。",
-                        )
-                    }
-                    withContext(Dispatchers.Main) {
-                        if (videoKey == sessionKey && ui.value.key == sessionKey) pm.pause()
-                    }
-                    return
-                }
-            } else {
-                val readyAhead = spokenIndices
-                    .take(needReady)
-                    .count { engine.isPrepared(it) || engine.isSilent(it) }
-                if (readyAhead >= needReady) break
-                if (System.nanoTime() >= deadlineNs) break
+
+            val readyAhead = requiredStartupCues.count { index ->
+                engine.isPrepared(index) || engine.isSilent(index)
             }
+            if (readyAhead >= requiredStartupCues.size) break
+            if (System.nanoTime() >= deadlineNs) break
             kotlinx.coroutines.delay(100L)
         }
 
         // Never start source-only playback if the initial usable voice failed or is still unavailable.
-        // A failed cue is counted as "prepared" by the queue so progress can continue, but it is
-        // not an audible dubbing result and must not be mistaken for a successful startup buffer.
+        // A failed cue is counted as "prepared" by the queue, but it is not an audible result.
         awaitProcessingResumed(sessionKey, pipelineGeneration)
         ensureCurrentSession(sessionKey, pipelineGeneration)
         val firstAudibleCue = spokenIndices.firstOrNull { index ->
@@ -2340,7 +2315,6 @@ class PlaybackService : MediaSessionService() {
             withContext(Dispatchers.Main) {
                 if (videoKey == sessionKey && ui.value.key == sessionKey) pm.pause()
             }
-            return
         }
     }
 
@@ -2457,8 +2431,8 @@ class PlaybackService : MediaSessionService() {
         val isPlaying = runCatching { player.isPlaying }.getOrDefault(false)
         val firstFrame = pm.hasRenderedFirstFrame.value
         val mediaAttached = runCatching { player.mediaItemCount > 0 }.getOrDefault(false)
-        // YouTube/web/local videos stay on the processing page for the whole of stage 5, so the
-        // already-mounted media must not raise player hints ("视频加载中…") during SYNTHESIZING.
+        // The player may be mounted during stage 5; PlayerScreen keeps the processing page
+        // in front until the startup PCM buffer is ready and playback actually begins.
         val waitsForCompleteDubbing = VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(
             VideoProcessingFlowPolicy.sourceKind(state.key),
         )
@@ -5300,7 +5274,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 }
                 lastLineIdx = Int.MIN_VALUE
                 ensureCurrentSession(sessionKey, pipelineGeneration)
-                awaitDubbingSynthesisBeforePlayback(
+                awaitInitialDubbingBufferBeforePlayback(
                     sessionKey = sessionKey,
                     pipelineGeneration = pipelineGeneration,
                     engine = d,
@@ -5870,7 +5844,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         )
                     )
                 }
-                awaitDubbingSynthesisBeforePlayback(
+                awaitInitialDubbingBufferBeforePlayback(
                     sessionKey = sessionKey,
                     pipelineGeneration = pipelineGeneration,
                     engine = d,
@@ -8572,13 +8546,13 @@ updateUiForSession(key, pipelineGeneration) {
                         }
                     }
                 }
-                // Generated-PCM engines finish the entire subtitle queue before playback starts.
-                // Direct System TTS has no pre-generated PCM queue, so it keeps a bounded first-cue wait.
+                // Generated-PCM engines wait only for an adaptive startup buffer; later cues
+                // continue synthesizing while playback advances. Direct System TTS uses its live timeline.
                 val startupDubbing = dubbing
                 if (startupDubbing != null) {
                     val immediateMode = startupDubbing.usesImmediateTimelinePlayback
                     if (!immediateMode) {
-                        awaitDubbingSynthesisBeforePlayback(
+                        awaitInitialDubbingBufferBeforePlayback(
                             sessionKey = key,
                             pipelineGeneration = pipelineGeneration,
                             engine = startupDubbing,

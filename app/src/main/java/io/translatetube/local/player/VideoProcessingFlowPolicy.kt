@@ -28,15 +28,18 @@ object VideoProcessingFlowPolicy {
     }
 
     /**
-     * YouTube, webpage and local videos all wait for the complete generated-PCM dubbing queue.
-     * This keeps the processing page visible until the actual fifth-stage work is finished.
+     * Video playback must not wait for the entire PCM queue. The player enters after a small
+     * startup buffer is ready; DubbingEngine continues synthesizing the remaining cues in the
+     * background and promotes upcoming cues as the playhead advances.
      */
-    fun requiresCompleteDubbingBeforePlayback(source: VideoSourceKind): Boolean =
-        source == VideoSourceKind.YOUTUBE ||
-            source == VideoSourceKind.WEB ||
-            source == VideoSourceKind.LOCAL
+    fun requiresCompleteDubbingBeforePlayback(source: VideoSourceKind): Boolean = when (source) {
+        VideoSourceKind.YOUTUBE,
+        VideoSourceKind.WEB,
+        VideoSourceKind.LOCAL,
+        VideoSourceKind.UNKNOWN -> false
+    }
 
-    /** Only non-video/import flows may use progressive player entry. */
+    /** Every source may enter progressive playback once a TTS engine and startup buffer are ready. */
     fun allowsProgressiveTtsPlayback(source: VideoSourceKind, hasTtsEngine: Boolean): Boolean =
         hasTtsEngine && !requiresCompleteDubbingBeforePlayback(source)
 
@@ -260,21 +263,15 @@ object VideoProcessingFlowPolicy {
     }
 
     /**
-     * A playback hint such as "视频加载中…" normally keeps the player on screen. It must not do
-     * that while a complete-queue source (YouTube/web/local) is still in stage 5: the media is
-     * already mounted and may be buffering, but the person has to stay on the processing page
-     * until every dubbed cue is ready. Otherwise the player flashes for about a second (the hint
-     * dwell time) and then drops back to the processing page.
+     * A mounted/buffering player must not let a transient loading hint hide stage 5 before the
+     * initial dubbing buffer is ready and playback has actually entered the player.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun playbackHintMayKeepPlayerVisible(
         phase: Phase,
         progressiveTtsPlayback: Boolean,
         playbackHasEnteredPlayer: Boolean,
-    ): Boolean = !(
-        phase == Phase.SYNTHESIZING &&
-            !progressiveTtsPlayback &&
-            !playbackHasEnteredPlayer
-        )
+    ): Boolean = phase != Phase.SYNTHESIZING || playbackHasEnteredPlayer
 
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
         if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null

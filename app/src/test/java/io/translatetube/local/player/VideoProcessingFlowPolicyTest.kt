@@ -417,7 +417,7 @@ class VideoProcessingFlowPolicyTest {
         )
     }
     @Test
-    fun allVideoSourcesRequireCompleteDubbingBeforePlayerEntry() {
+    fun allVideoSourcesEnterProgressivePlaybackAfterTheStartupBufferIsReady() {
         val videoSources = listOf(
             VideoSourceKind.YOUTUBE,
             VideoSourceKind.WEB,
@@ -425,13 +425,29 @@ class VideoProcessingFlowPolicyTest {
         )
 
         videoSources.forEach { source ->
-            assertTrue(
-                "$source must wait for its complete dubbing queue",
+            assertFalse(
+                "$source must not wait for the complete dubbing queue",
                 VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(source),
             )
-            assertFalse(
-                "$source must not enter the player progressively",
+            assertTrue(
+                "$source may enter playback while later cues are synthesizing",
                 VideoProcessingFlowPolicy.allowsProgressiveTtsPlayback(source, hasTtsEngine = true),
+            )
+            // Before the startup buffer is ready, a transient player hint cannot replace stage 5.
+            assertTrue(
+                VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                    phase = Phase.SYNTHESIZING,
+                    progressiveTtsPlayback = true,
+                    dubbingPreparationIncomplete = true,
+                ),
+            )
+            // READY is published only after the initial buffer check; later cues may still be pending.
+            assertFalse(
+                VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                    phase = Phase.READY,
+                    progressiveTtsPlayback = true,
+                    dubbingPreparationIncomplete = true,
+                ),
             )
         }
 
@@ -447,19 +463,6 @@ class VideoProcessingFlowPolicyTest {
                 hasTtsEngine = true,
             ),
         )
-
-        // A transient READY state must not reveal any video player while dubbing rows are pending.
-        videoSources.forEach { source ->
-            assertTrue(
-                "$source must keep the processing page visible",
-                VideoProcessingFlowPolicy.shouldShowProcessingPage(
-                    phase = Phase.READY,
-                    progressiveTtsPlayback = VideoProcessingFlowPolicy
-                        .allowsProgressiveTtsPlayback(source, hasTtsEngine = true),
-                    dubbingPreparationIncomplete = true,
-                ),
-            )
-        }
     }
 
     @Test
@@ -571,37 +574,32 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
-    fun playbackHintCannotPullCompleteQueueSourcesOutOfStageFive() {
-        // Web/YouTube/local video: media is mounted while dubbing is still being synthesized.
-        // A "视频加载中…" hint must not flash the player before every cue is ready.
-        assertFalse(
-            VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
-                phase = Phase.SYNTHESIZING,
-                progressiveTtsPlayback = false,
-                playbackHasEnteredPlayer = false,
-            ),
-        )
-        // READY (all dubbing done) and already-started playback keep the hint behaviour.
-        assertTrue(
-            VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
-                phase = Phase.READY,
-                progressiveTtsPlayback = false,
-                playbackHasEnteredPlayer = false,
-            ),
-        )
+    fun playbackHintCannotRevealPlayerBeforeStartupBufferActuallyStarts() {
+        // Video media may already be mounted and buffering during stage 5. Do not let that
+        // transient hint replace the processing page before the startup PCM buffer is ready.
+        listOf(false, true).forEach { progressive ->
+            assertFalse(
+                VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
+                    phase = Phase.SYNTHESIZING,
+                    progressiveTtsPlayback = progressive,
+                    playbackHasEnteredPlayer = false,
+                ),
+            )
+        }
         assertTrue(
             VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
                 phase = Phase.SYNTHESIZING,
-                progressiveTtsPlayback = false,
+                progressiveTtsPlayback = true,
                 playbackHasEnteredPlayer = true,
             ),
         )
         assertTrue(
             VideoProcessingFlowPolicy.playbackHintMayKeepPlayerVisible(
-                phase = Phase.SYNTHESIZING,
+                phase = Phase.READY,
                 progressiveTtsPlayback = true,
                 playbackHasEnteredPlayer = false,
             ),
         )
     }
+
 }
