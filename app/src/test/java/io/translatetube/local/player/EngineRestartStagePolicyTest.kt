@@ -18,7 +18,7 @@ class EngineRestartStagePolicyTest {
     ) = EngineConfigFingerprints(transcription, translation, dubbing)
 
     @Test
-    fun switchingVoicesWithinTheSameEngineRestartsOnlyDubbingAndCanReuseOnReturn() {
+    fun switchingVoicesWithinTheSameEngineRestartsDubbingAndRegeneratesPcm() {
         val voiceA = EngineConfigFingerprints(
             transcription = "asr-a",
             translation = "translation-a",
@@ -37,12 +37,12 @@ class EngineRestartStagePolicyTest {
                 sourceLanguageIsChinese = false,
             ),
         )
-        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(voiceA, voiceB))
-        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(voiceB, voiceA))
+        assertEquals(false, EngineRestartStagePolicy.canReuseMatchingDubbingCache(voiceA, voiceB))
+        assertEquals(false, EngineRestartStagePolicy.canReuseMatchingDubbingCache(voiceB, voiceA))
     }
 
     @Test
-    fun switchingBetweenEnginesRestartsOnlyDubbingAndCanReuseEachEngineOnReturn() {
+    fun switchingBetweenEnginesRestartsDubbingAndRegeneratesPcm() {
         val googleVoice = EngineConfigFingerprints(
             transcription = "asr-a",
             translation = "translation-a",
@@ -63,14 +63,14 @@ class EngineRestartStagePolicyTest {
                 sourceLanguageIsChinese = false,
             ),
         )
-        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(googleVoice, geminiVoice))
-        assertEquals(true, EngineRestartStagePolicy.canReuseMatchingDubbingCache(geminiVoice, googleVoice))
+        assertEquals(false, EngineRestartStagePolicy.canReuseMatchingDubbingCache(googleVoice, geminiVoice))
+        assertEquals(false, EngineRestartStagePolicy.canReuseMatchingDubbingCache(geminiVoice, googleVoice))
     }
 
     @Test
-    fun matchingDubbingCacheIsReusableOnlyForDubbingOnlyChanges() {
+    fun anyEngineChangeRestartBypassesPreviouslySuccessfulDubbingCache() {
         assertEquals(
-            true,
+            false,
             EngineRestartStagePolicy.canReuseMatchingDubbingCache(
                 oldConfig,
                 changed(dubbing = "gemini-tts-v3-puck"),
@@ -97,16 +97,17 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
-    fun cacheReuseChecksOnlyUpstreamSettingsUsedByTheActiveFlow() {
+    fun dubbingRestartNeverReusesPreviousPcmForAnyProcessingFlow() {
         val base = EngineConfigFingerprints(
             transcription = "asr-a",
             translation = "translation-a",
             dubbing = "tts-a",
         )
 
-        // YouTube's selected caption track and user-imported original subtitles do not depend on ASR.
+        // Even when an upstream setting is irrelevant to the source timeline, a requested
+        // dubbing restart must not reuse PCM from a previous synthesis run.
         assertEquals(
-            true,
+            false,
             EngineRestartStagePolicy.canReuseMatchingDubbingCache(
                 base,
                 base.copy(transcription = "asr-b", dubbing = "tts-b"),
@@ -114,7 +115,7 @@ class EngineRestartStagePolicyTest {
             ),
         )
         assertEquals(
-            true,
+            false,
             EngineRestartStagePolicy.canReuseMatchingDubbingCache(
                 base,
                 base.copy(transcription = "asr-b", dubbing = "tts-b"),
@@ -122,10 +123,10 @@ class EngineRestartStagePolicyTest {
             ),
         )
 
-        // Imported translated subtitles are authoritative; changing the app translation engine
-        // must not force old, exactly matching PCM to be ignored.
+        // Imported translated subtitles ignore the app translator, but a TTS restart still
+        // requires fresh PCM.
         assertEquals(
-            true,
+            false,
             EngineRestartStagePolicy.canReuseMatchingDubbingCache(
                 base,
                 base.copy(
@@ -137,8 +138,7 @@ class EngineRestartStagePolicyTest {
             ),
         )
 
-        // For regular ASR/translation flows, changing a relevant upstream engine still forces fresh
-        // dubbing even when the selected TTS engine/voice changes at the same time.
+        // Source and translator changes also result in fresh dubbing after the affected stage.
         assertEquals(
             false,
             EngineRestartStagePolicy.canReuseMatchingDubbingCache(
