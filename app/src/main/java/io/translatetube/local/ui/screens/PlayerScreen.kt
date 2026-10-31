@@ -1762,17 +1762,6 @@ private fun VideoParsingPage(
                         color = Color(0xFF7A8495),
                         style = MaterialTheme.typography.labelMedium,
                     )
-                    DropdownMenuItem(
-                        text = { Text("导出全部字幕", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        leadingIcon = {
-                            Icon(Icons.Filled.FileDownload, contentDescription = null, tint = Color(0xFF3268F5))
-                        },
-                        onClick = {
-                            processingSettingsOpen = false
-                            allSubtitlesDialogVisible = true
-                        },
-                        contentPadding = PaddingValues(horizontal = 14.dp),
-                    )
                     if (externalTranslationCardVisible) {
                         DropdownMenuItem(
                             text = {
@@ -1832,6 +1821,17 @@ private fun VideoParsingPage(
                         onClick = {
                             processingSettingsOpen = false
                             onExportOriginalSubtitle()
+                        },
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导出全部字幕", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, tint = Color(0xFF3268F5))
+                        },
+                        onClick = {
+                            processingSettingsOpen = false
+                            allSubtitlesDialogVisible = true
                         },
                         contentPadding = PaddingValues(horizontal = 14.dp),
                     )
