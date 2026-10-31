@@ -5003,6 +5003,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     totalLines = sourceOnly.size,
                     sourceLang = sourceLang,
                     translatedLineCount = 0,
+                    translationPreviewLines = emptyList(),
                     manualTranslationModeEnabled = true,
                     manualTranslationWaiting = true,
                     progress = "原文字幕已生成（" + sourceOnly.size + " 条），请导出后外部翻译，再导入译文继续。",
@@ -5030,6 +5031,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 it.copy(
                     lines = merged,
                     totalLines = merged.size,
+                    translationPreviewLines = merged.takeLast(12).mapNotNull { line ->
+                        SubtitleParsers.preferredTranslationText(line)?.let { line.copy(zh = it) }
+                    }.takeLast(2),
                     translatedLineCount = merged.count { line -> !line.zh.isNullOrBlank() },
                     manualTranslationModeEnabled = false,
                     manualTranslationWaiting = false,
@@ -7633,9 +7637,12 @@ updateUiForSession(key, pipelineGeneration) {
                         var processed = restoredProcessedSegments
                         fun publishTranscriptionPreview() {
                             val previewStart = (rows.size - 2).coerceAtLeast(0)
-                            val preview = (previewStart until rows.size).map { rowIndex ->
+                            val preview = (previewStart until rows.size).mapNotNull { rowIndex ->
                                 val row = rows[rowIndex]
-                                SubLine(rowIndex, row.first, row.second, row.third)
+                                val cleanedText = SubtitleParsers.cleanSpokenText(row.third)
+                                cleanedText.takeIf { it.isNotEmpty() }?.let { text ->
+                                    SubLine(rowIndex, row.first, row.second, text)
+                                }
                             }
                             updateUiForSession(key, pipelineGeneration) { state ->
                                 if (state.key == key && state.phase == Phase.TRANSCRIBING) {
