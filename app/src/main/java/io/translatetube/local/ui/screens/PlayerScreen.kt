@@ -3268,25 +3268,35 @@ private fun TranscriptionStageResultPreview(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .height(112.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
                 .padding(horizontal = 9.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (preview.isEmpty()) {
-                Text(
-                    emptyText,
-                    color = Color(0xFF98A3B2),
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                )
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Text(
+                        emptyText,
+                        color = Color(0xFF98A3B2),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             } else {
                 preview.forEachIndexed { index, line ->
                     if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.Top,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
@@ -3294,8 +3304,10 @@ private fun TranscriptionStageResultPreview(
                             color = Color(0xFF8B98AA),
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 10.sp,
-                                lineHeight = 15.sp,
+                                lineHeight = 14.sp,
                             ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             line.text,
@@ -3303,9 +3315,9 @@ private fun TranscriptionStageResultPreview(
                             color = Color(0xFF39485B),
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontSize = 12.sp,
-                                lineHeight = 17.sp,
+                                lineHeight = 16.sp,
                             ),
-                            maxLines = 3,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
