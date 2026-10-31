@@ -2694,7 +2694,7 @@ private fun VideoParsingPage(
                         }
                         val stageProgressText = if (index == 2) {
                             val progressLabel = stageProgressCaption
-                            val percentage = Regex("""\\d+(?:\\.\\d+)?%""")
+                            val percentage = Regex("""\d+(?:\.\d+)?%""")
                                 .find(progressLabel)?.value
                             val segmentCount = percentage?.let { percent ->
                                 progressLabel.removeSuffix(" · $percent")
@@ -5001,9 +5001,9 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
 
 private fun transcriptionAudioElapsed(progress: String): String? {
     val match = Regex(
-        """音频(?:进度)?\\s*[:：]?\\s*((?:\\d+\\s*小时(?:\\s*\\d+\\s*分)?(?:\\s*\\d+\\s*秒)?|\\d+\\s*分(?:\\s*\\d+\\s*秒)?|\\d+\\s*秒|\\d{1,2}:\\d{2}(?::\\d{2})?))""",
+        """音频(?:进度)?\s*[:：]?\s*((?:\d+\s*小时(?:\s*\d+\s*分)?(?:\s*\d+\s*秒)?|\d+\s*分(?:\s*\d+\s*秒)?|\d+\s*秒|\d{1,2}:\d{2}(?::\d{2})?))""",
     ).find(progress) ?: return null
-    return match.groupValues[1].replace(Regex("""\\s+"""), "")
+    return match.groupValues[1].replace(Regex("""\s+"""), "")
 }
 
 private fun progressPercent(progress: String): Float? {
