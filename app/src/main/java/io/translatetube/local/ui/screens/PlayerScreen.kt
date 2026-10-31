@@ -2575,8 +2575,8 @@ private fun VideoParsingPage(
                                         "$label：$value",
                                         color = Color(0xFF74839A),
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = if (compactLayout) 9.sp else 10.sp,
-                                            lineHeight = if (compactLayout) 12.sp else 14.sp,
+                                            fontSize = if (compactLayout) 11.sp else 12.sp,
+                                            lineHeight = if (compactLayout) 14.sp else 16.sp,
                                         ),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
