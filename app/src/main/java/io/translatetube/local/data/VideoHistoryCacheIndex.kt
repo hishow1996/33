@@ -26,6 +26,22 @@ internal object VideoHistoryCacheIndex {
     fun localPcmCacheFileNames(context: Context, videoKey: String): Set<String> =
         fileNames(context, videoKey, localPcmStorageKey(videoKey), safeLocalPcmFileName)
 
+    /** Keep a shared PCM file when another history row still references the same hashed name. */
+    fun isLocalPcmCacheFileReferencedByAnotherHistory(
+        context: Context,
+        videoKey: String,
+        fileName: String,
+    ): Boolean {
+        if (videoKey.isBlank() || !safeLocalPcmFileName.matches(fileName)) return false
+        val ownKey = localPcmStorageKey(videoKey)
+        val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return preferences.all.any { (key, value) ->
+            key != ownKey &&
+                key.endsWith("-local-pcm") &&
+                (value as? Set<*>)?.contains(fileName) == true
+        }
+    }
+
     private fun rememberFileName(
         context: Context,
         videoKey: String,

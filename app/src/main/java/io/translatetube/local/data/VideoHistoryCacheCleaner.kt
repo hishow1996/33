@@ -36,6 +36,11 @@ internal object VideoHistoryCacheCleaner {
         val localPcmDirectory = File(context.cacheDir, "local_asr_pcm16")
         for (name in VideoHistoryCacheIndex.localPcmCacheFileNames(context, video.key)) {
             if (!Regex("^[0-9a-f]{32}\\.pcm16$").matches(name)) continue
+            if (
+                VideoHistoryCacheIndex.isLocalPcmCacheFileReferencedByAnotherHistory(
+                    context, video.key, name,
+                )
+            ) continue
             val pcmFile = File(localPcmDirectory, name)
             if (!PlaybackService.deleteUnleasedLocalPcmCacheFile(pcmFile)) {
                 throw IOException("转写 PCM 缓存正在使用，暂时无法删除：$name")
