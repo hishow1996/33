@@ -42,6 +42,30 @@ class DevicePerformancePolicyTest {
         assertEquals(4,DevicePerformancePolicy.recommendedAsrThreads(d,"sensevoice",false,false))
         assertEquals(3,DevicePerformancePolicy.recommendedAsrThreads(d,"sensevoice",true,true))
     }
+    @Test fun eightCoreSixGbPhoneGetsThreeAsrThreads(){
+        // Honor 10 class: 8 cores, ~5.6 GiB reported RAM.
+        val ram=5L*gib+600L*mib
+        val d=s(ram=ram,cores=8)
+        assertEquals(DevicePerformanceTier.BALANCED,DevicePerformancePolicy.tier(d))
+        assertEquals(3,DevicePerformancePolicy.recommendedAsrThreads(d,"whisper",false,true))
+        assertEquals(3,DevicePerformancePolicy.recommendedAsrThreads(d,"sensevoice",false,false))
+        // Keep playback + dubbing responsive.
+        assertEquals(2,DevicePerformancePolicy.recommendedAsrThreads(d,"whisper",true,true))
+        // Four-core 6 GB phones stay at two.
+        assertEquals(2,DevicePerformancePolicy.recommendedAsrThreads(s(ram=ram,cores=4),"whisper",false,false))
+    }
+    @Test fun moderateMemoryPressureNoLongerDropsAsrThreads(){
+        val d=s(ram=5L*gib+600L*mib,avail=600L*mib,cores=8)
+        assertTrue(DevicePerformancePolicy.hasModerateMemoryPressure(d))
+        assertFalse(DevicePerformancePolicy.hasSevereMemoryPressure(d))
+        assertEquals(3,DevicePerformancePolicy.recommendedAsrThreads(d,"whisper",false,false))
+    }
+    @Test fun severePressurePowerSaveAndHeatStillReduceAsrThreads(){
+        val ram=5L*gib+600L*mib
+        assertEquals(2,DevicePerformancePolicy.recommendedAsrThreads(s(ram=ram,avail=300L*mib,cores=8),"whisper",false,false))
+        assertEquals(2,DevicePerformancePolicy.recommendedAsrThreads(s(ram=ram,cores=8,power=true),"whisper",false,false))
+        assertEquals(2,DevicePerformancePolicy.recommendedAsrThreads(s(ram=ram,cores=8,thermal=2),"whisper",false,false))
+    }
     @Test fun livePressurePowerSaveAndHeatReduceBudgets(){
         val d=s(ram=12L*gib,avail=256L*mib,heap=512,power=true,thermal=3,threshold=512L*mib)
         assertTrue(DevicePerformancePolicy.hasSevereMemoryPressure(d))

@@ -65,14 +65,38 @@ internal object DevicePerformancePolicy {
         return (base-reductions(s)-(if(playbackActive)1 else 0)).coerceIn(1,cores)
     }
 
+    /**
+     * Eight-core phones with about 6 GB RAM (for example four big + four little cores) are rated
+     * BALANCED because HIGH needs 8 GB. They can still run three ASR workers; two leaves big
+     * cores idle and makes local transcription needlessly slow. Reported total RAM is a bit
+     * below the marketing figure, so the bar is 5 GiB rather than 6.
+     */
+    private fun hasMidRangeAsrHeadroom(s: DevicePerformanceSnapshot): Boolean =
+        tier(s)==DevicePerformanceTier.BALANCED &&
+            s.processorCount>=8 &&
+            s.totalMemoryBytes>=5L*GIB
+
+    /**
+     * ASR-only reductions. Moderate memory pressure is not counted: it is common on 6 GB phones
+     * and used to push transcription down to one thread. Only severe pressure, power saving and
+     * heat reduce the ASR thread budget.
+     */
+    private fun asrReductions(s: DevicePerformanceSnapshot): Int {
+        var n=0
+        if(s.powerSaveMode)n++
+        if(s.thermalStatus>=2)n++
+        if(hasSevereMemoryPressure(s))n++
+        return n
+    }
+
     fun recommendedAsrThreads(s: DevicePerformanceSnapshot, modelId: String, isPlaying: Boolean, dubbingEnabled: Boolean): Int {
         val cores=s.processorCount.coerceAtLeast(1)
         val base=when(tier(s)){
             DevicePerformanceTier.LOW->1
-            DevicePerformanceTier.BALANCED->2
+            DevicePerformanceTier.BALANCED->if(hasMidRangeAsrHeadroom(s)) 3 else 2
             DevicePerformanceTier.HIGH->if(modelId=="sensevoice") 4 else 3
         }.coerceAtMost(cores)
-        return (base-(if(isPlaying&&dubbingEnabled)1 else 0)-reductions(s)).coerceAtLeast(1)
+        return (base-(if(isPlaying&&dubbingEnabled)1 else 0)-asrReductions(s)).coerceAtLeast(1)
     }
 
     fun recommendedTtsThreads(
