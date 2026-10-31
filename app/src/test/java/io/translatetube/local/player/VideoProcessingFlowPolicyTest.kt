@@ -233,6 +233,28 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun stageProgressCountersUseConsistentUnitsPercentagesAndBounds() {
+        assertEquals(
+            "17/25 段 · 68%",
+            VideoProcessingFlowPolicy.progressCounterLabel(17, 25, "段"),
+        )
+        assertEquals(
+            "42/120 行 · 35%",
+            VideoProcessingFlowPolicy.progressCounterLabel(42, 120, "行"),
+        )
+        assertEquals(
+            "48/120 句 · 40%",
+            VideoProcessingFlowPolicy.progressCounterLabel(48, 120, "句"),
+        )
+        assertEquals(
+            "20/20 分片 · 100%",
+            VideoProcessingFlowPolicy.progressCounterLabel(24, 20, "分片"),
+        )
+        assertEquals(null, VideoProcessingFlowPolicy.progressCounterLabel(1, 0, "段"))
+        assertEquals(null, VideoProcessingFlowPolicy.progressCounterLabel(1, 2, " "))
+    }
+
+    @Test
     fun missingTranscriptionEngineMustNotMarkReadyFlowAsComplete() {
         assertEquals(
             2,

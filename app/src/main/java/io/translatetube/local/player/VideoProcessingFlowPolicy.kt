@@ -272,6 +272,15 @@ object VideoProcessingFlowPolicy {
         return ((safeCompleted.toLong() * 100L) / total.toLong()).toInt()
     }
 
+    /** A single, consistent display format for measured stage counters. */
+    fun progressCounterLabel(completed: Int, total: Int, unit: String): String? {
+        val normalizedUnit = unit.trim()
+        if (total <= 0 || normalizedUnit.isBlank()) return null
+        val safeCompleted = completed.coerceIn(0, total)
+        val percent = completionPercent(safeCompleted, total) ?: return null
+        return "$safeCompleted/$total $normalizedUnit · $percent%"
+    }
+
     /**
      * Compact status for YouTube caption discovery, shown inside the video-parsing stage.
      * It deliberately does not turn caption lookup/read operations into audio/ASR stages.

@@ -2456,7 +2456,13 @@ private fun VideoParsingPage(
                                                 ?: Regex("""(?:已下载|下载中|下载)\D{0,10}(\d+)\s*/\s*(\d+)\D{0,8}(?:分片|片段)""")
                                                     .find(progressText)
                                             segmentMatch?.let {
-                                                add("分片进度" to "${it.groupValues[1]}/${it.groupValues[2]}")
+                                                val completed = it.groupValues[1].toIntOrNull()
+                                                val total = it.groupValues[2].toIntOrNull()
+                                                if (completed != null && total != null) {
+                                                    VideoProcessingFlowPolicy.progressCounterLabel(
+                                                        completed, total, "分片",
+                                                    )?.let { progress -> add("分片进度" to progress) }
+                                                }
                                             }
                                             val audioTask = when {
                                                 progressText.contains("刷新") || progressText.contains("失效") -> "刷新音轨链接"
@@ -2506,13 +2512,16 @@ private fun VideoParsingPage(
                                             progressText.takeIf { it.isNotBlank() }?.let {
                                                 add("当前任务" to it)
                                             }
-                                            state.transcriptionProgressPercent?.takeIf { it in 0..100 }?.let {
-                                                add("处理进度" to "$it%")
-                                            }
                                             if (state.transcriptionTotalSegments > 0) {
-                                                add(
-                                                    "已处理分段" to "${state.transcriptionCompletedSegments.coerceIn(0, state.transcriptionTotalSegments)}/${state.transcriptionTotalSegments}",
-                                                )
+                                                VideoProcessingFlowPolicy.progressCounterLabel(
+                                                    state.transcriptionCompletedSegments,
+                                                    state.transcriptionTotalSegments,
+                                                    "段",
+                                                )?.let { add("处理进度" to it) }
+                                            } else {
+                                                state.transcriptionProgressPercent?.takeIf { it in 0..100 }?.let {
+                                                    add("处理进度" to "$it%")
+                                                }
                                             }
                                             if (state.lines.isNotEmpty()) add("已识别字幕" to "${state.lines.size} 条")
                                         }
@@ -2526,13 +2535,9 @@ private fun VideoParsingPage(
                                             add("翻译方向" to "$sourceLanguageDisplay → 简体中文")
                                             if (state.totalLines > 0) {
                                                 val translated = state.translatedLineCount.coerceIn(0, state.totalLines)
-                                                val percent = VideoProcessingFlowPolicy.completionPercent(
-                                                    translated, state.totalLines,
-                                                )
-                                                add(
-                                                    "翻译进度" to "${translated}/${state.totalLines} 条" +
-                                                        (percent?.let { " · $it%" } ?: ""),
-                                                )
+                                                VideoProcessingFlowPolicy.progressCounterLabel(
+                                                    translated, state.totalLines, "行",
+                                                )?.let { add("翻译进度" to it) }
                                             }
                                             VideoProcessingFlowPolicy.translationBatchLabel(
                                                 state.translationCurrentBatch,
@@ -2553,13 +2558,9 @@ private fun VideoParsingPage(
                                             add("音色" to dubbingVoiceDisplay)
                                             if (state.totalLines > 0) {
                                                 val prepared = state.preparedCount.coerceIn(0, state.totalLines)
-                                                val percent = VideoProcessingFlowPolicy.completionPercent(
-                                                    prepared, state.totalLines,
-                                                )
-                                                add(
-                                                    "配音准备" to "${prepared}/${state.totalLines} 句" +
-                                                        (percent?.let { " · $it%" } ?: ""),
-                                                )
+                                                VideoProcessingFlowPolicy.progressCounterLabel(
+                                                    prepared, state.totalLines, "句",
+                                                )?.let { add("配音准备" to it) }
                                             }
                                             progressText.takeIf { it.isNotBlank() }?.let {
                                                 add("合成任务" to it)
@@ -2571,16 +2572,45 @@ private fun VideoParsingPage(
                                     }
                                 }
                                 stageDetailRows.forEach { (label, value) ->
-                                    Text(
-                                        "$label：$value",
-                                        color = Color(0xFF74839A),
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = if (compactLayout) 11.sp else 12.sp,
-                                            lineHeight = if (compactLayout) 14.sp else 16.sp,
-                                        ),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
+                                    val detailMaxLines = when (label) {
+                                        "视频", "频道", "当前任务", "当前状态", "合成任务", "引擎状态" -> 2
+                                        else -> 1
+                                    }
+                                    val isProgressRow = label in setOf(
+                                        "分片进度", "提取进度", "处理进度", "翻译进度", "配音准备",
                                     )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(
+                                            if (compactLayout) 8.dp else 10.dp,
+                                        ),
+                                        verticalAlignment = androidx.compose.ui.Alignment.Top,
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            modifier = Modifier.width(if (compactLayout) 68.dp else 76.dp),
+                                            color = Color(0xFF8995A6),
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = if (compactLayout) 11.sp else 12.sp,
+                                                lineHeight = if (compactLayout) 14.sp else 16.sp,
+                                                fontWeight = FontWeight.Medium,
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = value,
+                                            modifier = Modifier.weight(1f),
+                                            color = if (isProgressRow) Color(0xFF3E526F) else Color(0xFF586A80),
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = if (compactLayout) 11.sp else 12.sp,
+                                                lineHeight = if (compactLayout) 14.sp else 16.sp,
+                                                fontWeight = if (isProgressRow) FontWeight.SemiBold else FontWeight.Normal,
+                                            ),
+                                            maxLines = detailMaxLines,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                 }
                             }
                         }
