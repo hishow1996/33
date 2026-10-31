@@ -2558,11 +2558,12 @@ private fun VideoParsingPage(
                                                         (percent?.let { " · $it%" } ?: ""),
                                                 )
                                             }
-                                            val dubbingTask = state.dubbingStatus.trim()
-                                                .takeIf { it.isNotBlank() }
-                                                ?: progressText.takeIf { it.isNotBlank() }
-                                                    ?.let { compactProcessingProgress(it, Phase.SYNTHESIZING) }
-                                            dubbingTask?.let { add("当前状态" to it) }
+                                            progressText.takeIf { it.isNotBlank() }?.let {
+                                                add("合成任务" to it)
+                                            }
+                                            state.dubbingStatus.trim().takeIf { it.isNotBlank() }?.let {
+                                                add("引擎状态" to it)
+                                            }
                                         }
                                     }
                                 }
