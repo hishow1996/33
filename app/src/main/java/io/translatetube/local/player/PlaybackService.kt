@@ -11052,11 +11052,18 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         tts: TtsEngine,
         sessionKey: String = ui.value.key,
     ) {
-        engine.onFirstSynthesisReady = { index, sampleCount, sampleRate ->
+        engine.onSynthesisReady = { index, sampleCount, sampleRate, fromCache ->
             val durationMs = sampleCount.toLong() * 1_000L / sampleRate.coerceAtLeast(1)
+            val engineName = engine.currentTtsName.ifBlank { tts.name }
+            val cueStatus = if (fromCache) {
+                "已复用第 ${index + 1} 句 PCM 缓存"
+            } else {
+                "已生成第 ${index + 1} 句 PCM"
+            }
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                 state.copy(
-                    dubbingStatus = "${engine.currentTtsName} 已生成第 ${index + 1} 句 PCM（约 ${durationMs} ms）"
+                    ttsEngineName = engineName,
+                    dubbingStatus = "$engineName $cueStatus（约 ${durationMs} ms）",
                 )
             }
         }

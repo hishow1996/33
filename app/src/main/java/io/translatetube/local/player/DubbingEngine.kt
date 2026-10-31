@@ -146,12 +146,12 @@ class DubbingEngine(
     @Volatile private var synthesisTimelineLagSampleCountValue: Int = 0
     val synthesisTimelineLagSampleCount: Int get() = synthesisTimelineLagSampleCountValue
     @Volatile private var nextSpeechStartMsByLine: LongArray = LongArray(0)
-    /** Diagnostic callback: the first successful PCM result for this session. */
-    @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
+    /** Diagnostic callback for every PCM cue that becomes ready, including validated cache hits. */
+    @Volatile var onSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int, fromCache: Boolean) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
     @Volatile var onPlaybackStarted: ((index: Int, playbackGeneration: Int) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
-    private val firstSynthesisReported = AtomicBoolean(false)
+    private val firstSynthesisMilestoneLogged = AtomicBoolean(false)
     /** Emit first-output milestones once per attached subtitle session, not once per cue. */
     private val firstPlaybackReported = AtomicBoolean(false)
     private val firstPlaybackCompletedReported = AtomicBoolean(false)
@@ -489,7 +489,7 @@ class DubbingEngine(
                 }
                 nextSpeechStartMsByLine = nextSpeechStarts
             synthesisErrorReported.set(false)
-            firstSynthesisReported.set(false)
+            firstSynthesisMilestoneLogged.set(false)
             firstPlaybackReported.set(false)
             firstPlaybackCompletedReported.set(false)
             audioOutputPathReported.set(false)
@@ -935,26 +935,11 @@ class DubbingEngine(
                     // A cache file is usable only after its header and exact payload length are
                     // validated. Preserve empty failure markers separately from corrupt entries.
                     markCuePreparedForGeneration(idx, hasAudio = cachedAudioState, expectedGeneration = workerCacheGeneration)
-                    if (!released && cachedAudioState && firstSynthesisReported.compareAndSet(false, true)) {
+                    if (!released && cachedAudioState) {
                         runCatching {
                             val audioFromMemory = memoryAudio(idx)
-                            if (audioFromMemory != null) {
-                                logDubbingInfo(
-                                    "首条可用配音 PCM 来自内存缓存",
-                                    mapOf(
-                                        "字幕行号" to "${idx + 1}/${lines.size}",
-                                        "PCM 样本数" to audioFromMemory.samples.size.toString(),
-                                        "采样率 Hz" to audioFromMemory.sampleRate.toString(),
-                                        "预计音频时长 ms" to (audioFromMemory.samples.size.toDouble() * 1000.0 /
-                                            audioFromMemory.sampleRate.coerceAtLeast(1)).toLong().toString(),
-                                        "配音引擎" to (tts?.name ?: "未知引擎"),
-                                    ),
-                                )
-                                onFirstSynthesisReady?.invoke(
-                                    idx,
-                                    audioFromMemory.samples.size,
-                                    audioFromMemory.sampleRate,
-                                )
+                            val sampleInfo = if (audioFromMemory != null) {
+                                audioFromMemory.samples.size to audioFromMemory.sampleRate
                             } else {
                                 java.io.DataInputStream(
                                     java.io.BufferedInputStream(java.io.FileInputStream(cacheFile(idx)))
@@ -964,22 +949,30 @@ class DubbingEngine(
                                     if (sampleRate !in 8_000..192_000 || sampleCount <= 0) {
                                         throw java.io.IOException("缓存 PCM 头无效")
                                     }
-                                    if (!released) {
-                                        logDubbingInfo(
-                                            "首条可用配音 PCM 命中磁盘缓存",
-                                            mapOf(
-                                                "字幕行号" to "${idx + 1}/${lines.size}",
-                                                "PCM 样本数" to sampleCount.toString(),
-                                                "采样率 Hz" to sampleRate.toString(),
-                                                "预计音频时长 ms" to (sampleCount.toDouble() * 1000.0 /
-                                                    sampleRate.coerceAtLeast(1)).toLong().toString(),
-                                                "缓存文件大小 bytes" to cacheFile(idx).length().toString(),
-                                                "配音引擎" to (tts?.name ?: "未知引擎"),
-                                            ),
-                                        )
-                                        onFirstSynthesisReady?.invoke(idx, sampleCount, sampleRate)
-                                    }
+                                    sampleCount to sampleRate
                                 }
+                            }
+                            val (sampleCount, sampleRate) = sampleInfo
+                            if (firstSynthesisMilestoneLogged.compareAndSet(false, true)) {
+                                logDubbingInfo(
+                                    if (audioFromMemory != null) {
+                                        "首条可用配音 PCM 来自内存缓存"
+                                    } else {
+                                        "首条可用配音 PCM 命中磁盘缓存"
+                                    },
+                                    mapOf(
+                                        "字幕行号" to "${idx + 1}/${lines.size}",
+                                        "PCM 样本数" to sampleCount.toString(),
+                                        "采样率 Hz" to sampleRate.toString(),
+                                        "预计音频时长 ms" to (sampleCount.toDouble() * 1000.0 /
+                                            sampleRate.coerceAtLeast(1)).toLong().toString(),
+                                        "缓存来源" to if (audioFromMemory != null) "内存缓存" else "磁盘缓存",
+                                        "配音引擎" to (tts?.name ?: "未知引擎"),
+                                    ),
+                                )
+                            }
+                            if (!released) {
+                                onSynthesisReady?.invoke(idx, sampleCount, sampleRate, true)
                             }
                         }.onFailure {
                             android.util.Log.w("DubbingEngine", "Could not publish cached-PCM diagnostic", it)
@@ -1347,31 +1340,37 @@ class DubbingEngine(
                     synthesisRecoveryRetryCounts.remove(idx)
                     silentCueReasonsByIndex.remove(idx)
                     markCuePreparedForGeneration(idx, hasAudio = true, expectedGeneration = workerCacheGeneration)
-                    if (!released && firstSynthesisReported.compareAndSet(false, true)) {
-                        logDubbingInfo(
-                            "首条中文配音 PCM 合成成功",
-                            mapOf(
-                                "字幕行号" to "${idx + 1}/${lines.size}",
-                                "配音引擎名称" to (tts?.name ?: "未知引擎"),
-                                "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
-                                "合成调用次数（含重试）" to synthesisCallCount.toString(),
-                                "PCM 样本数" to boundedSamples.size.toString(),
-                                "PCM 采样率 Hz" to readyAudio.sampleRate.toString(),
-                                "音频时长 ms" to outputAudioDurationMs.toLong().toString(),
-                                "本句合成语速" to effectiveSynthesisSpeed.toString(),
-                                "本句合成处理耗时 ms" to synthesisElapsedMs.toString(),
-                                "合成实时系数" to synthesisRealtimeFactorValue.takeIf { it.isFinite() }?.toString().orEmpty().ifBlank { "尚未形成有效样本" },
-                                "是否成功写入磁盘缓存" to cachePersisted.toString(),
-                                "是否保留在内存缓存" to retainedInMemory.toString(),
-                                "是否为合并配音分块" to chunkTextByFirst.containsKey(idx).toString(),
-                                "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
-                                "混流总线代次" to outputBus.generationToken().toString(),
-                            ),
-                        )
+                    if (!released) {
+                        if (firstSynthesisMilestoneLogged.compareAndSet(false, true)) {
+                            logDubbingInfo(
+                                "首条中文配音 PCM 合成成功",
+                                mapOf(
+                                    "字幕行号" to "${idx + 1}/${lines.size}",
+                                    "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                                    "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                                    "合成调用次数（含重试）" to synthesisCallCount.toString(),
+                                    "PCM 样本数" to boundedSamples.size.toString(),
+                                    "PCM 采样率 Hz" to readyAudio.sampleRate.toString(),
+                                    "音频时长 ms" to outputAudioDurationMs.toLong().toString(),
+                                    "本句合成语速" to effectiveSynthesisSpeed.toString(),
+                                    "本句合成处理耗时 ms" to synthesisElapsedMs.toString(),
+                                    "合成实时系数" to synthesisRealtimeFactorValue.takeIf { it.isFinite() }?.toString().orEmpty().ifBlank { "尚未形成有效样本" },
+                                    "是否成功写入磁盘缓存" to cachePersisted.toString(),
+                                    "是否保留在内存缓存" to retainedInMemory.toString(),
+                                    "是否为合并配音分块" to chunkTextByFirst.containsKey(idx).toString(),
+                                    "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                                    "混流总线代次" to outputBus.generationToken().toString(),
+                                ),
+                            )
+                        }
                         runCatching {
-                            onFirstSynthesisReady?.invoke(idx, boundedSamples.size, readyAudio.sampleRate)
+                            onSynthesisReady?.invoke(idx, boundedSamples.size, readyAudio.sampleRate, false)
                         }.onFailure {
-                            android.util.Log.w("DubbingEngine", "Could not publish first-PCM diagnostic", it)
+                            android.util.Log.w(
+                                "DubbingEngine",
+                                "Could not publish synthesis-ready update for line ${idx + 1}",
+                                it,
+                            )
                         }
                     }
                     bumpPrepared()
@@ -3891,7 +3890,7 @@ class DubbingEngine(
             resetReadinessForCurrentConfiguration()
             synchronized(mem) { mem.clear() }
             synthesisErrorReported.set(false)
-            firstSynthesisReported.set(false)
+            firstSynthesisMilestoneLogged.set(false)
             val currentTts = tts
             if (currentTts is TimelineTtsPlayback && currentTts.useDirectTimelinePlayback) {
                 lines.indices.forEach { index ->
