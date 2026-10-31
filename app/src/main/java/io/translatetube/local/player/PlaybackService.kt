@@ -3011,6 +3011,13 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun releaseProcessingForegroundIfSafe(state: PlayerUiState) {
+        // READY can mean video playback has started while later subtitle cues are still
+        // synthesizing. Keep the dataSync foreground service until that queue is actually done.
+        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                state.phase,
+                isDubbingPreparationIncomplete(state),
+            )
+        ) return
         if (!processingForegroundActive) return
         val playerNeedsForeground = if (playerReady && ::pm.isInitialized) {
             val player = pm.player
@@ -3145,7 +3152,15 @@ class PlaybackService : MediaSessionService() {
             hasProcessingActions.toString(),
         ).joinToString("\\u001f")
         if (notificationFingerprint == lastProcessingNotificationFingerprint) {
-            if (!isProcessingPhase(state.phase)) releaseProcessingForegroundIfSafe(state)
+            if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(state.phase, preparationIncomplete)) {
+                releaseProcessingForegroundIfSafe(state)
+            } else if (preparationIncomplete && latestProcessingNotification != null && !processingForegroundActive) {
+                promoteProcessingForeground(
+                    latestProcessingNotification!!,
+                    state,
+                    "仍有配音队列待处理，恢复前台保护",
+                )
+            }
             return
         }
 
@@ -3208,7 +3223,7 @@ class PlaybackService : MediaSessionService() {
                 " determinateProgress=" + (measuredPercent != null) +
                 " session=" + safeDiagnosticSessionFingerprint(state.key),
         )
-        if (isProcessingPhase(state.phase)) {
+        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(state.phase, preparationIncomplete)) {
             latestProcessingNotification = notification
             promoteProcessingForeground(notification, state, "处理进度通知更新")
         } else {
@@ -3398,7 +3413,11 @@ class PlaybackService : MediaSessionService() {
         // notification after Media3 has finished updating its own media-control notification.
         val currentProcessingState = ui.value
         syncProcessingWakeLock(currentProcessingState)
-        if (isProcessingPhase(currentProcessingState.phase)) {
+        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                currentProcessingState.phase,
+                isDubbingPreparationIncomplete(currentProcessingState),
+            )
+        ) {
             val processingNotice = latestProcessingNotification
             if (processingNotice != null) {
                 promoteProcessingForeground(

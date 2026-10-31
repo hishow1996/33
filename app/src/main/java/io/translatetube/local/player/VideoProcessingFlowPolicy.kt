@@ -205,6 +205,24 @@ object VideoProcessingFlowPolicy {
         !waitingForDubbingEngine &&
         !dubbingHasErrors
 
+    /**
+     * Keep the service in the foreground while any video-processing stage is active, including
+     * the post-startup READY period where the remaining dubbing queue is still being synthesized.
+     */
+    fun shouldKeepProcessingForeground(
+        phase: Phase,
+        dubbingPreparationIncomplete: Boolean,
+    ): Boolean = when (phase) {
+        Phase.PARSING,
+        Phase.DOWNLOADING_AUDIO,
+        Phase.TRANSCRIBING,
+        Phase.TRANSLATING,
+        Phase.SYNTHESIZING -> true
+        Phase.READY -> dubbingPreparationIncomplete
+        Phase.IDLE,
+        Phase.ERROR -> false
+    }
+
     /** A READY player may still be preparing remaining dubbed cues in the background. */
     fun isDubbingPreparationIncomplete(
         dubbingOn: Boolean,
