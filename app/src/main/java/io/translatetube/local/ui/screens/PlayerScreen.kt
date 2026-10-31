@@ -2718,7 +2718,7 @@ private fun VideoParsingPage(
                             val progressLabel = stageProgressCaption
                             val labelWithoutPercent = progressLabel
                                 .replace(percentagePattern, "")
-                                .replace(Regex("""\s*[·•]\s*"""), " · ")
+                                .replace(Regex("""(?:\s*[·•]\s*){2,}"""), " · ")
                                 .trim()
                                 .trim('·')
                                 .trim()
@@ -2727,7 +2727,9 @@ private fun VideoParsingPage(
                                 Phase.TRANSCRIBING,
                             ).takeIf { it.isNotBlank() && it != "识别语音" }
                             val progressSummary = when {
-                                labelWithoutPercent.isNotBlank() -> labelWithoutPercent
+                                labelWithoutPercent.isNotBlank() && labelWithoutPercent !in setOf(
+                                    "正在处理", "处理失败", "已暂停，等待继续", "等待执行",
+                                ) -> labelWithoutPercent
                                 taskLabel != null -> taskLabel
                                 else -> "识别语音"
                             }
@@ -2741,7 +2743,8 @@ private fun VideoParsingPage(
                                 audioElapsed?.let { "音频$it" },
                                 singlePercent,
                             ).joinToString(" · ")
-                                                } else if (
+                        } else if (
+
                             stageProgressRow != null &&
                             stageProgressValue != null &&
                             !stageProgressCaption.contains('%')
