@@ -347,7 +347,7 @@ internal object HlsAudioDownloader {
                     ownerJob = ownerJob,
                     userAgent = userAgent,
                     awaitResume = awaitResume,
-                    progressLabel = sourceKind.displayName,
+                    progressLabel = initialSourceKind.displayName,
                     onProgress = onProgress,
                 )
                 awaitResume()
