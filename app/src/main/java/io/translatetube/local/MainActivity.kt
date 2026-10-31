@@ -29,6 +29,7 @@ import io.translatetube.local.ui.theme.BgDark
 import io.translatetube.local.ui.theme.TranslateTubeTheme
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.Phase
+import io.translatetube.local.player.PendingMediaResumeContextPolicy
 import io.translatetube.local.yt.NewPipeRepo
 import io.translatetube.local.web.SharedLinkTextParser
 
@@ -39,6 +40,9 @@ private data class PendingResumeTask(
     val sourceKey: String,
     val activeKey: String,
     val generation: Long,
+    /** Original WebView request context; cookies themselves are never persisted. */
+    val mediaReferrer: String? = null,
+    val mediaUserAgent: String? = null,
 )
 
 /** 一次播放请求：YouTube 或 本地视频 */
@@ -76,15 +80,25 @@ class MainActivity : ComponentActivity() {
             ?: return null
         val activeKey = resumePrefs.getString(KEY_ACTIVE, null)?.takeIf { it.isNotBlank() } ?: sourceKey
         val generation = resumePrefs.getLong(KEY_GENERATION, 1L).coerceAtLeast(1L)
-        return PendingResumeTask(sourceKey, activeKey, generation)
+        return PendingResumeTask(
+            sourceKey = sourceKey,
+            activeKey = activeKey,
+            generation = generation,
+            mediaReferrer = resumePrefs.getString(KEY_MEDIA_REFERRER, null),
+            mediaUserAgent = resumePrefs.getString(KEY_MEDIA_USER_AGENT, null),
+        )
     }
 
     private fun persistPendingResumeTask(task: PendingResumeTask) {
-        resumePrefs.edit()
+        val editor = resumePrefs.edit()
             .putString(KEY_SOURCE, task.sourceKey)
             .putString(KEY_ACTIVE, task.activeKey)
             .putLong(KEY_GENERATION, task.generation)
-            .commit()
+        if (task.mediaReferrer.isNullOrBlank()) editor.remove(KEY_MEDIA_REFERRER)
+        else editor.putString(KEY_MEDIA_REFERRER, task.mediaReferrer)
+        if (task.mediaUserAgent.isNullOrBlank()) editor.remove(KEY_MEDIA_USER_AGENT)
+        else editor.putString(KEY_MEDIA_USER_AGENT, task.mediaUserAgent)
+        editor.commit()
     }
 
     /** Give even rapid repeat taps on the same row a distinct playback request token. */
@@ -98,7 +112,21 @@ class MainActivity : ComponentActivity() {
         val tokenizedRequest = withFreshRequestToken(request)
         playReq.value = tokenizedRequest
         val generation = (resumePrefs.getLong(KEY_GENERATION, 0L) + 1L).coerceAtLeast(1L)
-        val task = PendingResumeTask(tokenizedRequest.key, tokenizedRequest.key, generation)
+        val pageReferrer = request.mediaReferrer?.takeIf {
+            it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+        }
+        val sourceKey = if (tokenizedRequest.mediaUrl != null && pageReferrer != null) {
+            "webpage:$pageReferrer"
+        } else {
+            tokenizedRequest.key
+        }
+        val task = PendingResumeTask(
+            sourceKey = sourceKey,
+            activeKey = tokenizedRequest.key,
+            generation = generation,
+            mediaReferrer = pageReferrer,
+            mediaUserAgent = request.mediaUserAgent?.takeIf { it.isNotBlank() },
+        )
         persistPendingResumeTask(task)
         pendingResumeTaskState.value = task
         val source = when {
@@ -122,12 +150,30 @@ class MainActivity : ComponentActivity() {
         playReq.value = tokenizedRequest
         if (current == null) {
             val generation = (resumePrefs.getLong(KEY_GENERATION, 0L) + 1L).coerceAtLeast(1L)
-            val task = PendingResumeTask(tokenizedRequest.key, tokenizedRequest.key, generation)
+            val pageReferrer = request.mediaReferrer?.takeIf {
+                it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+            }
+            val sourceKey = if (tokenizedRequest.mediaUrl != null && pageReferrer != null) {
+                "webpage:$pageReferrer"
+            } else {
+                tokenizedRequest.key
+            }
+            val task = PendingResumeTask(
+                sourceKey = sourceKey,
+                activeKey = tokenizedRequest.key,
+                generation = generation,
+                mediaReferrer = pageReferrer,
+                mediaUserAgent = request.mediaUserAgent?.takeIf { it.isNotBlank() },
+            )
             persistPendingResumeTask(task)
             pendingResumeTaskState.value = task
             return
         }
-        val updated = current.copy(activeKey = tokenizedRequest.key)
+        val updated = current.copy(
+            activeKey = tokenizedRequest.key,
+            mediaReferrer = request.mediaReferrer?.takeIf { it.isNotBlank() } ?: current.mediaReferrer,
+            mediaUserAgent = request.mediaUserAgent?.takeIf { it.isNotBlank() } ?: current.mediaUserAgent,
+        )
         persistPendingResumeTask(updated)
         pendingResumeTaskState.value = updated
         io.translatetube.local.util.AppLogStore.info(
@@ -143,7 +189,12 @@ class MainActivity : ComponentActivity() {
             current.activeKey != expected.activeKey ||
             current.generation != expected.generation
         ) return
-        resumePrefs.edit().remove(KEY_SOURCE).remove(KEY_ACTIVE).commit()
+        resumePrefs.edit()
+            .remove(KEY_SOURCE)
+            .remove(KEY_ACTIVE)
+            .remove(KEY_MEDIA_REFERRER)
+            .remove(KEY_MEDIA_USER_AGENT)
+            .commit()
         pendingResumeTaskState.value = null
     }
 
@@ -504,10 +555,43 @@ class MainActivity : ComponentActivity() {
                                                 "恢复网页视频任务：直接继续已选媒体的五阶段解析，跳过重复的网页源检测",
                                             )
                                         }
+                                        val restoredWebReferrer = PendingMediaResumeContextPolicy.pageReferrerForResume(
+                                            sourceKey = savedTask?.sourceKey,
+                                            activeKey = savedTask?.activeKey,
+                                            storedReferrer = savedTask?.mediaReferrer,
+                                            requestedTaskKey = taskKey,
+                                        )
+                                        val restoredMediaUrl = resumeKey
+                                            .takeIf { it.startsWith("remote:") }
+                                            ?.removePrefix("remote:")
+                                        // Match the original candidate-selection path: its Cookie header
+                                        // came from the media URL. Some resolvers (for example, Bilibili)
+                                        // instead supply the page cookie, so use that as a safe fallback.
+                                        val restoredWebCookie = if (
+                                            restoredWebReferrer != null && restoredMediaUrl != null
+                                        ) {
+                                            runCatching {
+                                                android.webkit.CookieManager.getInstance().getCookie(restoredMediaUrl)
+                                            }.getOrNull()?.takeIf { it.isNotBlank() }
+                                                ?: runCatching {
+                                                    android.webkit.CookieManager.getInstance().getCookie(restoredWebReferrer)
+                                                }.getOrNull()?.takeIf { it.isNotBlank() }
+                                        } else null
+                                        val restoredWebUserAgent = if (restoredWebReferrer != null) {
+                                            savedTask?.mediaUserAgent?.takeIf { it.isNotBlank() }
+                                                ?: runCatching {
+                                                    android.webkit.WebSettings.getDefaultUserAgent(this@MainActivity)
+                                                }.getOrNull()
+                                        } else null
                                         val request = when {
                                             resumeKey.startsWith("youtube:") -> PlayRequest(videoId = resumeKey.removePrefix("youtube:"))
                                             resumeKey.startsWith("webpage:") -> PlayRequest(webPageUrl = resumeKey.removePrefix("webpage:"))
-                                            resumeKey.startsWith("remote:") -> PlayRequest(mediaUrl = resumeKey.removePrefix("remote:"))
+                                            restoredMediaUrl != null -> PlayRequest(
+                                                mediaUrl = restoredMediaUrl,
+                                                mediaReferrer = restoredWebReferrer,
+                                                mediaCookie = restoredWebCookie,
+                                                mediaUserAgent = restoredWebUserAgent,
+                                            )
                                             resumeKey.startsWith("local:") -> PlayRequest(localUri = resumeKey.removePrefix("local:"))
                                             else -> null
                                         }
@@ -658,6 +742,8 @@ class MainActivity : ComponentActivity() {
         const val KEY_SOURCE = "source_key"
         const val KEY_ACTIVE = "active_key"
         const val KEY_GENERATION = "generation"
+        const val KEY_MEDIA_REFERRER = "media_referrer"
+        const val KEY_MEDIA_USER_AGENT = "media_user_agent"
     }
 }
 
