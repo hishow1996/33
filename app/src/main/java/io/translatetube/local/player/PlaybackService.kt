@@ -7865,6 +7865,7 @@ updateUiForSession(key, pipelineGeneration) {
                                         } else state
                                     }
                                 },
+                                checkpointIdentity = sourceSubtitleCacheKey.takeIf { asrProvider == "kawa" },
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) { it.copy(

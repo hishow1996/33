@@ -458,6 +458,8 @@ object CloudTranscription {
         checkActive: () -> Unit = {},
         onProgress: (String) -> Unit = {},
         encodedAudio: EncodedAudioInput? = null,
+        /** Stable source + ASR configuration identity; used only for resumable Kawa chunk results. */
+        checkpointIdentity: String? = null,
     ): Result {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
@@ -472,7 +474,16 @@ object CloudTranscription {
         checkActive()
         val ownerJob = currentCoroutineContext()[Job]
         if (provider == "kawa") {
-            return transcribeKawa(apiKey, language, wavFile, durationMs, checkActive, ownerJob, onProgress)
+            return transcribeKawa(
+                apiKey = apiKey,
+                language = language,
+                wavFile = wavFile,
+                durationMs = durationMs,
+                checkActive = checkActive,
+                ownerJob = ownerJob,
+                onProgress = onProgress,
+                checkpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() },
+            )
         }
 
         val providerName = if (provider == "elevenlabs") "ElevenLabs" else "Cartesia"
@@ -610,6 +621,7 @@ object CloudTranscription {
         checkActive: () -> Unit,
         ownerJob: Job?,
         onProgress: (String) -> Unit,
+        checkpointIdentity: String?,
     ): Result {
         val pcmBytes = wavFile.length() - 44L
         if (pcmBytes <= 0L || pcmBytes % 2L != 0L) {
@@ -619,6 +631,13 @@ object CloudTranscription {
         if (ranges.isEmpty()) throw IOException("待转写 WAV 音频为空")
         val cues = ArrayList<Triple<Long, Long, String>>()
         var detectedLanguage = language
+        val checkpointDirectory = checkpointIdentity?.let {
+            File(wavFile.parentFile ?: wavFile.absoluteFile.parentFile, "kawa_asr_checkpoints")
+                .apply { mkdirs() }
+        }
+        if (checkpointDirectory != null) {
+            KawaAsrCheckpointStore.cleanupStale(checkpointDirectory)
+        }
 
         // Do not create every chunk up front: for a long recording that duplicates almost the
         // entire WAV on disk and can exhaust free storage before the first request is uploaded.
@@ -630,7 +649,39 @@ object CloudTranscription {
                 checkActive()
                 ownerJob?.ensureActive()
                 val offsetMs = offsetBytes / 32L // 16 kHz * mono * PCM16 = 32 bytes per millisecond.
+                val audioDigest = if (checkpointDirectory != null && checkpointIdentity != null) {
+                    KawaAsrCheckpointStore.digestAudioRange(
+                        file = wavFile,
+                        offsetBytes = 44L + offsetBytes,
+                        sizeBytes = size,
+                        checkActive = checkActive,
+                    )
+                } else null
+                val checkpointFile = if (audioDigest != null && checkpointDirectory != null) {
+                    KawaAsrCheckpointStore.fileFor(
+                        directory = checkpointDirectory,
+                        identity = checkpointIdentity.orEmpty(),
+                        chunkIndex = rangeIndex,
+                        audioDigest = audioDigest,
+                    )
+                } else null
+                val restoredChunk = if (checkpointFile != null && audioDigest != null) {
+                    KawaAsrCheckpointStore.read(
+                        file = checkpointFile,
+                        audioDigest = audioDigest,
+                        chunkIndex = rangeIndex,
+                        range = range,
+                        durationMs = durationMs,
+                    )
+                } else null
+                if (restoredChunk != null) {
+                    cues.addAll(restoredChunk.cues)
+                    restoredChunk.language.takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
+                    onProgress("已恢复第 ${chunkNumber}/${ranges.size} 段云端转写结果，跳过重复上传")
+                    continue
+                }
                 val chunk = File.createTempFile("asr-kawa-", ".wav", wavFile.parentFile)
+                val chunkCues = ArrayList<Triple<Long, Long, String>>()
                 try {
                     val header = ByteArray(44)
                     input.seek(0L)
@@ -770,7 +821,22 @@ object CloudTranscription {
                         // The adjacent chunk owns its leading context interval. This keeps a cue
                         // near a hard upload boundary from being emitted twice.
                         if (timeline.first < range.ownedStartMs || timeline.first >= range.ownedEndMs) continue
-                        cues += Triple(timeline.first, timeline.second, text)
+                        val cue = Triple(timeline.first, timeline.second, text)
+                        cues += cue
+                        chunkCues += cue
+                    }
+                    // Commit each successful request before starting the next independently billable upload.
+                    if (checkpointFile != null && audioDigest != null) {
+                        KawaAsrCheckpointStore.write(
+                            file = checkpointFile,
+                            audioDigest = audioDigest,
+                            chunkIndex = rangeIndex,
+                            range = range,
+                            durationMs = durationMs,
+                            language = obj.optString("language").take(64),
+                            cues = chunkCues,
+                            checkActive = checkActive,
+                        )
                     }
                 } finally {
                     runCatching { chunk.delete() }
