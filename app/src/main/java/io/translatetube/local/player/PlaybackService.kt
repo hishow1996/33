@@ -4550,6 +4550,8 @@ class PlaybackService : MediaSessionService() {
                 if (
                     finishedState.key == key &&
                     finishedState.phase == Phase.READY &&
+                    !finishedState.waitingForTranscriptionEngine &&
+                    !finishedState.waitingForDubbingEngine &&
                     !finishedState.lines.any { needsSubtitleTranslation(it, finishedState.sourceLang) }
                 ) {
                     withContext(Dispatchers.IO) {
