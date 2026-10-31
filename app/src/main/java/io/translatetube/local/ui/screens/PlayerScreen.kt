@@ -3268,16 +3268,18 @@ private fun TranscriptionStageResultPreview(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(112.dp)
+                .requiredHeight(112.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
                 .padding(horizontal = 9.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.Center,
         ) {
             if (preview.isEmpty()) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(84.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     Text(
@@ -3289,37 +3291,55 @@ private fun TranscriptionStageResultPreview(
                     )
                 }
             } else {
-                preview.forEachIndexed { index, line ->
-                    if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
-                    Row(
+                repeat(2) { slot ->
+                    if (slot > 0) {
+                        HorizontalDivider(color = Color(0xFFE7ECF2))
+                    }
+                    val line = preview.getOrNull(slot)
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .height(40.dp),
+                        contentAlignment = Alignment.CenterStart,
                     ) {
-                        Text(
-                            "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
-                            modifier = Modifier.width(82.dp),
-                            color = Color(0xFF8B98AA),
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 10.sp,
-                                lineHeight = 14.sp,
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            line.text,
-                            modifier = Modifier.weight(1f),
-                            color = Color(0xFF39485B),
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp,
-                            ),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        if (line != null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
+                                    modifier = Modifier.width(82.dp),
+                                    color = Color(0xFF8B98AA),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 10.sp,
+                                        lineHeight = 14.sp,
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    line.text,
+                                    modifier = Modifier.weight(1f),
+                                    color = Color(0xFF39485B),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp,
+                                    ),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        } else {
+                            Text(
+                                "等待下一条识别结果",
+                                color = Color(0xFFB0BAC8),
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }
