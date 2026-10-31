@@ -2416,9 +2416,16 @@ private fun VideoParsingPage(
                                 enter = fadeIn(tween(150)) + expandVertically(animationSpec = tween(170)),
                                 exit = fadeOut(tween(100)) + shrinkVertically(animationSpec = tween(140)),
                             ) {
+                                val progressText = if (failed) state.failedProgress else state.progress
                                 val stageDetailRows = buildList<Pair<String, String>> {
                                     when (index) {
                                         0 -> {
+                                            add("视频来源" to when (source) {
+                                                VideoSourceKind.YOUTUBE -> "YouTube"
+                                                VideoSourceKind.WEB -> "网页视频"
+                                                VideoSourceKind.LOCAL -> "本地视频"
+                                                VideoSourceKind.UNKNOWN -> "视频"
+                                            })
                                             state.title.takeIf { it.isNotBlank() }?.let { add("视频" to it) }
                                             state.channel.takeIf { it.isNotBlank() }?.let { add("频道" to it) }
                                             if (state.durationMs > 0L) add("时长" to formatFloatingTime(state.durationMs))
@@ -2430,27 +2437,49 @@ private fun VideoParsingPage(
                                                 flow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
                                             ) {
                                                 VideoProcessingFlowPolicy.youtubeSubtitleDetail(
-                                                    progress = if (failed) state.failedProgress else state.progress,
+                                                    progress = progressText,
                                                     subtitleTrackStatus = state.subtitleTrackStatus,
                                                     availableTrackCount = state.availableSubtitleTracks.size,
                                                 )?.let { add("字幕检测" to it) }
+                                            } else {
+                                                compactProcessingProgress(progressText, Phase.PARSING)
+                                                    .takeIf { it.isNotBlank() }
+                                                    ?.let { add("当前任务" to it) }
                                             }
                                         }
                                         1 -> {
-                                            val progressText = if (failed) state.failedProgress else state.progress
-                                            val segmentRegex = Regex("""(?:音轨(?:片段)?|分片|片段)\D{0,16}(\d+)\s*/\s*(\d+)""")
+                                            val segmentRegex = Regex("""(?:音轨(?:片段)?|分片|片段|网页音轨)\D{0,18}(\d+)\s*/\s*(\d+)""")
                                             val segmentMatch = segmentRegex.find(progressText)
                                                 ?: Regex("""(?:已下载|下载中|下载)\D{0,10}(\d+)\s*/\s*(\d+)\D{0,8}(?:分片|片段)""")
                                                     .find(progressText)
                                             segmentMatch?.let {
-                                                add("分片下载" to "${it.groupValues[1]}/${it.groupValues[2]}")
+                                                add("分片进度" to "${it.groupValues[1]}/${it.groupValues[2]}")
+                                            }
+                                            val audioTask = when {
+                                                progressText.contains("刷新") || progressText.contains("失效") -> "刷新音轨链接"
+                                                progressText.contains("yt-dlp", ignoreCase = true) -> "yt-dlp 下载独立音轨"
+                                                segmentMatch != null || progressText.contains("HLS", ignoreCase = true) -> "下载音轨分片"
+                                                progressText.contains("正在选择独立音轨") -> "选择独立音轨"
+                                                progressText.contains("正在从网页媒体源提取") ||
+                                                    progressText.contains("网页媒体流音轨提取") -> "网页媒体流式提取"
+                                                progressText.contains("复用") -> "复用已缓存音频"
+                                                progressText.contains("独立音轨") && progressText.contains("下载") -> "下载独立音轨"
+                                                progressText.contains("提取") -> "提取视频音轨"
+                                                progressText.contains("下载") -> "下载音轨"
+                                                else -> "准备音轨"
+                                            }
+                                            add("当前任务" to audioTask)
+                                            val audioPercent = state.audioProgress?.fraction()
+                                                ?.let { (it * 100f).roundToInt() }
+                                                ?: Regex("""(\d{1,3})%""").find(progressText)
+                                                    ?.groupValues?.get(1)?.toIntOrNull()
+                                            audioPercent?.takeIf { it in 0..100 }?.let {
+                                                add("提取进度" to "$it%")
                                             }
                                             val audioLanguage = state.audioTrackLanguage.trim()
                                             if (audioLanguage.isNotBlank() &&
                                                 audioLanguage.lowercase(java.util.Locale.ROOT) !in setOf("und", "unknown", "undefined")
-                                            ) {
-                                                add("音轨语言" to LangMap.display(audioLanguage))
-                                            }
+                                            ) add("音轨语言" to LangMap.display(audioLanguage))
                                             processingAudioFormatLabel(state.audioTrackMimeType)?.let {
                                                 add("音频格式" to it)
                                             }
@@ -2471,6 +2500,12 @@ private fun VideoParsingPage(
                                                 ?.let { add("转写引擎" to it) }
                                             state.sourceLang.trim().takeIf { it.isNotBlank() }
                                                 ?.let { add("识别语言" to LangMap.display(it)) }
+                                            progressText.takeIf { it.isNotBlank() }?.let {
+                                                add("当前任务" to it)
+                                            }
+                                            state.transcriptionProgressPercent?.takeIf { it in 0..100 }?.let {
+                                                add("处理进度" to "$it%")
+                                            }
                                             if (state.transcriptionTotalSegments > 0) {
                                                 add(
                                                     "已处理分段" to "${state.transcriptionCompletedSegments.coerceIn(0, state.transcriptionTotalSegments)}/${state.transcriptionTotalSegments}",
@@ -2485,22 +2520,49 @@ private fun VideoParsingPage(
                                             } else {
                                                 add("翻译方式" to "外部译文")
                                             }
-                                            add("翻译方向" to "${sourceLanguageDisplay} → 简体中文")
-                                            if (state.totalLines > 0 && !state.manualTranslationWaiting) {
+                                            add("翻译方向" to "$sourceLanguageDisplay → 简体中文")
+                                            if (state.totalLines > 0) {
+                                                val translated = state.translatedLineCount.coerceIn(0, state.totalLines)
+                                                val percent = VideoProcessingFlowPolicy.completionPercent(
+                                                    translated, state.totalLines,
+                                                )
                                                 add(
-                                                    "已翻译" to "${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 条",
+                                                    "翻译进度" to "${translated}/${state.totalLines} 条" +
+                                                        (percent?.let { " · $it%" } ?: ""),
                                                 )
                                             }
+                                            VideoProcessingFlowPolicy.translationBatchLabel(
+                                                state.translationCurrentBatch,
+                                                state.translationTotalBatches,
+                                                state.translationRetryCount,
+                                            )?.let { add("翻译批次" to it) }
+                                            val translationTask = when {
+                                                state.manualTranslationWaiting -> "等待导入外部译文"
+                                                state.manualTranslationModeEnabled -> "外部翻译模式"
+                                                progressText.isNotBlank() -> progressText
+                                                else -> "准备翻译字幕"
+                                            }
+                                            add("当前状态" to translationTask)
                                         }
                                         4 -> {
                                             state.ttsEngineName.trim().takeIf { it.isNotBlank() }
                                                 ?.let { add("配音引擎" to it) }
                                             add("音色" to dubbingVoiceDisplay)
                                             if (state.totalLines > 0) {
+                                                val prepared = state.preparedCount.coerceIn(0, state.totalLines)
+                                                val percent = VideoProcessingFlowPolicy.completionPercent(
+                                                    prepared, state.totalLines,
+                                                )
                                                 add(
-                                                    "已合成" to "${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 句",
+                                                    "配音准备" to "${prepared}/${state.totalLines} 句" +
+                                                        (percent?.let { " · $it%" } ?: ""),
                                                 )
                                             }
+                                            val dubbingTask = state.dubbingStatus.trim()
+                                                .takeIf { it.isNotBlank() }
+                                                ?: progressText.takeIf { it.isNotBlank() }
+                                                    ?.let { compactProcessingProgress(it, Phase.SYNTHESIZING) }
+                                            dubbingTask?.let { add("当前状态" to it) }
                                         }
                                     }
                                 }

@@ -251,6 +251,19 @@ object VideoProcessingFlowPolicy {
 
     fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int = 2
 
+    fun translationBatchLabel(currentBatch: Int, totalBatches: Int, retryCount: Int): String? {
+        if (totalBatches <= 0) return null
+        val current = currentBatch.coerceIn(0, totalBatches)
+        val batch = if (current == 0) "共 ${totalBatches} 批" else "第 ${current}/${totalBatches} 批"
+        return if (retryCount > 0) "$batch · 重试第 $retryCount 次" else batch
+    }
+
+    fun completionPercent(completed: Int, total: Int): Int? {
+        if (total <= 0) return null
+        val safeCompleted = completed.coerceIn(0, total)
+        return ((safeCompleted.toLong() * 100L) / total.toLong()).toInt()
+    }
+
     /**
      * Compact status for YouTube caption discovery, shown inside the video-parsing stage.
      * It deliberately does not turn caption lookup/read operations into audio/ASR stages.

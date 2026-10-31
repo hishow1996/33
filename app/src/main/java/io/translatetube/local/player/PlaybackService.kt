@@ -536,6 +536,11 @@ data class PlayerUiState(
     val lines: List<SubLine> = emptyList(),
     /** Number of rows resolved for the active subtitle-translation pass; avoids rescanning the full list for progress. */
     val translatedLineCount: Int = 0,
+    /** Current translation batch, using one-based numbering for display. */
+    val translationCurrentBatch: Int = 0,
+    val translationTotalBatches: Int = 0,
+    /** Number of retries already used by the current translation batch. */
+    val translationRetryCount: Int = 0,
     /** Subtitle index whose AudioTrack has actually started; separate from the video playhead highlight. */
     val activeDubbingLine: Int = -1,
     val currentLine: Int = -1,
@@ -1110,6 +1115,9 @@ class PlaybackService : MediaSessionService() {
         EngineRestartStage.TRANSCRIPTION -> state.copy(
             lines = emptyList(),
             translatedLineCount = 0,
+            translationCurrentBatch = 0,
+            translationTotalBatches = 0,
+            translationRetryCount = 0,
             totalLines = 0,
             preparedUntil = 0,
             preparedCount = 0,
@@ -1124,6 +1132,9 @@ class PlaybackService : MediaSessionService() {
         EngineRestartStage.TRANSLATION -> state.copy(
             lines = state.lines.mapIndexed { index, line -> line.copy(index = index, zh = null) },
             translatedLineCount = 0,
+            translationCurrentBatch = 0,
+            translationTotalBatches = 0,
+            translationRetryCount = 0,
             preparedUntil = 0,
             preparedCount = 0,
             waitingForTranscriptionEngine = false,
@@ -8830,8 +8841,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         updateUiForSession(key, pipelineGeneration) { state ->
-            if (state.key == key && state.translatedLineCount != 0) {
-                state.copy(translatedLineCount = 0)
+            if (state.key == key) {
+                state.copy(
+                    translatedLineCount = 0,
+                    translationCurrentBatch = 0,
+                    translationTotalBatches = 0,
+                    translationRetryCount = 0,
+                )
             } else state
         }
         fun checkTranslationActive(index: Int) {
@@ -8990,6 +9006,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     ),
                 )
             }
+            val batchSize = 10
+            val translationBatches = pendingIndices.chunked(batchSize)
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     engineName = engineName,
@@ -8997,18 +9015,31 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     lines = updatedLines,
                     totalLines = updatedLines.size,
                     translatedLineCount = completed.coerceAtMost(updatedLines.size),
-                    progress = "翻译成中文 ${completed}/${updatedLines.size} 行",
+                    translationCurrentBatch = 0,
+                    translationTotalBatches = translationBatches.size,
+                    translationRetryCount = 0,
+                    progress = if (translationBatches.isEmpty()) {
+                        "字幕已有可用译文，正在整理结果…"
+                    } else {
+                        "准备翻译 ${pendingIndices.size} 条字幕，共 ${translationBatches.size} 批"
+                    },
                 )
             }
-            val batchSize = 10
             val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
             // Checkpoint the first batch immediately, then every few successful batches and
             // always at the end. This bounds crash recovery loss while avoiding serializing the full
             // subtitle timeline to Room after every 10 translated cues.
-            val translationBatches = pendingIndices.chunked(batchSize)
             for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
                 awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)?.let { return it }
                 awaitProcessingResumed(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    state.copy(
+                        translationCurrentBatch = batchIndex + 1,
+                        translationTotalBatches = translationBatches.size,
+                        translationRetryCount = 0,
+                        progress = "准备第 ${batchIndex + 1}/${translationBatches.size} 批字幕翻译…",
+                    )
+                }
                 val batchStartedAtNanos = System.nanoTime()
                 // The playback layer calls the engine once per small batch, so carry the previous
                 // completed cues here; otherwise engine-local context resets at every boundary.
@@ -9038,6 +9069,18 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 while (unresolvedIndices.isNotEmpty() && attempt < 2) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     val batch = unresolvedIndices.map { plain[it] }
+                    updateUiForSession(key, pipelineGeneration) { state ->
+                        state.copy(
+                            translationCurrentBatch = batchIndex + 1,
+                            translationTotalBatches = translationBatches.size,
+                            translationRetryCount = attempt,
+                            progress = if (attempt == 0) {
+                                "正在请求翻译服务 · 第 ${batchIndex + 1}/${translationBatches.size} 批"
+                            } else {
+                                "第 ${batchIndex + 1}/${translationBatches.size} 批译文不完整，正在重试第 ${attempt + 1} 次"
+                            },
+                        )
+                    }
                     // 请求可能要几十秒：用户这时启用外部翻译，就放弃等待这一批，立刻进入"等待外部译文"。
                     val racedBatch = try {
                         runUntilInterrupted(
@@ -9187,7 +9230,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         totalLines = updatedLines.size,
                         translatedLineCount = completed.coerceAtMost(updatedLines.size),
                         sourceLang = src,
-                        progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                        translationCurrentBatch = batchIndex + 1,
+                        translationTotalBatches = translationBatches.size,
+                        translationRetryCount = 0,
+                        progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已翻译 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                     )
                 }
                 // Keep structured logs bounded: record the first, final and periodic successful batches.

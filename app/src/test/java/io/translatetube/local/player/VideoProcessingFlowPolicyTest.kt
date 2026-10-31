@@ -211,6 +211,28 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun translationBatchLabelsAndPercentagesReflectRealCounters() {
+        assertEquals(
+            "共 8 批",
+            VideoProcessingFlowPolicy.translationBatchLabel(0, 8, 0),
+        )
+        assertEquals(
+            "第 3/8 批",
+            VideoProcessingFlowPolicy.translationBatchLabel(3, 8, 0),
+        )
+        assertEquals(
+            "第 3/8 批 · 重试第 1 次",
+            VideoProcessingFlowPolicy.translationBatchLabel(3, 8, 1),
+        )
+        assertEquals(null, VideoProcessingFlowPolicy.translationBatchLabel(0, 0, 0))
+
+        assertEquals(0, VideoProcessingFlowPolicy.completionPercent(0, 120))
+        assertEquals(29, VideoProcessingFlowPolicy.completionPercent(35, 120))
+        assertEquals(100, VideoProcessingFlowPolicy.completionPercent(150, 120))
+        assertEquals(null, VideoProcessingFlowPolicy.completionPercent(0, 0))
+    }
+
+    @Test
     fun missingTranscriptionEngineMustNotMarkReadyFlowAsComplete() {
         assertEquals(
             2,
