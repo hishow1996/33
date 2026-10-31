@@ -3998,22 +3998,22 @@ class PlaybackService : MediaSessionService() {
                     return@launch
                 }
                 val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
-                val checkpointState = checkpoint?.let { saved ->
-                    val restartStage = chooseEngineRestartStage(
+                val checkpointRestartStage = checkpoint?.let { saved ->
+                    chooseEngineRestartStage(
                         previous = saved.fingerprints,
                         current = currentDomains,
                         state = saved.state,
                         ignoreTranscription = false,
                     )
-                    when (restartStage) {
-                        // A changed ASR configuration invalidates the transcript, but the normal
-                        // audio cache still avoids downloading/extracting the webpage track again.
-                        EngineRestartStage.TRANSCRIPTION -> null
-                        EngineRestartStage.TRANSLATION ->
-                            stateForEngineRestart(saved.state, EngineRestartStage.TRANSLATION)
-                        EngineRestartStage.DUBBING,
-                        null -> saved.state
-                    }
+                }
+                val checkpointState = when (checkpointRestartStage) {
+                    // A changed ASR configuration invalidates the transcript, but the normal
+                    // audio cache still avoids downloading/extracting the webpage track again.
+                    EngineRestartStage.TRANSCRIPTION -> null
+                    EngineRestartStage.TRANSLATION ->
+                        checkpoint?.let { stateForEngineRestart(it.state, EngineRestartStage.TRANSLATION) }
+                    EngineRestartStage.DUBBING,
+                    null -> checkpoint?.state
                 }
                 withContext(Dispatchers.Main.immediate) {
                     if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
@@ -4037,14 +4037,7 @@ class PlaybackService : MediaSessionService() {
                                 } else {
                                     "配音"
                                 },
-                                "引擎配置变化" to when (
-                                    chooseEngineRestartStage(
-                                        checkpoint!!.fingerprints,
-                                        currentDomains,
-                                        checkpoint.state,
-                                        ignoreTranscription = false,
-                                    )
-                                ) {
+                                "引擎配置变化" to when (checkpointRestartStage) {
                                     EngineRestartStage.TRANSCRIPTION -> "转写"
                                     EngineRestartStage.TRANSLATION -> "翻译"
                                     EngineRestartStage.DUBBING -> "配音"
