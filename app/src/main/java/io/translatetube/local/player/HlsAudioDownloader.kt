@@ -413,12 +413,15 @@ internal object HlsAudioDownloader {
                 }
 
                 val cachedSegments = mutableListOf<File>()
+                // Running total of finished segment sizes. Re-statting every earlier segment for
+                // each new one made the cost grow with the square of the segment count.
+                var cachedSegmentBytes = 0L
                 sources.forEachIndexed { index, source ->
                     awaitResume()
                     ownerJob?.ensureActive()
                     val segmentFile = segmentFiles[index]
                     val reusable = reusableSegments[index]
-                    val bytesBeforeSegment = boundedCacheByteTotal(cachedSegments.map { it.length() })
+                    val bytesBeforeSegment = cachedSegmentBytes
                     val segmentProgress: (Long, Long?) -> Unit = { segmentBytes, segmentTotal ->
                         val downloadedSoFar = boundedCacheByteTotal(listOf(bytesBeforeSegment, segmentBytes))
                         val mediaIndex = index - initSegmentOffset
@@ -488,6 +491,7 @@ internal object HlsAudioDownloader {
                         )
                     }
                     cachedSegments += segment
+                    cachedSegmentBytes = boundedCacheByteTotal(listOf(cachedSegmentBytes, segment.length()))
                     segmentFile.parentFile?.setLastModified(System.currentTimeMillis())
                     pruneSegmentCaches(cacheParent, keep = cacheDirectory)
                     segmentProgress(segment.length(), source.byteRangeLength ?: segment.length())
