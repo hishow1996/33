@@ -28,6 +28,12 @@ class LocalPcmAudioCachePolicyTest {
     }
 
     @Test
+    fun freshnessWindowsStayAlignedWithRemoteSourceAudioCache() {
+        assertTrue(LocalPcmAudioCachePolicy.TTL_MS == AsrAudioCachePolicy.TTL_MS)
+        assertTrue(LocalPcmAudioCachePolicy.PARTIAL_TTL_MS == AsrAudioCachePolicy.PARTIAL_TTL_MS)
+    }
+
+    @Test
     fun rejectsPcmFilesLargerThanDecoderAndCacheLimit() {
         assertFalse(
             LocalPcmAudioCachePolicy.canReuse(

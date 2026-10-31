@@ -31,6 +31,18 @@ internal object VideoHistoryCacheCleaner {
             deleteDirectoryIfPresent(segmentDirectory, "HLS 音轨分段")
         }
 
+        // Decoded local PCM is indexed separately from downloaded .bin files because it has a
+        // different format and storage budget. Refuse to remove it while an ASR reader holds it.
+        val localPcmDirectory = File(context.cacheDir, "local_asr_pcm16")
+        for (name in VideoHistoryCacheIndex.localPcmCacheFileNames(context, video.key)) {
+            if (!Regex("^[0-9a-f]{32}\\.pcm16$").matches(name)) continue
+            val pcmFile = File(localPcmDirectory, name)
+            if (!PlaybackService.deleteUnleasedLocalPcmCacheFile(pcmFile)) {
+                throw IOException("转写 PCM 缓存正在使用，暂时无法删除：$name")
+            }
+            deleteFileIfPresent(File(localPcmDirectory, "$name.part"), "转写 PCM 临时文件")
+        }
+
         database.subtitleCacheDao().deleteForVideo(video.key, "${video.key}|")
         // Remove the row last: failures above keep it visible so the user can retry the cleanup.
         database.videoDao().delete(video.key)

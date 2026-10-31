@@ -891,6 +891,18 @@ class PlaybackService : MediaSessionService() {
 
         fun clearAllHistorySessionConfig(context: Context) =
             ReadyHistorySessionConfigStore.clearAll(context)
+
+        /** Delete one history-owned local PCM cache only when no active ASR reader holds it. */
+        fun deleteUnleasedLocalPcmCacheFile(file: File): Boolean {
+            if (!file.exists()) return true
+            val service = instance
+            val deleted = if (service != null) {
+                service.activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+            } else {
+                file.delete()
+            }
+            return deleted || !file.exists()
+        }
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -9713,6 +9725,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         decode: () -> AudioExtract.PcmFile,
     ): Pair<AudioExtract.PcmFile, String?> {
         val path = cacheFile.absolutePath
+        VideoHistoryCacheIndex.rememberLocalPcmCacheFile(this@PlaybackService, sessionKey, cacheFile.name)
         return localAsrPcmLocks.withLock(path) {
             awaitProcessingResumed(sessionKey, pipelineGeneration)
             activeAsrAudioPaths.acquire(path)
