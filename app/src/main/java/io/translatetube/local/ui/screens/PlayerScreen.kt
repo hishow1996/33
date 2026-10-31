@@ -1676,6 +1676,16 @@ private fun VideoParsingPage(
     }
     // YouTube、网页视频与本地视频始终展示完整处理阶段，不再折叠后续步骤。
     val visibleStages = steps.indices.toList()
+    // Restored sessions created before result-preview fields existed can still render
+    // their last source/translated cues from the playable subtitle timeline.
+    val completedTranscriptionPreview = state.transcriptionPreviewLines.ifEmpty {
+        state.lines.takeLast(2)
+    }
+    val completedTranslationPreview = state.translationPreviewLines.ifEmpty {
+        state.lines.takeLast(12).mapNotNull { line ->
+            SubtitleParsers.preferredTranslationText(line)?.let { line.copy(zh = it) }
+        }.takeLast(2)
+    }
     val animatedFraction by animateFloatAsState(
         targetValue = fraction?.coerceIn(0f, 1f) ?: 0f,
         animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
@@ -2616,6 +2626,37 @@ private fun VideoParsingPage(
                                         )
                                     }
                                 }
+                                when (index) {
+                                    2 -> TranscriptionStageResultPreview(
+                                        lines = state.transcriptionPreviewLines,
+                                        emptyText = "识别到的原文字幕会实时显示在这里",
+                                    )
+                                    3 -> TranslationStageResultPreview(
+                                        lines = state.translationPreviewLines,
+                                        emptyText = if (state.manualTranslationWaiting) {
+                                            "导入外部译文后会显示在这里"
+                                        } else {
+                                            "完成的中文译文会实时显示在这里"
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        AnimatedVisibility(
+                            visible = done && index == 2 && completedTranscriptionPreview.isNotEmpty() ||
+                                done && index == 3 && completedTranslationPreview.isNotEmpty(),
+                            enter = fadeIn(tween(150)) + expandVertically(animationSpec = tween(170)),
+                            exit = fadeOut(tween(100)) + shrinkVertically(animationSpec = tween(140)),
+                        ) {
+                            when (index) {
+                                2 -> TranscriptionStageResultPreview(
+                                    lines = completedTranscriptionPreview,
+                                    emptyText = "暂无识别结果",
+                                )
+                                3 -> TranslationStageResultPreview(
+                                    lines = completedTranslationPreview,
+                                    emptyText = "暂无有效译文",
+                                )
                             }
                         }
                         val stageBadgeText = when {
@@ -2722,6 +2763,121 @@ private fun VideoParsingPage(
             onDismiss = { allSubtitlesDialogVisible = false },
             onDownloadSubtitle = onDownloadSubtitle,
         )
+    }
+}
+
+@Composable
+private fun TranscriptionStageResultPreview(
+    lines: List<SubLine>,
+    emptyText: String,
+) {
+    val preview = lines.takeLast(2)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "识别结果",
+            color = Color(0xFF596B82),
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFFF7F9FC))
+                .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (preview.isEmpty()) {
+                Text(
+                    emptyText,
+                    color = Color(0xFF98A3B2),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                )
+            } else {
+                preview.forEachIndexed { index, line ->
+                    if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
+                    Text(
+                        "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
+                        color = Color(0xFF9AA5B4),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    )
+                    Text(
+                        line.text,
+                        color = Color(0xFF39485B),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranslationStageResultPreview(
+    lines: List<SubLine>,
+    emptyText: String,
+) {
+    val preview = lines.mapNotNull { line ->
+        SubtitleParsers.preferredTranslationText(line)?.let { translated -> line to translated }
+    }.takeLast(2)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "翻译结果",
+            color = Color(0xFF596B82),
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFFF7F9FC))
+                .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (preview.isEmpty()) {
+                Text(
+                    emptyText,
+                    color = Color(0xFF98A3B2),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                )
+            } else {
+                preview.forEachIndexed { index, (line, translated) ->
+                    if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
+                    Text(
+                        formatFloatingTime(line.startMs),
+                        color = Color(0xFF9AA5B4),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    )
+                    Text(
+                        "原文",
+                        color = Color(0xFF929EAE),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    )
+                    Text(
+                        line.text,
+                        color = Color(0xFF6F7C8D),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 15.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "中文译文",
+                        color = Color(0xFF23865E),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                    )
+                    Text(
+                        translated,
+                        color = Color(0xFF344457),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }
 
