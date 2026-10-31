@@ -2418,7 +2418,15 @@ private fun ProcessingWorkspace(
         3 -> "翻译内容"
         else -> "配音合成"
     }
-    val isLocalTts = selectedTtsEngineId in setOf("system", "piper", "kokoro")
+    // Prefer the engine that actually ran; preferences are only a fallback before publication.
+    val isLocalTts = if (state.ttsEngineName.isNotBlank()) {
+        state.ttsEngineName.contains("Kokoro", ignoreCase = true) ||
+            state.ttsEngineName.contains("Piper", ignoreCase = true) ||
+            state.ttsEngineName.contains("系统TTS", ignoreCase = true) ||
+            state.ttsEngineName.contains("本地", ignoreCase = true)
+    } else {
+        selectedTtsEngineId in setOf("system", "piper", "kokoro")
+    }
     val isLocalAsr = state.transcriptionEngineName.contains("本地", ignoreCase = true)
     val audio = state.audioProgress
     val audioPercent = audio?.percent?.takeIf { it in 0..100 }
@@ -2722,7 +2730,7 @@ private fun ProcessingWorkspace(
                         }
                         ProcessingModeTag(
                             if (localModeLabel == "外部") "外部" else localModeLabel,
-                            isLocalTranslation,
+                            localModeLabel == "本地",
                         )
                     }
                     if (translationCount.isNotBlank()) {
