@@ -3372,8 +3372,8 @@ private fun TranscriptionStageResultPreview(
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
-                .padding(start = 9.dp, end = 9.dp, top = 3.dp, bottom = 7.dp),
-            verticalArrangement = Arrangement.Top,
+                .padding(horizontal = 9.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.Center,
         ) {
             if (preview.isEmpty()) {
                 Box(
