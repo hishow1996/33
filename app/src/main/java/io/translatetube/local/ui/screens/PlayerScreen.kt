@@ -2799,34 +2799,26 @@ private fun VideoParsingPage(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }
-                                when {
-                                    stageProgressValue != null -> LinearProgressIndicator(
-                                        progress = { stageProgressValue },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(7.dp)
-                                            .clip(CircleShape),
-                                        color = if (failed) Color(0xFFD74655) else Color(0xFF3268F5),
-                                        trackColor = Color(0xFFE2EAF8),
-                                    )
-                                    active && !paused -> LinearProgressIndicator(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(7.dp)
-                                            .clip(CircleShape),
-                                        color = Color(0xFF3268F5),
-                                        trackColor = Color(0xFFE2EAF8),
-                                    )
-                                    else -> LinearProgressIndicator(
-                                        progress = { 0f },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(7.dp)
-                                            .clip(CircleShape),
-                                        color = Color(0xFF3268F5),
-                                        trackColor = Color(0xFFE2EAF8),
-                                    )
-                                }
+                                StageProgressVisual(
+                                    stageIndex = index,
+                                    progress = stageProgressValue,
+                                    isIndeterminate = active &&
+                                        !paused &&
+                                        !failed &&
+                                        !waitingForStageEngine &&
+                                        !waitingForExternalSubtitle &&
+                                        stageProgressValue == null,
+                                    isAnimating = active &&
+                                        !paused &&
+                                        !failed &&
+                                        !waitingForStageEngine &&
+                                        !waitingForExternalSubtitle,
+                                    isPaused = paused,
+                                    isFailed = failed,
+                                    isCompleted = done,
+                                    isSkipped = stageSkipped,
+                                    sourceSubtitlesReady = state.lines.isNotEmpty(),
+                                )
                             }
 
                             fullWidthRows.forEach { (label, value) ->
@@ -2938,6 +2930,276 @@ private fun VideoParsingPage(
             onDismiss = { allSubtitlesDialogVisible = false },
             onDownloadSubtitle = onDownloadSubtitle,
         )
+    }
+}
+
+
+@Composable
+private fun StageProgressVisual(
+    stageIndex: Int,
+    progress: Float?,
+    isIndeterminate: Boolean,
+    isAnimating: Boolean,
+    isPaused: Boolean,
+    isFailed: Boolean,
+    isCompleted: Boolean,
+    isSkipped: Boolean,
+    sourceSubtitlesReady: Boolean,
+) {
+    val transition = rememberInfiniteTransition(label = "stageProgressMotion")
+    val pulse by transition.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 1f,
+        animationSpec = if (isAnimating) {
+            infiniteRepeatable(
+                animation = tween(720),
+                repeatMode = RepeatMode.Reverse,
+            )
+        } else {
+            tween(durationMillis = 0)
+        },
+        label = "stageProgressPulse",
+    )
+    val scanPosition by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = if (isAnimating && isIndeterminate) {
+            infiniteRepeatable(
+                animation = tween(
+                    durationMillis = 1150,
+                    easing = androidx.compose.animation.core.LinearEasing,
+                ),
+                repeatMode = RepeatMode.Restart,
+            )
+        } else {
+            tween(durationMillis = 0)
+        },
+        label = "stageProgressScan",
+    )
+
+    val primaryColor = when {
+        isSkipped -> Color(0xFFB8C1CE)
+        isFailed -> Color(0xFFD74655)
+        isCompleted -> Color(0xFF18A879)
+        isPaused -> Color(0xFFD39A35)
+        else -> Color(0xFF3268F5)
+    }
+    val trackColor = when {
+        isFailed -> Color(0xFFFFE8EA)
+        isSkipped -> Color(0xFFF0F3F7)
+        else -> Color(0xFFE5ECF7)
+    }
+    val fraction = when {
+        isCompleted -> 1f
+        isSkipped -> 0f
+        else -> progress?.coerceIn(0f, 1f) ?: 0f
+    }
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(if (stageIndex == 3) 14.dp else 12.dp),
+    ) {
+        val gap = 2.5.dp.toPx()
+        val fill = if (isSkipped) Color(0xFFAEB8C6) else primaryColor
+        val pulseAlpha = if (isAnimating) pulse else 1f
+        val corner = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+
+        when (stageIndex) {
+            // 1. Video parsing — individual film frames light up from left to right.
+            0 -> {
+                val count = 15
+                val frameHeight = size.height * 0.82f
+                val top = (size.height - frameHeight) / 2f
+                val frameWidth = (size.width - gap * (count - 1)) / count
+                val completedFrames = (fraction * count).toInt()
+                val scanIndex = (scanPosition * count).toInt().coerceIn(0, count - 1)
+                repeat(count) { i ->
+                    val left = i * (frameWidth + gap)
+                    val filled = i < completedFrames
+                    val scanning = isIndeterminate && i == scanIndex
+                    val frameColor = when {
+                        filled -> fill
+                        scanning -> fill.copy(alpha = pulseAlpha)
+                        else -> trackColor
+                    }
+                    drawRoundRect(
+                        color = frameColor,
+                        topLeft = Offset(left, top),
+                        size = Size(frameWidth, frameHeight),
+                        cornerRadius = corner,
+                    )
+                    // Tiny perforations make the progress cells read as a film strip.
+                    val holeColor = if (filled || scanning) {
+                        Color.White.copy(alpha = 0.78f)
+                    } else {
+                        Color(0xFFC7D2E3)
+                    }
+                    val holeWidth = (frameWidth * 0.17f).coerceAtLeast(1.dp.toPx())
+                    val holeHeight = 1.2.dp.toPx()
+                    drawRoundRect(
+                        color = holeColor,
+                        topLeft = Offset(left + 1.dp.toPx(), top + 1.2.dp.toPx()),
+                        size = Size(holeWidth, holeHeight),
+                        cornerRadius = CornerRadius(1.dp.toPx()),
+                    )
+                    drawRoundRect(
+                        color = holeColor,
+                        topLeft = Offset(left + frameWidth - holeWidth - 1.dp.toPx(), top + 1.2.dp.toPx()),
+                        size = Size(holeWidth, holeHeight),
+                        cornerRadius = CornerRadius(1.dp.toPx()),
+                    )
+                }
+            }
+
+            // 2. Audio extraction — a compact waveform fills according to extracted media.
+            1 -> {
+                val heights = floatArrayOf(
+                    0.34f, 0.55f, 0.82f, 0.48f, 0.72f, 0.96f, 0.58f,
+                    0.38f, 0.76f, 0.52f, 0.9f, 0.62f, 0.42f, 0.78f,
+                    0.98f, 0.54f, 0.36f, 0.68f, 0.88f, 0.5f, 0.72f,
+                    0.4f, 0.6f,
+                )
+                val count = heights.size
+                val barGap = 2.2.dp.toPx()
+                val barWidth = (size.width - barGap * (count - 1)) / count
+                val completedBars = (fraction * count).toInt()
+                val scanIndex = (scanPosition * count).toInt().coerceIn(0, count - 1)
+                heights.forEachIndexed { i, heightFactor ->
+                    val isCurrent = isIndeterminate && i == scanIndex
+                    val pulseFactor = if (
+                        isAnimating && !isIndeterminate && i == (completedBars - 1).coerceAtLeast(0)
+                    ) pulse else 1f
+                    val barHeight = (size.height * heightFactor * pulseFactor).coerceAtLeast(2.dp.toPx())
+                    val left = i * (barWidth + barGap)
+                    val top = (size.height - barHeight) / 2f
+                    drawRoundRect(
+                        color = when {
+                            i < completedBars -> fill
+                            isCurrent -> fill.copy(alpha = pulseAlpha)
+                            else -> trackColor
+                        },
+                        topLeft = Offset(left, top),
+                        size = Size(barWidth, barHeight),
+                        cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+                    )
+                }
+            }
+
+            // 3. Transcription — two rows of recognition dots, filled by completed segments.
+            2 -> {
+                val columns = 24
+                val rows = 2
+                val total = columns * rows
+                val radius = 1.55.dp.toPx()
+                val horizontalGap = (size.width - radius * 2f) / (columns - 1)
+                val verticalGap = (size.height - radius * 2f) / (rows - 1)
+                val completedDots = (fraction * total).toInt()
+                val scanIndex = (scanPosition * total).toInt().coerceIn(0, total - 1)
+                repeat(total) { i ->
+                    val row = i / columns
+                    val column = i % columns
+                    val isScanning = isIndeterminate && kotlin.math.abs(i - scanIndex) <= 1
+                    val dotRadius = if (isScanning && i == scanIndex) {
+                        radius * (0.85f + 0.3f * pulse)
+                    } else {
+                        radius
+                    }
+                    val dotColor = when {
+                        i < completedDots -> fill
+                        isScanning -> fill.copy(alpha = if (i == scanIndex) pulseAlpha else 0.55f)
+                        else -> trackColor
+                    }
+                    drawCircle(
+                        color = dotColor,
+                        radius = dotRadius,
+                        center = Offset(
+                            radius + column * horizontalGap,
+                            radius + row * verticalGap,
+                        ),
+                    )
+                }
+            }
+
+            // 4. Translation — source text and Chinese output have separate visual lanes.
+            3 -> {
+                val segments = 18
+                val laneGap = 2.2.dp.toPx()
+                val segmentGap = 2.dp.toPx()
+                val segmentWidth = (size.width - segmentGap * (segments - 1)) / segments
+                val laneHeight = 3.4.dp.toPx()
+                val laneSpacing = 3.dp.toPx()
+                val firstTop = (size.height - laneHeight * 2f - laneSpacing) / 2f
+                val secondTop = firstTop + laneHeight + laneSpacing
+                val sourceFraction = if (sourceSubtitlesReady || isCompleted) 1f else 0f
+                val translationFraction = fraction
+                val sourceFilled = (sourceFraction * segments).toInt()
+                val translatedFilled = (translationFraction * segments).toInt()
+                val scanIndex = (scanPosition * segments).toInt().coerceIn(0, segments - 1)
+                repeat(segments) { i ->
+                    val left = i * (segmentWidth + segmentGap)
+                    drawRoundRect(
+                        color = if (i < sourceFilled) Color(0xFF3268F5) else trackColor,
+                        topLeft = Offset(left, firstTop),
+                        size = Size(segmentWidth, laneHeight),
+                        cornerRadius = CornerRadius(laneHeight / 2f, laneHeight / 2f),
+                    )
+                    val lowerColor = when {
+                        isFailed -> Color(0xFFD74655)
+                        isCompleted -> Color(0xFF18A879)
+                        else -> Color(0xFF22A77D)
+                    }
+                    val lowerFilled = i < translatedFilled
+                    val scanning = isIndeterminate && i == scanIndex
+                    drawRoundRect(
+                        color = when {
+                            lowerFilled -> lowerColor
+                            scanning -> lowerColor.copy(alpha = pulseAlpha)
+                            else -> trackColor
+                        },
+                        topLeft = Offset(left, secondTop),
+                        size = Size(segmentWidth, laneHeight),
+                        cornerRadius = CornerRadius(laneHeight / 2f, laneHeight / 2f),
+                    )
+                }
+            }
+
+            // 5. Dubbing — speech bubbles light up one by one as audio lines are prepared.
+            else -> {
+                val count = 12
+                val bubbleGap = 3.dp.toPx()
+                val bubbleWidth = (size.width - bubbleGap * (count - 1)) / count
+                val bubbleHeight = 7.dp.toPx()
+                val top = 0.7.dp.toPx()
+                val completedBubbles = (fraction * count).toInt()
+                val scanIndex = (scanPosition * count).toInt().coerceIn(0, count - 1)
+                repeat(count) { i ->
+                    val left = i * (bubbleWidth + bubbleGap)
+                    val filled = i < completedBubbles
+                    val scanning = isIndeterminate && i == scanIndex
+                    val bubbleColor = when {
+                        filled -> fill
+                        scanning -> fill.copy(alpha = pulseAlpha)
+                        else -> trackColor
+                    }
+                    drawRoundRect(
+                        color = bubbleColor,
+                        topLeft = Offset(left, top),
+                        size = Size(bubbleWidth, bubbleHeight),
+                        cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
+                    )
+                    val tailRadius = 1.15.dp.toPx()
+                    drawCircle(
+                        color = bubbleColor,
+                        radius = tailRadius,
+                        center = Offset(
+                            left + bubbleWidth * 0.28f,
+                            top + bubbleHeight - 0.15.dp.toPx(),
+                        ),
+                    )
+                }
+            }
+        }
     }
 }
 
