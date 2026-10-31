@@ -9787,7 +9787,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 // Unlike the coarser Room cache checkpoint, persist each completed batch so
                 // force-stop recovery resumes from the exact remaining cue rather than from audio.
-                persistInProgressProcessingCheckpoint(key, pipelineGeneration)
+                pipelineGeneration?.let { generation ->
+                    persistInProgressProcessingCheckpoint(key, generation)
+                }
                 // Keep structured logs bounded: record the first, final and periodic successful batches.
                 val completedBatchCount = batchIndex + 1
                 if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
