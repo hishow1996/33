@@ -340,7 +340,16 @@ internal object HlsAudioDownloader {
                 awaitResume()
                 val rootUri = parseHttpUrl(playlistUrl)
                 val rootOrigin = rootUri
-                var fetched = fetchText(rootUri, mediaHeaders, rootOrigin, ownerJob, userAgent)
+                var fetched = fetchTextWithRetry(
+                    url = rootUri,
+                    headers = mediaHeaders,
+                    rootOrigin = rootOrigin,
+                    ownerJob = ownerJob,
+                    userAgent = userAgent,
+                    awaitResume = awaitResume,
+                    progressLabel = sourceKind.displayName,
+                    onProgress = onProgress,
+                )
                 awaitResume()
                 ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
@@ -357,7 +366,16 @@ internal object HlsAudioDownloader {
                     if (masterDepth > MAX_MASTER_DEPTH) {
                         throw IllegalStateException("HLS 主清单嵌套层数过多，已停止解析。")
                     }
-                    fetched = fetchText(parseHttpUrl(selection.url), mediaHeaders, rootOrigin, ownerJob, userAgent)
+                    fetched = fetchTextWithRetry(
+                        url = parseHttpUrl(selection.url),
+                        headers = mediaHeaders,
+                        rootOrigin = rootOrigin,
+                        ownerJob = ownerJob,
+                        userAgent = userAgent,
+                        awaitResume = awaitResume,
+                        progressLabel = sourceKind.displayName,
+                        onProgress = onProgress,
+                    )
                     awaitResume()
                     ensurePlaylistIsUnencrypted(fetched.text)
                 }
@@ -482,9 +500,9 @@ internal object HlsAudioDownloader {
                             ownerJob = ownerJob,
                             awaitResume = awaitResume,
                             userAgent = userAgent,
-                            onRetry = { attempt ->
+                            onRetry = { attempt, failure ->
                                 onProgress(
-                                    "网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）；已缓存 ${AudioDownloadProgressFormatter.formatBytes(bytesBeforeSegment)}"
+                                    "${MediaDownloadRetryPolicy.retryReasonLabel(failure)}，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt}/${MediaDownloadRetryPolicy.MAX_NETWORK_ATTEMPTS} 次）；已缓存 ${AudioDownloadProgressFormatter.formatBytes(bytesBeforeSegment)}"
                                 )
                             },
                             onBytesProgress = segmentProgress,
@@ -646,7 +664,7 @@ internal object HlsAudioDownloader {
         rootOrigin: String,
         ownerJob: Job?,
         awaitResume: suspend () -> Unit,
-        onRetry: (attemptNumber: Int) -> Unit,
+        onRetry: (attemptNumber: Int, failure: Throwable) -> Unit,
         userAgent: String?,
         onBytesProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
     ): File {
@@ -667,7 +685,7 @@ internal object HlsAudioDownloader {
             headers
         }
         var lastError: Exception? = null
-        for (attempt in 1..3) {
+        for (attempt in 1..MediaDownloadRetryPolicy.MAX_NETWORK_ATTEMPTS) {
             awaitResume()
             ownerJob?.ensureActive()
             part.delete()
@@ -789,9 +807,9 @@ internal object HlsAudioDownloader {
                 part.delete()
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 lastError = error
-                if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
-                onRetry(attempt + 1)
-                kotlinx.coroutines.delay(250L * attempt)
+                if (attempt == MediaDownloadRetryPolicy.MAX_NETWORK_ATTEMPTS || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
+                onRetry(attempt + 1, error)
+                kotlinx.coroutines.delay(MediaDownloadRetryPolicy.retryDelayMillis(error, attempt))
             }
         }
         throw IllegalStateException("HLS 音轨片段下载失败。", lastError)
@@ -1116,6 +1134,47 @@ internal object HlsAudioDownloader {
         safe = Regex("""(?<![A-Za-z0-9])[A-Za-z0-9_./+=-]{48,}(?![A-Za-z0-9])""")
             .replace(safe, "[长令牌已隐藏]")
         return safe.replace(Regex("""\s+"""), " ").trim().take(240)
+    }
+
+    /**
+     * Retry playlist/master-manifest requests as well as media segments. A transient DNS failure
+     * while refreshing a nested HLS playlist must not terminate the whole audio extraction.
+     */
+    private suspend fun fetchTextWithRetry(
+        url: String,
+        headers: Map<String, String>,
+        rootOrigin: String,
+        ownerJob: Job?,
+        userAgent: String?,
+        awaitResume: suspend () -> Unit,
+        progressLabel: String,
+        onProgress: (String) -> Unit,
+    ): FetchedText {
+        var lastError: Exception? = null
+        for (attempt in 1..MediaDownloadRetryPolicy.MAX_NETWORK_ATTEMPTS) {
+            awaitResume()
+            ownerJob?.ensureActive()
+            try {
+                return fetchText(url, headers, rootOrigin, ownerJob, userAgent)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                lastError = error
+                if (
+                    attempt == MediaDownloadRetryPolicy.MAX_NETWORK_ATTEMPTS ||
+                    !MediaDownloadRetryPolicy.shouldRetry(error)
+                ) {
+                    throw error
+                }
+                val waitMillis = MediaDownloadRetryPolicy.retryDelayMillis(error, attempt)
+                onProgress(
+                    "$progressLabel · ${MediaDownloadRetryPolicy.retryReasonLabel(error)}，" +
+                        "正在重试 HLS 清单（第 ${attempt + 1}/${MediaDownloadRetryPolicy.MAX_NETWORK_ATTEMPTS} 次，" +
+                        "${waitMillis / 1_000} 秒后重试）"
+                )
+                kotlinx.coroutines.delay(waitMillis)
+            }
+        }
+        throw IllegalStateException("HLS 清单请求失败。", lastError)
     }
 
     private fun fetchText(

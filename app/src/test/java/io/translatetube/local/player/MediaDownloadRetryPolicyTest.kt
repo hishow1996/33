@@ -1,12 +1,37 @@
 package io.translatetube.local.player
 
 import java.io.IOException
+import java.net.UnknownHostException
 import kotlinx.coroutines.CancellationException
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaDownloadRetryPolicyTest {
+    @Test
+    fun retriesDnsFailuresWithLongerBoundedBackoff() {
+        val dnsFailure = UnknownHostException("Unable to resolve media host")
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(dnsFailure))
+        assertEquals("DNS 域名解析暂时失败", MediaDownloadRetryPolicy.retryReasonLabel(dnsFailure))
+        assertEquals(2_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 1))
+        assertEquals(4_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 2))
+        assertEquals(8_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 3))
+        assertEquals(16_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 4))
+        assertEquals(20_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 5))
+        assertEquals(20_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 6))
+    }
+
+    @Test
+    fun ordinaryNetworkFailuresUseShorterBoundedBackoff() {
+        val networkFailure = IOException("connection reset")
+        assertEquals(750L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 1))
+        assertEquals(1_500L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 2))
+        assertEquals(3_000L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 3))
+        assertEquals(6_000L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 4))
+        assertEquals(8_000L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 5))
+    }
+
     @Test
     fun retriesTransientNetworkErrorsAndHttpStatuses() {
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("connection reset")))
