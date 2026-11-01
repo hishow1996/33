@@ -43,11 +43,6 @@ internal object SpeakerAssignmentPolicy {
     private const val MIN_STABLE_ANCHOR_CUE_COUNT = 2
     private const val MIN_STABLE_ANCHOR_SHARE = 0.72
     private const val MIN_STABLE_ANCHOR_LEAD_RATIO = 1.25
-    private const val MIN_STABLE_ANCHOR_OVERLAP_MS = 450L
-    private const val MIN_SINGLE_CUE_STABLE_OVERLAP_MS = 1_200L
-    private const val MIN_STABLE_ANCHOR_CUE_COUNT = 2
-    private const val MIN_STABLE_ANCHOR_SHARE = 0.72
-    private const val MIN_STABLE_ANCHOR_LEAD_RATIO = 1.25
 
     /** Convert native diarizer segments once, retaining confidence for every caller. */
     fun observationsFromSegments(segments: List<SpeakerDiarizer.Segment>): List<SpeakerObservation> =
