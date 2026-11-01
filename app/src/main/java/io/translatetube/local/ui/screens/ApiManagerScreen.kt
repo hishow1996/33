@@ -44,6 +44,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalDensity
+import android.graphics.Rect
 import android.net.Uri
 import java.io.File
 import java.util.Locale
@@ -1314,17 +1316,54 @@ private fun GenericApiLogo() {
 private fun ConfigureDialogImeResize() {
     val view = LocalView.current
     DisposableEffect(view) {
-        val window = (view.parent as? DialogWindowProvider)?.window
-        val originalSoftInputMode = window?.attributes?.softInputMode
-        if (window != null) {
-            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        var parent = view.parent
+        var dialogWindow: android.view.Window? = null
+        while (parent != null && dialogWindow == null) {
+            if (parent is DialogWindowProvider) dialogWindow = parent.window
+            parent = parent.parent
+        }
+        val originalSoftInputMode = dialogWindow?.attributes?.softInputMode
+        if (dialogWindow != null) {
+            dialogWindow.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
         onDispose {
-            if (window != null && originalSoftInputMode != null) {
-                window.setSoftInputMode(originalSoftInputMode)
+            if (dialogWindow != null && originalSoftInputMode != null) {
+                dialogWindow.setSoftInputMode(originalSoftInputMode)
             }
         }
     }
+}
+
+/**
+ * Measure the area hidden by the software keyboard using the window's visible
+ * display frame. This also works on older Android versions where Compose IME
+ * insets may not reliably resize a Dialog window.
+ */
+@Composable
+private fun rememberDialogImeHeight(): androidx.compose.ui.unit.Dp {
+    val view = LocalView.current
+    val density = LocalDensity.current
+    var keyboardHeightPx by remember(view) { mutableStateOf(0) }
+
+    DisposableEffect(view) {
+        val rootView = view.rootView
+        val visibleFrame = Rect()
+        val observer = rootView.viewTreeObserver
+        val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            rootView.getWindowVisibleDisplayFrame(visibleFrame)
+            val screenHeight = rootView.resources.displayMetrics.heightPixels
+            val hiddenHeight = (screenHeight - visibleFrame.bottom).coerceAtLeast(0)
+            keyboardHeightPx = if (hiddenHeight > screenHeight * 0.15f) hiddenHeight else 0
+        }
+        observer.addOnGlobalLayoutListener(listener)
+        listener.onGlobalLayout()
+
+        onDispose {
+            if (observer.isAlive) observer.removeOnGlobalLayoutListener(listener)
+        }
+    }
+
+    return with(density) { keyboardHeightPx.toDp() }
 }
 
 @Composable
@@ -1367,6 +1406,11 @@ private fun FreeModelConfigDialog(
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     val configuration = LocalConfiguration.current
+    val keyboardHeight = rememberDialogImeHeight()
+    val maxDialogHeight = minOf(
+        (configuration.screenHeightDp * 0.85f).dp,
+        (configuration.screenHeightDp.dp - keyboardHeight - 24.dp).coerceAtLeast(240.dp),
+    )
 
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
@@ -1375,8 +1419,7 @@ private fun FreeModelConfigDialog(
         ConfigureDialogImeResize()
         Column(
             Modifier.fillMaxWidth(0.92f)
-                .imePadding()
-                .heightIn(max = (configuration.screenHeightDp * 0.85f).dp)
+                .heightIn(max = maxDialogHeight)
                 .clip(RoundedCornerShape(20.dp)).background(SurfaceDark)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 18.dp, vertical = 16.dp),
@@ -1657,6 +1700,11 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val credentialsReady = apiCredentialsReady && (fixedEngine || model.isNotBlank())
 
     val configuration = LocalConfiguration.current
+    val keyboardHeight = rememberDialogImeHeight()
+    val maxDialogHeight = minOf(
+        (configuration.screenHeightDp * 0.84f).dp,
+        (configuration.screenHeightDp.dp - keyboardHeight - 24.dp).coerceAtLeast(240.dp),
+    )
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -1835,8 +1883,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         }
         Column(
             Modifier.fillMaxWidth(0.94f)
-                .imePadding()
-                .heightIn(max = (configuration.screenHeightDp * 0.84f).dp)
+                .heightIn(max = maxDialogHeight)
                 .clip(RoundedCornerShape(20.dp)).background(SurfaceDark)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 18.dp, vertical = 16.dp)
