@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.asr.SpeakerDiarizer
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
