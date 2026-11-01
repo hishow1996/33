@@ -3508,16 +3508,19 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 4. Translation — the original subtitle is a straight blue rail;
-            // a small green car travels along it and leaves the translated range behind.
+            // 4. Translation — a miniature road: blue road edges show source readiness,
+            // and the green car leaves a translated trail behind it.
             3 -> {
-                val roadStart = 6.dp.toPx()
-                val roadEnd = (size.width - 6.dp.toPx()).coerceAtLeast(roadStart)
-                val roadY = size.height * 0.74f
+                val roadStart = 5.dp.toPx()
+                val roadEnd = (size.width - 5.dp.toPx()).coerceAtLeast(roadStart)
+                val roadY = size.height * 0.72f
+                val roadHeight = 5.8.dp.toPx()
+                val roadTop = roadY - roadHeight / 2f
+                val roadWidth = (roadEnd - roadStart).coerceAtLeast(0f)
                 val railColor = if (sourceSubtitlesReady || isCompleted) {
                     Color(0xFF3268F5)
                 } else {
-                    trackColor
+                    Color(0xFFB8C5D6)
                 }
                 val carColor = when {
                     isFailed -> Color(0xFFD74655)
@@ -3525,45 +3528,69 @@ private fun StageProgressVisual(
                     isSkipped -> Color(0xFF9AA6B5)
                     else -> Color(0xFF22A77D)
                 }
+                val trailColor = when {
+                    isFailed -> Color(0xFFD74655)
+                    isPaused -> Color(0xFFD39A35)
+                    isCompleted -> Color(0xFF18A879)
+                    else -> Color(0xFF22A77D)
+                }
+                val carWidth = 12.dp.toPx()
+                val carStart = roadStart + carWidth / 2f
+                val carEnd = (roadEnd - carWidth / 2f).coerceAtLeast(carStart)
                 val carProgress = when {
                     isSkipped -> 0f
                     isIndeterminate && isAnimating -> scanPosition
                     else -> fraction
                 }.coerceIn(0f, 1f)
-                val carCenterX = roadStart + (roadEnd - roadStart) * carProgress
-                val carWidth = 12.dp.toPx()
-                val wheelRadius = 1.45.dp.toPx()
-                val wheelY = roadY - wheelRadius * 0.2f
+                val carCenterX = carStart + (carEnd - carStart) * carProgress
+                val wheelRadius = 1.4.dp.toPx()
+                val wheelY = roadY - 0.2.dp.toPx()
+                val roadCorner = CornerRadius(2.7.dp.toPx(), 2.7.dp.toPx())
 
-                // The blue line communicates that the source subtitle track is ready.
-                drawLine(
+                // Road surface and edge lines make this read as a road, not a thin rail.
+                drawRoundRect(
+                    color = Color(0xFFDCE5EF),
+                    topLeft = Offset(roadStart, roadTop),
+                    size = Size(roadWidth, roadHeight),
+                    cornerRadius = roadCorner,
+                )
+                drawRoundRect(
                     color = railColor,
-                    start = Offset(roadStart, roadY),
-                    end = Offset(roadEnd, roadY),
-                    strokeWidth = 2.dp.toPx(),
-                    cap = StrokeCap.Round,
+                    topLeft = Offset(roadStart, roadTop),
+                    size = Size(roadWidth, roadHeight),
+                    cornerRadius = roadCorner,
+                    style = Stroke(width = 0.8.dp.toPx()),
                 )
 
-                // A green/red/amber trail marks only the known translated portion.
+                // The trail grows only with the known translated fraction.
                 if (!isIndeterminate && !isSkipped && fraction > 0f) {
                     drawLine(
-                        color = if (isFailed) Color(0xFFD74655) else if (isPaused) Color(0xFFD39A35) else Color(0xFF22A77D),
-                        start = Offset(roadStart, roadY),
+                        color = trailColor,
+                        start = Offset(roadStart + 1.dp.toPx(), roadY),
                         end = Offset(carCenterX, roadY),
-                        strokeWidth = 2.dp.toPx(),
-                        cap = StrokeCap.Round,
-                    )
-                } else if (isCompleted) {
-                    drawLine(
-                        color = Color(0xFF18A879),
-                        start = Offset(roadStart, roadY),
-                        end = Offset(roadEnd, roadY),
-                        strokeWidth = 2.dp.toPx(),
+                        strokeWidth = 2.4.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                 }
 
-                // Compact car body, raised cabin, windows and two wheels.
+                // White broken lane markings sit above the progress trail.
+                val dashWidth = 3.4.dp.toPx()
+                val dashGap = 3.8.dp.toPx()
+                val dashHeight = 0.75.dp.toPx()
+                val dashCount = ((roadWidth + dashGap) / (dashWidth + dashGap)).toInt().coerceAtLeast(1)
+                repeat(dashCount) { index ->
+                    val dashLeft = roadStart + 2.dp.toPx() + index * (dashWidth + dashGap)
+                    if (dashLeft + dashWidth < roadEnd - 1.dp.toPx()) {
+                        drawRoundRect(
+                            color = Color.White.copy(alpha = 0.94f),
+                            topLeft = Offset(dashLeft, roadY - dashHeight / 2f),
+                            size = Size(dashWidth, dashHeight),
+                            cornerRadius = CornerRadius(dashHeight / 2f),
+                        )
+                    }
+                }
+
+                // Keep the compact car fully inside the road, including at both ends.
                 val carLeft = carCenterX - carWidth / 2f
                 val bodyTop = roadY - 5.1.dp.toPx()
                 val bodyHeight = 4.6.dp.toPx()
@@ -3582,13 +3609,13 @@ private fun StageProgressVisual(
                 }
                 drawPath(cabin, carColor)
                 drawRoundRect(
-                    color = Color.White.copy(alpha = 0.9f),
+                    color = Color.White.copy(alpha = 0.94f),
                     topLeft = Offset(carLeft + 4.4.dp.toPx(), bodyTop - 1.9.dp.toPx()),
                     size = Size(1.8.dp.toPx(), 1.8.dp.toPx()),
                     cornerRadius = CornerRadius(0.45.dp.toPx()),
                 )
                 drawRoundRect(
-                    color = Color.White.copy(alpha = 0.9f),
+                    color = Color.White.copy(alpha = 0.94f),
                     topLeft = Offset(carLeft + 6.7.dp.toPx(), bodyTop - 1.9.dp.toPx()),
                     size = Size(1.7.dp.toPx(), 1.8.dp.toPx()),
                     cornerRadius = CornerRadius(0.45.dp.toPx()),
