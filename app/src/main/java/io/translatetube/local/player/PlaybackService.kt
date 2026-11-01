@@ -926,6 +926,19 @@ class PlaybackService : MediaSessionService() {
             }
             return deleted || !file.exists()
         }
+
+        /** Delete one downloaded ASR source-audio cache only when no active reader owns it. */
+        fun deleteUnleasedAsrAudioCacheFile(file: File): Boolean {
+            val service = instance
+            val deleted = if (service != null) {
+                service.activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) {
+                    !file.exists() || file.delete()
+                }
+            } else {
+                !file.exists() || file.delete()
+            }
+            return deleted || !file.exists()
+        }
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -10246,7 +10259,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     }
 
     private fun asrAudioCacheDirectory(): File =
-        File(cacheDir, "asr_audio_retry").apply { mkdirs() }
+        AsrAudioCacheStorage.directory(this@PlaybackService)
 
     private fun asrAudioCacheFile(identity: String, cacheNamespace: String? = null): File {
         // YouTube's ASR cache namespace is versioned independently so audio fetched by the old
