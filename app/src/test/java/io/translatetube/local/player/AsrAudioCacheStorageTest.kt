@@ -66,4 +66,36 @@ class AsrAudioCacheStorageTest {
             root.deleteRecursively()
         }
     }
+    @Test
+    fun keepsLegacyEntriesWhenDestinationHasDifferentEntryType() {
+        val root = createTempDir(prefix = "asr-audio-type-collision")
+        try {
+            val legacy = File(root, "cache/asr_audio_retry")
+            val destination = File(root, "no-backup/asr_audio_retry")
+
+            // Legacy file collides with a destination directory.
+            File(destination, "audio.bin").mkdirs()
+            File(legacy, "audio.bin").apply {
+                parentFile?.mkdirs()
+                writeText("legacy-audio")
+            }
+
+            // Legacy directory collides with a destination file.
+            File(destination, "segments").writeText("persistent-file")
+            File(legacy, "segments/00000.seg").apply {
+                parentFile?.mkdirs()
+                writeText("legacy-segment")
+            }
+
+            assertFalse(AsrAudioCacheStorage.migrateLegacyDirectory(legacy, destination))
+            assertTrue(legacy.isDirectory)
+            assertEquals("legacy-audio", File(legacy, "audio.bin").readText())
+            assertEquals("legacy-segment", File(legacy, "segments/00000.seg").readText())
+            assertTrue(File(destination, "audio.bin").isDirectory)
+            assertEquals("persistent-file", File(destination, "segments").readText())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
 }

@@ -71,8 +71,9 @@ internal object AsrAudioCacheStorage {
                     // The persistent destination already has a usable file with this name.
                     succeeded = false
                 }
-            } else if (!child.deleteRecursively() && child.exists()) {
-                // A name collision with a different entry type is not safe to overwrite.
+            } else {
+                // A name collision with a different entry type is not safe to overwrite or delete.
+                // Keep the legacy entry in place so a later migration attempt can recover it.
                 succeeded = false
             }
         }
