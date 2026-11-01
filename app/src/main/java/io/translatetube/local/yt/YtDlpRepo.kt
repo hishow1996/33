@@ -1535,7 +1535,14 @@ object YtDlpRepo {
                     title = title,
                     durationSec = info.optDouble("duration", 0.0).toInt().coerceAtLeast(0),
                     mediaUrl = url,
-                    referrer = headers?.optString("Referer").orEmpty().takeUnless { it == "null" }.orEmpty(),
+                    // Keep the source page available for later recovery when temporary CDN
+                    // media URLs expire. Some extractors omit Referer from http_headers even
+                    // though the original page URL is the correct request context.
+                    referrer = headers?.optString("Referer")
+                        .orEmpty()
+                        .takeUnless { it == "null" }
+                        .orEmpty()
+                        .ifBlank { pageUrl.trim() },
                     cookie = effectiveCookie,
                 )
                 AppLogStore.info(
