@@ -11168,12 +11168,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
 
         try {
-            val refreshedMedia = io.translatetube.local.yt.YtDlpRepo.resolve(
-                applicationContext,
-                pageUrl,
-                cookieHeader,
-            )
-            val refreshedCookie = refreshedMedia.cookie.takeIf { it.isNotBlank() } ?: cookieHeader
+            // downloadAudio performs a fresh page extraction internally. Avoid a separate
+            // resolve() request first so a low-RAM/mobile-data device parses the page only once.
             val refreshedAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
                 applicationContext,
                 pageUrl,
@@ -11209,24 +11205,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         } else state
                     }
                 },
-                cookieHeader = refreshedCookie,
-            )
-            VideoHistoryCacheIndex.rememberAudioCacheFile(
-                this@PlaybackService,
-                sessionKey,
-                destination.name,
-                sourceIdentity = MediaUrlCacheIdentity.canonicalUrl(refreshedMedia.mediaUrl),
+                cookieHeader = cookieHeader,
             )
             io.translatetube.local.util.AppLogStore.info(
                 context = applicationContext,
                 tag = "WebAudioExtraction",
-                message = "网页媒体临时地址过期，重新解析成功并获取到音轨",
+                message = "网页媒体临时地址过期，重新提取页面并下载纯音频成功",
                 diagnosticContext = mapOf(
                     "原始错误分类" to RemoteAudioFailurePolicy.classify(originalFailure).code,
                     "网页主机名" to pageUri.host.orEmpty(),
-                    "新媒体主机名" to runCatching { java.net.URI(refreshedMedia.mediaUrl).host }.getOrNull().orEmpty(),
-                    "是否恢复 Cookie" to (!refreshedCookie.isNullOrBlank()).toString(),
-                    "重新解析后媒体类型" to if (HlsAudioDownloader.isManifestUrl(refreshedMedia.mediaUrl)) "HLS/M3U8" else "直链媒体",
+                    "是否恢复 Cookie" to (!cookieHeader.isNullOrBlank()).toString(),
+                    "重新提取方式" to "yt-dlp bestaudio，仅获取音频",
                 ),
             )
             return refreshedAudio
