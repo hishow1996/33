@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.asr.SpeakerDiarizer
+
 /**
  * Converts temporary diarizer cluster labels to IDs ordered by first appearance and attributes
  * diarized segments to subtitle cues without allocating several intermediate collections per cue.
@@ -24,6 +26,17 @@ internal object SpeakerAssignmentPolicy {
         var overlapMs: Long = 0L,
         var confidenceOverlap: Double = 0.0,
     )
+
+    /** Convert native diarizer segments once, retaining confidence for every caller. */
+    fun observationsFromSegments(segments: List<SpeakerDiarizer.Segment>): List<SpeakerObservation> =
+        segments.map { segment ->
+            SpeakerObservation(
+                speakerId = segment.speaker,
+                startMs = (segment.startSec * 1000f).toLong(),
+                endMs = (segment.endSec * 1000f).toLong(),
+                confidence = segment.confidence,
+            )
+        }
 
     fun canonicalSpeakerIds(observations: List<SpeakerObservation>): Map<Int, Int> {
         if (observations.isEmpty()) return emptyMap()

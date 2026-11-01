@@ -12691,14 +12691,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
             // Build observations once: the Honor 10 class of devices benefits from avoiding
             // a second per-segment list allocation during the two speaker-matching passes.
-            val speakerObservations = segments.map { segment ->
-                SpeakerAssignmentPolicy.SpeakerObservation(
-                    speakerId = segment.speaker,
-                    startMs = (segment.startSec * 1000f).toLong(),
-                    endMs = (segment.endSec * 1000f).toLong(),
-                    confidence = segment.confidence,
-                )
-            }
+            val speakerObservations = SpeakerAssignmentPolicy.observationsFromSegments(segments)
             // sherpa-onnx cluster labels are arbitrary; normalize by first appearance so voice
             // identities remain stable when the diarizer chooses different raw cluster numbers.
             val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(speakerObservations)
@@ -12932,17 +12925,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         releaseActiveAsrAudio(leasedPath)
                     }
                 }
-                val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                        if (state.key == sessionKey) state.copy(
-                                                progress = "人物识别 · $message",
-                                                transcriptionProgressPercent = null,
-                                                transcriptionCompletedSegments = 0,
-                                                transcriptionTotalSegments = 0,
-                                            ) else state
+                val segments = try {
+                    SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
+                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                            if (state.key == sessionKey) state.copy(
+                                progress = "人物识别 · $message",
+                                transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
+                            ) else state
+                        }
                     }
+                } finally {
+                    // Release the decoded 16 kHz analysis buffer before voice assignment and TTS setup.
+                    pcm.samples.fill(0f)
                 }
-                detectedSpeakerCount = segments.map { it.speaker }.distinct().size
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
@@ -12955,23 +12952,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // sherpa-onnx cluster labels are arbitrary identifiers, not persistent person IDs.
                 // Normalize them by first appearance so a fresh diarization run cannot swap voices
                 // merely because the model numbered the same people differently.
-                val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(
-                    segments.map { segment ->
-                        SpeakerAssignmentPolicy.SpeakerObservation(
-                            speakerId = segment.speaker,
-                            startMs = (segment.startSec * 1000f).toLong(),
-                            endMs = (segment.endSec * 1000f).toLong(),
-                        )
-                    }
-                )
-                val speakerObservations = segments.map { segment ->
-                    SpeakerAssignmentPolicy.SpeakerObservation(
-                        speakerId = segment.speaker,
-                        startMs = (segment.startSec * 1000f).toLong(),
-                        endMs = (segment.endSec * 1000f).toLong(),
-                        confidence = segment.confidence,
-                    )
-                }
+                val speakerObservations = SpeakerAssignmentPolicy.observationsFromSegments(segments)
+                val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(speakerObservations)
+                detectedSpeakerCount = canonicalSpeakerIds.size
                 val updated = originalLines.map { line ->
                     val cueDurationMs = if (line.startMs >= 0L && line.endMs > line.startMs) {
                         line.endMs - line.startMs

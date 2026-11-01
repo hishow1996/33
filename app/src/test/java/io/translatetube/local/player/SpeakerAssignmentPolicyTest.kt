@@ -5,6 +5,19 @@ import org.junit.Test
 
 class SpeakerAssignmentPolicyTest {
     @Test
+    fun observationsFromSegmentsPreserveTimestampsAndModelConfidence() {
+        val observations = SpeakerAssignmentPolicy.observationsFromSegments(
+            listOf(SpeakerDiarizer.Segment(0.25f, 0.75f, 12, 0.87f))
+        )
+
+        assertEquals(1, observations.size)
+        assertEquals(12, observations.single().speakerId)
+        assertEquals(250L, observations.single().startMs)
+        assertEquals(750L, observations.single().endMs)
+        assertEquals(0.87f, observations.single().confidence, 0.0001f)
+    }
+
+    @Test
     fun canonicalIdsFollowFirstAppearanceInsteadOfRawModelLabels() {
         val observations = listOf(
             SpeakerAssignmentPolicy.SpeakerObservation(91, 0L, 900L),
