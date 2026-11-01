@@ -1387,10 +1387,19 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     Text("人物 ${index + 1}", color = OnBg)
+                                    if (person.sampleText.isNotBlank()) {
+                                        Text(
+                                            person.sampleText,
+                                            color = SubText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                     Text(
                                         "${person.subtitleCount} 条字幕 · $voiceName",
                                         color = SubText,
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.labelSmall,
                                     )
                                 }
                                 Icon(Icons.Filled.ArrowForwardIos, contentDescription = null, tint = SubText)

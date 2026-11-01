@@ -984,6 +984,7 @@ class PlaybackService : MediaSessionService() {
         val firstLineIndex: Int,
         val subtitleCount: Int,
         val voiceId: Int,
+        val sampleText: String,
     )
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -1023,6 +1024,10 @@ class PlaybackService : MediaSessionService() {
                     firstLineIndex = firstIndex,
                     subtitleCount = indexes.size,
                     voiceId = voiceId.coerceIn(-1, 53),
+                    sampleText = (firstLine.zh?.takeIf { it.isNotBlank() } ?: firstLine.text)
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                        .take(88),
                 )
             }
     }
