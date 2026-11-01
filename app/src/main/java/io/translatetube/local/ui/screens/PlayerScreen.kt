@@ -3306,10 +3306,10 @@ private fun StageProgressVisual(
     // without resetting the current helix pose; resuming continues from that pose.
     val translationAnimationActive = stageIndex == 3 && isAnimating &&
         !isPaused && !isFailed && !isCompleted && !isSkipped
-    val translationHelixRotation = remember {
+    val translationHelixRotation = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
     }
-    val translationHelixPulse = remember {
+    val translationHelixPulse = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
     }
     LaunchedEffect(translationAnimationActive) {
@@ -3344,9 +3344,6 @@ private fun StageProgressVisual(
             }
         }
     }
-    val translationHelixRotationPhase = translationHelixRotation.value
-    val translationHelixPulsePhase = translationHelixPulse.value
-
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
         isFailed -> Color(0xFFD74655)
@@ -3590,6 +3587,10 @@ private fun StageProgressVisual(
 
 // 4. Translation — four open-ended DNA double-helix cycles.
             3 -> {
+                // Read animation values during Canvas drawing so frames invalidate drawing,
+                // not the whole composable tree.
+                val translationHelixRotationPhase = translationHelixRotation.value
+                val translationHelixPulsePhase = translationHelixPulse.value
                 val progressX = size.width * fraction
                 val centerY = size.height / 2f
                 val amplitude = size.height * 0.29f
@@ -3600,7 +3601,8 @@ private fun StageProgressVisual(
                 val twist = kotlin.math.sin(translationHelixRotationPhase) * 0.62f
                 fun phaseAt(x: Float): Float {
                     val t = (x / size.width).coerceIn(0f, 1f)
-                    val envelope = 4f * t * (1f - t)
+                    val envelopeWave = kotlin.math.sin(kotlin.math.PI.toFloat() * t)
+                    val envelope = envelopeWave * envelopeWave
                     return basePhase + totalPhase * t + twist * envelope
                 }
                 fun strandY(x: Float, upperSign: Float): Float {
@@ -3623,28 +3625,22 @@ private fun StageProgressVisual(
                     }
                 }
 
-                // Detect the eight interior crossover points from the actual animated curves.
-                // Two rungs are then placed near the opposite ends of every interval: 14 total.
+                // Solve the eight known interior crossovers with bisection.
+                // This keeps rung count and spacing stable while the phase envelope moves them.
                 val crossings = ArrayList<Float>(8)
-                var previousX = 0f
-                var previousValue = kotlin.math.sin(phaseAt(previousX))
-                for (index in 1..sampleCount) {
-                    val x = size.width * index.toFloat() / sampleCount
-                    val value = kotlin.math.sin(phaseAt(x))
-                    if (kotlin.math.abs(value) < 0.0001f) {
-                        if (crossings.isEmpty() || x - crossings.last() > 0.8.dp.toPx()) {
-                            crossings.add(x)
-                        }
-                    } else if (previousValue * value < 0f) {
-                        val ratio = kotlin.math.abs(previousValue) /
-                            (kotlin.math.abs(previousValue) + kotlin.math.abs(value)).coerceAtLeast(0.0001f)
-                        val crossingX = previousX + (x - previousX) * ratio
-                        if (crossings.isEmpty() || crossingX - crossings.last() > 0.8.dp.toPx()) {
-                            crossings.add(crossingX)
+                repeat(8) { crossingIndex ->
+                    val targetPhase = kotlin.math.PI.toFloat() * crossingIndex
+                    var low = 0f
+                    var high = size.width
+                    repeat(20) {
+                        val middle = (low + high) / 2f
+                        if (phaseAt(middle) < targetPhase) {
+                            low = middle
+                        } else {
+                            high = middle
                         }
                     }
-                    previousX = x
-                    previousValue = value
+                    crossings.add((low + high) / 2f)
                 }
 
                 val rungPositions = ArrayList<Float>(14)
@@ -3708,7 +3704,7 @@ private fun StageProgressVisual(
                             brush = gradient,
                             start = Offset(x, yA),
                             end = Offset(x, yB),
-                            strokeWidth = rungStroke + strength * 0.75.dp.toPx(),
+                            strokeWidth = rungStroke + strength * 1.0.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                         if (strength > 0.04f) {
@@ -3716,7 +3712,7 @@ private fun StageProgressVisual(
                                 color = Color.White.copy(alpha = strength * 0.82f),
                                 start = Offset(x, yA),
                                 end = Offset(x, yB),
-                                strokeWidth = 0.65.dp.toPx() + strength * 0.45.dp.toPx(),
+                                strokeWidth = 0.8.dp.toPx() + strength * 0.55.dp.toPx(),
                                 cap = StrokeCap.Round,
                             )
                         }
@@ -3736,9 +3732,39 @@ private fun StageProgressVisual(
                     )
                 }
 
+                // Alternate which strand appears in front at each crossover.
+                // The full base paths remain continuous underneath these short overpass accents.
+                fun drawAlternatingOverpasses(
+                    alpha: Float = 1f,
+                    strokeWidth: Float = curveStroke + 0.35.dp.toPx(),
+                ) {
+                    crossings.forEachIndexed { crossingIndex, crossingX ->
+                        val startX = (crossingX - 3.dp.toPx()).coerceAtLeast(0f)
+                        val endX = (crossingX + 3.dp.toPx()).coerceAtMost(size.width)
+                        val strandAIsFront = crossingIndex % 2 == 0
+                        val overpass = Path()
+                        val segmentSamples = 8
+                        for (sample in 0..segmentSamples) {
+                            val x = startX + (endX - startX) * sample / segmentSamples.toFloat()
+                            val y = strandY(x, if (strandAIsFront) -1f else 1f)
+                            if (sample == 0) overpass.moveTo(x, y) else overpass.lineTo(x, y)
+                        }
+                        drawPath(
+                            overpass,
+                            color = (if (strandAIsFront) blueStrandColor else greenStrandColor)
+                                .copy(alpha = alpha),
+                            style = Stroke(
+                                width = strokeWidth,
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round,
+                            ),
+                        )
+                    }
+                }
+
                 val motionEnabled = isAnimating && !isPaused && !isFailed &&
                     !isCompleted && !isSkipped
-                val pulseRadius = 13.dp.toPx()
+                val pulseRadius = 24.dp.toPx()
 
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = progressX.coerceIn(0f, size.width)) {
@@ -3747,6 +3773,7 @@ private fun StageProgressVisual(
                             pulseRadius = pulseRadius,
                         )
                         drawActiveCurves()
+                        drawAlternatingOverpasses()
 
                         // A bright, short trailing glow travels across both continuous strands.
                         if (motionEnabled) {
@@ -3759,6 +3786,7 @@ private fun StageProgressVisual(
                                     alpha = 0.56f,
                                     strokeWidth = 3.1.dp.toPx(),
                                 )
+                                drawAlternatingOverpasses(alpha = 0.72f, strokeWidth = 3.4.dp.toPx())
                             }
                         }
                     }
@@ -3772,6 +3800,7 @@ private fun StageProgressVisual(
                     ) {
                         drawActiveRungs(pulseHead = scanHead, pulseRadius = scanRadius)
                         drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
+                        drawAlternatingOverpasses(alpha = 0.88f, strokeWidth = 2.9.dp.toPx())
                     }
                 }
 
