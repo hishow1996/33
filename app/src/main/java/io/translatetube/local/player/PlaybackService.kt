@@ -10761,11 +10761,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // different WebView cookie sessions. The raw cookie/media URL is not written to this key.
         val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
         return asrAudioDownloadLocks.withLock(identity) {
-            reusableAsrAudioFile(identity)?.let { cached ->
+            val cachedAudio = reusableAsrAudioFile(identity)
+                ?: reusableHistoryRemoteAudioFile(
+                    sessionKey = sessionKey,
+                    currentIdentity = identity,
+                    mediaUrl = mediaUrl,
+                    referrer = referrer,
+                    cookie = cookie,
+                )
+            if (cachedAudio != null) {
                 updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
-                return@withLock cached
+                return@withLock cachedAudio
             }
             updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                 if (state.key == sessionKey) {
@@ -11028,6 +11036,85 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (!leaseTransferred) activeAsrAudioPaths.release(destination.absolutePath)
             }
         }
+    }
+
+    /**
+     * A history item can receive a refreshed CDN URL or lose its WebView Referer after re-entry.
+     * In that case the URL-scoped cache key changes even though the already-downloaded source
+     * audio still belongs to this exact history item. Recheck the item's indexed cache artifacts
+     * before requesting the old (often expired) HLS URL.
+     *
+     * Cookie-backed sessions deliberately do not use this cross-URL fallback: their exact
+     * URL/referrer/cookie cache key remains the only permitted reuse path.
+     */
+    private fun reusableHistoryRemoteAudioFile(
+        sessionKey: String,
+        currentIdentity: String,
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+    ): File? {
+        if (sessionKey.isBlank() || !cookie.isNullOrBlank()) return null
+
+        val directory = asrAudioCacheDirectory()
+        val currentPath = asrAudioCacheFile(currentIdentity).absolutePath
+        val now = System.currentTimeMillis()
+        val candidates = VideoHistoryCacheIndex.audioCacheFileNames(this, sessionKey)
+            .asSequence()
+            .map { File(directory, it) }
+            .filter { it.absolutePath != currentPath }
+            .filter { it.isFile && it.length() > 0L }
+            .sortedByDescending { it.lastModified() }
+            .toList()
+
+        for (candidate in candidates) {
+            val path = candidate.absolutePath
+            activeAsrAudioPaths.acquire(path)
+            if (!AsrAudioCachePolicy.canReuse(
+                    isFile = candidate.isFile,
+                    sizeBytes = candidate.length(),
+                    lastModifiedMs = candidate.lastModified(),
+                    nowMs = now,
+                )
+            ) {
+                activeAsrAudioPaths.release(path)
+                continue
+            }
+
+            // The index is scoped to this history key, but older entries may have been produced
+            // by a different source selection. Validate that the cached container still exposes a
+            // readable audio track before handing it to transcription.
+            val probe = runCatching {
+                validateRemoteAudioFile(
+                    mediaUrl = mediaUrl,
+                    referrer = referrer,
+                    cookie = cookie,
+                    stage = "历史记录来源音频缓存复核",
+                    file = candidate,
+                )
+            }.getOrNull()
+            if (probe == null || probe.audioTrackCount <= 0) {
+                activeAsrAudioPaths.release(path)
+                continue
+            }
+
+            candidate.setLastModified(System.currentTimeMillis())
+            pruneAsrAudioCache(directory, keep = candidate)
+            io.translatetube.local.util.AppLogStore.info(
+                context = applicationContext,
+                tag = "WebAudioExtraction",
+                message = "按历史视频缓存索引复用已下载音频，跳过旧媒体地址请求",
+                diagnosticContext = mapOf(
+                    "缓存复用方式" to "历史视频音频索引",
+                    "缓存文件大小字节" to candidate.length().toString(),
+                    "当前媒体地址" to "未写入日志",
+                    "Cookie 会话隔离" to "当前请求未携带 Cookie",
+                    "媒体地址是否可能已刷新" to "是",
+                ),
+            )
+            return candidate
+        }
+        return null
     }
 
     /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
