@@ -516,9 +516,36 @@ data class AudioProgressSnapshot(
     }
 }
 
+enum class SpeakerRecognitionPhase {
+    IDLE,
+    PREPARING,
+    DOWNLOADING_MODELS,
+    ANALYZING,
+    APPLYING,
+    CANCELLING,
+    SUCCEEDED,
+    FAILED,
+    CANCELLED,
+}
+
+data class SpeakerRecognitionUiState(
+    val phase: SpeakerRecognitionPhase = SpeakerRecognitionPhase.IDLE,
+    val message: String = "",
+    val personCount: Int = 0,
+    val error: String? = null,
+) {
+    val isActive: Boolean
+        get() = phase == SpeakerRecognitionPhase.PREPARING ||
+            phase == SpeakerRecognitionPhase.DOWNLOADING_MODELS ||
+            phase == SpeakerRecognitionPhase.ANALYZING ||
+            phase == SpeakerRecognitionPhase.APPLYING ||
+            phase == SpeakerRecognitionPhase.CANCELLING
+}
+
 data class PlayerUiState(
     val phase: Phase = Phase.IDLE,
     val progress: String = "",
+    val speakerRecognition: SpeakerRecognitionUiState = SpeakerRecognitionUiState(),
     val audioProgress: AudioProgressSnapshot? = null,
     val audioTrackLanguage: String = "",
     val audioTrackMimeType: String = "",
@@ -956,6 +983,10 @@ class PlaybackService : MediaSessionService() {
     /** Secondary speaker recognition/reassignment may still be reading the durable audio cache. */
     val isSpeakerTaskActive: Boolean get() = speakerJob?.isActive == true
 
+    /** Only a user-triggered recognition pass can be canceled independently of the main pipeline. */
+    val canCancelSpeakerRecognition: Boolean
+        get() = speakerJob?.isActive == true && ui.value.speakerRecognition.isActive
+
     /** Return the detected people in first-appearance order for the playback tools panel. */
     fun getDetectedSpeakerPeople(): List<SpeakerPersonSummary> {
         val current = ui.value
@@ -990,15 +1021,18 @@ class PlaybackService : MediaSessionService() {
     /** Cancel only the active diarization pass; voice-assignment work remains untouched. */
     fun cancelSpeakerRecognition() {
         val current = ui.value
-        val progress = current.progress
-        val isRecognitionProgress = progress.contains("人物识别") ||
-            progress.contains("人物说话") || progress.contains("分离")
         val job = speakerJob
-        if (!isRecognitionProgress || job?.isActive != true || current.key.isBlank()) return
+        if (!current.speakerRecognition.isActive || job?.isActive != true || current.key.isBlank()) return
         job.cancel(kotlinx.coroutines.CancellationException("用户取消人物识别"))
         updateUiForSession(current.key) { state ->
-            if (state.key == current.key && state.progress == progress) {
-                state.copy(progress = "正在取消人物识别…")
+            if (state.key == current.key) {
+                state.copy(
+                    speakerRecognition = state.speakerRecognition.copy(
+                        phase = SpeakerRecognitionPhase.CANCELLING,
+                        message = "正在取消人物识别…",
+                        error = null,
+                    ),
+                )
             } else state
         }
         android.util.Log.i("PlaybackService", "User canceled speaker diarization for the active playback session")
