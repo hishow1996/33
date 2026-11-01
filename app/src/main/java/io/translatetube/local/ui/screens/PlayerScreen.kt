@@ -2651,25 +2651,43 @@ private fun VideoParsingPage(
                                     else -> "等待提取音频"
                                 }
                                 add("当前任务" to audioTask)
-                                state.audioTrackLanguage.trim().takeIf {
-                                    it.isNotBlank() && it.lowercase(java.util.Locale.ROOT) !in
-                                        setOf("und", "unknown", "undefined")
-                                }?.let { add("音轨语言" to LangMap.display(it)) }
-                                processingAudioFormatLabel(state.audioTrackMimeType)?.let {
-                                    add("音频格式" to it)
+                                val liveAudioSource = when {
+                                    progressText.contains("正在缓存网页音轨", ignoreCase = true) ||
+                                        progressText.contains("HLS", ignoreCase = true) -> "HLS 分片"
+                                    progressText.contains("音画混合流") -> "音画混合流"
+                                    progressText.contains("独立音轨") -> "独立音轨"
+                                    else -> state.audioTrackSourceType.trim().ifBlank {
+                                        if (active) "检测中" else "未知"
+                                    }
                                 }
-                                if (state.audioTrackDurationMs > 0L) {
-                                    add("音频时长" to formatFloatingTime(state.audioTrackDurationMs))
-                                }
-                                if (state.audioTrackChannelCount > 0) {
-                                    add(
-                                        "声道" to when (state.audioTrackChannelCount) {
-                                            1 -> "单声道"
-                                            2 -> "立体声"
-                                            else -> state.audioTrackChannelCount.toString() + " 声道"
-                                        },
-                                    )
-                                }
+                                add("视频分辨率" to state.videoResolution.trim().ifBlank {
+                                    state.selectedQuality.trim().ifBlank { "未知" }
+                                })
+                                add("音轨来源" to liveAudioSource)
+                                add("音频格式" to processingAudioFormatLabel(state.audioTrackMimeType).orEmpty().ifBlank {
+                                    if (active) "检测中" else "未知"
+                                })
+                                val sampleRateHz = state.audioTrackSampleRateHz
+                                val sampleRateKHz = sampleRateHz / 1000f
+                                add(
+                                    "采样率" to when {
+                                        sampleRateHz <= 0 -> if (active) "检测中" else "未知"
+                                        sampleRateHz % 1_000 == 0 -> "${sampleRateHz / 1_000} kHz"
+                                        else -> "${sampleRateKHz} kHz"
+                                    },
+                                )
+                                add("音频时长" to if (state.audioTrackDurationMs > 0L) {
+                                    formatFloatingTime(state.audioTrackDurationMs)
+                                } else if (active) "检测中" else "未知")
+                                add(
+                                    "声道" to when {
+                                        state.audioTrackChannelCount == 1 -> "单声道"
+                                        state.audioTrackChannelCount == 2 -> "立体声"
+                                        state.audioTrackChannelCount > 2 ->
+                                            state.audioTrackChannelCount.toString() + " 声道"
+                                        else -> if (active) "检测中" else "未知"
+                                    },
+                                )
                             }
                             2 -> {
                                 add("转写引擎" to transcriptionEngineSummary)
@@ -3856,7 +3874,8 @@ private fun CompactProcessingStageDetails(
             }
             1 -> {
                 value("当前任务")?.let { CompactStageMetadataLine(it) }
-                CompactStageMetadataRow(value("音轨语言"), value("音频格式"))
+                CompactStageMetadataRow(value("视频分辨率"), value("音轨来源"))
+                CompactStageMetadataRow(value("音频格式"), value("采样率"))
                 CompactStageMetadataRow(value("音频时长"), value("声道"))
             }
             2 -> {
