@@ -977,18 +977,24 @@ class PlaybackService : MediaSessionService() {
             key == state.key &&
             speakerJob?.isActive == true
         ) {
-            activeOpenRequestToken = requestToken
-            io.translatetube.local.util.AppLogStore.info(
-                this,
-                "PlaybackFlow",
-                "历史记录复用正在进行的人物识别任务，跳过新建视频处理流程",
+            return try {
+                if (!state.isPlaying) pm.play()
+                activeOpenRequestToken = requestToken
+                io.translatetube.local.util.AppLogStore.info(
+                    this,
+                    "PlaybackFlow",
+                    "历史记录复用正在进行的人物识别任务，跳过新建视频处理流程",
                 diagnosticContext = mapOf(
                     "当前阶段" to state.phase.name,
                     "当前进度" to state.progress.take(120),
                     "跳过五阶段重启" to "是",
-                ),
-            )
-            return true
+                    ),
+                )
+                true
+            } catch (error: Exception) {
+                android.util.Log.w("PlaybackService", "恢复人物识别中的播放会话失败", error)
+                false
+            }
         }
         if (
             key.isBlank() ||
@@ -12494,7 +12500,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     if (sessionVideoId != null) {
                         val id = sessionVideoId
                         val audio = obtainAsrAudioFile(
-                            id, sessionKey, "复用已下载音频，正在分析人物声音…",
+                            id, sessionKey, "人物识别 · 复用已下载音频，正在分析人物声音…",
                             pipelineGeneration = pipelineGeneration,
                             dubbingMutationGeneration = mutationGeneration,
                         )
@@ -12513,7 +12519,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             sessionRemoteMediaReferrer,
                             sessionRemoteMediaCookie,
                             sessionKey,
-                            "复用网页视频音频，正在分析人物声音…",
+                            "人物识别 · 复用网页视频音频，正在分析人物声音…",
                             pipelineGeneration = pipelineGeneration,
                             dubbingMutationGeneration = mutationGeneration,
                         )
