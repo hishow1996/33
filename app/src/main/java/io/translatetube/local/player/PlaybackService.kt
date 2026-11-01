@@ -11069,14 +11069,49 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 } catch (mediaError: Exception) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (mediaError is kotlinx.coroutines.CancellationException) throw mediaError
-                    logRemoteAudioFailure(
-                        mediaUrl, referrer, cookie, extractionStage, mediaError,
-                        mapOf(
-                            "转写缓存文件存在" to destination.isFile.toString(),
-                            "转写缓存文件大小字节" to destination.length().toString(),
-                        ),
-                    )
-                    throw mediaError
+
+                    val refreshedAudio = try {
+                        refreshExpiredRemoteAudioFromPage(
+                            sessionKey = sessionKey,
+                            pipelineGeneration = pipelineGeneration,
+                            dubbingMutationGeneration = dubbingMutationGeneration,
+                            pageUrl = referrer,
+                            existingCookie = cookie,
+                            destination = destination,
+                            originalFailure = mediaError,
+                        )
+                    } catch (refreshError: Exception) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (refreshError is kotlinx.coroutines.CancellationException) throw refreshError
+                        logRemoteAudioFailure(
+                            mediaUrl,
+                            referrer,
+                            cookie,
+                            "媒体地址过期后重新解析网页音轨",
+                            refreshError,
+                            mapOf(
+                                "原始媒体错误分类" to RemoteAudioFailurePolicy.classify(mediaError).code,
+                                "原始媒体异常类型" to mediaError.javaClass.name,
+                                "原始媒体异常详情" to (mediaError.message ?: "无异常消息").take(300),
+                                "转写缓存文件存在" to destination.isFile.toString(),
+                                "转写缓存文件大小字节" to destination.length().toString(),
+                            ),
+                        )
+                        throw refreshError
+                    }
+                    if (refreshedAudio != null) {
+                        extractionStage = "媒体地址过期后重新解析并下载纯音频"
+                        refreshedAudio
+                    } else {
+                        logRemoteAudioFailure(
+                            mediaUrl, referrer, cookie, extractionStage, mediaError,
+                            mapOf(
+                                "转写缓存文件存在" to destination.isFile.toString(),
+                                "转写缓存文件大小字节" to destination.length().toString(),
+                            ),
+                        )
+                        throw mediaError
+                    }
                 }
                 validateRemoteAudioFile(mediaUrl, referrer, cookie, extractionStage, cachedAudio)
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = cachedAudio)
@@ -11085,6 +11120,112 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             } finally {
                 if (!leaseTransferred) activeAsrAudioPaths.release(destination.absolutePath)
             }
+        }
+    }
+
+    /**
+     * Recover a signed CDN URL that has expired while the user was away from the source page.
+     * Only 404/410-style failures are eligible, and only one page re-resolution is attempted.
+     * If the site no longer exposes a supported stream, the original failure is attached to the
+     * refresh failure and the caller reports both without downloading the whole video.
+     */
+    private suspend fun refreshExpiredRemoteAudioFromPage(
+        sessionKey: String,
+        pipelineGeneration: Long?,
+        dubbingMutationGeneration: Long?,
+        pageUrl: String,
+        existingCookie: String?,
+        destination: File,
+        originalFailure: Throwable,
+    ): File? {
+        if (RemoteAudioFailurePolicy.classify(originalFailure).code != "expired_or_missing") {
+            return null
+        }
+        val pageUri = runCatching { android.net.Uri.parse(pageUrl.trim()) }.getOrNull()
+            ?: return null
+        if (
+            pageUri.scheme !in setOf("http", "https") ||
+            pageUri.host.isNullOrBlank()
+        ) return null
+
+        awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+        val cookieHeader = existingCookie?.takeIf { it.isNotBlank() }
+            ?: runCatching {
+                android.webkit.CookieManager.getInstance().getCookie(pageUrl)
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+
+        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+            if (state.key == sessionKey) {
+                state.copy(
+                    phase = Phase.DOWNLOADING_AUDIO,
+                    progress = "媒体地址已过期，正在重新解析网页音轨…",
+                    audioProgress = null,
+                )
+            } else state
+        }
+
+        try {
+            val refreshedMedia = io.translatetube.local.yt.YtDlpRepo.resolve(
+                applicationContext,
+                pageUrl,
+                cookieHeader,
+            )
+            val refreshedCookie = refreshedMedia.cookie.takeIf { it.isNotBlank() } ?: cookieHeader
+            val refreshedAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
+                applicationContext,
+                pageUrl,
+                destination,
+                onProgress = { percent, downloadedBytes, totalBytes ->
+                    kotlinx.coroutines.runBlocking {
+                        awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                    }
+                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(
+                                phase = Phase.DOWNLOADING_AUDIO,
+                                progress = if (downloadedBytes > 0L || totalBytes != null) {
+                                    AudioDownloadProgressFormatter.formatProgress(
+                                        label = "网页音轨 · 重新解析后下载",
+                                        downloadedBytes = downloadedBytes,
+                                        totalBytes = totalBytes,
+                                        percent = percent.takeIf { it >= 0 },
+                                    )
+                                } else if (percent >= 0) {
+                                    "网页音轨 · 重新解析后下载 $percent%"
+                                } else {
+                                    "网页音轨 · 重新解析后下载…"
+                                },
+                                audioProgress = if (downloadedBytes > 0L || totalBytes != null) {
+                                    AudioProgressSnapshot(
+                                        downloadedBytes = downloadedBytes,
+                                        totalBytes = totalBytes,
+                                        percent = percent.takeIf { it >= 0 },
+                                    )
+                                } else null,
+                            )
+                        } else state
+                    }
+                },
+                cookieHeader = refreshedCookie,
+            )
+            io.translatetube.local.util.AppLogStore.info(
+                context = applicationContext,
+                tag = "WebAudioExtraction",
+                message = "网页媒体临时地址过期，重新解析成功并获取到音轨",
+                diagnosticContext = mapOf(
+                    "原始错误分类" to RemoteAudioFailurePolicy.classify(originalFailure).code,
+                    "网页主机名" to pageUri.host.orEmpty(),
+                    "新媒体主机名" to runCatching { java.net.URI(refreshedMedia.mediaUrl).host }.getOrNull().orEmpty(),
+                    "是否恢复 Cookie" to (!refreshedCookie.isNullOrBlank()).toString(),
+                    "重新解析后媒体类型" to if (HlsAudioDownloader.isManifestUrl(refreshedMedia.mediaUrl)) "HLS/M3U8" else "直链媒体",
+                ),
+            )
+            return refreshedAudio
+        } catch (error: Exception) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            error.addSuppressed(originalFailure)
+            throw error
         }
     }
 
