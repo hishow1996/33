@@ -12689,18 +12689,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 return
             }
 
+            // Build observations once: the Honor 10 class of devices benefits from avoiding
+            // a second per-segment list allocation during the two speaker-matching passes.
+            val speakerObservations = segments.map { segment ->
+                SpeakerAssignmentPolicy.SpeakerObservation(
+                    speakerId = segment.speaker,
+                    startMs = (segment.startSec * 1000f).toLong(),
+                    endMs = (segment.endSec * 1000f).toLong(),
+                    confidence = segment.confidence,
+                )
+            }
             // sherpa-onnx cluster labels are arbitrary; normalize by first appearance so voice
             // identities remain stable when the diarizer chooses different raw cluster numbers.
-            val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(
-                segments.map { segment ->
-                    SpeakerAssignmentPolicy.SpeakerObservation(
-                        speakerId = segment.speaker,
-                        startMs = (segment.startSec * 1000f).toLong(),
-                        endMs = (segment.endSec * 1000f).toLong(),
-                        confidence = segment.confidence,
-                    )
-                },
-            )
+            val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(speakerObservations)
             val speakerVoiceAssignments = previous.speakerVoices.toMutableMap()
             val currentLineKeys = lineKeys.toSet()
             val lineVoiceAssignments = previous.lineVoices
@@ -12711,14 +12712,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 .toMutableMap()
             val preferredKokoroVoice = prefs.getInt("kokoro_speaker", 14).coerceIn(0, 53)
             var assignedCueCount = 0
-            val speakerObservations = segments.map { segment ->
-                SpeakerAssignmentPolicy.SpeakerObservation(
-                    speakerId = segment.speaker,
-                    startMs = (segment.startSec * 1000f).toLong(),
-                    endMs = (segment.endSec * 1000f).toLong(),
-                    confidence = segment.confidence,
-                )
-            }
             for (line in lines) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val durationMs = (line.endMs - line.startMs).coerceAtLeast(0L)
@@ -13531,8 +13524,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
         }
         val sharedTimeline = prefs.getString(sharedSpeakerTimelinePrefsKey(key), null)
-            ?.let(SpeakerAssignmentCodec::decode)
-            ?.lineSpeakers
+            ?.let { encoded -> SpeakerAssignmentCodec.decode(encoded).lineSpeakers }
             .orEmpty()
         // One-time migration: earlier builds stored person IDs alongside each engine's tone IDs.
         if (sharedTimeline.isEmpty() && scopedSnapshot.lineSpeakers.isNotEmpty()) {
