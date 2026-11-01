@@ -968,6 +968,28 @@ class PlaybackService : MediaSessionService() {
     ): Boolean {
         if (!playerReady || !::pm.isInitialized || requestToken <= 0L) return false
         val state = ui.value
+        // Speaker recognition/reassignment is a secondary task on an already-ready session.
+        // It may temporarily rebuild the dubbing engine, but a history tap must reconnect to this
+        // live task rather than calling open() and retiring its active engine/audio cache.
+        if (
+            key.isNotBlank() &&
+            key == videoKey &&
+            key == state.key &&
+            speakerJob?.isActive == true
+        ) {
+            activeOpenRequestToken = requestToken
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackFlow",
+                "历史记录复用正在进行的人物识别任务，跳过新建视频处理流程",
+                diagnosticContext = mapOf(
+                    "当前阶段" to state.phase.name,
+                    "当前进度" to state.progress.take(120),
+                    "跳过五阶段重启" to "是",
+                ),
+            )
+            return true
+        }
         if (
             key.isBlank() ||
             key != videoKey ||
@@ -12425,13 +12447,23 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
                         error = null,
-                        progress = if (selectedTts == "system") "检查手机可用的中文音色…" else "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…",
-                        phase = Phase.TRANSCRIBING,
+                        progress = if (selectedTts == "system") {
+                            "人物识别 · 检查手机可用的中文音色…"
+                        } else {
+                            "人物识别 · 准备人物识别音频（为荣耀 10 限制为前 3 分钟）…"
+                        },
+                        // Keep the successful player session READY while this secondary operation
+                        // analyzes speakers. Its progress text drives the busy UI; READY remains
+                        // available to history reuse and playback-session guards.
                     )
                 }
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
-                        progress = if (selectedTts == "system") "检查手机可用的中文音色…" else "初始化所选配音引擎…",
+                        progress = if (selectedTts == "system") {
+                            "人物识别 · 检查手机可用的中文音色…"
+                        } else {
+                            "人物识别 · 初始化所选配音引擎…"
+                        },
                     )
                 }
                 // Initialize the selected engine before the expensive diarization step and before
@@ -12468,7 +12500,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                         updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                             if (state.key == sessionKey) {
-                                state.copy(phase = Phase.TRANSCRIBING, progress = "解码音频，准备分析人物声音…")
+                                state.copy(progress = "人物识别 · 解码音频，准备分析人物声音…")
                             } else state
                         }
                         sourceFile = audio
@@ -12487,7 +12519,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                         updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                             if (state.key == sessionKey) {
-                                state.copy(phase = Phase.TRANSCRIBING, progress = "解码网页音频，准备分析人物声音…")
+                                state.copy(progress = "人物识别 · 解码网页音频，准备分析人物声音…")
                             } else state
                         }
                         sourceFile = audio
@@ -12512,7 +12544,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
                     updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                         if (state.key == sessionKey) state.copy(
-                                                progress = message,
+                                                progress = "人物识别 · $message",
                                                 transcriptionProgressPercent = null,
                                                 transcriptionCompletedSegments = 0,
                                                 transcriptionTotalSegments = 0,
