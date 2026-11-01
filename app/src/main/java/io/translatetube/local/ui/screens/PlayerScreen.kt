@@ -3270,7 +3270,7 @@ private fun StageProgressVisual(
     val dubbingWaveformPhase by transition.animateFloat(
         initialValue = 0f,
         targetValue = if (
-            stageIndex == 4 && isAnimating && !isIndeterminate &&
+            stageIndex == 4 && isAnimating &&
             !isPaused && !isFailed && !isCompleted && !isSkipped
         ) 6.2831855f else 0f,
         animationSpec = infiniteRepeatable(
@@ -3565,78 +3565,7 @@ private fun StageProgressVisual(
                 )
             }
 
-            // 5. Dubbing — an organic ECG signal with varied spacing and peak heights.
-            // The lit section keeps breathing while the unprocessed track stays still.
-            else -> {
-                val centerY = size.height / 2f
-                val canvasWidth = size.width
-                val amplitude = size.height * 0.40f
-                val breathe = if (isAnimating && !isIndeterminate && !isPaused && !isFailed && !isCompleted && !isSkipped) {
-                    0.72f + 0.28f * ((kotlin.math.sin(dubbingWaveformPhase) + 1f) / 2f)
-                } else {
-                    1f
-                }
-                val activeAmplitude = amplitude * breathe
-
-                // Each beat has its own spacing and contour: some have a tall,
-                // sharp spike, others are softer, with different small waves.
-                // The sequence is deliberately hand-shaped rather than random,
-                // so it feels natural without flickering between recompositions.
-
-
-                fun buildEcgPath(waveAmplitude: Float): Path {
-                    return Path().apply {
-                        var cursorX = 0f
-                        var beatIndex = 0
-                        while (cursorX < canvasWidth + 1f) {
-                            val beatWidth = beatWidthsDp[beatIndex % beatWidthsDp.size] * density
-                            val points = waveformTemplates[beatIndex % waveformTemplates.size]
-                            var point = 0
-                            while (point < points.size) {
-                                val x = cursorX + points[point] * beatWidth
-                                val y = centerY + (points[point + 1] - 0.5f) * 2f * waveAmplitude
-                                if (beatIndex == 0 && point == 0) {
-                                    moveTo(x, y)
-                                } else {
-                                    lineTo(x, y)
-                                }
-                                point += 2
-                            }
-                            cursorX += beatWidth
-                            beatIndex += 1
-                        }
-                    }
-                }
-
-                // Keep the unfinished track still; only the completed section
-                // receives the full-range rhythmic motion.
-                val trackPath = buildEcgPath(amplitude)
-                val activePath = buildEcgPath(activeAmplitude)
-                val stroke = Stroke(
-                    width = 1.8.dp.toPx(),
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round,
-                )
-                drawPath(
-                    path = trackPath,
-                    color = trackColor,
-                    style = stroke,
-                )
-
-                when {
-                    isIndeterminate && isAnimating -> {
-                        val sweepWidth = size.width * 0.22f
-                        val sweepCenter = scanPosition * (size.width + sweepWidth) - sweepWidth / 2f
-                        clipRect(
-                            left = (sweepCenter - sweepWidth / 2f).coerceAtLeast(0f),
-                            right = (sweepCenter + sweepWidth / 2f).coerceAtMost(size.width),
-                        ) {
-                            drawPath(activePath, fill, style = stroke)
-                        }
-                    }
-                    fraction > 0f -> {
-                        clipRect(right = size.width * fraction) {
-                            drawPath(activePath, fill, styl// 5. Dubbing — an irregular audio waveform with a slim progress cursor.
+            // 5. Dubbing — an irregular audio waveform with a slim progress cursor.
             // Every completed bar from the beginning to the cursor pulses continuously.
             else -> {
                 val centerY = size.height / 2f
@@ -3667,10 +3596,9 @@ private fun StageProgressVisual(
                     var x = 0.8.dp.toPx()
                     var index = 0
                     while (x < size.width) {
-                        // Deterministic variation keeps bar heights and gaps organic,
-                        // without changing the waveform layout on each animation frame.
-                        val heightA = (kotlin.math.abs(kotlin.math.sin(index * 2.17f)) * 0.34f)
-                        val heightB = (kotlin.math.abs(kotlin.math.sin(index * 0.71f + 1.4f)) * 0.36f)
+                        // Deterministic variation gives each bar a different height and gap.
+                        val heightA = kotlin.math.abs(kotlin.math.sin(index * 2.17f)) * 0.34f
+                        val heightB = kotlin.math.abs(kotlin.math.sin(index * 0.71f + 1.4f)) * 0.36f
                         val baseHeight = (0.20f + heightA + heightB).coerceIn(0.18f, 0.94f)
                         val widthFactor = (kotlin.math.sin(index * 1.37f) + 1f) / 2f
                         val gapFactor = (kotlin.math.sin(index * 2.43f + 0.8f) + 1f) / 2f
@@ -3680,13 +3608,11 @@ private fun StageProgressVisual(
                         val waveA = (kotlin.math.sin(dubbingWaveformPhase * 1.2f - index * 0.52f) + 1f) / 2f
                         val waveB = (kotlin.math.sin(dubbingWaveformPhase * 0.78f + index * 0.91f) + 1f) / 2f
                         val motion = waveA * 0.72f + waveB * 0.28f
-                        // Large height range makes the entire completed voice track
-                        // visibly rise and fall instead of merely flickering in brightness.
+                        // Broad height swing makes the full completed range visibly pulse.
                         val animatedHeight = (baseHeight * 0.18f + motion * 0.82f)
                             .coerceIn(0.14f, 1f)
                         val heightFactor = if (animate) animatedHeight else baseHeight
-                        val barHeight = (maxBarHeight * heightFactor)
-                            .coerceAtLeast(1.8.dp.toPx())
+                        val barHeight = (maxBarHeight * heightFactor).coerceAtLeast(1.8.dp.toPx())
                         val top = centerY - barHeight / 2f
 
                         drawRoundRect(
@@ -3700,10 +3626,10 @@ private fun StageProgressVisual(
                     }
                 }
 
-                // Static grey waveform is the unprocessed audio track.
+                // The unprocessed waveform remains grey and completely still.
                 drawWaveBars(trackColor, animate = false)
 
-                // The completed section pulses as one travelling, irregular sound wave.
+                // Only the range up to the real progress point receives the moving waveform.
                 when {
                     isIndeterminate && isAnimating -> {
                         val scanWidth = size.width * 0.24f
@@ -3721,8 +3647,8 @@ private fun StageProgressVisual(
                     }
                 }
 
-                // Slim vertical cursor marks the exact synthesis boundary.
-                val cursorX = progressX.coerceIn(0.8.dp.toPx(), size.width - 0.8.dp.toPx())
+                // A thin vertical cursor marks the exact synthesis boundary.
+                val cursorX = progressX.coerceIn(0f, size.width)
                 drawLine(
                     color = cursorColor,
                     start = Offset(cursorX, (size.height - 14.dp.toPx()) / 2f),
@@ -3730,7 +3656,111 @@ private fun StageProgressVisual(
                     strokeWidth = 1.2.dp.toPx(),
                     cap = StrokeCap.Round,
                 )
-            }fier = Modifier.weight(1f),
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactProcessingStageDetails(
+    stageIndex: Int,
+    rows: List<Pair<String, String>>,
+) {
+    fun value(label: String): Pair<String, String>? = rows.firstOrNull { it.first == label }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        when (stageIndex) {
+            0 -> {
+                CompactStageMetadataRow(value("视频来源"), value("视频时长"))
+                value("视频标题")?.let { CompactStageMetadataLine(it) }
+                CompactStageMetadataRow(value("频道"), value("视频清晰度"))
+                value("字幕检测")?.let { CompactStageMetadataLine(it) }
+                value("当前状态")?.let { CompactStageMetadataLine(it) }
+            }
+            1 -> {
+                value("当前任务")?.let { CompactStageMetadataLine(it) }
+                CompactStageMetadataRow(value("音轨语言"), value("音频格式"))
+                CompactStageMetadataRow(value("音频时长"), value("声道"))
+            }
+            2 -> {
+                CompactStageMetadataRow(value("转写引擎"), value("识别语言"))
+                value("已识别字幕")?.let { CompactStageMetadataLine(it) }
+            }
+            4 -> {
+                CompactStageMetadataRow(value("配音引擎"), value("音色"))
+                value("合成任务")?.let { CompactStageMetadataLine(it) }
+                value("引擎状态")?.let { CompactStageMetadataLine(it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactStageMetadataRow(
+    first: Pair<String, String>?,
+    second: Pair<String, String>? = null,
+) {
+    val items = listOfNotNull(first, second)
+    if (items.isEmpty()) return
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items.forEach { (label, value) ->
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    label,
+                    color = Color(0xFF8794A8),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 9.sp,
+                        lineHeight = 12.sp,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    value,
+                    modifier = Modifier.weight(1f),
+                    color = Color(0xFF3D4E65),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (items.size == 1) Spacer(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun CompactStageMetadataLine(item: Pair<String, String>) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            item.first,
+            color = Color(0xFF8794A8),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 9.sp,
+                lineHeight = 12.sp,
+            ),
+            maxLines = 1,
+        )
+        Text(
+            item.second,
+            modifier = Modifier.weight(1f),
             color = Color(0xFF3D4E65),
             style = MaterialTheme.typography.bodySmall.copy(
                 fontSize = 10.sp,
