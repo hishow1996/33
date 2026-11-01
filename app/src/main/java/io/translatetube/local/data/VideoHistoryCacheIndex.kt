@@ -100,7 +100,7 @@ internal object VideoHistoryCacheIndex {
             .remove(audioStorageKey(videoKey))
             .remove(localPcmStorageKey(videoKey))
         val identityPrefix = audioSourceIdentityStoragePrefix(videoKey)
-        preferences.all.keys.filter { it.startsWith(identityPrefix) }.forEach(editor::remove)
+        preferences.all.keys.filter { it.startsWith(identityPrefix) }.forEach { editor.remove(it) }
         editor.apply()
     }
 
