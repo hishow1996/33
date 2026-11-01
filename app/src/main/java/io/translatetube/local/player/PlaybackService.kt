@@ -13113,6 +13113,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     if (state.key == key) state.copy(
                         phase = Phase.SYNTHESIZING,
                         progress = "人物识别 · 复用已解码音频缓存…",
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.PREPARING,
+                            message = "复用已解码音频缓存…",
+                        ),
                     ) else state
                 }
                 releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
@@ -13146,6 +13150,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (state.key == key) state.copy(
                     phase = Phase.SYNTHESIZING,
                     progress = "人物识别 · 复用缓存音频，正在分析人物声音…",
+                    speakerRecognition = SpeakerRecognitionUiState(
+                        phase = SpeakerRecognitionPhase.PREPARING,
+                        message = "复用缓存音频，准备识别人物…",
+                    ),
                 ) else state
             }
             releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
@@ -13169,6 +13177,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: Exception) {
+            updateUiForSession(key, pipelineGeneration) { state ->
+                if (state.key == key && state.speakerRecognition.isActive) state.copy(
+                    speakerRecognition = SpeakerRecognitionUiState(
+                        phase = SpeakerRecognitionPhase.FAILED,
+                        message = "人物识别失败",
+                        error = error.message ?: error.javaClass.simpleName,
+                    ),
+                ) else state
+            }
             io.translatetube.local.util.AppLogStore.error(
                 this@PlaybackService,
                 "SpeakerDiarization",
@@ -13655,6 +13672,28 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
             }
+            }
+        }
+        // Cancellation can happen while queued on the pipeline mutex, before the inner
+        // try/finally is entered. Handle that edge case without overwriting a newer task.
+        speakerJob?.let { recognitionJob ->
+            recognitionJob.invokeOnCompletion { cause ->
+                if (
+                    cause is kotlinx.coroutines.CancellationException &&
+                    speakerJob === recognitionJob
+                ) {
+                    ui.update { state ->
+                        if (state.key == sessionKey && state.speakerRecognition.isActive) {
+                            state.copy(
+                                progress = "",
+                                speakerRecognition = SpeakerRecognitionUiState(
+                                    phase = SpeakerRecognitionPhase.CANCELLED,
+                                    message = "人物识别已取消",
+                                ),
+                            )
+                        } else state
+                    }
+                }
             }
         }
     }
