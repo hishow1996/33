@@ -62,10 +62,18 @@ internal object AsrAudioCacheStorage {
             } else if (child.isDirectory && target.isDirectory) {
                 if (!mergeDirectoryContents(child, target)) succeeded = false
                 if (child.exists() && !child.delete() && child.exists()) succeeded = false
-            } else if (child.isFile && target.isFile && target.length() == 0L && child.length() > 0L) {
-                if (!target.delete() || !child.renameTo(target)) {
-                    if (!copyEntryAtomically(child, target)) succeeded = false
+            } else if (child.isFile && target.isFile) {
+                if (target.length() == 0L && child.length() > 0L) {
+                    if (!target.delete() || !child.renameTo(target)) {
+                        if (!copyEntryAtomically(child, target)) succeeded = false
+                    }
+                } else if (!child.delete() && child.exists()) {
+                    // The persistent destination already has a usable file with this name.
+                    succeeded = false
                 }
+            } else if (!child.deleteRecursively() && child.exists()) {
+                // A name collision with a different entry type is not safe to overwrite.
+                succeeded = false
             }
         }
         return succeeded
