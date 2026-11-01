@@ -193,13 +193,17 @@ fun PlayerScreen(
     var pendingSubtitleExportContent by remember { mutableStateOf<String?>(null) }
     var showPersonVoiceDialog by remember { mutableStateOf(false) }
     var personVoiceMenuExpanded by remember { mutableStateOf(false) }
+    var showSpeakerPeopleDialog by remember { mutableStateOf(false) }
+    var detectedSpeakerPeople by remember(state.key) {
+        mutableStateOf(emptyList<PlaybackService.SpeakerPersonSummary>())
+    }
     var personTargetIndex by remember { mutableIntStateOf(-1) }
+    var personTargetTitle by remember { mutableStateOf("人物默认音色") }
     var selectedPersonVoiceId by remember { mutableIntStateOf(-1) }
     val subtitleExportScope = rememberCoroutineScope()
-    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true ||
-        state.progress.contains("人物识别") ||
-        state.progress.contains("人物说话") ||
-        state.progress.contains("分离")
+    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true
+    val isSpeakerRecognitionVisible = state.progress.contains("人物识别") ||
+        state.progress.contains("人物说话") || state.progress.contains("分离")
 
     // 错误时允许用户显式重试同一个视频；不监听 phase，避免失败后自动重试循环。
     var retryNonce by remember { mutableStateOf(0) }
@@ -915,13 +919,47 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         )
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
-                            title = if (isSpeakerBusy) "正在识别人物…" else "识别并区分人物",
-                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy && voiceSelectionEnabled,
+                            title = when {
+                                isSpeakerBusy && isSpeakerRecognitionVisible -> "正在识别人物…"
+                                isSpeakerBusy -> "正在更新人物音色…"
+                                else -> "识别并区分人物"
+                            },
+                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy && !isSpeakerRecognitionVisible && voiceSelectionEnabled,
                             onClick = {
                                 advancedMenuExpanded = false
                                 PlaybackService.instance?.autoAssignSpeakers()
                             },
                         )
+                        if (isSpeakerRecognitionVisible) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                val stage = state.progress
+                                    .substringAfter("人物识别 · ", state.progress)
+                                    .ifBlank { "正在分析人物声音…" }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        stage,
+                                        modifier = Modifier.weight(1f),
+                                        color = SubText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (isSpeakerBusy && !state.progress.startsWith("正在取消人物识别")) {
+                                        TextButton(
+                                            onClick = { PlaybackService.instance?.cancelSpeakerRecognition() },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        ) { Text("取消") }
+                                    }
+                                }
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+                        }
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
                             title = "人物默认音色",
@@ -929,13 +967,20 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 state.currentLine in state.lines.indices,
                             onClick = {
                                 advancedMenuExpanded = false
-                                personTargetIndex = state.currentLine
-                                val currentVoice = state.lines.getOrNull(personTargetIndex)?.speakerId ?: -1
-                                selectedPersonVoiceId = currentVoice.takeIf { value ->
-                                    voiceOptions.any { it.first == value }
-                                } ?: -1
-                                personVoiceMenuExpanded = false
-                                showPersonVoiceDialog = true
+                                val people = PlaybackService.instance?.getDetectedSpeakerPeople().orEmpty()
+                                if (people.isNotEmpty()) {
+                                    detectedSpeakerPeople = people
+                                    showSpeakerPeopleDialog = true
+                                } else {
+                                    personTargetIndex = state.currentLine
+                                    personTargetTitle = "人物默认音色"
+                                    val currentVoice = state.lines.getOrNull(personTargetIndex)?.speakerId ?: -1
+                                    selectedPersonVoiceId = currentVoice.takeIf { value ->
+                                        voiceOptions.any { it.first == value }
+                                    } ?: -1
+                                    personVoiceMenuExpanded = false
+                                    showPersonVoiceDialog = true
+                                }
                             },
                         )
                         Divider(
@@ -1264,6 +1309,60 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
     }
 
+    if (showSpeakerPeopleDialog) {
+        AlertDialog(
+            onDismissRequest = { showSpeakerPeopleDialog = false },
+            title = { Text("识别到的人物") },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    detectedSpeakerPeople.forEachIndexed { index, person ->
+                        val voiceName = voiceOptions.firstOrNull { it.first == person.voiceId }?.second
+                            ?: "默认音色"
+                        TextButton(
+                            onClick = {
+                                personTargetIndex = person.firstLineIndex
+                                personTargetTitle = "人物 ${index + 1}"
+                                selectedPersonVoiceId = person.voiceId.takeIf { value ->
+                                    voiceOptions.any { it.first == value }
+                                } ?: -1
+                                showSpeakerPeopleDialog = false
+                                personVoiceMenuExpanded = false
+                                showPersonVoiceDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Filled.Face, contentDescription = null, tint = BrandBright)
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text("人物 ${index + 1}", color = OnBg)
+                                    Text(
+                                        "${person.subtitleCount} 条字幕 · $voiceName",
+                                        color = SubText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                Icon(Icons.Filled.ArrowForwardIos, contentDescription = null, tint = SubText)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSpeakerPeopleDialog = false }) { Text("完成") }
+            },
+        )
+    }
+
     if (showPersonVoiceDialog) {
         val targetLine = state.lines.getOrNull(personTargetIndex)
         val currentVoiceName = voiceOptions.firstOrNull { it.first == selectedPersonVoiceId }?.second
@@ -1273,7 +1372,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 showPersonVoiceDialog = false
                 personVoiceMenuExpanded = false
             },
-            title = { Text("人物默认音色") },
+            title = { Text(personTargetTitle) },
             text = {
                 Column(
                     Modifier.fillMaxWidth()
@@ -4818,10 +4917,7 @@ private fun ControlBar(
     onCopySub: () -> Unit,
 ) {
     val svc = PlaybackService.instance
-    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true ||
-        state.progress.contains("人物识别") ||
-        state.progress.contains("人物说话") ||
-        state.progress.contains("分离")
+    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true
 
     Surface(
         modifier = Modifier.fillMaxWidth(),

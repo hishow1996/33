@@ -942,11 +942,67 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /** A detected person and the first subtitle cue attributed to that person. */
+    data class SpeakerPersonSummary(
+        val personId: Int,
+        val firstLineIndex: Int,
+        val subtitleCount: Int,
+        val voiceId: Int,
+    )
+
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
     val isReady: Boolean get() = playerReady && ::pm.isInitialized
 
     /** Secondary speaker recognition/reassignment may still be reading the durable audio cache. */
     val isSpeakerTaskActive: Boolean get() = speakerJob?.isActive == true
+
+    /** Return the detected people in first-appearance order for the playback tools panel. */
+    fun getDetectedSpeakerPeople(): List<SpeakerPersonSummary> {
+        val current = ui.value
+        val key = current.key
+        if (key.isBlank() || videoKey != key) return emptyList()
+        val assignments = loadSpeakerAssignments(key, currentTtsEngineId())
+        val indexesByPerson = linkedMapOf<Int, MutableList<Int>>()
+        current.lines.forEachIndexed { index, line ->
+            val personId = assignments.lineSpeakers[
+                SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+            ] ?: return@forEachIndexed
+            if (personId in 0..999) indexesByPerson.getOrPut(personId) { mutableListOf() }.add(index)
+        }
+        return indexesByPerson.entries
+            .sortedBy { it.value.firstOrNull() ?: Int.MAX_VALUE }
+            .mapNotNull { (personId, indexes) ->
+                val firstIndex = indexes.firstOrNull() ?: return@mapNotNull null
+                val firstLine = current.lines.getOrNull(firstIndex) ?: return@mapNotNull null
+                val firstLineKey = SpeakerAssignmentCodec.lineKey(firstLine.startMs, firstLine.endMs)
+                val voiceId = assignments.speakerVoices[personId]
+                    ?: assignments.lineVoices[firstLineKey]
+                    ?: firstLine.speakerId
+                SpeakerPersonSummary(
+                    personId = personId,
+                    firstLineIndex = firstIndex,
+                    subtitleCount = indexes.size,
+                    voiceId = voiceId.coerceIn(-1, 53),
+                )
+            }
+    }
+
+    /** Cancel only the active diarization pass; voice-assignment work remains untouched. */
+    fun cancelSpeakerRecognition() {
+        val current = ui.value
+        val progress = current.progress
+        val isRecognitionProgress = progress.contains("人物识别") ||
+            progress.contains("人物说话") || progress.contains("分离")
+        val job = speakerJob
+        if (!isRecognitionProgress || job?.isActive != true || current.key.isBlank()) return
+        job.cancel(kotlinx.coroutines.CancellationException("用户取消人物识别"))
+        updateUiForSession(current.key) { state ->
+            if (state.key == current.key && state.progress == progress) {
+                state.copy(progress = "正在取消人物识别…")
+            } else state
+        }
+        android.util.Log.i("PlaybackService", "User canceled speaker diarization for the active playback session")
+    }
 
     /**
      * A video key identifies media, not a particular user action. The same history row can be
@@ -13397,7 +13453,23 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
             } finally {
-                pendingTts?.close()
+                runCatching { pendingTts?.close() }
+                // A canceled diarization used to leave this progress marker behind. The UI
+                // treated the marker itself as an active job, so the menu stayed stuck forever.
+                if (
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey &&
+                    activePipelineGeneration == pipelineGeneration &&
+                    activeDubbingMutationGeneration == mutationGeneration
+                ) {
+                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                        val staleRecognitionProgress = state.progress.contains("人物识别") ||
+                            state.progress.contains("人物说话") || state.progress.contains("分离")
+                        if (state.key == sessionKey && staleRecognitionProgress) {
+                            state.copy(progress = "")
+                        } else state
+                    }
+                }
             }
             }
         }
