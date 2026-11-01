@@ -196,7 +196,8 @@ fun PlayerScreen(
     var personTargetIndex by remember { mutableIntStateOf(-1) }
     var selectedPersonVoiceId by remember { mutableIntStateOf(-1) }
     val subtitleExportScope = rememberCoroutineScope()
-    val isSpeakerBusy = state.progress.contains("人物识别") ||
+    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true ||
+        state.progress.contains("人物识别") ||
         state.progress.contains("人物说话") ||
         state.progress.contains("分离")
 
@@ -4761,7 +4762,8 @@ private fun ControlBar(
     onCopySub: () -> Unit,
 ) {
     val svc = PlaybackService.instance
-    val isSpeakerBusy = state.progress.contains("人物识别") ||
+    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true ||
+        state.progress.contains("人物识别") ||
         state.progress.contains("人物说话") ||
         state.progress.contains("分离")
 
