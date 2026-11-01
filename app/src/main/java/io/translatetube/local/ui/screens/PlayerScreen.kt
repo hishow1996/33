@@ -201,9 +201,12 @@ fun PlayerScreen(
     var personTargetTitle by remember { mutableStateOf("人物默认音色") }
     var selectedPersonVoiceId by remember { mutableIntStateOf(-1) }
     val subtitleExportScope = rememberCoroutineScope()
-    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true
-    val isSpeakerRecognitionVisible = state.progress.contains("人物识别") ||
-        state.progress.contains("人物说话") || state.progress.contains("分离")
+    val speakerRecognition = state.speakerRecognition
+    val isSpeakerBusy = speakerRecognition.isActive ||
+        PlaybackService.instance?.isSpeakerTaskActive == true
+    val isSpeakerRecognitionVisible = speakerRecognition.isActive ||
+        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED ||
+        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED
 
     // 错误时允许用户显式重试同一个视频；不监听 phase，避免失败后自动重试循环。
     var retryNonce by remember { mutableStateOf(0) }
@@ -920,11 +923,16 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
                             title = when {
+                                isSpeakerBusy && speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING -> "正在取消人物识别…"
+                                isSpeakerBusy && speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.APPLYING -> "正在应用人物分配…"
                                 isSpeakerBusy && isSpeakerRecognitionVisible -> "正在识别人物…"
                                 isSpeakerBusy -> "正在更新人物音色…"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> "重新识别人物"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> "重新识别人物"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> "重新区分人物"
                                 else -> "识别并区分人物"
                             },
-                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy && !isSpeakerRecognitionVisible && voiceSelectionEnabled,
+                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
                             onClick = {
                                 advancedMenuExpanded = false
                                 PlaybackService.instance?.autoAssignSpeakers()
@@ -935,43 +943,54 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                val stage = state.progress
-                                    .substringAfter("人物识别 · ", state.progress)
-                                    .ifBlank { "正在分析人物声音…" }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        stage,
-                                        modifier = Modifier.weight(1f),
-                                        color = SubText,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    if (isSpeakerBusy && !state.progress.startsWith("正在取消人物识别")) {
-                                        TextButton(
-                                            onClick = { PlaybackService.instance?.cancelSpeakerRecognition() },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                        ) { Text("取消") }
+                                Text(
+                                    speakerRecognition.error ?: speakerRecognition.message,
+                                    color = if (
+                                        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
+                                    ) Color(0xFFB64A55) else SubText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (speakerRecognition.isActive) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        LinearProgressIndicator(
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        if (
+                                            PlaybackService.instance?.canCancelSpeakerRecognition == true &&
+                                            speakerRecognition.phase != io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING
+                                        ) {
+                                            TextButton(
+                                                onClick = { PlaybackService.instance?.cancelSpeakerRecognition() },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            ) { Text("取消") }
+                                        }
                                     }
+                                } else {
+                                    TextButton(
+                                        onClick = {
+                                            PlaybackService.instance?.autoAssignSpeakers()
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    ) { Text("重新识别") }
                                 }
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             }
                         }
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
                             title = "人物默认音色",
-                            enabled = voiceSelectionEnabled && !isSpeakerBusy &&
-                                state.currentLine in state.lines.indices,
+                            enabled = !isSpeakerBusy && state.currentLine in state.lines.indices,
                             onClick = {
                                 advancedMenuExpanded = false
                                 val people = PlaybackService.instance?.getDetectedSpeakerPeople().orEmpty()
                                 if (people.isNotEmpty()) {
                                     detectedSpeakerPeople = people
                                     showSpeakerPeopleDialog = true
-                                } else {
+                                } else if (voiceSelectionEnabled) {
                                     personTargetIndex = state.currentLine
                                     personTargetTitle = "人物默认音色"
                                     val currentVoice = state.lines.getOrNull(personTargetIndex)?.speakerId ?: -1
@@ -980,6 +999,12 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                     } ?: -1
                                     personVoiceMenuExpanded = false
                                     showPersonVoiceDialog = true
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        ctx,
+                                        "当前配音引擎不支持多人物音色，但仍可识别和查看人物。切换到支持多音色的引擎后即可分别设置。",
+                                        android.widget.Toast.LENGTH_LONG,
+                                    ).show()
                                 }
                             },
                         )
@@ -1324,6 +1349,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         val voiceName = voiceOptions.firstOrNull { it.first == person.voiceId }?.second
                             ?: "默认音色"
                         TextButton(
+                            enabled = voiceSelectionEnabled,
                             onClick = {
                                 personTargetIndex = person.firstLineIndex
                                 personTargetTitle = "人物 ${index + 1}"
@@ -4921,7 +4947,8 @@ private fun ControlBar(
     onCopySub: () -> Unit,
 ) {
     val svc = PlaybackService.instance
-    val isSpeakerBusy = PlaybackService.instance?.isSpeakerTaskActive == true
+    val isSpeakerBusy = state.speakerRecognition.isActive ||
+        PlaybackService.instance?.isSpeakerTaskActive == true
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
