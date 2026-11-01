@@ -3277,24 +3277,8 @@ private fun StageProgressVisual(
         label = "dubbingAudioWaveformPhase",
     )
 
-    // Transcription has two independent motions: a travelling light band
-    // and a stronger staggered pulse across every completed capsule.
-    val transcriptionMarqueePosition by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = if (
-            stageIndex == 2 && isAnimating &&
-            !isPaused && !isFailed && !isCompleted && !isSkipped
-        ) 1f else 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = 1380,
-                easing = androidx.compose.animation.core.LinearEasing,
-            ),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "transcriptionMarqueePosition",
-    )
-    val transcriptionWavePhase by transition.animateFloat(
+    // Every simulated text stroke in the processed range jumps independently.
+    val transcriptionTextPhase by transition.animateFloat(
         initialValue = 0f,
         targetValue = if (
             stageIndex == 2 && isAnimating &&
@@ -3302,12 +3286,12 @@ private fun StageProgressVisual(
         ) 6.2831855f else 0f,
         animationSpec = infiniteRepeatable(
             animation = tween(
-                durationMillis = 860,
+                durationMillis = 820,
                 easing = androidx.compose.animation.core.LinearEasing,
             ),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "transcriptionWavePhase",
+        label = "transcriptionTextRevealPhase",
     )
 
     val primaryColor = when {
@@ -3444,96 +3428,142 @@ private fun StageProgressVisual(
                     .coerceAtLeast(0f)
                 val slotHeight = 6.dp.toPx()
                 val verticalGap = 2.dp.toPx()
-                val gridHeight = slotHeight * rows + verticalGap
-                val firstCenterY = (size.height - gridHeight) / 2f + slotHeight / 2f
-                val filledColumns = when {
-                    isCompleted -> columns
-                    isSkipped -> 0
-                    else -> (fraction * columns).toInt().coerceIn(0, columns)
-                }
-                val running = isAnimating && !isPaused && !isFailed &&
-                    !isCompleted && !isSkipped
-                val activeMarquee = if (isIndeterminate && running) {
-                    columns.toFloat()
-                } else {
-                    filledColumns.toFloat()
-                }
-                val marqueePosition = transcriptionMarqueePosition * activeMarquee
-                val baseColor = when {
+                val gridHeight = slotHeight * rows +// 3. Transcription — a single row of text-like chips with jumping strokes.
+            // All strokes from the beginning through the real progress point move together.
+            2 -> {
+                val blockWeights = floatArrayOf(
+                    0.82f, 1.08f, 0.68f, 1.16f, 0.94f,
+                    0.76f, 1.12f, 0.70f, 1.02f, 0.88f,
+                )
+                val blockCount = blockWeights.size
+                val blockGap = 2.dp.toPx()
+                val totalWeight = blockWeights.sum()
+                val availableWidth = (size.width - blockGap * (blockCount - 1)).coerceAtLeast(0f)
+                val blockHeight = 11.dp.toPx()
+                val blockTop = (size.height - blockHeight) / 2f
+                val blockCorner = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                val lineColor = Color(0xFFB7C4D5)
+                val activeColor = when {
                     isFailed -> Color(0xFFD74655)
                     isPaused -> Color(0xFFD39A35)
                     isCompleted -> Color(0xFF18A879)
                     isSkipped -> Color(0xFFB8C1CE)
                     else -> Color(0xFF3268F5)
                 }
+                val motionEnabled = isAnimating && !isPaused && !isFailed &&
+                    !isCompleted && !isSkipped
+                val revealX = if (isIndeterminate) {
+                    0f
+                } else {
+                    size.width * fraction
+                }
+                val scanX = if (isIndeterminate && motionEnabled) {
+                    scanPosition * size.width
+                } else {
+                    revealX
+                }
 
-                repeat(rows) { row ->
-                    repeat(columns) { column ->
-                        val left = column * (cellWidth + horizontalGap)
-                        val centerY = firstCenterY + row * (slotHeight + verticalGap)
-                        val phaseOffset = column * 0.58f + row * 0.92f
-                        val waveOne = (kotlin.math.sin(transcriptionWavePhase - phaseOffset) + 1f) / 2f
-                        val waveTwo = (kotlin.math.sin(transcriptionWavePhase * 0.63f + phaseOffset * 0.72f) + 1f) / 2f
-                        val waveMotion = waveOne * 0.72f + waveTwo * 0.28f
-                        val naturalHeight = 0.28f + kotlin.math.abs(kotlin.math.sin(column * 1.71f + row * 1.13f)) * 0.25f
-                        val animatedHeight = (naturalHeight * 0.24f + waveMotion * 0.76f)
-                            .coerceIn(0.18f, 1f)
-                        val heightFactor = if (running && !isIndeterminate && column < filledColumns) {
-                            animatedHeight
-                        } else {
-                            naturalHeight
-                        }
-                        val capsuleHeight = (slotHeight * heightFactor).coerceAtLeast(2.2.dp.toPx())
-                        val top = centerY - capsuleHeight / 2f
-                        val corner = CornerRadius(cellWidth / 2f, cellWidth / 2f)
-                        val isFilled = column < filledColumns && !isSkipped
-                        val isInsideScan = isIndeterminate && running &&
-                            kotlin.math.abs(column - marqueePosition) <= 2.4f
+                // First draw every text block and its quiet, grey placeholder strokes.
+                var blockLeft = 0f
+                val blockBounds = ArrayList<Pair<Float, Float>>(blockCount)
+                repeat(blockCount) { blockIndex ->
+                    val blockWidth = availableWidth * blockWeights[blockIndex] / totalWeight
+                    val blockRight = blockLeft + blockWidth
+                    blockBounds.add(blockLeft to blockRight)
+                    drawRoundRect(
+                        color = trackColor,
+                        topLeft = Offset(blockLeft, blockTop),
+                        size = Size(blockWidth, blockHeight),
+                        cornerRadius = blockCorner,
+                    )
 
-                        drawRoundRect(
-                            color = trackColor,
-                            topLeft = Offset(left, top),
-                            size = Size(cellWidth, capsuleHeight),
-                            cornerRadius = corner,
+                    val lineCount = if (blockWidth > 22.dp.toPx()) 3 else 2
+                    repeat(lineCount) { lineIndex ->
+                        val lineStart = blockLeft + blockWidth * (0.18f + lineIndex * 0.27f)
+                        val lineLength = (blockWidth * (0.17f + ((blockIndex + lineIndex) % 3) * 0.035f))
+                            .coerceAtMost(blockWidth * 0.28f)
+                        val staticY = blockTop + blockHeight * (0.32f + (lineIndex % 2) * 0.34f)
+                        drawLine(
+                            color = lineColor,
+                            start = Offset(lineStart, staticY),
+                            end = Offset(lineStart + lineLength, staticY),
+                            strokeWidth = 1.05.dp.toPx(),
+                            cap = StrokeCap.Round,
                         )
+                    }
+                    blockLeft = blockRight + blockGap
+                }
 
-                        if (isFilled || isInsideScan) {
-                            var highlightStrength = 0f
-                            if (running && activeMarquee > 0f) {
-                                val rowOffset = row * 1.25f
-                                val head = (marqueePosition + rowOffset) % activeMarquee
-                                val rawDistance = kotlin.math.abs(column - head)
-                                val wrappedDistance = minOf(rawDistance, activeMarquee - rawDistance)
-                                highlightStrength = (1f - wrappedDistance / 3.2f).coerceIn(0f, 1f)
-                            }
-                            val cellColor = when {
-                                isInsideScan -> Color(0xFF83B3FF)
-                                highlightStrength > 0.72f && running -> Color(0xFF8DBAFF)
-                                highlightStrength > 0.32f && running -> Color(0xFF5F91F5)
-                                else -> baseColor
-                            }
+                // Fill only the measured processed range. The crop edge is the true progress.
+                if (!isIndeterminate && fraction > 0f && !isSkipped) {
+                    clipRect(right = revealX) {
+                        blockBounds.forEach { (left, right) ->
                             drawRoundRect(
-                                color = cellColor,
-                                topLeft = Offset(left, top),
-                                size = Size(cellWidth, capsuleHeight),
-                                cornerRadius = corner,
+                                color = activeColor,
+                                topLeft = Offset(left, blockTop),
+                                size = Size(right - left, blockHeight),
+                                cornerRadius = blockCorner,
                             )
                         }
+
+                        // Each mini text stroke gets its own phase and vertical travel.
+                        // The 2.5dp swing is intentionally strong enough to be visible at 16dp.
+                        blockBounds.forEachIndexed { blockIndex, bounds ->
+                            val (left, right) = bounds
+                            val blockWidth = right - left
+                            val lineCount = if (blockWidth > 22.dp.toPx()) 3 else 2
+                            repeat(lineCount) { lineIndex ->
+                                val phase = transcriptionTextPhase -
+                                    blockIndex * 0.73f - lineIndex * 1.61f
+                                val verticalTravel = kotlin.math.sin(phase) * 2.5f.dp.toPx()
+                                val lineStart = left + blockWidth * (0.18f + lineIndex * 0.27f)
+                                val lineLength = (blockWidth * (0.17f + ((blockIndex + lineIndex) % 3) * 0.035f))
+                                    .coerceAtMost(blockWidth * 0.28f)
+                                val baseY = blockTop + blockHeight * (0.32f + (lineIndex % 2) * 0.34f)
+                                val y = (baseY + verticalTravel)
+                                    .coerceIn(blockTop + 1.6.dp.toPx(), blockTop + blockHeight - 1.6.dp.toPx())
+                                drawLine(
+                                    color = Color.White,
+                                    start = Offset(lineStart, y),
+                                    end = Offset(lineStart + lineLength, y),
+                                    strokeWidth = 1.15.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // The current text segment gets a slim outline; unknown progress only scans
+                // this outline and never paints an invented completed range.
+                val boundaryX = if (isIndeterminate) scanX else revealX
+                if (!isSkipped && !isCompleted && boundaryX < size.width) {
+                    val currentBounds = blockBounds.firstOrNull { (left, right) ->
+                        boundaryX >= left && boundaryX <= right
+                    } ?: blockBounds.last()
+                    val (left, right) = currentBounds
+                    if (isIndeterminate) {
+                        val scanPulse = 0.55f + pulse * 0.45f
+                        drawRoundRect(
+                            color = activeColor.copy(alpha = scanPulse),
+                            topLeft = Offset(left, blockTop),
+                            size = Size(right - left, blockHeight),
+                            cornerRadius = blockCorner,
+                            style = Stroke(width = 1.dp.toPx()),
+                        )
+                    } else {
+                        drawRoundRect(
+                            color = activeColor,
+                            topLeft = Offset(left, blockTop),
+                            size = Size(right - left, blockHeight),
+                            cornerRadius = blockCorner,
+                            style = Stroke(width = 1.dp.toPx()),
+                        )
                     }
                 }
             }
 
-// 4. Translation — a miniature road: blue road edges show source readiness,
-            // and the green car leaves a translated trail behind it.
-            3 -> {
-                val roadStart = 5.dp.toPx()
-                val roadEnd = (size.width - 5.dp.toPx()).coerceAtLeast(roadStart)
-                val roadY = size.height * 0.72f
-                val roadHeight = 5.8.dp.toPx()
-                val roadTop = roadY - roadHeight / 2f
-                val roadWidth = (roadEnd - roadStart).coerceAtLeast(0f)
-                val railColor = if (sourceSubtitlesReady || isCompleted) {
-                    Color(0xFF3268F5)
+8F5)
                 } else {
                     Color(0xFFB8C5D6)
                 }
