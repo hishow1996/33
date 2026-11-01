@@ -3306,6 +3306,8 @@ private fun StageProgressVisual(
     // without resetting the current helix pose; resuming continues from that pose.
     val translationAnimationActive = stageIndex == 3 && isAnimating &&
         !isPaused && !isFailed && !isCompleted && !isSkipped
+    // Indeterminate progress uses the scan cursor instead of a determinate left-to-right pulse.
+    val translationPulseActive = translationAnimationActive && !isIndeterminate
     val translationHelixRotation = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
     }
@@ -3329,8 +3331,8 @@ private fun StageProgressVisual(
             }
         }
     }
-    LaunchedEffect(translationAnimationActive) {
-        if (translationAnimationActive) {
+    LaunchedEffect(translationPulseActive) {
+        if (translationPulseActive) {
             while (true) {
                 val remaining = (1f - translationHelixPulse.value).coerceIn(0.001f, 1f)
                 translationHelixPulse.animateTo(
