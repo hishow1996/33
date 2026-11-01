@@ -10316,7 +10316,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
             val destination = asrAudioCacheFile(videoId, cacheNamespace = "youtube-original-track-v2")
-            VideoHistoryCacheIndex.rememberAudioCacheFile(this@PlaybackService, sessionKey, destination.name)
+            VideoHistoryCacheIndex.rememberAudioCacheFile(
+                this@PlaybackService,
+                sessionKey,
+                destination.name,
+                sourceIdentity = "youtube-original-track-v2|$videoId",
+            )
             suspend fun downloadStream(url: String): File = try {
                 downloadAudio(
                     url, destination, sessionKey,
@@ -10778,6 +10783,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ?: reusableHistoryRemoteAudioFile(
                     sessionKey = sessionKey,
                     currentIdentity = identity,
+                    currentSourceIdentity = MediaUrlCacheIdentity.canonicalUrl(mediaUrl),
                     mediaUrl = mediaUrl,
                     referrer = referrer,
                     cookie = cookie,
@@ -10804,7 +10810,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             }
             val destination = asrAudioCacheFile(identity)
-            VideoHistoryCacheIndex.rememberAudioCacheFile(this@PlaybackService, sessionKey, destination.name)
+            VideoHistoryCacheIndex.rememberAudioCacheFile(
+                this@PlaybackService,
+                sessionKey,
+                destination.name,
+                sourceIdentity = MediaUrlCacheIdentity.canonicalUrl(mediaUrl),
+            )
             activeAsrAudioPaths.acquire(destination.absolutePath)
             var leaseTransferred = false
             var extractionStage = "网页媒体音轨获取"
@@ -11063,6 +11074,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     private fun reusableHistoryRemoteAudioFile(
         sessionKey: String,
         currentIdentity: String,
+        currentSourceIdentity: String,
         mediaUrl: String,
         referrer: String,
         cookie: String?,
@@ -11074,6 +11086,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val now = System.currentTimeMillis()
         val candidates = VideoHistoryCacheIndex.audioCacheFileNames(this, sessionKey)
             .asSequence()
+            .filter { fileName ->
+                VideoHistoryCacheIndex.hasMatchingAudioSourceIdentity(
+                    this,
+                    sessionKey,
+                    fileName,
+                    currentSourceIdentity,
+                )
+            }
             .map { File(directory, it) }
             .filter { it.absolutePath != currentPath }
             .filter { it.isFile && it.length() > 0L }
