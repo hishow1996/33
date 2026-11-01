@@ -3363,7 +3363,7 @@ private fun StageProgressVisual(
     val translationWholeRotation = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
     }
-    LaunchedEffect(translationAnimationActive) {
+    LaunchedEffect(translationAnimationActive, isPaused) {
         if (translationAnimationActive) {
             while (true) {
                 val remaining = (1f - translationWholeRotation.value / 6.2831855f)
@@ -3378,6 +3378,9 @@ private fun StageProgressVisual(
                 // 0 and 2π are the same full-turn pose, so the loop is seamless.
                 translationWholeRotation.snapTo(0f)
             }
+        } else if (!isPaused) {
+            // A completed, failed, skipped, or stopped stage returns to its neutral pose.
+            translationWholeRotation.snapTo(0f)
         }
     }
     val primaryColor = when {
