@@ -1773,9 +1773,6 @@ private fun VideoParsingPage(
         }
     }.coerceIn(0, steps.lastIndex)
     // Default to the active stage, while allowing any stage card to be opened manually.
-    var expandedStageIndex by remember(state.key, currentStage) {
-        mutableIntStateOf(currentStage.coerceIn(0, steps.lastIndex))
-    }
     val fraction: Float? = when (state.phase) {
         Phase.READY -> when {
             waitingForTranscriptionEngine || waitingForDubbingEngine -> null
@@ -1869,18 +1866,6 @@ private fun VideoParsingPage(
         VideoSourceKind.WEB -> "网页"
         VideoSourceKind.LOCAL -> "本地"
         VideoSourceKind.UNKNOWN -> "视频"
-    }
-    // YouTube、网页视频与本地视频始终展示完整处理阶段，不再折叠后续步骤。
-    val visibleStages = steps.indices.toList()
-    // Restored sessions created before result-preview fields existed can still render
-    // their last source/translated cues from the playable subtitle timeline.
-    val completedTranscriptionPreview = state.transcriptionPreviewLines.ifEmpty {
-        state.lines.takeLast(2)
-    }
-    val completedTranslationPreview = state.translationPreviewLines.ifEmpty {
-        state.lines.takeLast(12).mapNotNull { line ->
-            SubtitleParsers.preferredTranslationText(line)?.let { line.copy(zh = it) }
-        }.takeLast(2)
     }
     val animatedFraction by animateFloatAsState(
         targetValue = fraction?.coerceIn(0f, 1f) ?: 0f,
@@ -2478,6 +2463,122 @@ private fun VideoParsingPage(
             }
         }
 
+
+        ProcessingStageCards(
+            state = state,
+            source = source,
+            flow = flow,
+            complete = complete,
+            isError = isError,
+            isCancelled = isCancelled,
+            waitingForTranscriptionEngine = waitingForTranscriptionEngine,
+            waitingForDubbingEngine = waitingForDubbingEngine,
+            currentStage = currentStage,
+            compactLayout = compactLayout,
+            translationEngineDisplayName = translationEngineDisplayName,
+            selectedTtsEngineName = selectedTtsEngineName,
+            dubbingVoiceDisplay = dubbingVoiceDisplay,
+            sourceLanguageDisplay = sourceLanguageDisplay,
+            fraction = fraction,
+        )
+
+        if (state.phase == Phase.ERROR) {
+            Spacer(Modifier.height(8.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (isCancelled) Color(0xFFFFF7E9) else Color(0xFFFFF1F2))
+                    .border(
+                        1.dp,
+                        if (isCancelled) Color(0xFFFFE4B5) else Color(0xFFFFD8DD),
+                        RoundedCornerShape(14.dp),
+                    )
+                    .padding(12.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (isCancelled) "处理已取消" else "处理未能完成",
+                        color = if (isCancelled) Color(0xFFA86B13) else Color(0xFFCB3E4D),
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    )
+                    Text(
+                        state.error.orEmpty().ifBlank { detail },
+                        color = if (isCancelled) Color(0xFF8C6C3F) else Color(0xFF9F4D56),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = onRetry,
+                        modifier = Modifier.fillMaxWidth().height(43.dp),
+                        shape = RoundedCornerShape(13.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF3268F5),
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            when {
+                                isCancelled -> "重新开始处理"
+                                state.cloudAsrSubmissionUncertain -> "确认重新提交"
+                                else -> "重试当前处理"
+                            },
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
+
+
+    }
+
+    if (allSubtitlesDialogVisible) {
+        AllSubtitlesDialog(
+            state = state,
+            onDismiss = { allSubtitlesDialogVisible = false },
+            onDownloadSubtitle = onDownloadSubtitle,
+        )
+    }
+}
+
+
+@Composable
+private fun ProcessingStageCards(
+    state: PlayerUiState,
+    source: VideoSourceKind,
+    flow: ProcessingFlow,
+    complete: Boolean,
+    isError: Boolean,
+    isCancelled: Boolean,
+    waitingForTranscriptionEngine: Boolean,
+    waitingForDubbingEngine: Boolean,
+    currentStage: Int,
+    compactLayout: Boolean,
+    translationEngineDisplayName: String,
+    selectedTtsEngineName: String,
+    dubbingVoiceDisplay: String,
+    sourceLanguageDisplay: String,
+    fraction: Float?,
+) {
+    val steps = listOf("视频解析", "音频提取", "语音转写", "字幕翻译", "配音合成")
+    val visibleStages = steps.indices.toList()
+    // Keep this as a regular MutableState<Int>. The specialized MutableIntState
+    // generated an invalid register move in this large Compose call path on API 28.
+    var expandedStageIndex by remember(state.key, currentStage) {
+        mutableStateOf(currentStage.coerceIn(0, steps.lastIndex))
+    }
+    // Restored sessions created before result-preview fields existed can still render
+    // their last source/translated cues from the playable subtitle timeline.
+    val completedTranscriptionPreview = state.transcriptionPreviewLines.ifEmpty {
+        state.lines.takeLast(2)
+    }
+    val completedTranslationPreview = state.translationPreviewLines.ifEmpty {
+        state.lines.takeLast(12).mapNotNull { line ->
+            SubtitleParsers.preferredTranslationText(line)?.let { line.copy(zh = it) }
+        }.takeLast(2)
+    }
 
         // Five consistent, independently expandable cards. The active stage opens by default.
         Column(
@@ -3156,67 +3257,7 @@ private fun VideoParsingPage(
             }
         }
 
-        if (state.phase == Phase.ERROR) {
-            Spacer(Modifier.height(8.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (isCancelled) Color(0xFFFFF7E9) else Color(0xFFFFF1F2))
-                    .border(
-                        1.dp,
-                        if (isCancelled) Color(0xFFFFE4B5) else Color(0xFFFFD8DD),
-                        RoundedCornerShape(14.dp),
-                    )
-                    .padding(12.dp),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        if (isCancelled) "处理已取消" else "处理未能完成",
-                        color = if (isCancelled) Color(0xFFA86B13) else Color(0xFFCB3E4D),
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    )
-                    Text(
-                        state.error.orEmpty().ifBlank { detail },
-                        color = if (isCancelled) Color(0xFF8C6C3F) else Color(0xFF9F4D56),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Button(
-                        onClick = onRetry,
-                        modifier = Modifier.fillMaxWidth().height(43.dp),
-                        shape = RoundedCornerShape(13.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF3268F5),
-                            contentColor = Color.White,
-                        ),
-                    ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text(
-                            when {
-                                isCancelled -> "重新开始处理"
-                                state.cloudAsrSubmissionUncertain -> "确认重新提交"
-                                else -> "重试当前处理"
-                            },
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-            }
-        }
-
-
-    }
-
-    if (allSubtitlesDialogVisible) {
-        AllSubtitlesDialog(
-            state = state,
-            onDismiss = { allSubtitlesDialogVisible = false },
-            onDownloadSubtitle = onDownloadSubtitle,
-        )
-    }
 }
-
 
 @Composable
 private fun StageProgressVisual(
