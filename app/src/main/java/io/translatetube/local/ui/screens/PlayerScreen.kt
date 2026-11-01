@@ -3302,23 +3302,8 @@ private fun StageProgressVisual(
         label = "transcriptionTextRevealPhase",
     )
 
-    // Translation folded-paper strip: a travelling highlight and staggered paper lift.
-    val translationPaperFlowPhase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = if (
-            stageIndex == 3 && isAnimating && !isIndeterminate &&
-            !isPaused && !isFailed && !isCompleted && !isSkipped
-        ) 1f else 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = 900,
-                easing = androidx.compose.animation.core.LinearEasing,
-            ),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "translationPaperFlow",
-    )
-    val translationPaperLiftPhase by transition.animateFloat(
+    // Translation DNA helix: continuous strand twist plus a travelling rung pulse.
+    val translationHelixRotationPhase by transition.animateFloat(
         initialValue = 0f,
         targetValue = if (
             stageIndex == 3 && isAnimating &&
@@ -3326,12 +3311,27 @@ private fun StageProgressVisual(
         ) 6.2831855f else 0f,
         animationSpec = infiniteRepeatable(
             animation = tween(
-                durationMillis = 780,
+                durationMillis = 1800,
                 easing = androidx.compose.animation.core.LinearEasing,
             ),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "translationPaperLift",
+        label = "translationDnaRotation",
+    )
+    val translationHelixPulsePhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (
+            stageIndex == 3 && isAnimating &&
+            !isPaused && !isFailed && !isCompleted && !isSkipped
+        ) 1f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 1100,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "translationDnaPulse",
     )
 
     val primaryColor = when {
@@ -3575,189 +3575,217 @@ private fun StageProgressVisual(
                 }
             }
 
-// 4. Translation — equal folded-paper tiles with a restrained, continuous light sweep.
+// 4. Translation — four open-ended DNA double-helix cycles.
             3 -> {
-                val pieceCount = 20
-                val pieceGap = 1.5.dp.toPx()
-                val availableWidth = (size.width - pieceGap * (pieceCount - 1)).coerceAtLeast(0f)
-                val pieceWidth = availableWidth / pieceCount
-                // Reserve vertical breathing room so the paper never clips at the 16dp edge.
-                val paperHeight = minOf(
-                    12.5.dp.toPx(),
-                    pieceWidth,
-                    (size.height - 2.dp.toPx()).coerceAtLeast(1.dp.toPx()),
-                )
-                val baseTop = (size.height - paperHeight) / 2f
-                val foldSize = minOf(2.7.dp.toPx(), paperHeight * 0.22f)
-                val paperCorner = minOf(2.dp.toPx(), paperHeight * 0.17f)
-                val paperShape = CornerRadius(paperCorner, paperCorner)
                 val progressX = size.width * fraction
+                val centerY = size.height / 2f
+                val amplitude = size.height * 0.29f
+                val basePhase = -kotlin.math.PI.toFloat() / 2f
+                val totalPhase = 8f * kotlin.math.PI.toFloat()
+                // The twist envelope is zero at both ends, so neither end ever closes.
+                // Its moving phase changes the crossover positions while preserving four cycles.
+                val twist = kotlin.math.sin(translationHelixRotationPhase) * 0.62f
+                fun phaseAt(x: Float): Float {
+                    val t = (x / size.width).coerceIn(0f, 1f)
+                    val envelope = 4f * t * (1f - t)
+                    return basePhase + totalPhase * t + twist * envelope
+                }
+                fun strandY(x: Float, upperSign: Float): Float {
+                    return centerY + upperSign * amplitude * kotlin.math.sin(phaseAt(x))
+                }
+
+                val sampleCount = (size.width / 1.5.dp.toPx()).toInt().coerceAtLeast(160)
+                val strandA = Path()
+                val strandB = Path()
+                for (index in 0..sampleCount) {
+                    val x = size.width * index.toFloat() / sampleCount
+                    val yA = strandY(x, -1f)
+                    val yB = strandY(x, 1f)
+                    if (index == 0) {
+                        strandA.moveTo(x, yA)
+                        strandB.moveTo(x, yB)
+                    } else {
+                        strandA.lineTo(x, yA)
+                        strandB.lineTo(x, yB)
+                    }
+                }
+
+                // Detect the eight interior crossover points from the actual animated curves.
+                // Two rungs are then placed near the opposite ends of every interval: 14 total.
+                val crossings = ArrayList<Float>(8)
+                var previousX = 0f
+                var previousValue = kotlin.math.sin(phaseAt(previousX))
+                for (index in 1..sampleCount) {
+                    val x = size.width * index.toFloat() / sampleCount
+                    val value = kotlin.math.sin(phaseAt(x))
+                    if (kotlin.math.abs(value) < 0.0001f) {
+                        if (crossings.isEmpty() || x - crossings.last() > 0.8.dp.toPx()) {
+                            crossings.add(x)
+                        }
+                    } else if (previousValue * value < 0f) {
+                        val ratio = kotlin.math.abs(previousValue) /
+                            (kotlin.math.abs(previousValue) + kotlin.math.abs(value)).coerceAtLeast(0.0001f)
+                        val crossingX = previousX + (x - previousX) * ratio
+                        if (crossings.isEmpty() || crossingX - crossings.last() > 0.8.dp.toPx()) {
+                            crossings.add(crossingX)
+                        }
+                    }
+                    previousX = x
+                    previousValue = value
+                }
+
+                val rungPositions = ArrayList<Float>(14)
+                for (index in 0 until (crossings.size - 1).coerceAtLeast(0)) {
+                    val left = crossings[index]
+                    val right = crossings[index + 1]
+                    rungPositions.add(left + (right - left) * 0.18f)
+                    rungPositions.add(left + (right - left) * 0.82f)
+                }
+
+                val pendingColor = if (isSkipped) Color(0xFFBBC5D2) else Color(0xFFD1DAE5)
+                val blueStrandColor = when {
+                    isFailed -> Color(0xFFD74655)
+                    isCompleted -> Color(0xFF18A879)
+                    isSkipped -> Color(0xFFBBC5D2)
+                    else -> Color(0xFF3684EB)
+                }
+                val greenStrandColor = when {
+                    isFailed -> Color(0xFFD74655)
+                    isCompleted -> Color(0xFF18A879)
+                    isSkipped -> Color(0xFFBBC5D2)
+                    else -> Color(0xFF20A985)
+                }
+                val curveStroke = 2.dp.toPx()
+                val rungStroke = 1.dp.toPx()
+                val curveStyle = Stroke(
+                    width = curveStroke,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                )
+
+                // Draw the complete muted structure first; both strands stay continuous
+                // and the left/right ends remain visibly open.
+                rungPositions.forEach { x ->
+                    drawLine(
+                        color = pendingColor,
+                        start = Offset(x, strandY(x, -1f)),
+                        end = Offset(x, strandY(x, 1f)),
+                        strokeWidth = rungStroke,
+                        cap = StrokeCap.Round,
+                    )
+                }
+                drawPath(strandA, color = pendingColor, style = curveStyle)
+                drawPath(strandB, color = pendingColor, style = curveStyle)
+
+                fun drawActiveRungs(pulseHead: Float?, pulseRadius: Float) {
+                    rungPositions.forEach { x ->
+                        val yA = strandY(x, -1f)
+                        val yB = strandY(x, 1f)
+                        val strength = if (pulseHead != null) {
+                            (1f - kotlin.math.abs(x - pulseHead) / pulseRadius).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
+                        val gradient = Brush.linearGradient(
+                            colors = listOf(blueStrandColor, greenStrandColor),
+                            start = Offset(x, yA),
+                            end = Offset(x, yB),
+                        )
+                        drawLine(
+                            brush = gradient,
+                            start = Offset(x, yA),
+                            end = Offset(x, yB),
+                            strokeWidth = rungStroke + strength * 0.75.dp.toPx(),
+                            cap = StrokeCap.Round,
+                        )
+                        if (strength > 0.04f) {
+                            drawLine(
+                                color = Color.White.copy(alpha = strength * 0.82f),
+                                start = Offset(x, yA),
+                                end = Offset(x, yB),
+                                strokeWidth = 0.65.dp.toPx() + strength * 0.45.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
+                        }
+                    }
+                }
+
+                fun drawActiveCurves(alpha: Float = 1f, strokeWidth: Float = curveStroke) {
+                    drawPath(
+                        strandA,
+                        color = blueStrandColor.copy(alpha = alpha),
+                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                    )
+                    drawPath(
+                        strandB,
+                        color = greenStrandColor.copy(alpha = alpha),
+                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                    )
+                }
+
                 val motionEnabled = isAnimating && !isPaused && !isFailed &&
                     !isCompleted && !isSkipped
-                val maxLiftRoom = (
-                    (size.height - paperHeight * 1.03f) / 2f - 0.2.dp.toPx()
-                ).coerceAtLeast(0f)
-                val maxLift = minOf(0.55.dp.toPx(), maxLiftRoom)
-                val completedColor = when {
-                    isFailed -> Color(0xFFD74655)
-                    isPaused -> Color(0xFFD39A35)
-                    isCompleted -> Color(0xFF18A879)
-                    isSkipped -> Color(0xFFB8C1CE)
-                    else -> Color(0xFF20A77D)
-                }
-                val pendingColor = trackColor
-                val foldColor = Color(0xFFDFFFF1)
+                val pulseRadius = 13.dp.toPx()
 
-                repeat(pieceCount) { index ->
-                    val pieceLeft = index * (pieceWidth + pieceGap)
-                    val pieceRight = pieceLeft + pieceWidth
-                    val pieceCenter = (pieceLeft + pieceRight) / 2f
-                    val isInCompletedRange = !isIndeterminate &&
-                        !isSkipped && pieceLeft < progressX
-                    val phaseOffset = index * 0.72f
-                    val wave = (kotlin.math.sin(translationPaperLiftPhase - phaseOffset) + 1f) / 2f
-                    val lift = if (motionEnabled && isInCompletedRange) {
-                        kotlin.math.sin(translationPaperLiftPhase - phaseOffset) * maxLift
-                    } else {
-                        0f
-                    }
-                    // Keep every tile's width fixed; only its height breathes slightly.
-                    val scaleY = if (motionEnabled && isInCompletedRange) {
-                        0.97f + wave * 0.06f
-                    } else {
-                        1f
-                    }
-                    val animatedHeight = paperHeight * scaleY
-                    val animatedTop = baseTop + lift + (paperHeight - animatedHeight) / 2f
-                    val animatedRight = pieceRight
-                    val animatedBottom = animatedTop + animatedHeight
+                if (!isIndeterminate && fraction > 0f && !isSkipped) {
+                    clipRect(right = progressX.coerceIn(0f, size.width)) {
+                        drawActiveRungs(
+                            pulseHead = if (motionEnabled) translationHelixPulsePhase * progressX else null,
+                            pulseRadius = pulseRadius,
+                        )
+                        drawActiveCurves()
 
-                    // Pending tiles keep the exact same square-like dimensions and spacing.
-                    drawRoundRect(
-                        color = pendingColor,
-                        topLeft = Offset(pieceLeft, baseTop),
-                        size = Size(pieceWidth, paperHeight),
-                        cornerRadius = paperShape,
-                    )
-                    drawRoundRect(
-                        color = Color(0xFFCCD6E2).copy(alpha = 0.55f),
-                        topLeft = Offset(pieceLeft, baseTop),
-                        size = Size(pieceWidth, paperHeight),
-                        cornerRadius = paperShape,
-                        style = Stroke(width = 0.45.dp.toPx()),
-                    )
-
-                    if (isInCompletedRange) {
-                        // Clip each tile at both its own edge and the real progress boundary.
-                        clipRect(
-                            left = pieceLeft,
-                            top = 0f,
-                            right = minOf(pieceRight, progressX),
-                            bottom = size.height,
-                        ) {
-                            drawRoundRect(
-                                color = completedColor,
-                                topLeft = Offset(pieceLeft, animatedTop),
-                                size = Size(pieceWidth, animatedHeight),
-                                cornerRadius = paperShape,
-                            )
-
-                            // Proportional folded corner with a subtle seam.
-                            val foldPath = Path().apply {
-                                moveTo(animatedRight - foldSize, animatedTop)
-                                lineTo(animatedRight, animatedTop + foldSize)
-                                lineTo(animatedRight - foldSize, animatedTop + foldSize)
-                                close()
+                        // A bright, short trailing glow travels across both continuous strands.
+                        if (motionEnabled) {
+                            val pulseHead = translationHelixPulsePhase * progressX
+                            clipRect(
+                                left = (pulseHead - pulseRadius * 1.15f).coerceAtLeast(0f),
+                                right = (pulseHead + pulseRadius * 0.22f).coerceAtMost(size.width),
+                            ) {
+                                drawActiveCurves(
+                                    alpha = 0.56f,
+                                    strokeWidth = 3.1.dp.toPx(),
+                                )
                             }
-                            drawPath(
-                                path = foldPath,
-                                color = foldColor.copy(alpha = 0.62f),
-                            )
-                            drawLine(
-                                color = Color.White.copy(alpha = 0.48f),
-                                start = Offset(animatedRight - foldSize, animatedTop),
-                                end = Offset(animatedRight, animatedTop + foldSize),
-                                strokeWidth = 0.55.dp.toPx(),
-                                cap = StrokeCap.Round,
-                            )
-
-                            // Two tiny printed lines stay inside the tile boundaries.
-                            val lineTop = animatedTop + animatedHeight * 0.42f
-                            val lineStart = pieceLeft + pieceWidth * 0.17f
-                            drawLine(
-                                color = Color.White.copy(alpha = 0.9f),
-                                start = Offset(lineStart, lineTop),
-                                end = Offset(pieceLeft + pieceWidth * 0.57f, lineTop),
-                                strokeWidth = 0.9.dp.toPx(),
-                                cap = StrokeCap.Round,
-                            )
-                            drawLine(
-                                color = Color.White.copy(alpha = 0.78f),
-                                start = Offset(lineStart, lineTop + 2.4.dp.toPx()),
-                                end = Offset(pieceLeft + pieceWidth * 0.72f, lineTop + 2.4.dp.toPx()),
-                                strokeWidth = 0.8.dp.toPx(),
-                                cap = StrokeCap.Round,
-                            )
-
-                            // A soft travelling highlight, limited to the measured range.
-                            if (motionEnabled && fraction > 0f) {
-                                val flowHead = translationPaperFlowPhase * progressX
-                                val distance = kotlin.math.abs(pieceCenter - flowHead)
-                                val flowRadius = 21.dp.toPx()
-                                val flowStrength = (1f - distance / flowRadius).coerceIn(0f, 1f)
-                                if (flowStrength > 0f) {
-                                    drawRoundRect(
-                                        color = Color.White.copy(alpha = flowStrength * 0.24f),
-                                        topLeft = Offset(pieceLeft, animatedTop),
-                                        size = Size(pieceWidth, animatedHeight),
-                                        cornerRadius = paperShape,
-                                    )
-                                    // Fold corner catches a softer, shorter glint.
-                                    drawPath(
-                                        path = foldPath,
-                                        color = Color.White.copy(alpha = flowStrength * 0.58f),
-                                    )
-                                }
-                            }
-
-                            // Thin, consistent edge keeps adjacent paper pieces distinct.
-                            drawRoundRect(
-                                color = Color(0xFF168C68).copy(alpha = 0.38f),
-                                topLeft = Offset(pieceLeft, animatedTop),
-                                size = Size(pieceWidth, animatedHeight),
-                                cornerRadius = paperShape,
-                                style = Stroke(width = 0.45.dp.toPx()),
-                            )
                         }
-                    } else if (isIndeterminate && isAnimating && !isPaused && !isFailed) {
-                        val scanHead = scanPosition * size.width
-                        val distance = kotlin.math.abs(pieceCenter - scanHead)
-                        if (distance < 21.dp.toPx()) {
-                            drawRoundRect(
-                                color = Color(0xFF6FA4F5).copy(alpha = 0.22f),
-                                topLeft = Offset(pieceLeft, baseTop),
-                                size = Size(pieceWidth, paperHeight),
-                                cornerRadius = paperShape,
-                                style = Stroke(width = 0.9.dp.toPx()),
-                            )
-                        }
+                    }
+                } else if (isIndeterminate && motionEnabled) {
+                    // Unknown progress scans a short DNA section without claiming completion.
+                    val scanHead = scanPosition * size.width
+                    val scanRadius = 15.dp.toPx()
+                    clipRect(
+                        left = (scanHead - scanRadius).coerceAtLeast(0f),
+                        right = (scanHead + scanRadius * 0.35f).coerceAtMost(size.width),
+                    ) {
+                        drawActiveRungs(pulseHead = scanHead, pulseRadius = scanRadius)
+                        drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
                     }
                 }
 
-                // The marker follows the real progress; no future piece is painted early.
+                // The slim blue cursor follows the exact measured translation boundary.
                 if (!isIndeterminate && !isCompleted && !isSkipped) {
+                    val markerColor = if (isFailed) Color(0xFFD74655) else Color(0xFF3268F5)
                     val markerX = progressX.coerceIn(0f, size.width)
                     drawLine(
-                        color = if (isFailed) Color(0xFFD74655) else if (isPaused) Color(0xFFD39A35) else Color(0xFF3268F5),
-                        start = Offset(markerX, 1.dp.toPx()),
-                        end = Offset(markerX, size.height - 1.dp.toPx()),
-                        strokeWidth = 1.15.dp.toPx(),
+                        color = markerColor,
+                        start = Offset(markerX, 0f),
+                        end = Offset(markerX, size.height),
+                        strokeWidth = 1.2.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                } else if (isIndeterminate && motionEnabled) {
+                    val scanX = (scanPosition * size.width).coerceIn(0f, size.width)
+                    drawLine(
+                        color = Color(0xFF3268F5).copy(alpha = 0.9f),
+                        start = Offset(scanX, 0f),
+                        end = Offset(scanX, size.height),
+                        strokeWidth = 1.2.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                 }
             }
 
-// 5. Dubbing — an irregular audio waveform with a slim progress cursor.
+            // 5. Dubbing — an irregular audio waveform with a slim progress cursor.
             // Every completed bar from the beginning to the cursor pulses continuously.
             else -> {
                 val centerY = size.height / 2f
