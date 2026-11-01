@@ -3354,8 +3354,8 @@ private fun StageProgressVisual(
         modifier = Modifier
             .fillMaxWidth()
             .height(when (stageIndex) {
-                4 -> 16.dp
-                1, 3 -> 14.dp
+                3, 4 -> 16.dp
+                1 -> 14.dp
                 else -> 12.dp
             }),
     ) {
@@ -3490,46 +3490,101 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 4. Translation — source text and Chinese output have separate visual lanes.
+            // 4. Translation — the original subtitle is a straight blue rail;
+            // a small green car travels along it and leaves the translated range behind.
             3 -> {
-                val segments = 18
-                val segmentGap = 2.dp.toPx()
-                val segmentWidth = (size.width - segmentGap * (segments - 1)) / segments
-                val laneHeight = 3.4.dp.toPx()
-                val laneSpacing = 3.dp.toPx()
-                val firstTop = (size.height - laneHeight * 2f - laneSpacing) / 2f
-                val secondTop = firstTop + laneHeight + laneSpacing
-                val sourceFraction = if (sourceSubtitlesReady || isCompleted) 1f else 0f
-                val translationFraction = fraction
-                val sourceFilled = (sourceFraction * segments).toInt()
-                val translatedFilled = (translationFraction * segments).toInt()
-                val scanIndex = (scanPosition * segments).toInt().coerceIn(0, segments - 1)
-                repeat(segments) { i ->
-                    val left = i * (segmentWidth + segmentGap)
-                    drawRoundRect(
-                        color = if (i < sourceFilled) Color(0xFF3268F5) else trackColor,
-                        topLeft = Offset(left, firstTop),
-                        size = Size(segmentWidth, laneHeight),
-                        cornerRadius = CornerRadius(laneHeight / 2f, laneHeight / 2f),
+                val roadStart = 6.dp.toPx()
+                val roadEnd = (size.width - 6.dp.toPx()).coerceAtLeast(roadStart)
+                val roadY = size.height * 0.74f
+                val railColor = if (sourceSubtitlesReady || isCompleted) {
+                    Color(0xFF3268F5)
+                } else {
+                    trackColor
+                }
+                val carColor = when {
+                    isFailed -> Color(0xFFD74655)
+                    isPaused -> Color(0xFFD39A35)
+                    isSkipped -> Color(0xFF9AA6B5)
+                    else -> Color(0xFF22A77D)
+                }
+                val carProgress = when {
+                    isSkipped -> 0f
+                    isIndeterminate && isAnimating -> scanPosition
+                    else -> fraction
+                }.coerceIn(0f, 1f)
+                val carCenterX = roadStart + (roadEnd - roadStart) * carProgress
+                val carWidth = 12.dp.toPx()
+                val wheelRadius = 1.45.dp.toPx()
+                val wheelY = roadY - wheelRadius * 0.2f
+
+                // The blue line communicates that the source subtitle track is ready.
+                drawLine(
+                    color = railColor,
+                    start = Offset(roadStart, roadY),
+                    end = Offset(roadEnd, roadY),
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+
+                // A green/red/amber trail marks only the known translated portion.
+                if (!isIndeterminate && !isSkipped && fraction > 0f) {
+                    drawLine(
+                        color = if (isFailed) Color(0xFFD74655) else if (isPaused) Color(0xFFD39A35) else Color(0xFF22A77D),
+                        start = Offset(roadStart, roadY),
+                        end = Offset(carCenterX, roadY),
+                        strokeWidth = 2.dp.toPx(),
+                        cap = StrokeCap.Round,
                     )
-                    val lowerColor = when {
-                        isFailed -> Color(0xFFD74655)
-                        isCompleted -> Color(0xFF18A879)
-                        else -> Color(0xFF22A77D)
-                    }
-                    val lowerFilled = i < translatedFilled
-                    val scanning = isIndeterminate && i == scanIndex
-                    drawRoundRect(
-                        color = when {
-                            lowerFilled -> lowerColor
-                            scanning -> lowerColor.copy(alpha = pulseAlpha)
-                            else -> trackColor
-                        },
-                        topLeft = Offset(left, secondTop),
-                        size = Size(segmentWidth, laneHeight),
-                        cornerRadius = CornerRadius(laneHeight / 2f, laneHeight / 2f),
+                } else if (isCompleted) {
+                    drawLine(
+                        color = Color(0xFF18A879),
+                        start = Offset(roadStart, roadY),
+                        end = Offset(roadEnd, roadY),
+                        strokeWidth = 2.dp.toPx(),
+                        cap = StrokeCap.Round,
                     )
                 }
+
+                // Compact car body, raised cabin, windows and two wheels.
+                val carLeft = carCenterX - carWidth / 2f
+                val bodyTop = roadY - 5.1.dp.toPx()
+                val bodyHeight = 4.6.dp.toPx()
+                drawRoundRect(
+                    color = carColor,
+                    topLeft = Offset(carLeft, bodyTop),
+                    size = Size(carWidth, bodyHeight),
+                    cornerRadius = CornerRadius(1.5.dp.toPx(), 1.5.dp.toPx()),
+                )
+                val cabin = Path().apply {
+                    moveTo(carLeft + 2.3.dp.toPx(), bodyTop + 0.2.dp.toPx())
+                    lineTo(carLeft + 4.1.dp.toPx(), bodyTop - 2.5.dp.toPx())
+                    lineTo(carLeft + 8.9.dp.toPx(), bodyTop - 2.5.dp.toPx())
+                    lineTo(carLeft + 10.4.dp.toPx(), bodyTop + 0.2.dp.toPx())
+                    close()
+                }
+                drawPath(cabin, carColor)
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.9f),
+                    topLeft = Offset(carLeft + 4.4.dp.toPx(), bodyTop - 1.9.dp.toPx()),
+                    size = Size(1.8.dp.toPx(), 1.8.dp.toPx()),
+                    cornerRadius = CornerRadius(0.45.dp.toPx()),
+                )
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.9f),
+                    topLeft = Offset(carLeft + 6.7.dp.toPx(), bodyTop - 1.9.dp.toPx()),
+                    size = Size(1.7.dp.toPx(), 1.8.dp.toPx()),
+                    cornerRadius = CornerRadius(0.45.dp.toPx()),
+                )
+                drawCircle(
+                    color = Color(0xFF344054),
+                    radius = wheelRadius,
+                    center = Offset(carLeft + 3.2.dp.toPx(), wheelY),
+                )
+                drawCircle(
+                    color = Color(0xFF344054),
+                    radius = wheelRadius,
+                    center = Offset(carLeft + 9.0.dp.toPx(), wheelY),
+                )
             }
 
             // 5. Dubbing — an organic ECG signal with varied spacing and peak heights.
