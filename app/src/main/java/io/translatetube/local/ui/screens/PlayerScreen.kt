@@ -3490,8 +3490,9 @@ private fun StageProgressVisual(
                     0f
                 }
                 val centerY = size.height / 2f
-                val maxBarHeight = (size.height - 1.4.dp.toPx()).coerceAtLeast(2.dp.toPx())
-                val minBarHeight = 2.2.dp.toPx()
+                // Use almost the full 16dp lane for a visibly wider vertical bounce.
+                val maxBarHeight = (size.height - 0.8.dp.toPx()).coerceAtLeast(2.dp.toPx())
+                val minBarHeight = 1.5.dp.toPx()
                 val activeColor = when {
                     isFailed -> Color(0xFFD74655)
                     isPaused -> Color(0xFFD39A35)
@@ -3535,8 +3536,10 @@ private fun StageProgressVisual(
                         val mainBeat = (kotlin.math.sin(rhythmPhase * 1.22f - index * 0.43f) + 1f) / 2f
                         val syncopation = (kotlin.math.sin(rhythmPhase * 1.78f + index * 1.07f) + 1f) / 2f
                         val rollingBeat = (kotlin.math.sin(rhythmPhase * 0.72f - index * 0.19f + 1.2f) + 1f) / 2f
-                        val energy = (mainBeat * 0.54f + syncopation * 0.29f + rollingBeat * 0.17f)
-                            .coerceIn(0f, 1f)
+                        val rawEnergy = mainBeat * 0.54f + syncopation * 0.29f + rollingBeat * 0.17f
+                        // Expand contrast around the midpoint so bars swing more clearly
+                        // between short and tall values, like a lively music spectrum.
+                        val energy = (0.5f + (rawEnergy - 0.5f) * 1.7f).coerceIn(0f, 1f)
                         val barHeight = if (animate) {
                             minBarHeight + (maxBarHeight - minBarHeight) * energy
                         } else {
