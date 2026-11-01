@@ -1406,7 +1406,7 @@ private fun FreeModelConfigDialog(
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     val configuration = LocalConfiguration.current
-androidx.compose.ui.window.Dialog(
+    androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
@@ -1699,7 +1699,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val credentialsReady = apiCredentialsReady && (fixedEngine || model.isNotBlank())
 
     val configuration = LocalConfiguration.current
-androidx.compose.ui.window.Dialog(
+    androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
