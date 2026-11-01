@@ -135,18 +135,26 @@ internal object DubbingCacheStorage {
             BufferedInputStream(FileInputStream(second)).use { secondInput ->
                 val firstBuffer = ByteArray(COPY_BUFFER_BYTES)
                 val secondBuffer = ByteArray(COPY_BUFFER_BYTES)
-                while (true) {
+                var sameBytes = true
+                var reachedEnd = false
+                while (sameBytes && !reachedEnd) {
                     checkActive()
                     val firstCount = firstInput.read(firstBuffer)
                     val secondCount = secondInput.read(secondBuffer)
-                    if (firstCount != secondCount) return@use false
-                    if (firstCount < 0) return@use true
-                    if (firstCount == 0) continue
-                    for (index in 0 until firstCount) {
-                        if (firstBuffer[index] != secondBuffer[index]) return@use false
+                    if (firstCount != secondCount) {
+                        sameBytes = false
+                    } else if (firstCount < 0) {
+                        reachedEnd = true
+                    } else {
+                        for (index in 0 until firstCount) {
+                            if (firstBuffer[index] != secondBuffer[index]) {
+                                sameBytes = false
+                                break
+                            }
+                        }
                     }
                 }
-                false
+                sameBytes && reachedEnd
             }
         }
         return equal &&
