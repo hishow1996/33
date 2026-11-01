@@ -3457,17 +3457,13 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 3. Transcription — a single row of text-like chips with jumping strokes.
-            // Every short stroke from the start to the measured progress boundary keeps moving.
+            // 3. Transcription — equal-sized text blocks, each containing exactly three
+            // upright strokes that jump independently across the completed range.
             2 -> {
-                val blockWeights = floatArrayOf(
-                    0.82f, 1.08f, 0.68f, 1.16f, 0.94f,
-                    0.76f, 1.12f, 0.70f, 1.02f, 0.88f,
-                )
-                val blockCount = blockWeights.size
+                val blockCount = 10
                 val blockGap = 2.dp.toPx()
-                val totalWeight = blockWeights.sum()
                 val availableWidth = (size.width - blockGap * (blockCount - 1)).coerceAtLeast(0f)
+                val blockWidth = availableWidth / blockCount
                 val blockHeight = 11.dp.toPx()
                 val blockTop = (size.height - blockHeight) / 2f
                 val blockCorner = CornerRadius(3.dp.toPx(), 3.dp.toPx())
@@ -3487,12 +3483,12 @@ private fun StageProgressVisual(
                 } else {
                     revealX
                 }
-
-                // Static text blocks and grey letter strokes represent waiting segments.
-                var blockLeft = 0f
+                val linePositions = floatArrayOf(0.25f, 0.50f, 0.75f)
                 val blockBounds = ArrayList<Pair<Float, Float>>(blockCount)
+
+                // Every text block has exactly the same width, height and three-line layout.
                 repeat(blockCount) { blockIndex ->
-                    val blockWidth = availableWidth * blockWeights[blockIndex] / totalWeight
+                    val blockLeft = blockIndex * (blockWidth + blockGap)
                     val blockRight = blockLeft + blockWidth
                     blockBounds.add(blockLeft to blockRight)
                     drawRoundRect(
@@ -3502,28 +3498,22 @@ private fun StageProgressVisual(
                         cornerRadius = blockCorner,
                     )
 
-                    val lineCount = if (blockWidth > 22.dp.toPx()) 3 else 2
-                    repeat(lineCount) { lineIndex ->
-                        val xFactor = if (lineCount == 2) {
-                            0.32f + lineIndex * 0.36f
-                        } else {
-                            0.22f + lineIndex * 0.28f
-                        }
-                        val lineX = blockLeft + blockWidth * xFactor
-                        val baseHeight = (3.0f + ((blockIndex + lineIndex * 2) % 3) * 1.1f).dp.toPx()
+                    // Three upright grey strokes are visible in waiting blocks.
+                    repeat(3) { lineIndex ->
+                        val lineX = blockLeft + blockWidth * linePositions[lineIndex]
+                        val baseHeight = (3.2f + ((blockIndex + lineIndex * 2) % 3) * 0.7f).dp.toPx()
                         val centerY = blockTop + blockHeight / 2f
                         drawLine(
                             color = lineColor,
                             start = Offset(lineX, centerY - baseHeight / 2f),
                             end = Offset(lineX, centerY + baseHeight / 2f),
-                            strokeWidth = 1.25.dp.toPx(),
+                            strokeWidth = 1.35.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                     }
-                    blockLeft = blockRight + blockGap
                 }
 
-                // Paint only the processed range, clipped at the real progress boundary.
+                // Paint only the measured processed range; no segment beyond real progress lights up.
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = revealX) {
                         blockBounds.forEach { (left, right) ->
@@ -3535,24 +3525,15 @@ private fun StageProgressVisual(
                             )
                         }
 
-                        // Every completed text stroke jumps vertically with its own phase.
-                        // A 2.5dp travel keeps the motion clearly visible at this compact height.
-                        blockBounds.forEachIndexed { blockIndex, bounds ->
-                            val (left, right) = bounds
-                            val blockWidth = right - left
-                            val lineCount = if (blockWidth > 22.dp.toPx()) 3 else 2
-                            repeat(lineCount) { lineIndex ->
+                        // All three strokes in every completed block jump independently.
+                        blockBounds.forEachIndexed { blockIndex, (left, right) ->
+                            repeat(3) { lineIndex ->
                                 val phase = transcriptionTextPhase -
                                     blockIndex * 0.73f - lineIndex * 1.61f
                                 val wave = (kotlin.math.sin(phase) + 1f) / 2f
                                 val verticalTravel = kotlin.math.sin(phase * 1.17f) * 1.45f.dp.toPx()
-                                val xFactor = if (lineCount == 2) {
-                                    0.32f + lineIndex * 0.36f
-                                } else {
-                                    0.22f + lineIndex * 0.28f
-                                }
-                                val lineX = left + blockWidth * xFactor
-                                // Upright strokes grow and shrink from 2dp to about 7dp.
+                                val lineX = left + (right - left) * linePositions[lineIndex]
+                                // Vertical bar height varies clearly from 2dp to 7dp.
                                 val barHeight = (2.0f + wave * 5.0f).dp.toPx()
                                 val centerY = (blockTop + blockHeight / 2f + verticalTravel)
                                     .coerceIn(
@@ -3563,7 +3544,7 @@ private fun StageProgressVisual(
                                     color = Color.White,
                                     start = Offset(lineX, centerY - barHeight / 2f),
                                     end = Offset(lineX, centerY + barHeight / 2f),
-                                    strokeWidth = 1.35.dp.toPx(),
+                                    strokeWidth = 1.45.dp.toPx(),
                                     cap = StrokeCap.Round,
                                 )
                             }
@@ -3571,8 +3552,8 @@ private fun StageProgressVisual(
                     }
                 }
 
-                // Unknown progress scans one outline without inventing a completed range.
-                // With measured progress, outline the single segment currently being processed.
+                // Unknown progress scans one block outline without inventing completion;
+                // determinate mode outlines the block at the current real progress position.
                 val boundaryX = if (isIndeterminate) scanX else revealX
                 if (!isSkipped && !isCompleted && boundaryX < size.width) {
                     val currentBounds = blockBounds.firstOrNull { (left, right) ->
