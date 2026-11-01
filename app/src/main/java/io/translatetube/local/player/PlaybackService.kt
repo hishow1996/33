@@ -9367,17 +9367,36 @@ updateUiForSession(key, pipelineGeneration) {
                         }
                     }
                     if (restartPlaybackFromBeginningForThisRun) {
-                        val actualStartPositionMs = runCatching { pm.position() }.getOrDefault(-1L)
+                        // ExoPlayer may only be read on the main thread. Reading it from this worker
+                        // thread always threw, so the old log showed "读取失败" and position 0 even
+                        // when playback was healthy, hiding the real state of a black-screen start.
+                        val startState = withContext(Dispatchers.Main) {
+                            fun read(block: () -> String): String = runCatching(block).getOrDefault("读取失败")
+                            linkedMapOf(
+                                "起播调用后播放器位置 ms" to read { pm.player.currentPosition.toString() },
+                                "播放器播放意图 playWhenReady" to read { pm.player.playWhenReady.toString() },
+                                "是否正在播放 isPlaying" to read { pm.player.isPlaying.toString() },
+                                "播放器状态" to read {
+                                    when (val s = pm.player.playbackState) {
+                                        androidx.media3.common.Player.STATE_IDLE -> "IDLE（未准备）"
+                                        androidx.media3.common.Player.STATE_BUFFERING -> "BUFFERING（缓冲中）"
+                                        androidx.media3.common.Player.STATE_READY -> "READY（可播放）"
+                                        androidx.media3.common.Player.STATE_ENDED -> "ENDED（已结束）"
+                                        else -> s.toString()
+                                    }
+                                },
+                                "已挂载媒体数" to read { pm.player.mediaItemCount.toString() },
+                                "是否已渲染首帧" to read { pm.hasRenderedFirstFrame.value.toString() },
+                                "画面是否已绑定播放器" to (boundVideoSurface?.get() != null).toString(),
+                            )
+                        }
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
                             "PlaybackFlow",
                             "本轮起播位置检查完成",
-                            diagnosticContext = mapOf(
+                            diagnosticContext = startState + mapOf(
                                 "视频来源" to diagnosticMediaSourceType(ui.value),
                                 "请求起播位置 ms" to "0",
-                                "起播调用后播放器位置 ms" to actualStartPositionMs.toString(),
-                                "播放器播放意图" to runCatching { pm.player.playWhenReady.toString() }.getOrDefault("读取失败"),
-                                "播放器实际状态" to runCatching { pm.player.isPlaying.toString() }.getOrDefault("读取失败"),
                                 "是否从头起播" to "true",
                             ),
                         )
