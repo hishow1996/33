@@ -91,7 +91,13 @@ internal object DubbingCacheStorage {
                 continue
             }
             val published = runCatching { temp.renameTo(destination) }.getOrDefault(false)
-            val publishedMatchesSource = published && try {
+            if (!published) {
+                // Another migration may have published the destination after our existence check.
+                // Never delete that other writer's file when our rename itself failed.
+                runCatching { temp.delete() }
+                continue
+            }
+            val publishedMatchesSource = try {
                 destination.length() == sourceLength &&
                     source.lastModified() == sourceModified &&
                     filesEqual(source, destination, checkActive)
@@ -101,6 +107,7 @@ internal object DubbingCacheStorage {
                 false
             }
             if (!publishedMatchesSource) {
+                // This call successfully published the path, so it owns the destination it removes.
                 runCatching { destination.delete() }
                 runCatching { temp.delete() }
                 continue
