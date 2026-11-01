@@ -1406,17 +1406,16 @@ private fun FreeModelConfigDialog(
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     val configuration = LocalConfiguration.current
-    val keyboardHeight = rememberDialogImeHeight()
-    val maxDialogHeight = minOf(
-        (configuration.screenHeightDp * 0.85f).dp,
-        (configuration.screenHeightDp.dp - keyboardHeight - 24.dp).coerceAtLeast(240.dp),
-    )
-
-    androidx.compose.ui.window.Dialog(
+androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         ConfigureDialogImeResize()
+        val keyboardHeight = rememberDialogImeHeight()
+        val maxDialogHeight = minOf(
+            (configuration.screenHeightDp * 0.85f).dp,
+            (configuration.screenHeightDp.dp - keyboardHeight - 24.dp).coerceAtLeast(240.dp),
+        )
         Column(
             Modifier.fillMaxWidth(0.92f)
                 .heightIn(max = maxDialogHeight)
@@ -1700,16 +1699,16 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val credentialsReady = apiCredentialsReady && (fixedEngine || model.isNotBlank())
 
     val configuration = LocalConfiguration.current
-    val keyboardHeight = rememberDialogImeHeight()
-    val maxDialogHeight = minOf(
-        (configuration.screenHeightDp * 0.84f).dp,
-        (configuration.screenHeightDp.dp - keyboardHeight - 24.dp).coerceAtLeast(240.dp),
-    )
-    androidx.compose.ui.window.Dialog(
+androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         ConfigureDialogImeResize()
+        val keyboardHeight = rememberDialogImeHeight()
+        val maxDialogHeight = minOf(
+            (configuration.screenHeightDp * 0.84f).dp,
+            (configuration.screenHeightDp.dp - keyboardHeight - 24.dp).coerceAtLeast(240.dp),
+        )
         val scope = rememberCoroutineScope()
 
         fun makeCurrentProfile(): ApiProfile = ApiProfile(
