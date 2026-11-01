@@ -61,6 +61,32 @@ class AppCacheStoragePolicyTest {
     }
 
     @Test
+    fun includesDurableAsrAudioCacheInSizeAndClearOperations() {
+        val cacheRoot = createTempDir(prefix = "app-cache-durable")
+        val noBackupRoot = createTempDir(prefix = "app-no-backup")
+        try {
+            File(cacheRoot, "dub/cue.pcm").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(13))
+            }
+            File(noBackupRoot, "asr_audio_retry/video.bin").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(37))
+            }
+            File(noBackupRoot, "unrelated.keep").writeText("keep")
+
+            assertEquals(50L, AppCacheStoragePolicy.sizeBytes(cacheRoot, noBackupRoot))
+            assertTrue(AppCacheStoragePolicy.clear(cacheRoot, noBackupRoot))
+            assertFalse(File(noBackupRoot, "asr_audio_retry").exists())
+            assertTrue(File(noBackupRoot, "unrelated.keep").isFile)
+            assertEquals(0L, AppCacheStoragePolicy.sizeBytes(cacheRoot, noBackupRoot))
+        } finally {
+            cacheRoot.deleteRecursively()
+            noBackupRoot.deleteRecursively()
+        }
+    }
+
+    @Test
     fun refusesCacheClearWhenPlaybackOrBackgroundWorkIsActive() {
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = true, isProcessing = false, dubbingIncomplete = false))
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = false, isProcessing = true, dubbingIncomplete = false))
