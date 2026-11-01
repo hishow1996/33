@@ -12937,6 +12937,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
             if (localPcm != null) {
                 localPcmLeasePath = localPcm.second
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key) state.copy(
+                        phase = Phase.SYNTHESIZING,
+                        progress = "人物识别 · 复用已解码音频缓存…",
+                    ) else state
+                }
                 releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
                 assignSpeakersFromLocalTranscript(
                     key = key,
@@ -12965,9 +12971,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             audioLeasePath = cachedAudio.absolutePath
             ensureCurrentSession(key, pipelineGeneration)
             updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key && state.phase == Phase.SYNTHESIZING) {
-                    state.copy(progress = "人物识别 · 复用缓存音频，正在分析人物声音…")
-                } else state
+                if (state.key == key) state.copy(
+                    phase = Phase.SYNTHESIZING,
+                    progress = "人物识别 · 复用缓存音频，正在分析人物声音…",
+                ) else state
             }
             releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
             val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
