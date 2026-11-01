@@ -3461,12 +3461,12 @@ private fun StageProgressVisual(
             // upright strokes that jump independently across the completed range.
             2 -> {
                 val blockCount = 10
-                val blockGap = 2.dp.toPx()
+                val blockGap = 1.8.dp.toPx()
                 val availableWidth = (size.width - blockGap * (blockCount - 1)).coerceAtLeast(0f)
                 val blockWidth = availableWidth / blockCount
                 val blockHeight = 11.dp.toPx()
                 val blockTop = (size.height - blockHeight) / 2f
-                val blockCorner = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                val blockCorner = CornerRadius(3.5.dp.toPx(), 3.5.dp.toPx())
                 val lineColor = Color(0xFFB7C4D5)
                 val activeColor = when {
                     isFailed -> Color(0xFFD74655)
@@ -3501,13 +3501,13 @@ private fun StageProgressVisual(
                     // Three upright grey strokes are visible in waiting blocks.
                     repeat(3) { lineIndex ->
                         val lineX = blockLeft + blockWidth * linePositions[lineIndex]
-                        val baseHeight = (3.2f + ((blockIndex + lineIndex * 2) % 3) * 0.7f).dp.toPx()
+                        val baseHeight = (3.0f + ((blockIndex + lineIndex * 2) % 3) * 1.0f).dp.toPx()
                         val centerY = blockTop + blockHeight / 2f
                         drawLine(
                             color = lineColor,
                             start = Offset(lineX, centerY - baseHeight / 2f),
                             end = Offset(lineX, centerY + baseHeight / 2f),
-                            strokeWidth = 1.35.dp.toPx(),
+                            strokeWidth = 1.3.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                     }
@@ -3531,10 +3531,10 @@ private fun StageProgressVisual(
                                 val phase = transcriptionTextPhase -
                                     blockIndex * 0.73f - lineIndex * 1.61f
                                 val wave = (kotlin.math.sin(phase) + 1f) / 2f
-                                val verticalTravel = kotlin.math.sin(phase * 1.17f) * 1.45f.dp.toPx()
+                                val verticalTravel = kotlin.math.sin(phase * 1.17f) * 1.0f.dp.toPx()
                                 val lineX = left + (right - left) * linePositions[lineIndex]
-                                // Vertical bar height varies clearly from 2dp to 7dp.
-                                val barHeight = (2.0f + wave * 5.0f).dp.toPx()
+                                // Each vertical stroke varies evenly from 3dp to 7dp.
+                                val barHeight = (3.0f + wave * 4.0f).dp.toPx()
                                 val centerY = (blockTop + blockHeight / 2f + verticalTravel)
                                     .coerceIn(
                                         blockTop + barHeight / 2f + 0.8.dp.toPx(),
@@ -3544,7 +3544,7 @@ private fun StageProgressVisual(
                                     color = Color.White,
                                     start = Offset(lineX, centerY - barHeight / 2f),
                                     end = Offset(lineX, centerY + barHeight / 2f),
-                                    strokeWidth = 1.45.dp.toPx(),
+                                    strokeWidth = 1.3.dp.toPx(),
                                     cap = StrokeCap.Round,
                                 )
                             }
@@ -3556,8 +3556,8 @@ private fun StageProgressVisual(
                 // determinate mode outlines the block at the current real progress position.
                 val boundaryX = if (isIndeterminate) scanX else revealX
                 if (!isSkipped && !isCompleted && boundaryX < size.width) {
-                    val currentBounds = blockBounds.firstOrNull { (left, right) ->
-                        boundaryX >= left && boundaryX <= right
+                    val currentBounds = blockBounds.firstOrNull { (_, right) ->
+                        boundaryX < right
                     } ?: blockBounds.last()
                     val (left, right) = currentBounds
                     val outlineAlpha = if (isIndeterminate && motionEnabled) {
