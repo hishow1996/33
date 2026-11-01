@@ -3690,12 +3690,6 @@ private fun StageProgressVisual(
                 }
                 drawPath(strandA, color = pendingColor, style = curveStyle)
                 drawPath(strandB, color = pendingColor, style = curveStyle)
-                drawOverUnderWeave(
-                    colorA = pendingColor,
-                    colorB = pendingColor,
-                    strokeWidth = curveStroke,
-                )
-
                 fun drawActiveRungs(pulseHead: Float?, pulseRadius: Float) {
                     rungPositions.forEach { x ->
                         val yA = strandY(x, -1f)
@@ -3808,6 +3802,13 @@ private fun StageProgressVisual(
                         )
                     }
                 }
+
+                // Draw the muted over/under crossings after the local helper is declared.
+                drawOverUnderWeave(
+                    colorA = pendingColor,
+                    colorB = pendingColor,
+                    strokeWidth = curveStroke,
+                )
 
                 val motionEnabled = isAnimating && !isPaused && !isFailed &&
                     !isCompleted && !isSkipped
