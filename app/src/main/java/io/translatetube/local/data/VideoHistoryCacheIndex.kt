@@ -29,6 +29,21 @@ internal object VideoHistoryCacheIndex {
     fun audioCacheFileNames(context: Context, videoKey: String): Set<String> =
         fileNames(context, videoKey, audioStorageKey(videoKey), safeAudioFileName)
 
+    /** A shared remote-audio file must remain while another history item still references it. */
+    fun isAudioCacheFileReferencedByAnotherHistory(
+        context: Context,
+        videoKey: String,
+        fileName: String,
+    ): Boolean {
+        if (videoKey.isBlank() || !safeAudioFileName.matches(fileName)) return false
+        val ownKey = audioStorageKey(videoKey)
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).all.any { (key, value) ->
+            key != ownKey &&
+                key.endsWith("-audio") &&
+                (value as? Set<*>)?.contains(fileName) == true
+        }
+    }
+
     /** Only reuse an alternate indexed cache when its one-way source identity matches this media. */
     fun hasMatchingAudioSourceIdentity(
         context: Context,
