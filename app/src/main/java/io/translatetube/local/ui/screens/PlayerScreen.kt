@@ -3502,15 +3502,19 @@ private fun StageProgressVisual(
 
                     val lineCount = if (blockWidth > 22.dp.toPx()) 3 else 2
                     repeat(lineCount) { lineIndex ->
-                        val lineStart = blockLeft + blockWidth * (0.18f + lineIndex * 0.27f)
-                        val lineLength = (blockWidth * (0.17f + ((blockIndex + lineIndex) % 3) * 0.035f))
-                            .coerceAtMost(blockWidth * 0.28f)
-                        val staticY = blockTop + blockHeight * (0.32f + (lineIndex % 2) * 0.34f)
+                        val xFactor = if (lineCount == 2) {
+                            0.32f + lineIndex * 0.36f
+                        } else {
+                            0.22f + lineIndex * 0.28f
+                        }
+                        val lineX = blockLeft + blockWidth * xFactor
+                        val baseHeight = (3.0f + ((blockIndex + lineIndex * 2) % 3) * 1.1f).dp.toPx()
+                        val centerY = blockTop + blockHeight / 2f
                         drawLine(
                             color = lineColor,
-                            start = Offset(lineStart, staticY),
-                            end = Offset(lineStart + lineLength, staticY),
-                            strokeWidth = 1.05.dp.toPx(),
+                            start = Offset(lineX, centerY - baseHeight / 2f),
+                            end = Offset(lineX, centerY + baseHeight / 2f),
+                            strokeWidth = 1.25.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                     }
@@ -3538,18 +3542,26 @@ private fun StageProgressVisual(
                             repeat(lineCount) { lineIndex ->
                                 val phase = transcriptionTextPhase -
                                     blockIndex * 0.73f - lineIndex * 1.61f
-                                val verticalTravel = kotlin.math.sin(phase) * 2.5f.dp.toPx()
-                                val lineStart = left + blockWidth * (0.18f + lineIndex * 0.27f)
-                                val lineLength = (blockWidth * (0.17f + ((blockIndex + lineIndex) % 3) * 0.035f))
-                                    .coerceAtMost(blockWidth * 0.28f)
-                                val baseY = blockTop + blockHeight * (0.32f + (lineIndex % 2) * 0.34f)
-                                val y = (baseY + verticalTravel)
-                                    .coerceIn(blockTop + 1.6.dp.toPx(), blockTop + blockHeight - 1.6.dp.toPx())
+                                val wave = (kotlin.math.sin(phase) + 1f) / 2f
+                                val verticalTravel = kotlin.math.sin(phase * 1.17f) * 1.45f.dp.toPx()
+                                val xFactor = if (lineCount == 2) {
+                                    0.32f + lineIndex * 0.36f
+                                } else {
+                                    0.22f + lineIndex * 0.28f
+                                }
+                                val lineX = left + blockWidth * xFactor
+                                // Upright strokes grow and shrink from 2dp to about 7dp.
+                                val barHeight = (2.0f + wave * 5.0f).dp.toPx()
+                                val centerY = (blockTop + blockHeight / 2f + verticalTravel)
+                                    .coerceIn(
+                                        blockTop + barHeight / 2f + 0.8.dp.toPx(),
+                                        blockTop + blockHeight - barHeight / 2f - 0.8.dp.toPx(),
+                                    )
                                 drawLine(
                                     color = Color.White,
-                                    start = Offset(lineStart, y),
-                                    end = Offset(lineStart + lineLength, y),
-                                    strokeWidth = 1.15.dp.toPx(),
+                                    start = Offset(lineX, centerY - barHeight / 2f),
+                                    end = Offset(lineX, centerY + barHeight / 2f),
+                                    strokeWidth = 1.35.dp.toPx(),
                                     cap = StrokeCap.Round,
                                 )
                             }
