@@ -12875,21 +12875,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 pendingTts = preflightEngine
                 val systemChineseVoiceCount =
                     (preflightEngine as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
-                if (!io.translatetube.local.tts.TtsSpeakerCapabilityPolicy
-                        .supportsDistinctVoices(selectedTts, systemChineseVoiceCount)
-                ) {
-                    val message = when (selectedTts) {
-                        "piper" ->
-                            "当前 Piper 中文模型为单人音色，不能为不同人物分配不同声音。已取消人物识别；普通 Piper 配音仍可使用。请切换到 Kokoro 或支持多种中文音色的系统 TTS。"
-                        "system" ->
-                            "手机系统 TTS 只提供一个可用中文音色，无法为不同人物分配不同音色；普通系统配音仍可使用。"
-                        else -> "当前选择的配音引擎不支持多人物音色分配。"
-                    }
-                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
-                        it.copy(phase = Phase.READY, progress = "", error = message)
-                    }
-                    return@launch
-                }
+                // Identify people independently from the selected engine's tone capacity.
+                // Piper and single-voice System TTS still benefit from a saved person timeline;
+                // their cues simply keep the engine's default voice until a capable engine is selected.
                 val speakerDecodeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
