@@ -55,6 +55,29 @@ class ActiveFileLeaseRegistryTest {
     }
 
     @Test
+    fun keepsMissingDestinationProtectedWhileItsDownloadLeaseIsActive() {
+        val leases = ActiveFileLeaseRegistry()
+        val path = "/private/no_backup/asr_audio/video.bin"
+        var finalFileExists = false
+        var deleteCallbackInvoked = false
+
+        // The .bin is created only after the download completes, but its path is leased first.
+        leases.acquire(path)
+        assertFalse(leases.deleteIfUnleased(path) {
+            deleteCallbackInvoked = true
+            !finalFileExists
+        })
+        assertFalse(deleteCallbackInvoked)
+
+        leases.release(path)
+        assertTrue(leases.deleteIfUnleased(path) {
+            deleteCallbackInvoked = true
+            !finalFileExists
+        })
+        assertTrue(deleteCallbackInvoked)
+    }
+
+    @Test
     fun currentReaderCanDeleteFailedFileOnlyWhenNoOtherReaderOwnsIt() {
         val leases = ActiveFileLeaseRegistry()
         val path = "/cache/asr_audio/video.bin"
