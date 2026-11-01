@@ -560,6 +560,10 @@ data class PlayerUiState(
     val audioTrackMimeType: String = "",
     val audioTrackDurationMs: Long = 0L,
     val audioTrackChannelCount: Int = 0,
+    val audioTrackSampleRateHz: Int = 0,
+    val audioTrackSourceType: String = "",
+    /** Actual dimensions reported for the currently selected video track, not the display surface. */
+    val videoResolution: String = "",
     val transcriptionEngineName: String = "",
     val transcriptionProgressPercent: Int? = null,
     val transcriptionCompletedSegments: Int = 0,
@@ -2347,8 +2351,44 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                    // HLS/DASH 清单解析后，Media3 才会公开真实的视频轨与分辨率。
+                    // Read the dimensions from the selected media track, never from the view size.
+                    val selectedResolution = tracks.groups.asSequence()
+                        .filter { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }
+                        .flatMap { group ->
+                            (0 until group.length).asSequence()
+                                .filter { trackIndex -> group.isTrackSelected(trackIndex) }
+                                .map { trackIndex -> group.getTrackFormat(trackIndex) }
+                        }
+                        .mapNotNull { format ->
+                            val width = format.width
+                            val height = format.height
+                            when {
+                                width > 0 && height > 0 -> "$width × $height"
+                                height > 0 -> "${height}p"
+                                else -> null
+                            }
+                        }
+                        .firstOrNull()
+                    if (!selectedResolution.isNullOrBlank()) {
+                        val activeKey = ui.value.key
+                        ui.update { state ->
+                            if (state.key == activeKey) state.copy(videoResolution = selectedResolution) else state
+                        }
+                    }
+                    // HLS/DASH track metadata may be available before the first decoded video frame.
                     refreshAdaptiveVideoQualityOptions()
+                }
+
+                override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                    // Use decoded media dimensions as a fallback when track metadata arrives late.
+                    val width = videoSize.width
+                    val height = videoSize.height
+                    if (width <= 0 || height <= 0) return
+                    val selectedResolution = "$width × $height"
+                    val activeKey = ui.value.key
+                    ui.update { state ->
+                        if (state.key == activeKey) state.copy(videoResolution = selectedResolution) else state
+                    }
                 }
             })
 
@@ -7552,6 +7592,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         audioTrackMimeType = "",
                         audioTrackDurationMs = 0L,
                         audioTrackChannelCount = 0,
+                        audioTrackSampleRateHz = 0,
+                        audioTrackSourceType = when {
+                            videoId != null -> "独立音轨"
+                            remoteMediaUrl != null -> "检测中"
+                            localUri != null -> "本地音轨"
+                            else -> ""
+                        },
                         transcriptionEngineName = transcriptionEngineDisplayName,
                         transcriptionProgressPercent = null,
                     )
@@ -7601,6 +7648,18 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             audioTrackMimeType = audioProbe.selectedAudioMimeType.orEmpty(),
                             audioTrackDurationMs = audioProbe.durationMs.coerceAtLeast(0L),
                             audioTrackChannelCount = audioProbe.selectedAudioChannelCount ?: 0,
+                            audioTrackSampleRateHz = audioProbe.selectedAudioSampleRateHz ?: 0,
+                            audioTrackSourceType = when {
+                                state.progress.contains("正在缓存网页音轨", ignoreCase = true) ||
+                                    state.progress.contains("HLS", ignoreCase = true) -> "HLS 分片"
+                                state.progress.contains("音画混合流") -> "音画混合流"
+                                state.progress.contains("独立音轨") -> "独立音轨"
+                                state.progress.contains("复用网页视频音频缓存") -> "缓存音轨"
+                                videoId != null -> "独立音轨"
+                                remoteMediaUrl != null -> "网页媒体音轨"
+                                localUri != null -> "本地音轨"
+                                else -> "未知"
+                            },
                         )
                     }
                 }
