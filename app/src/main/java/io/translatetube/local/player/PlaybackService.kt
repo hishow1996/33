@@ -7481,6 +7481,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val asrLines: List<Triple<Long, Long, String>>
                 val detectedAsrLang: String
                 val asrTimelineDurationMs: Long
+                // Reuse the exact PCM already decoded for local ASR; speaker analysis must not decode or download the source again.
+                var speakerAnalysisPcmFile: io.translatetube.local.asr.AudioExtract.PcmFile? = null
                 val directCloudPreparation: Triple<io.translatetube.local.asr.CloudTranscription.EncodedAudioInput, Long, File?>? =
                     if (asrProvider == "elevenlabs" || asrProvider == "cartesia") {
                         updateUiForSession(key, pipelineGeneration) {
@@ -7763,6 +7765,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 transientPcmFile = pcmFile.takeUnless { pcm ->
                     leasedLocalPcmCachePath != null && pcm.file.absolutePath == leasedLocalPcmCachePath
                 }
+                speakerAnalysisPcmFile = pcmFile
                 decodedPcmHolder.set(null)
                 // Keep HLS parts when decoding fails so the next attempt can reuse downloaded
                 // segments. Once MediaExtractor has accepted the merged file, discard the copies.
@@ -8298,8 +8301,11 @@ updateUiForSession(key, pipelineGeneration) {
                 asrLines = decodedAsrLines
                 detectedAsrLang = decodedAsrLang
                 ensureCurrentSession(key, pipelineGeneration)
-                transientPcmFile?.file?.delete()
-                transientPcmFile = null
+                if (asrProvider != "local") {
+                    transientPcmFile?.file?.delete()
+                    transientPcmFile = null
+                    speakerAnalysisPcmFile = null
+                }
                 }
                 // Only disposable local temporary files may be removed before the transcript checkpoint.
                 // YouTube audio remains cached until its ASR subtitles have been saved successfully.
@@ -8350,6 +8356,21 @@ updateUiForSession(key, pipelineGeneration) {
                     } else state
                 }
                 lines = transcribedLines
+                if (asrProvider == "local") {
+                    speakerAnalysisPcmFile?.let { analysisPcmFile ->
+                        assignSpeakersFromLocalTranscript(
+                            key = key,
+                            lines = transcribedLines,
+                            pcmFile = analysisPcmFile,
+                            pipelineGeneration = pipelineGeneration,
+                        )
+                    }
+                }
+                // The temporary ASR PCM is no longer needed after speaker analysis. Leased cache PCM
+                // remains owned by the outer pipeline and is released in its finally block.
+                transientPcmFile?.file?.delete()
+                transientPcmFile = null
+                speakerAnalysisPcmFile = null
                 sourceTranscriptProducedInThisRun = true
                 srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
                     .resolveTranscriptionLanguageFromCues(
@@ -12543,6 +12564,273 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val actualDuration = if (::pm.isInitialized) pm.duration() else 0L
         if (actualDuration > 0L && ui.value.durationMs != actualDuration) {
             ui.update { it.copy(durationMs = actualDuration) }
+        }
+    }
+
+    /**
+     * Automatically identify speakers immediately after local ASR, reusing the exact 16 kHz PCM
+     * file that Whisper/SenseVoice just consumed. The diarizer is deliberately best-effort:
+     * a missing optional runtime/model must never block translation or ordinary dubbing.
+     */
+    private suspend fun assignSpeakersFromLocalTranscript(
+        key: String,
+        lines: List<SubLine>,
+        pcmFile: io.translatetube.local.asr.AudioExtract.PcmFile,
+        pipelineGeneration: Long,
+    ) {
+        if (lines.isEmpty()) return
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+            prefs.getString("tts_engine", "edge"),
+        )
+        var systemVoiceProbe: TtsEngine? = null
+        try {
+            var systemChineseVoiceCount = 0
+            if (selectedTts == "system") {
+                systemVoiceProbe = makeTtsOffMainThread("system")
+                systemChineseVoiceCount =
+                    (systemVoiceProbe as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
+            }
+            if (!io.translatetube.local.tts.TtsSpeakerCapabilityPolicy
+                    .supportsDistinctVoices(selectedTts, systemChineseVoiceCount)
+            ) {
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "SpeakerDiarization",
+                        "当前配音引擎不支持多人音色，跳过自动人物识别",
+                        diagnosticContext = mapOf(
+                            "配音引擎" to selectedTts,
+                            "本地转写字幕行数" to lines.size.toString(),
+                            "处理策略" to "保留正常转写、翻译和单人配音流程",
+                        ),
+                    )
+                }
+                return
+            }
+            if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "SpeakerDiarization",
+                        "Kokoro 音色模型未就绪，跳过自动人物音色分配",
+                        diagnosticContext = mapOf(
+                            "配音引擎" to selectedTts,
+                            "本地转写字幕行数" to lines.size.toString(),
+                            "处理策略" to "不阻断转写与后续翻译",
+                        ),
+                    )
+                }
+                return
+            }
+            ensureCurrentSession(key, pipelineGeneration)
+            if (currentTtsEngineId() != selectedTts) {
+                android.util.Log.i(
+                    "PlaybackService",
+                    "Skipping automatic speaker assignment because the selected TTS engine changed during ASR",
+                )
+                return
+            }
+
+            val lineKeys = lines.map { SpeakerAssignmentCodec.lineKey(it.startMs, it.endMs) }
+            val previous = loadSpeakerAssignments(key, selectedTts)
+            if (lineKeys.isNotEmpty() && lineKeys.all { it in previous.lineSpeakers }) {
+                android.util.Log.i(
+                    "PlaybackService",
+                    "Reusing saved speaker timeline for local ASR transcript: cues=${lineKeys.size}",
+                )
+                return
+            }
+
+            if (pcmFile.sampleRate != 16_000) {
+                throw IllegalStateException("本地人物识别需要 16 kHz PCM，当前采样率为 ${pcmFile.sampleRate} Hz")
+            }
+            val maxSamples = 3L * 60L * pcmFile.sampleRate.toLong()
+            val sampleCount = minOf(pcmFile.sampleCount, maxSamples)
+            if (sampleCount < pcmFile.sampleRate.toLong()) {
+                throw IllegalStateException("转写音频不足 1 秒，无法可靠识别说话人")
+            }
+
+            updateUiForSession(key, pipelineGeneration) { state ->
+                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                    state.copy(
+                        progress = "人物识别 · 准备本地模型…",
+                        transcriptionProgressPercent = null,
+                        transcriptionCompletedSegments = 0,
+                        transcriptionTotalSegments = 0,
+                    )
+                } else state
+            }
+            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            val samples = withContext(Dispatchers.IO) {
+                pcmFile.readFloatSamples(
+                    startSample = 0L,
+                    count = sampleCount.toInt(),
+                    checkActive = { ownerJob?.ensureActive() },
+                )
+            }
+            val segments = try {
+                io.translatetube.local.asr.SpeakerDiarizer.diarize(
+                    this@PlaybackService,
+                    samples,
+                ) { message ->
+                    updateUiForSession(key, pipelineGeneration) { state ->
+                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                            state.copy(
+                                progress = "人物识别 · $message",
+                                transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
+                            )
+                        } else state
+                    }
+                }
+            } finally {
+                // The PCM sample copy can be several megabytes on longer videos.
+                samples.fill(0f)
+            }
+            ensureCurrentSession(key, pipelineGeneration)
+            if (currentTtsEngineId() != selectedTts) {
+                android.util.Log.i(
+                    "PlaybackService",
+                    "Discarding automatic speaker result because the selected TTS engine changed during diarization",
+                )
+                return
+            }
+            if (segments.isEmpty()) {
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "SpeakerDiarization",
+                        "本地人物识别没有找到可区分的说话人",
+                        diagnosticContext = mapOf(
+                            "配音引擎" to selectedTts,
+                            "分析音频时长 ms" to (sampleCount * 1000L / pcmFile.sampleRate).toString(),
+                            "转写字幕行数" to lines.size.toString(),
+                        ),
+                    )
+                }
+                return
+            }
+
+            // sherpa-onnx cluster labels are arbitrary; normalize by first appearance so voice
+            // identities remain stable when the diarizer chooses different raw cluster numbers.
+            val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(
+                segments.map { segment ->
+                    SpeakerAssignmentPolicy.SpeakerObservation(
+                        speakerId = segment.speaker,
+                        startMs = (segment.startSec * 1000f).toLong(),
+                        endMs = (segment.endSec * 1000f).toLong(),
+                        confidence = segment.confidence,
+                    )
+                },
+            )
+            val speakerVoiceAssignments = previous.speakerVoices.toMutableMap()
+            val currentLineKeys = lineKeys.toSet()
+            val lineVoiceAssignments = previous.lineVoices
+                .filterKeys { it in currentLineKeys }
+                .toMutableMap()
+            val linePersonAssignments = previous.lineSpeakers
+                .filterKeys { it in currentLineKeys }
+                .toMutableMap()
+            val preferredKokoroVoice = prefs.getInt("kokoro_speaker", 14).coerceIn(0, 53)
+            var assignedCueCount = 0
+            val speakerObservations = segments.map { segment ->
+                SpeakerAssignmentPolicy.SpeakerObservation(
+                    speakerId = segment.speaker,
+                    startMs = (segment.startSec * 1000f).toLong(),
+                    endMs = (segment.endSec * 1000f).toLong(),
+                    confidence = segment.confidence,
+                )
+            }
+            for (line in lines) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val durationMs = (line.endMs - line.startMs).coerceAtLeast(0L)
+                val minimumOverlapMs = minOf(250L, (durationMs.toDouble() * 0.2).toLong())
+                val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
+                    observations = speakerObservations,
+                    cueStartMs = line.startMs,
+                    cueEndMs = line.endMs,
+                    minimumOverlapMs = minimumOverlapMs,
+                )
+                val personId = canonicalSpeakerIds[detectedSpeaker] ?: -1
+                val lineKey = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                if (personId in 0..999) {
+                    val suggestedVoice = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
+                        .voiceForCanonicalSpeaker(
+                            engineId = selectedTts,
+                            canonicalSpeakerId = personId,
+                            systemChineseVoiceCount = systemChineseVoiceCount,
+                            preferredKokoroVoice = preferredKokoroVoice,
+                        )
+                    val voiceId = previous.lineOverrides[lineKey]
+                        ?: speakerVoiceAssignments.getOrPut(personId) { suggestedVoice }
+                    lineVoiceAssignments[lineKey] = voiceId
+                    linePersonAssignments[lineKey] = personId
+                    assignedCueCount++
+                } else {
+                    lineVoiceAssignments.remove(lineKey)
+                    linePersonAssignments.remove(lineKey)
+                }
+            }
+            saveSpeakerAssignments(
+                previous.copy(
+                    speakerVoices = speakerVoiceAssignments,
+                    lineVoices = lineVoiceAssignments,
+                    lineSpeakers = linePersonAssignments,
+                ),
+                key,
+                selectedTts,
+            )
+            val speakerCount = canonicalSpeakerIds.size
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "SpeakerDiarization",
+                    "本地转写后自动人物识别完成",
+                    diagnosticContext = mapOf(
+                        "配音引擎" to selectedTts,
+                        "人物数量" to speakerCount.toString(),
+                        "已匹配人物的字幕行数" to assignedCueCount.toString(),
+                        "转写字幕总行数" to lines.size.toString(),
+                        "分析音频时长 ms" to (sampleCount * 1000L / pcmFile.sampleRate).toString(),
+                        "是否因低内存设备限制为前三分钟" to (pcmFile.sampleCount > sampleCount).toString(),
+                        "人物音色映射" to "已按当前配音引擎的实际可用音色编号分配",
+                    ),
+                )
+            }
+            updateUiForSession(key, pipelineGeneration) { state ->
+                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                    state.copy(
+                        progress = "人物识别完成 · $speakerCount 人，已匹配 $assignedCueCount 条字幕",
+                        transcriptionProgressPercent = null,
+                        transcriptionCompletedSegments = 0,
+                        transcriptionTotalSegments = 0,
+                    )
+                } else state
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "SpeakerDiarization",
+                    "本地转写后的自动人物识别失败，继续翻译和配音",
+                    error,
+                    diagnosticContext = mapOf(
+                        "配音引擎" to selectedTts,
+                        "转写字幕行数" to lines.size.toString(),
+                        "处理策略" to "人物识别失败不影响正常字幕与配音流程",
+                    ),
+                )
+            }
+            android.util.Log.w("PlaybackService", "Automatic local speaker diarization failed; continuing pipeline", error)
+        } finally {
+            systemVoiceProbe?.let { engine ->
+                runCatching { engine.close() }
+                    .onFailure { android.util.Log.w("PlaybackService", "Could not close temporary system TTS speaker probe", it) }
+            }
         }
     }
 

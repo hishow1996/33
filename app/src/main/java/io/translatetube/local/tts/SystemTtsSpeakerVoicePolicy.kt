@@ -67,7 +67,15 @@ internal object SystemTtsSpeakerVoicePolicy {
         if (canonicalSpeakerId <= 0) return -1
         if (engineId == "system") {
             val alternatives = (systemChineseVoiceCount - 1).coerceAtLeast(0)
-            return if (alternatives == 0) -1 else Math.floorMod(canonicalSpeakerId - 1, alternatives)
+            return if (canonicalSpeakerId in 1..alternatives) canonicalSpeakerId - 1 else -1
+        }
+        if (engineId == "edge") {
+            val alternatives = (EdgeTts.VOICES.size - 1).coerceAtLeast(0)
+            return canonicalSpeakerId.takeIf { it in 1..alternatives } ?: -1
+        }
+        if (engineId == "gemini") {
+            val alternatives = (GeminiTtsVoices.ALL.size - 1).coerceAtLeast(0)
+            return canonicalSpeakerId.takeIf { it in 1..alternatives } ?: -1
         }
         if (engineId != "kokoro" || canonicalSpeakerId !in 1..53) return -1
         val candidate = canonicalSpeakerId - 1

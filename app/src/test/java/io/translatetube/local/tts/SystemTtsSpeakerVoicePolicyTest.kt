@@ -80,8 +80,19 @@ class SystemTtsSpeakerVoicePolicyTest {
     fun systemSpeakerMappingIgnoresKokoroPreferenceAndUsesAvailableSlotsFirst() {
         assertEquals(0, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("system", 1, 3, 14))
         assertEquals(1, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("system", 2, 3, 14))
-        assertEquals(0, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("system", 3, 3, 1))
+        assertEquals(-1, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("system", 3, 3, 1))
         assertEquals(-1, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("system", 1, 1, 14))
+    }
+
+    @Test
+    fun edgeAndGeminiMappingUseDistinctAvailableVoiceSlots() {
+        assertEquals(1, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("edge", 1, 0, 14))
+        assertEquals(5, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("edge", 5, 0, 14))
+        assertEquals(-1, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("edge", 6, 0, 14))
+
+        assertEquals(1, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("gemini", 1, 0, 14))
+        assertEquals(7, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("gemini", 7, 0, 14))
+        assertEquals(-1, SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker("gemini", 8, 0, 14))
     }
 
     @Test

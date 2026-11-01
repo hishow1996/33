@@ -18,6 +18,12 @@ class TtsSpeakerCapabilityPolicyTest {
     }
 
     @Test
+    fun edgeAndGeminiSupportDistinctSpeakerVoices() {
+        assertTrue(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("edge"))
+        assertTrue(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("gemini"))
+    }
+
+    @Test
     fun singleSpeakerPiperDoesNotClaimToSupportDistinctVoices() {
         assertFalse(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("piper"))
         assertFalse(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("unknown"))
