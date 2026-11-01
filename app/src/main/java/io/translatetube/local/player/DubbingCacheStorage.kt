@@ -62,10 +62,15 @@ internal object DubbingCacheStorage {
             val sourceLength = source.length()
             val temp = File(durableDirectory, "${source.name}.migration.tmp")
             runCatching { temp.delete() }
-            val copied = runCatching {
+            val copied = try {
                 copyFile(source, temp, checkActive)
                 temp.length() == sourceLength && source.length() == sourceLength
-            }.getOrDefault(false)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                runCatching { temp.delete() }
+                throw cancelled
+            } catch (_: Exception) {
+                false
+            }
             if (!copied) {
                 runCatching { temp.delete() }
                 continue
