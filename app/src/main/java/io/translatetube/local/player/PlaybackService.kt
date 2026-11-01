@@ -8363,6 +8363,7 @@ updateUiForSession(key, pipelineGeneration) {
                             lines = transcribedLines,
                             pcmFile = analysisPcmFile,
                             pipelineGeneration = pipelineGeneration,
+                            analysisIdentity = sourceSubtitleCacheKey,
                         )
                     }
                 }
@@ -8750,6 +8751,29 @@ updateUiForSession(key, pipelineGeneration) {
                     baseLines
                 }
                 ensureCurrentSession(key, pipelineGeneration)
+                if (CachedSpeakerAnalysisEligibilityPolicy.shouldAnalyzeCachedTranscript(
+                        asrProvider = asrProvider,
+                        sourceCacheKey = sourceCachedKey,
+                        expectedSourceCacheKey = sourceSubtitleCacheKey,
+                        hasValidatedSourceCache = sourceCached != null && restoredSourceLines != null,
+                        hasImportedSource = !sourceImportedLines.isNullOrEmpty(),
+                        transcriptProducedInThisRun = sourceTranscriptProducedInThisRun,
+                    )
+                ) {
+                    restoreSpeakersFromCachedLocalAsrTranscript(
+                        key = key,
+                        lines = calibratedLines,
+                        analysisIdentity = sourceSubtitleCacheKey,
+                        videoId = videoId,
+                        localUri = localUri,
+                        remoteMediaUrl = remoteMediaUrl,
+                        remoteMediaReferrer = remoteMediaReferrer,
+                        remoteMediaCookie = remoteMediaCookie,
+                        cacheKeyBase = cacheKeyBase,
+                        pipelineGeneration = pipelineGeneration,
+                    )
+                    ensureCurrentSession(key, pipelineGeneration)
+                }
                 val finalLines = applySavedLineOverrides(calibratedLines, key)
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
@@ -10177,6 +10201,73 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             .digest(identity.toByteArray(Charsets.UTF_8))
         val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
         return File(localAsrPcmCacheDirectory(), "$safeId.pcm16")
+    }
+
+    /**
+     * Reuse a verified local video's existing PCM cache for a delayed speaker-analysis pass.
+     * This path never decodes the source video or creates a new audio extraction.
+     */
+    private suspend fun reusableCachedLocalPcmForSpeakerAnalysis(
+        identity: String,
+        sessionKey: String,
+    ): Pair<io.translatetube.local.asr.AudioExtract.PcmFile, String>? {
+        val cacheFile = localAsrPcmCacheFile(identity)
+        val path = cacheFile.absolutePath
+        return localAsrPcmLocks.withLock(path) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            activeAsrAudioPaths.acquire(path)
+            val now = System.currentTimeMillis()
+            if (!LocalPcmAudioCachePolicy.canReuse(
+                    isFile = cacheFile.isFile,
+                    sizeBytes = cacheFile.length(),
+                    lastModifiedMs = cacheFile.lastModified(),
+                    nowMs = now,
+                )
+            ) {
+                activeAsrAudioPaths.release(path)
+                return@withLock null
+            }
+
+            cacheFile.setLastModified(now)
+            VideoHistoryCacheIndex.rememberLocalPcmCacheFile(this@PlaybackService, sessionKey, cacheFile.name)
+            pruneLocalAsrPcmCache(keep = cacheFile)
+            io.translatetube.local.asr.AudioExtract.PcmFile(
+                file = cacheFile,
+                sampleCount = cacheFile.length() / 2L,
+                sampleRate = 16_000,
+            ) to path
+        }
+    }
+
+    /**
+     * Find, but never download, the audio bytes previously used for ASR. Returned files carry
+     * an active cache lease and must be released by the caller.
+     */
+    private suspend fun reusableCachedAsrAudioForSpeakerAnalysis(
+        videoId: String?,
+        mediaUrl: String?,
+        referrer: String,
+        cookie: String?,
+        sessionKey: String,
+    ): File? {
+        if (videoId != null) {
+            return asrAudioDownloadLocks.withLock(videoId) {
+                reusableAsrAudioFile(videoId, cacheNamespace = "youtube-original-track-v2")
+            }
+        }
+        if (mediaUrl != null) {
+            val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
+            return asrAudioDownloadLocks.withLock(identity) {
+                reusableAsrAudioFile(identity)
+                    ?: reusableHistoryRemoteAudioFile(
+                        sessionKey = sessionKey,
+                        currentIdentity = identity,
+                        currentSourceIdentity = MediaUrlCacheIdentity.canonicalUrl(mediaUrl),
+                        cookie = cookie,
+                    )
+            }
+        }
+        return null
     }
 
     /**
@@ -12588,8 +12679,18 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         lines: List<SubLine>,
         pcmFile: io.translatetube.local.asr.AudioExtract.PcmFile,
         pipelineGeneration: Long,
+        analysisIdentity: String = key,
     ) {
         if (lines.isEmpty()) return
+        val analysisPrefs = getSharedPreferences("speaker_analysis_state_v1", MODE_PRIVATE)
+        val analysisMarkerKey = speakerAnalysisMarkerKey(analysisIdentity)
+        if (analysisPrefs.getBoolean(analysisMarkerKey, false)) {
+            android.util.Log.i(
+                "PlaybackService",
+                "Skipping speaker diarization; this local ASR transcript was already analyzed",
+            )
+            return
+        }
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
             prefs.getString("tts_engine", "edge"),
@@ -12611,6 +12712,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val lineKeys = lines.map { SpeakerAssignmentCodec.lineKey(it.startMs, it.endMs) }
             val previous = loadSpeakerAssignments(key, selectedTts)
             if (lineKeys.isNotEmpty() && lineKeys.all { it in previous.lineSpeakers }) {
+                analysisPrefs.edit().putBoolean(analysisMarkerKey, true).apply()
                 android.util.Log.i(
                     "PlaybackService",
                     "Reusing saved speaker timeline for local ASR transcript: cues=${lineKeys.size}",
@@ -12628,7 +12730,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
 
             updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
                     state.copy(
                         progress = "人物识别 · 准备本地模型…",
                         transcriptionProgressPercent = null,
@@ -12651,7 +12753,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     samples,
                 ) { message ->
                     updateUiForSession(key, pipelineGeneration) { state ->
-                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                        if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
                             state.copy(
                                 progress = "人物识别 · $message",
                                 transcriptionProgressPercent = null,
@@ -12744,6 +12846,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 key,
                 selectedTts,
             )
+            // Record completion against the exact ASR source-cache identity. The marker is
+            // engine-independent so switching TTS voices never repeats expensive diarization.
+            analysisPrefs.edit().putBoolean(analysisMarkerKey, true).apply()
             val speakerCount = canonicalSpeakerIds.size
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.info(
@@ -12762,7 +12867,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
             updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
                     state.copy(
                         progress = "人物识别完成 · $speakerCount 人，已匹配 $assignedCueCount 条字幕",
                         transcriptionProgressPercent = null,
@@ -12793,6 +12898,123 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 runCatching { engine.close() }
                     .onFailure { android.util.Log.w("PlaybackService", "Could not close temporary system TTS speaker probe", it) }
             }
+        }
+    }
+
+    /**
+     * Backfill speaker identities for a validated cached local-ASR transcript. Only existing
+     * ASR audio/PCM cache files are considered; a cache miss is a safe no-op, never a redownload.
+     */
+    private suspend fun restoreSpeakersFromCachedLocalAsrTranscript(
+        key: String,
+        lines: List<SubLine>,
+        analysisIdentity: String,
+        videoId: String?,
+        localUri: Uri?,
+        remoteMediaUrl: String?,
+        remoteMediaReferrer: String,
+        remoteMediaCookie: String?,
+        cacheKeyBase: String,
+        pipelineGeneration: Long,
+    ) {
+        if (lines.isEmpty() || isSpeakerAnalysisComplete(analysisIdentity)) return
+
+        var localPcmLeasePath: String? = null
+        var audioLeasePath: String? = null
+        var temporaryPcmFile: io.translatetube.local.asr.AudioExtract.PcmFile? = null
+        try {
+            val localPcm = if (
+                localUri != null &&
+                !cacheKeyBase.startsWith("local-media-unverified-v1:")
+            ) {
+                reusableCachedLocalPcmForSpeakerAnalysis(
+                    identity = "$cacheKeyBase|local-asr-pcm16-v1",
+                    sessionKey = key,
+                )
+            } else {
+                null
+            }
+
+            if (localPcm != null) {
+                localPcmLeasePath = localPcm.second
+                releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
+                assignSpeakersFromLocalTranscript(
+                    key = key,
+                    lines = lines,
+                    pcmFile = localPcm.first,
+                    pipelineGeneration = pipelineGeneration,
+                    analysisIdentity = analysisIdentity,
+                )
+                return
+            }
+
+            val cachedAudio = reusableCachedAsrAudioForSpeakerAnalysis(
+                videoId = videoId,
+                mediaUrl = remoteMediaUrl,
+                referrer = remoteMediaReferrer,
+                cookie = remoteMediaCookie,
+                sessionKey = key,
+            )
+            if (cachedAudio == null) {
+                android.util.Log.i(
+                    "PlaybackService",
+                    "Skipping cached-transcript speaker backfill because no reusable source-audio cache exists",
+                )
+                return
+            }
+            audioLeasePath = cachedAudio.absolutePath
+            ensureCurrentSession(key, pipelineGeneration)
+            updateUiForSession(key, pipelineGeneration) { state ->
+                if (state.key == key && state.phase == Phase.SYNTHESIZING) {
+                    state.copy(progress = "人物识别 · 复用缓存音频，正在分析人物声音…")
+                } else state
+            }
+            releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
+            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            temporaryPcmFile = withContext(Dispatchers.IO) {
+                io.translatetube.local.asr.AudioExtract.decodeTo16kMonoFile(
+                    this@PlaybackService,
+                    src = null,
+                    file = cachedAudio,
+                    maxDurationMs = 3 * 60 * 1000L,
+                    checkActive = { ownerJob?.ensureActive() },
+                )
+            }
+            assignSpeakersFromLocalTranscript(
+                key = key,
+                lines = lines,
+                pcmFile = requireNotNull(temporaryPcmFile),
+                pipelineGeneration = pipelineGeneration,
+                analysisIdentity = analysisIdentity,
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService,
+                "SpeakerDiarization",
+                "恢复本地转写缓存的人物识别失败，继续使用现有字幕和配音",
+                error,
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        videoId != null -> "YouTube 原声转写缓存"
+                        remoteMediaUrl != null -> "网页视频转写缓存"
+                        localUri != null -> "本地视频转写缓存"
+                        else -> "其他"
+                    },
+                    "是否重新转写" to "否",
+                    "是否重新下载或提取音轨" to "否",
+                ),
+            )
+            android.util.Log.w(
+                "PlaybackService",
+                "Cached local-ASR speaker backfill failed; continuing with ordinary dubbing",
+                error,
+            )
+        } finally {
+            temporaryPcmFile?.file?.delete()
+            releaseActiveAsrAudio(audioLeasePath)
+            localPcmLeasePath?.let(::releaseLocalAsrPcmFile)
         }
     }
 
@@ -13418,6 +13640,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             .digest(identity.toByteArray(Charsets.UTF_8))
         return "video_" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
+
+    private fun speakerAnalysisMarkerKey(analysisIdentity: String): String =
+        assignmentStorageKey("speaker-analysis-complete-v1|$analysisIdentity")
+
+    private fun isSpeakerAnalysisComplete(analysisIdentity: String): Boolean =
+        getSharedPreferences("speaker_analysis_state_v1", MODE_PRIVATE)
+            .getBoolean(speakerAnalysisMarkerKey(analysisIdentity), false)
 
     private fun assignmentPrefsKey(
         key: String,
