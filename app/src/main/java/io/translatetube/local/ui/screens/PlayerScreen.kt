@@ -3300,6 +3300,38 @@ private fun StageProgressVisual(
         label = "transcriptionTextRevealPhase",
     )
 
+    // Translation folded-paper strip: a travelling highlight and staggered paper lift.
+    val translationPaperFlowPhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (
+            stageIndex == 3 && isAnimating && !isIndeterminate &&
+            !isPaused && !isFailed && !isCompleted && !isSkipped
+        ) 1f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 900,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "translationPaperFlow",
+    )
+    val translationPaperLiftPhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (
+            stageIndex == 3 && isAnimating &&
+            !isPaused && !isFailed && !isCompleted && !isSkipped
+        ) 6.2831855f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 780,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "translationPaperLift",
+    )
+
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
         isFailed -> Color(0xFFD74655)
@@ -3548,131 +3580,157 @@ private fun StageProgressVisual(
                 }
             }
 
-// 4. Translation — a miniature road: blue road edges show source readiness,
-            // and the green car leaves a translated trail behind it.
+// 4. Translation — folded-paper strip with a looping light sweep and staggered lift.
             3 -> {
-                val roadStart = 5.dp.toPx()
-                val roadEnd = (size.width - 5.dp.toPx()).coerceAtLeast(roadStart)
-                val roadY = size.height * 0.72f
-                val roadHeight = 5.8.dp.toPx()
-                val roadTop = roadY - roadHeight / 2f
-                val roadWidth = (roadEnd - roadStart).coerceAtLeast(0f)
-                val railColor = if (sourceSubtitlesReady || isCompleted) {
-                    Color(0xFF3268F5)
-                } else {
-                    Color(0xFFB8C5D6)
-                }
-                val carColor = when {
-                    isFailed -> Color(0xFFD74655)
-                    isPaused -> Color(0xFFD39A35)
-                    isSkipped -> Color(0xFF9AA6B5)
-                    else -> Color(0xFF22A77D)
-                }
-                val trailColor = when {
+                val pieceWeights = floatArrayOf(
+                    0.88f, 1.12f, 0.72f, 1.18f, 0.96f,
+                    0.78f, 1.14f, 0.82f, 1.06f, 0.92f,
+                )
+                val pieceCount = pieceWeights.size
+                val pieceGap = 2.dp.toPx()
+                val totalWeight = pieceWeights.sum()
+                val availableWidth = (size.width - pieceGap * (pieceCount - 1)).coerceAtLeast(0f)
+                val paperHeight = 10.5.dp.toPx()
+                val baseTop = (size.height - paperHeight) / 2f
+                val foldSize = 3.6.dp.toPx()
+                val paperCorner = CornerRadius(2.1.dp.toPx(), 2.1.dp.toPx())
+                val progressX = size.width * fraction
+                val motionEnabled = isAnimating && !isPaused && !isFailed &&
+                    !isCompleted && !isSkipped
+                val completedColor = when {
                     isFailed -> Color(0xFFD74655)
                     isPaused -> Color(0xFFD39A35)
                     isCompleted -> Color(0xFF18A879)
-                    else -> Color(0xFF22A77D)
+                    isSkipped -> Color(0xFFB8C1CE)
+                    else -> Color(0xFF20A77D)
                 }
-                val carWidth = 12.dp.toPx()
-                val carStart = roadStart + carWidth / 2f
-                val carEnd = (roadEnd - carWidth / 2f).coerceAtLeast(carStart)
-                val carProgress = when {
-                    isSkipped -> 0f
-                    isIndeterminate && isAnimating -> scanPosition
-                    else -> fraction
-                }.coerceIn(0f, 1f)
-                val carCenterX = carStart + (carEnd - carStart) * carProgress
-                val wheelRadius = 1.4.dp.toPx()
-                val wheelY = roadY - 0.2.dp.toPx()
-                val roadCorner = CornerRadius(2.7.dp.toPx(), 2.7.dp.toPx())
+                val pendingColor = trackColor
+                val lightColor = Color(0xFFDFFFF1)
 
-                // Road surface and edge lines make this read as a road, not a thin rail.
-                drawRoundRect(
-                    color = Color(0xFFDCE5EF),
-                    topLeft = Offset(roadStart, roadTop),
-                    size = Size(roadWidth, roadHeight),
-                    cornerRadius = roadCorner,
-                )
-                drawRoundRect(
-                    color = railColor,
-                    topLeft = Offset(roadStart, roadTop),
-                    size = Size(roadWidth, roadHeight),
-                    cornerRadius = roadCorner,
-                    style = Stroke(width = 0.8.dp.toPx()),
-                )
+                var pieceLeft = 0f
+                repeat(pieceCount) { index ->
+                    val pieceWidth = availableWidth * pieceWeights[index] / totalWeight
+                    val pieceRight = pieceLeft + pieceWidth
+                    val pieceCenter = (pieceLeft + pieceRight) / 2f
+                    val isInCompletedRange = !isIndeterminate &&
+                        !isSkipped && pieceLeft < progressX
+                    val phaseOffset = index * 0.82f
+                    val wave = (kotlin.math.sin(translationPaperLiftPhase - phaseOffset) + 1f) / 2f
+                    val lift = if (motionEnabled && isInCompletedRange) {
+                        kotlin.math.sin(translationPaperLiftPhase - phaseOffset) * 1.05f.dp.toPx()
+                    } else {
+                        0f
+                    }
+                    val scale = if (motionEnabled && isInCompletedRange) {
+                        0.91f + wave * 0.18f
+                    } else {
+                        1f
+                    }
+                    val animatedHeight = paperHeight * scale
+                    val animatedWidth = pieceWidth * scale
+                    val animatedLeft = pieceCenter - animatedWidth / 2f
+                    val animatedTop = baseTop + lift + (paperHeight - animatedHeight) / 2f
+                    val animatedRight = animatedLeft + animatedWidth
+                    val animatedBottom = animatedTop + animatedHeight
 
-                // The trail grows only with the known translated fraction.
-                if (!isIndeterminate && !isSkipped && fraction > 0f) {
+                    // Pending paper pieces remain grey and completely still.
+                    drawRoundRect(
+                        color = pendingColor,
+                        topLeft = Offset(pieceLeft, baseTop),
+                        size = Size(pieceWidth, paperHeight),
+                        cornerRadius = paperCorner,
+                    )
+
+                    if (isInCompletedRange) {
+                        clipRect(right = progressX) {
+                            drawRoundRect(
+                                color = completedColor,
+                                topLeft = Offset(animatedLeft, animatedTop),
+                                size = Size(animatedWidth, animatedHeight),
+                                cornerRadius = paperCorner,
+                            )
+
+                            // Folded upper-right corner.
+                            val foldPath = Path().apply {
+                                moveTo(animatedRight - foldSize, animatedTop)
+                                lineTo(animatedRight, animatedTop + foldSize)
+                                lineTo(animatedRight - foldSize, animatedTop + foldSize)
+                                close()
+                            }
+                            drawPath(
+                                path = foldPath,
+                                color = lightColor.copy(alpha = 0.88f),
+                            )
+
+                            // Short white strokes suggest text printed on each paper piece.
+                            val lineTop = animatedTop + animatedHeight * 0.40f
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.92f),
+                                start = Offset(animatedLeft + 3.dp.toPx(), lineTop),
+                                end = Offset(animatedLeft + animatedWidth * 0.48f, lineTop),
+                                strokeWidth = 1.05.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.82f),
+                                start = Offset(animatedLeft + 3.dp.toPx(), lineTop + 2.5.dp.toPx()),
+                                end = Offset(animatedLeft + animatedWidth * 0.68f, lineTop + 2.5.dp.toPx()),
+                                strokeWidth = 0.9.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
+
+                            // A bright band travels from the start to the real progress edge.
+                            if (motionEnabled && fraction > 0f) {
+                                val flowHead = translationPaperFlowPhase * progressX
+                                val distance = kotlin.math.abs(pieceCenter - flowHead)
+                                val flowRadius = 25.dp.toPx()
+                                val flowStrength = (1f - distance / flowRadius).coerceIn(0f, 1f)
+                                if (flowStrength > 0f) {
+                                    drawRoundRect(
+                                        color = Color.White.copy(alpha = flowStrength * 0.38f),
+                                        topLeft = Offset(animatedLeft, animatedTop),
+                                        size = Size(animatedWidth, animatedHeight),
+                                        cornerRadius = paperCorner,
+                                    )
+                                    // The folded corner flashes briefly as the light passes.
+                                    drawPath(
+                                        path = foldPath,
+                                        color = Color.White.copy(alpha = flowStrength * 0.92f),
+                                    )
+                                }
+                            }
+                        }
+                    } else if (isIndeterminate && isAnimating && !isPaused && !isFailed) {
+                        val scanHead = scanPosition * size.width
+                        val distance = kotlin.math.abs(pieceCenter - scanHead)
+                        if (distance < 24.dp.toPx()) {
+                            drawRoundRect(
+                                color = Color(0xFF6FA4F5).copy(alpha = 0.25f),
+                                topLeft = Offset(pieceLeft, baseTop),
+                                size = Size(pieceWidth, paperHeight),
+                                cornerRadius = paperCorner,
+                                style = Stroke(width = 1.dp.toPx()),
+                            )
+                        }
+                    }
+
+                    pieceLeft = pieceRight + pieceGap
+                }
+
+                // A slim blue boundary marks the exact measured translation progress.
+                if (!isIndeterminate && !isCompleted && !isSkipped) {
+                    val markerX = progressX.coerceIn(0f, size.width)
                     drawLine(
-                        color = trailColor,
-                        start = Offset(roadStart + 1.dp.toPx(), roadY),
-                        end = Offset(carCenterX, roadY),
-                        strokeWidth = 2.4.dp.toPx(),
+                        color = if (isFailed) Color(0xFFD74655) else if (isPaused) Color(0xFFD39A35) else Color(0xFF3268F5),
+                        start = Offset(markerX, 1.dp.toPx()),
+                        end = Offset(markerX, size.height - 1.dp.toPx()),
+                        strokeWidth = 1.15.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                 }
-
-                // White broken lane markings sit above the progress trail.
-                val dashWidth = 3.4.dp.toPx()
-                val dashGap = 3.8.dp.toPx()
-                val dashHeight = 0.75.dp.toPx()
-                val dashCount = ((roadWidth + dashGap) / (dashWidth + dashGap)).toInt().coerceAtLeast(1)
-                repeat(dashCount) { index ->
-                    val dashLeft = roadStart + 2.dp.toPx() + index * (dashWidth + dashGap)
-                    if (dashLeft + dashWidth < roadEnd - 1.dp.toPx()) {
-                        drawRoundRect(
-                            color = Color.White.copy(alpha = 0.94f),
-                            topLeft = Offset(dashLeft, roadY - dashHeight / 2f),
-                            size = Size(dashWidth, dashHeight),
-                            cornerRadius = CornerRadius(dashHeight / 2f),
-                        )
-                    }
-                }
-
-                // Keep the compact car fully inside the road, including at both ends.
-                val carLeft = carCenterX - carWidth / 2f
-                val bodyTop = roadY - 5.1.dp.toPx()
-                val bodyHeight = 4.6.dp.toPx()
-                drawRoundRect(
-                    color = carColor,
-                    topLeft = Offset(carLeft, bodyTop),
-                    size = Size(carWidth, bodyHeight),
-                    cornerRadius = CornerRadius(1.5.dp.toPx(), 1.5.dp.toPx()),
-                )
-                val cabin = Path().apply {
-                    moveTo(carLeft + 2.3.dp.toPx(), bodyTop + 0.2.dp.toPx())
-                    lineTo(carLeft + 4.1.dp.toPx(), bodyTop - 2.5.dp.toPx())
-                    lineTo(carLeft + 8.9.dp.toPx(), bodyTop - 2.5.dp.toPx())
-                    lineTo(carLeft + 10.4.dp.toPx(), bodyTop + 0.2.dp.toPx())
-                    close()
-                }
-                drawPath(cabin, carColor)
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.94f),
-                    topLeft = Offset(carLeft + 4.4.dp.toPx(), bodyTop - 1.9.dp.toPx()),
-                    size = Size(1.8.dp.toPx(), 1.8.dp.toPx()),
-                    cornerRadius = CornerRadius(0.45.dp.toPx()),
-                )
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.94f),
-                    topLeft = Offset(carLeft + 6.7.dp.toPx(), bodyTop - 1.9.dp.toPx()),
-                    size = Size(1.7.dp.toPx(), 1.8.dp.toPx()),
-                    cornerRadius = CornerRadius(0.45.dp.toPx()),
-                )
-                drawCircle(
-                    color = Color(0xFF344054),
-                    radius = wheelRadius,
-                    center = Offset(carLeft + 3.2.dp.toPx(), wheelY),
-                )
-                drawCircle(
-                    color = Color(0xFF344054),
-                    radius = wheelRadius,
-                    center = Offset(carLeft + 9.0.dp.toPx(), wheelY),
-                )
             }
 
-            // 5. Dubbing — an irregular audio waveform with a slim progress cursor.
+// 5. Dubbing — an irregular audio waveform with a slim progress cursor.
             // Every completed bar from the beginning to the cursor pulses continuously.
             else -> {
                 val centerY = size.height / 2f
