@@ -3417,19 +3417,8 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 3. Transcription — larger double-row capsules with a looping marquee
-            // and a strong staggered wave across the entire completed range.
-            2 -> {
-                val columns = 32
-                val rows = 2
-                val cellWidth = (size.width / columns * 0.68f)
-                    .coerceIn(4.dp.toPx(), 6.dp.toPx())
-                val horizontalGap = ((size.width - cellWidth * columns) / (columns - 1))
-                    .coerceAtLeast(0f)
-                val slotHeight = 6.dp.toPx()
-                val verticalGap = 2.dp.toPx()
-                val gridHeight = slotHeight * rows +// 3. Transcription — a single row of text-like chips with jumping strokes.
-            // All strokes from the beginning through the real progress point move together.
+            // 3. Transcription — a single row of text-like chips with jumping strokes.
+            // Every short stroke from the start to the measured progress boundary keeps moving.
             2 -> {
                 val blockWeights = floatArrayOf(
                     0.82f, 1.08f, 0.68f, 1.16f, 0.94f,
@@ -3452,18 +3441,14 @@ private fun StageProgressVisual(
                 }
                 val motionEnabled = isAnimating && !isPaused && !isFailed &&
                     !isCompleted && !isSkipped
-                val revealX = if (isIndeterminate) {
-                    0f
-                } else {
-                    size.width * fraction
-                }
+                val revealX = if (isIndeterminate) 0f else size.width * fraction
                 val scanX = if (isIndeterminate && motionEnabled) {
                     scanPosition * size.width
                 } else {
                     revealX
                 }
 
-                // First draw every text block and its quiet, grey placeholder strokes.
+                // Static text blocks and grey letter strokes represent waiting segments.
                 var blockLeft = 0f
                 val blockBounds = ArrayList<Pair<Float, Float>>(blockCount)
                 repeat(blockCount) { blockIndex ->
@@ -3494,7 +3479,7 @@ private fun StageProgressVisual(
                     blockLeft = blockRight + blockGap
                 }
 
-                // Fill only the measured processed range. The crop edge is the true progress.
+                // Paint only the processed range, clipped at the real progress boundary.
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = revealX) {
                         blockBounds.forEach { (left, right) ->
@@ -3506,8 +3491,8 @@ private fun StageProgressVisual(
                             )
                         }
 
-                        // Each mini text stroke gets its own phase and vertical travel.
-                        // The 2.5dp swing is intentionally strong enough to be visible at 16dp.
+                        // Every completed text stroke jumps vertically with its own phase.
+                        // A 2.5dp travel keeps the motion clearly visible at this compact height.
                         blockBounds.forEachIndexed { blockIndex, bounds ->
                             val (left, right) = bounds
                             val blockWidth = right - left
@@ -3534,36 +3519,40 @@ private fun StageProgressVisual(
                     }
                 }
 
-                // The current text segment gets a slim outline; unknown progress only scans
-                // this outline and never paints an invented completed range.
+                // Unknown progress scans a single outline without inventing a completed range.
+                // With measured progress, outline the one segment currently being processed.
                 val boundaryX = if (isIndeterminate) scanX else revealX
                 if (!isSkipped && !isCompleted && boundaryX < size.width) {
                     val currentBounds = blockBounds.firstOrNull { (left, right) ->
                         boundaryX >= left && boundaryX <= right
                     } ?: blockBounds.last()
                     val (left, right) = currentBounds
-                    if (isIndeterminate) {
-                        val scanPulse = 0.55f + pulse * 0.45f
-                        drawRoundRect(
-                            color = activeColor.copy(alpha = scanPulse),
-                            topLeft = Offset(left, blockTop),
-                            size = Size(right - left, blockHeight),
-                            cornerRadius = blockCorner,
-                            style = Stroke(width = 1.dp.toPx()),
-                        )
+                    val outlineAlpha = if (isIndeterminate && motionEnabled) {
+                        0.55f + pulse * 0.45f
                     } else {
-                        drawRoundRect(
-                            color = activeColor,
-                            topLeft = Offset(left, blockTop),
-                            size = Size(right - left, blockHeight),
-                            cornerRadius = blockCorner,
-                            style = Stroke(width = 1.dp.toPx()),
-                        )
+                        1f
                     }
+                    drawRoundRect(
+                        color = activeColor.copy(alpha = outlineAlpha),
+                        topLeft = Offset(left, blockTop),
+                        size = Size(right - left, blockHeight),
+                        cornerRadius = blockCorner,
+                        style = Stroke(width = 1.dp.toPx()),
+                    )
                 }
             }
 
-8F5)
+// 4. Translation — a miniature road: blue road edges show source readiness,
+            // and the green car leaves a translated trail behind it.
+            3 -> {
+                val roadStart = 5.dp.toPx()
+                val roadEnd = (size.width - 5.dp.toPx()).coerceAtLeast(roadStart)
+                val roadY = size.height * 0.72f
+                val roadHeight = 5.8.dp.toPx()
+                val roadTop = roadY - roadHeight / 2f
+                val roadWidth = (roadEnd - roadStart).coerceAtLeast(0f)
+                val railColor = if (sourceSubtitlesReady || isCompleted) {
+                    Color(0xFF3268F5)
                 } else {
                     Color(0xFFB8C5D6)
                 }
