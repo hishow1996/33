@@ -27,7 +27,7 @@ internal object AppCacheStoragePolicy {
         return if (total > Long.MAX_VALUE - bytes) Long.MAX_VALUE else total + bytes
     }
 
-    fun sizeBytes(cacheDir: File): Long {
+    fun sizeBytes(cacheDir: File, noBackupFilesDir: File? = null): Long {
         var total = 0L
         managedDirectoryNames.forEach { name ->
             val directory = File(cacheDir, name)
@@ -42,11 +42,15 @@ internal object AppCacheStoragePolicy {
                 file.isFile && managedTopLevelPrefixes.any { prefix -> file.name.startsWith(prefix) }
             }
             ?.forEach { file -> total = addBytesSaturated(total, file.length().coerceAtLeast(0L)) }
+        val durableAudio = noBackupFilesDir?.let { File(it, "asr_audio_retry") }
+        if (durableAudio != null && !sameDirectory(durableAudio, File(cacheDir, "asr_audio_retry"))) {
+            total = addDirectoryBytesSaturated(total, durableAudio)
+        }
         return total
     }
 
     /** Leaves Room databases, downloaded model files and unrelated cache entries untouched. */
-    fun clear(cacheDir: File): Boolean {
+    fun clear(cacheDir: File, noBackupFilesDir: File? = null): Boolean {
         var succeeded = true
         managedDirectoryNames.forEach { name ->
             val directory = File(cacheDir, name)
@@ -61,6 +65,26 @@ internal object AppCacheStoragePolicy {
             ?.forEach { file ->
                 if (!file.delete() && file.exists()) succeeded = false
             }
+        val durableAudio = noBackupFilesDir?.let { File(it, "asr_audio_retry") }
+        if (durableAudio != null && !sameDirectory(durableAudio, File(cacheDir, "asr_audio_retry")) &&
+            durableAudio.exists() && !durableAudio.deleteRecursively() && durableAudio.exists()
+        ) {
+            succeeded = false
+        }
         return succeeded
     }
+
+    private fun addDirectoryBytesSaturated(initial: Long, directory: File): Long {
+        var total = initial
+        if (directory.isDirectory) {
+            directory.walkTopDown().filter { it.isFile }.forEach { file ->
+                total = addBytesSaturated(total, file.length().coerceAtLeast(0L))
+            }
+        }
+        return total
+    }
+
+    private fun sameDirectory(first: File, second: File): Boolean =
+        runCatching { first.canonicalFile == second.canonicalFile }
+            .getOrDefault(first.absoluteFile == second.absoluteFile)
 }
