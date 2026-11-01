@@ -6772,7 +6772,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
         // Optional local speaker diarization runs alongside translation and is joined before TTS
-        // so speaker/voice assignments are ready when dubbing synthesis starts.
+        // so speaker/voice assignments are ready when dubbing synthesis starts. Model downloads
+        // and native inference must never delay publishing a completed transcript to translation.
         var deferredSpeakerRecognitionJob: Job? = null
         // Keep local PCM protected from concurrent pruning while the current ASR pass reads it.
         var leasedLocalPcmCachePath: String? = null
