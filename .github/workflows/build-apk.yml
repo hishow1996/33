@@ -1,3 +1,4 @@
+# Retry APK build after removing duplicate speaker-anchor constants (2026-11-01).
 # Explicit user-requested APK build trigger (2026-11-01 09:40 Asia/Tokyo; latest main a4da352e).
 # Explicit user-requested APK build retry after repairing ASR checkpoint v4 validation and Web policy test class (2026-11-01).
 # Explicit user-requested APK build trigger after aligning Cloud ASR guard unit-test signature (2026-11-01).
