@@ -7661,9 +7661,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             audioTrackChannelCount = audioProbe.selectedAudioChannelCount ?: 0,
                             audioTrackSampleRateHz = audioProbe.selectedAudioSampleRateHz ?: 0,
                             audioTrackSourceType = when {
-                                state.progress.contains("音画混合流") -> "音画混合流"
-                                state.progress.contains("独立音轨") -> "独立音轨"
-                                state.progress.contains("复用网页视频音频缓存") -> "缓存音轨"
+                                it.progress.contains("音画混合流") -> "音画混合流"
+                                it.progress.contains("独立音轨") -> "独立音轨"
+                                it.progress.contains("复用网页视频音频缓存") -> "缓存音轨"
                                 videoId != null -> "独立音轨"
                                 remoteMediaUrl != null -> "网页媒体音轨"
                                 localUri != null -> "本地音轨"
