@@ -11211,6 +11211,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 },
                 cookieHeader = refreshedCookie,
             )
+            VideoHistoryCacheIndex.rememberAudioCacheFile(
+                this@PlaybackService,
+                sessionKey,
+                destination.name,
+                sourceIdentity = MediaUrlCacheIdentity.canonicalUrl(refreshedMedia.mediaUrl),
+            )
             io.translatetube.local.util.AppLogStore.info(
                 context = applicationContext,
                 tag = "WebAudioExtraction",
