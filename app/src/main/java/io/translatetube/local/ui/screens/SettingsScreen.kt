@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
@@ -225,12 +226,15 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             Box(
                 modifier = Modifier
                     .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.White)
                     .clickable(onClick = onBack),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("‹", color = OnBg, style = MaterialTheme.typography.headlineMedium)
+                Icon(
+                    imageVector = Icons.Filled.ArrowBack,
+                    contentDescription = "返回",
+                    tint = Color(0xFF273953),
+                    modifier = Modifier.size(21.dp),
+                )
             }
             Spacer(Modifier.width(12.dp))
             Text("设置", style = MaterialTheme.typography.titleLarge, color = OnBg)
