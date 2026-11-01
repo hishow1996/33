@@ -3366,7 +3366,7 @@ private fun StageProgressVisual(
                         1.00f, 0.50f,
                     ),
                 )
-    ) }
+    }
 
     Canvas(
         modifier = Modifier
