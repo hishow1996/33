@@ -12786,6 +12786,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             prefs.getString("tts_engine", "edge"),
         )
         var systemVoiceProbe: TtsEngine? = null
+        updateUiForSession(key, pipelineGeneration) { state ->
+            if (state.key == key) state.copy(
+                speakerRecognition = SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.PREPARING,
+                    message = "准备本地人物识别音频…",
+                ),
+            ) else state
+        }
         try {
             var systemChineseVoiceCount = 0
             if (selectedTts == "system") {
@@ -12803,6 +12811,16 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val previous = loadSpeakerAssignments(key, selectedTts)
             if (lineKeys.isNotEmpty() && lineKeys.all { it in previous.lineSpeakers }) {
                 analysisPrefs.edit().putBoolean(analysisMarkerKey, true).apply()
+                val cachedPersonCount = previous.lineSpeakers.values.distinct().size
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key) state.copy(
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.SUCCEEDED,
+                            message = "已恢复人物识别结果",
+                            personCount = cachedPersonCount,
+                        ),
+                    ) else state
+                }
                 android.util.Log.i(
                     "PlaybackService",
                     "Reusing saved speaker timeline for local ASR transcript: cues=${lineKeys.size}",
@@ -12823,6 +12841,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
                     state.copy(
                         progress = "人物识别 · 准备本地模型…",
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.PREPARING,
+                            message = "准备本地模型…",
+                        ),
                         transcriptionProgressPercent = null,
                         transcriptionCompletedSegments = 0,
                         transcriptionTotalSegments = 0,
@@ -12846,6 +12868,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
                             state.copy(
                                 progress = "人物识别 · $message",
+                                speakerRecognition = SpeakerRecognitionUiState(
+                                    phase = if (message.contains("下载")) {
+                                        SpeakerRecognitionPhase.DOWNLOADING_MODELS
+                                    } else {
+                                        SpeakerRecognitionPhase.ANALYZING
+                                    },
+                                    message = message,
+                                ),
                                 transcriptionProgressPercent = null,
                                 transcriptionCompletedSegments = 0,
                                 transcriptionTotalSegments = 0,
@@ -12859,6 +12889,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             ensureCurrentSession(key, pipelineGeneration)
             if (currentTtsEngineId() != selectedTts) {
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key) state.copy(
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.CANCELLED,
+                            message = "配音引擎已切换，人物识别结果未应用",
+                        ),
+                    ) else state
+                }
                 android.util.Log.i(
                     "PlaybackService",
                     "Discarding automatic speaker result because the selected TTS engine changed during diarization",
@@ -12866,6 +12904,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 return
             }
             if (segments.isEmpty()) {
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key) state.copy(
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.FAILED,
+                            message = "没有找到可区分的人物",
+                            error = "这段音频中没有检测到足够清晰、可区分的说话人片段。可以重新识别，或继续使用默认音色。",
+                        ),
+                    ) else state
+                }
                 withContext(Dispatchers.IO) {
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
@@ -12973,6 +13020,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
                     state.copy(
                         progress = "人物识别完成 · $speakerCount 人，已匹配 $assignedCueCount 条字幕",
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.SUCCEEDED,
+                            message = "已识别 $speakerCount 位人物",
+                            personCount = speakerCount,
+                        ),
                         transcriptionProgressPercent = null,
                         transcriptionCompletedSegments = 0,
                         transcriptionTotalSegments = 0,
@@ -12980,8 +13032,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 } else state
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            updateUiForSession(key, pipelineGeneration) { state ->
+                if (state.key == key && state.speakerRecognition.isActive) state.copy(
+                    speakerRecognition = SpeakerRecognitionUiState(
+                        phase = SpeakerRecognitionPhase.CANCELLED,
+                        message = "人物识别已取消",
+                    ),
+                ) else state
+            }
             throw cancelled
         } catch (error: Exception) {
+            updateUiForSession(key, pipelineGeneration) { state ->
+                if (state.key == key) state.copy(
+                    speakerRecognition = SpeakerRecognitionUiState(
+                        phase = SpeakerRecognitionPhase.FAILED,
+                        message = "人物识别失败",
+                        error = error.message ?: error.javaClass.simpleName,
+                    ),
+                ) else state
+            }
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.error(
                     this@PlaybackService,
@@ -13144,11 +13213,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         )
         val originalLines = ui.value.lines
         if (originalLines.isEmpty()) {
-            ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
+            ui.update { it.copy(
+                error = "当前没有字幕，先生成或导入字幕再区分人物",
+                speakerRecognition = SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.FAILED,
+                    message = "没有可关联的字幕",
+                    error = "先生成或导入字幕，再执行人物区分。",
+                ),
+            ) }
             return
         }
         if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
-            ui.update { it.copy(error = "Kokoro 配音模型尚未就绪；已保留当前播放和字幕，请先在设置中准备模型后再区分人物。") }
+            ui.update { it.copy(
+                error = "Kokoro 配音模型尚未就绪；已保留当前播放和字幕，请先在设置中准备模型后再区分人物。",
+                speakerRecognition = SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.FAILED,
+                    message = "配音模型尚未就绪",
+                    error = "请先在设置中准备 Kokoro 模型，再重试人物区分。",
+                ),
+            ) }
             return
         }
         val sessionKey = videoKey
@@ -13165,6 +13248,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         val pipelineGeneration = activePipelineGeneration
         val mutationGeneration = beginDubbingMutationGeneration()
+        ui.update { state ->
+            if (state.key == sessionKey) state.copy(
+                speakerRecognition = SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.PREPARING,
+                    message = "准备人物识别…",
+                ),
+            ) else state
+        }
         speakerJob = scope.launch {
             val speakerTaskJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             pipelineExecutionMutex.withLock {
@@ -13176,6 +13267,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
                         error = null,
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.PREPARING,
+                            message = "准备人物识别音频…",
+                        ),
                         progress = if (selectedTts == "system") {
                             "人物识别 · 检查手机可用的中文音色…"
                         } else {
@@ -13263,6 +13358,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                             if (state.key == sessionKey) state.copy(
                                 progress = "人物识别 · $message",
+                                speakerRecognition = SpeakerRecognitionUiState(
+                                    phase = if (message.contains("下载")) {
+                                        SpeakerRecognitionPhase.DOWNLOADING_MODELS
+                                    } else {
+                                        SpeakerRecognitionPhase.ANALYZING
+                                    },
+                                    message = message,
+                                ),
                                 transcriptionProgressPercent = null,
                                 transcriptionCompletedSegments = 0,
                                 transcriptionTotalSegments = 0,
@@ -13286,6 +13389,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // Normalize them by first appearance so a fresh diarization run cannot swap voices
                 // merely because the model numbered the same people differently.
                 val speakerObservations = SpeakerAssignmentPolicy.observationsFromSegments(segments)
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                    if (state.key == sessionKey) state.copy(
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.APPLYING,
+                            message = "正在关联人物与字幕…",
+                        ),
+                    ) else state
+                }
                 val cueAnchors = originalLines.mapNotNull { line ->
                     val previousPersonId = assignmentSnapshot.lineSpeakers[
                         SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
@@ -13357,6 +13468,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         state.copy(
                             lines = updated,
                             progress = "已区分人物，使用 ${distinctVoices} 种音色",
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.APPLYING,
+                                message = "已识别 ${detectedSpeakerCount} 位人物，正在更新配音…",
+                                personCount = detectedSpeakerCount,
+                            ),
                             phase = Phase.SYNTHESIZING,
                             totalLines = updated.size,
                             preparedUntil = 0,
@@ -13437,10 +13553,29 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         state.copy(
                             phase = Phase.READY,
                             progress = "人物区分完成：已识别 ${segments.map { speaker -> speaker.speaker }.distinct().size} 位说话人",
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.SUCCEEDED,
+                                message = "识别完成 · ${detectedSpeakerCount} 位人物",
+                                personCount = detectedSpeakerCount,
+                            ),
                         )
                     } else state
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
+                if (
+                    speakerJob === speakerTaskJob &&
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey
+                ) {
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey && state.speakerRecognition.isActive) state.copy(
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.CANCELLED,
+                                message = "人物识别已取消",
+                            ),
+                        ) else state
+                    }
+                }
                 throw e
             } catch (e: Exception) {
                 io.translatetube.local.util.AppLogStore.error(
@@ -13464,6 +13599,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             progress = "",
                             muteOriginal = state.originalVolume <= 0f,
                             error = "自动区分人物失败：${e.message}",
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.FAILED,
+                                message = "人物识别失败",
+                                personCount = detectedSpeakerCount,
+                                error = e.message ?: e.javaClass.simpleName,
+                            ),
                         )
                     } else state
                 }
@@ -13499,8 +13640,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     updateUiForSession(sessionKey) { state ->
                         val staleRecognitionProgress = state.progress.contains("人物识别") ||
                             state.progress.contains("人物说话") || state.progress.contains("分离")
-                        if (state.key == sessionKey && staleRecognitionProgress) {
-                            state.copy(progress = "")
+                        if (state.key == sessionKey) {
+                            val recognition = if (state.speakerRecognition.isActive) {
+                                SpeakerRecognitionUiState(
+                                    phase = SpeakerRecognitionPhase.CANCELLED,
+                                    message = "人物识别已结束",
+                                )
+                            } else state.speakerRecognition
+                            state.copy(
+                                progress = if (staleRecognitionProgress) "" else state.progress,
+                                speakerRecognition = recognition,
+                            )
                         } else state
                     }
                 }
