@@ -12810,7 +12810,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             for (line in lines) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val durationMs = (line.endMs - line.startMs).coerceAtLeast(0L)
-                val minimumOverlapMs = minOf(250L, (durationMs.toDouble() * 0.2).toLong())
+                val minimumOverlapMs = SpeakerAssignmentPolicy.minimumOverlapMsForCue(durationMs)
                 val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
                     observations = speakerObservations,
                     cueStartMs = line.startMs,

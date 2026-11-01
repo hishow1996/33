@@ -24,7 +24,7 @@ internal object SpeakerAssignmentPolicy {
 
     private data class CueScore(
         var overlapMs: Long = 0L,
-        var confidenceWeight: Double = 0.5,
+        var confidenceWeight: Double = 0.0,
     )
 
     private const val MIN_CUE_OVERLAP_MS = 40L
