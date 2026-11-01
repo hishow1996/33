@@ -16,6 +16,13 @@ internal object RemoteAudioFailurePolicy {
         val nextStep: String,
     )
 
+    /**
+     * A fresh page extraction can recover expired or temporarily rejected signed CDN URLs.
+     * Keep this narrowly scoped: network/DNS/rate-limit failures must not trigger page retries.
+     */
+    fun shouldRetryWithFreshPageExtraction(failure: Throwable): Boolean =
+        classify(failure).code in setOf("expired_or_missing", "access_denied")
+
     fun classify(failure: Throwable): Diagnosis {
         val chain = generateSequence(failure) { it.cause }.take(8).toList()
         val text = chain.joinToString(" ") { it.javaClass.name + " " + it.message.orEmpty() }

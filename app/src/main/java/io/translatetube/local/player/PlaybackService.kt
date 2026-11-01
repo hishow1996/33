@@ -11096,7 +11096,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     if (mediaError is kotlinx.coroutines.CancellationException) throw mediaError
 
                     val refreshedAudio = try {
-                        refreshExpiredRemoteAudioFromPage(
+                        refreshRemoteAudioFromPage(
                             sessionKey = sessionKey,
                             pipelineGeneration = pipelineGeneration,
                             dubbingMutationGeneration = dubbingMutationGeneration,
@@ -11112,7 +11112,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             mediaUrl,
                             referrer,
                             cookie,
-                            "媒体地址过期后重新解析网页音轨",
+                            "媒体地址失效后重新解析网页音轨",
                             refreshError,
                             mapOf(
                                 "原始媒体错误分类" to RemoteAudioFailurePolicy.classify(mediaError).code,
@@ -11125,7 +11125,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         throw refreshError
                     }
                     if (refreshedAudio != null) {
-                        extractionStage = "媒体地址过期后重新解析并下载纯音频"
+                        extractionStage = "媒体地址失效后重新解析并下载纯音频"
                         refreshedAudio
                     } else {
                         logRemoteAudioFailure(
@@ -11154,7 +11154,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
      * If the site no longer exposes a supported stream, the original failure is attached to the
      * refresh failure and the caller reports both without downloading the whole video.
      */
-    private suspend fun refreshExpiredRemoteAudioFromPage(
+    private suspend fun refreshRemoteAudioFromPage(
         sessionKey: String,
         pipelineGeneration: Long?,
         dubbingMutationGeneration: Long?,
@@ -11163,8 +11163,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         destination: File,
         originalFailure: Throwable,
     ): File? {
-        if (RemoteAudioFailurePolicy.classify(originalFailure).code != "expired_or_missing") {
+        val diagnosis = RemoteAudioFailurePolicy.classify(originalFailure)
+        if (!RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(originalFailure)) {
             return null
+        }
+        val refreshProgress = if (diagnosis.code == "access_denied") {
+            "媒体地址访问被拒绝，正在重新解析网页音轨…"
+        } else {
+            "媒体地址已过期，正在重新解析网页音轨…"
+        }
+        val refreshDownloadLabel = if (diagnosis.code == "access_denied") {
+            "网页音轨 · 刷新访问地址后下载"
+        } else {
+            "网页音轨 · 重新解析后下载"
         }
         val pageUri = runCatching { android.net.Uri.parse(pageUrl.trim()) }.getOrNull()
             ?: return null
@@ -11183,7 +11194,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (state.key == sessionKey) {
                 state.copy(
                     phase = Phase.DOWNLOADING_AUDIO,
-                    progress = "媒体地址已过期，正在重新解析网页音轨…",
+                    progress = refreshProgress,
                     audioProgress = null,
                 )
             } else state
@@ -11206,7 +11217,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 phase = Phase.DOWNLOADING_AUDIO,
                                 progress = if (downloadedBytes > 0L || totalBytes != null) {
                                     AudioDownloadProgressFormatter.formatProgress(
-                                        label = "网页音轨 · 重新解析后下载",
+                                        label = refreshDownloadLabel,
                                         downloadedBytes = downloadedBytes,
                                         totalBytes = totalBytes,
                                         percent = percent.takeIf { it >= 0 },
@@ -11232,7 +11243,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             io.translatetube.local.util.AppLogStore.info(
                 context = applicationContext,
                 tag = "WebAudioExtraction",
-                message = "网页媒体临时地址过期，重新提取页面并下载纯音频成功",
+                message = "网页媒体临时地址失效或访问受限，重新提取页面并下载纯音频成功",
                 diagnosticContext = mapOf(
                     "原始错误分类" to RemoteAudioFailurePolicy.classify(originalFailure).code,
                     "网页主机名" to pageUri.host.orEmpty(),

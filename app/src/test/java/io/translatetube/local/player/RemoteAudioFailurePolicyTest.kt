@@ -61,4 +61,25 @@ class RemoteAudioFailurePolicyTest {
         assertEquals("network_timeout", RemoteAudioFailurePolicy.classify(
             SocketTimeoutException("read timed out")).code)
     }
+    @Test fun permitsOneFreshPageExtractionForExpiredAndForbiddenMediaUrls() {
+        assertEquals(true, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(
+            IOException("HLS segment request failed (HTTP 403)")
+        ))
+        assertEquals(true, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(
+            IOException("HLS segment request failed (HTTP 404)")
+        ))
+        assertEquals(true, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(
+            IOException("HLS segment request failed (HTTP 410)")
+        ))
+    }
+
+    @Test fun doesNotRefreshPageForRateLimitsOrNetworkFailures() {
+        assertEquals(false, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(
+            IOException("HTTP 429 Too Many Requests")
+        ))
+        assertEquals(false, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(
+            UnknownHostException("Unable to resolve host")
+        ))
+    }
+
 }
