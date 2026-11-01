@@ -363,7 +363,7 @@ fun StorageManagementScreen(
                     "开始执行本地数据清理",
                     diagnosticContext = mapOf(
                         "清理类别" to action.title,
-                        "操作前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir) }.getOrDefault(-1L).toString(),
+                        "操作前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir) }.getOrDefault(-1L).toString(),
                         "操作前日志记录条数" to runCatching { AppLogStore.readRecent(ctx, 800).size }.getOrDefault(-1).toString(),
                         "是否播放/处理中" to playbackBusy.toString(),
                         "是否模型下载中" to downloadBusy.toString(),
@@ -372,9 +372,9 @@ fun StorageManagementScreen(
                 runCatching {
                     when (action) {
                         StorageAction.CACHE -> {
-                            val before = AppCacheStoragePolicy.sizeBytes(ctx.cacheDir).coerceAtLeast(0L)
-                            val ok = AppCacheStoragePolicy.clear(ctx.cacheDir)
-                            val after = AppCacheStoragePolicy.sizeBytes(ctx.cacheDir).coerceAtLeast(0L)
+                            val before = AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir).coerceAtLeast(0L)
+                            val ok = AppCacheStoragePolicy.clear(ctx.cacheDir, ctx.noBackupFilesDir)
+                            val after = AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir).coerceAtLeast(0L)
                             val freed = (before - after).coerceAtLeast(0L)
                             if (ok) "临时缓存清理完成，实际释放 ${bytesLabel(freed)}。"
                             else "部分缓存仍被占用，实际释放 ${bytesLabel(freed)}；请停止相关任务后重试。"
@@ -411,7 +411,7 @@ fun StorageManagementScreen(
                     val diagnostic = mapOf(
                         "清理类别" to actionLabel,
                         "操作结果摘要" to summary.take(500),
-                        "当前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir) }.getOrDefault(-1L).toString(),
+                        "当前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir) }.getOrDefault(-1L).toString(),
                         "当前日志记录条数" to runCatching { AppLogStore.readRecent(ctx, 800).size }.getOrDefault(-1).toString(),
                         "结果分类" to if (partial) "部分完成或仍有资源占用" else "成功完成",
                     )
@@ -1004,7 +1004,7 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
     fun measured(label: String, file: File): Long = runCatching { directorySize(file) }.getOrElse {
         warnings += "$label 统计失败：${it.javaClass.simpleName}"; -1L
     }
-    val cache = runCatching { AppCacheStoragePolicy.sizeBytes(context.cacheDir) }.getOrElse {
+    val cache = runCatching { AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir) }.getOrElse {
         warnings += "临时缓存统计失败：${it.javaClass.simpleName}"; -1L
     }
     val subtitleCount = runCatching { db.subtitleCacheDao().countEntries() }.getOrElse {
