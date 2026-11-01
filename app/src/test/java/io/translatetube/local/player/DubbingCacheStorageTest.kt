@@ -52,6 +52,28 @@ class DubbingCacheStorageTest {
     }
 
     @Test
+    fun keepsLegacySourceWhenDurableFileHasSameLengthButDifferentBytes() {
+        val root = createTempDir(prefix = "dubbing-cache-same-size-conflict")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val legacyBytes = ByteArray(64) { 1 }
+            val durableBytes = ByteArray(64) { 2 }
+            val source = File(legacy, "cue.pcm").apply { writeBytes(legacyBytes) }
+            val existing = File(durable, "cue.pcm").apply { writeBytes(durableBytes) }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(0, count)
+            assertTrue("legacy cache must remain available", source.isFile)
+            assertArrayEquals(legacyBytes, source.readBytes())
+            assertArrayEquals("existing durable cache must not be overwritten", durableBytes, existing.readBytes())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun leavesLegacySourceUntouchedWhenDestinationCannotBeCreated() {
         val root = createTempDir(prefix = "dubbing-cache-unwritable")
         try {

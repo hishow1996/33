@@ -51,20 +51,29 @@ internal object DubbingCacheStorage {
             if (!source.isFile) continue
             val destination = File(durableDirectory, source.name)
             if (destination.isFile) {
-                // The filename is already the full engine/text/voice identity. A same-sized
-                // durable copy wins; preserve the legacy file if the existing copy differs.
-                if (destination.length() == source.length()) {
-                    source.delete()
+                // A matching filename and length are not enough: interrupted/bit-flipped PCM can
+                // have the same size. Remove the legacy copy only after an exact byte comparison.
+                val identical = try {
+                    filesEqual(source, destination, checkActive)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    false
                 }
+                if (identical) source.delete()
                 continue
             }
 
             val sourceLength = source.length()
+            val sourceModified = source.lastModified()
             val temp = File(durableDirectory, "${source.name}.migration.tmp")
             runCatching { temp.delete() }
             val copied = try {
                 copyFile(source, temp, checkActive)
-                temp.length() == sourceLength && source.length() == sourceLength
+                temp.length() == sourceLength &&
+                    source.length() == sourceLength &&
+                    source.lastModified() == sourceModified &&
+                    filesEqual(source, temp, checkActive)
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 runCatching { temp.delete() }
                 throw cancelled
@@ -82,11 +91,21 @@ internal object DubbingCacheStorage {
                 continue
             }
             val published = runCatching { temp.renameTo(destination) }.getOrDefault(false)
-            if (!published || destination.length() != sourceLength) {
+            val publishedMatchesSource = published && try {
+                destination.length() == sourceLength &&
+                    source.lastModified() == sourceModified &&
+                    filesEqual(source, destination, checkActive)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                false
+            }
+            if (!publishedMatchesSource) {
+                runCatching { destination.delete() }
                 runCatching { temp.delete() }
                 continue
             }
-            runCatching { destination.setLastModified(source.lastModified()) }
+            runCatching { destination.setLastModified(sourceModified) }
             if (source.delete()) migratedCount++
         }
 
@@ -94,6 +113,46 @@ internal object DubbingCacheStorage {
             runCatching { legacyDirectory.delete() }
         }
         return migratedCount
+    }
+
+    /**
+     * Compare finalized cache files byte-for-byte. Length-only checks can mistake two different
+     * PCM payloads for the same cache and delete the only recoverable copy.
+     */
+    private fun filesEqual(
+        first: File,
+        second: File,
+        checkActive: () -> Unit,
+    ): Boolean {
+        if (!first.isFile || !second.isFile) return false
+        val firstLength = first.length()
+        val secondLength = second.length()
+        val firstModified = first.lastModified()
+        val secondModified = second.lastModified()
+        if (firstLength != secondLength) return false
+
+        val equal = BufferedInputStream(FileInputStream(first)).use { firstInput ->
+            BufferedInputStream(FileInputStream(second)).use { secondInput ->
+                val firstBuffer = ByteArray(COPY_BUFFER_BYTES)
+                val secondBuffer = ByteArray(COPY_BUFFER_BYTES)
+                while (true) {
+                    checkActive()
+                    val firstCount = firstInput.read(firstBuffer)
+                    val secondCount = secondInput.read(secondBuffer)
+                    if (firstCount != secondCount) return@use false
+                    if (firstCount < 0) return@use true
+                    if (firstCount == 0) continue
+                    for (index in 0 until firstCount) {
+                        if (firstBuffer[index] != secondBuffer[index]) return@use false
+                    }
+                }
+                false
+            }
+        }
+        return equal &&
+            first.isFile && second.isFile &&
+            first.length() == firstLength && second.length() == secondLength &&
+            first.lastModified() == firstModified && second.lastModified() == secondModified
     }
 
     private fun copyFile(source: File, destination: File, checkActive: () -> Unit) {
