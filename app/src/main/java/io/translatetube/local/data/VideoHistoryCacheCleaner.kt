@@ -11,11 +11,13 @@ import java.io.IOException
 /** Deletes a history row only after its video-specific caches have been removed successfully. */
 internal object VideoHistoryCacheCleaner {
     suspend fun deleteVideo(context: Context, database: AppDatabase, video: VideoEntity) {
-        val dubbingDirectory = File(
-            File(context.cacheDir, "dub"),
-            DubbingCachePath.directoryName(video.key),
+        val dubbingDirectories = listOf(
+            DubbingCacheStorage.videoDirectory(context, video.key),
+            DubbingCacheStorage.legacyVideoDirectory(context, video.key),
         )
-        deleteDirectoryIfPresent(dubbingDirectory, "配音 PCM")
+        dubbingDirectories.forEach { directory ->
+            deleteDirectoryIfPresent(directory, "配音 PCM")
+        }
 
         val audioDirectory = AsrAudioCacheStorage.directory(context)
         val audioNames = VideoHistoryCacheIndex.audioCacheFileNames(context, video.key).toMutableSet()
@@ -64,7 +66,7 @@ internal object VideoHistoryCacheCleaner {
     }
 
     suspend fun deleteAll(context: Context, database: AppDatabase): Int {
-        if (!AppCacheStoragePolicy.clear(context.cacheDir)) {
+        if (!AppCacheStoragePolicy.clear(context.cacheDir, context.noBackupFilesDir)) {
             throw IOException("部分应用缓存仍无法删除；历史记录保留，请停止相关任务后重试。")
         }
         clearDurableAsrAudioCache(context)

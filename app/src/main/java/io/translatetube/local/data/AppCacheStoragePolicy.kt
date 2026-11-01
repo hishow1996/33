@@ -42,6 +42,10 @@ internal object AppCacheStoragePolicy {
                 file.isFile && managedTopLevelPrefixes.any { prefix -> file.name.startsWith(prefix) }
             }
             ?.forEach { file -> total = addBytesSaturated(total, file.length().coerceAtLeast(0L)) }
+        val durableDubbing = noBackupFilesDir?.let { File(it, "dub") }
+        if (durableDubbing != null && !sameDirectory(durableDubbing, File(cacheDir, "dub"))) {
+            total = addDirectoryBytesSaturated(total, durableDubbing)
+        }
         val durableAudio = noBackupFilesDir?.let { File(it, "asr_audio_retry") }
         if (durableAudio != null && !sameDirectory(durableAudio, File(cacheDir, "asr_audio_retry"))) {
             total = addDirectoryBytesSaturated(total, durableAudio)
@@ -65,6 +69,12 @@ internal object AppCacheStoragePolicy {
             ?.forEach { file ->
                 if (!file.delete() && file.exists()) succeeded = false
             }
+        val durableDubbing = noBackupFilesDir?.let { File(it, "dub") }
+        if (durableDubbing != null && !sameDirectory(durableDubbing, File(cacheDir, "dub")) &&
+            durableDubbing.exists() && !durableDubbing.deleteRecursively() && durableDubbing.exists()
+        ) {
+            succeeded = false
+        }
         val durableAudio = noBackupFilesDir?.let { File(it, "asr_audio_retry") }
         if (durableAudio != null && !sameDirectory(durableAudio, File(cacheDir, "asr_audio_retry")) &&
             durableAudio.exists() && !durableAudio.deleteRecursively() && durableAudio.exists()

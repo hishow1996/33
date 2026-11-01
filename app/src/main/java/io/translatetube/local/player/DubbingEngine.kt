@@ -97,11 +97,9 @@ class DubbingEngine(
     }
     // videoKey may contain a content:// URI with slashes. Hash it to keep all cache files
     // inside one bounded, collision-resistant directory instead of creating nested path segments.
-    private val cacheRootDir = File(ctx.cacheDir, "dub").apply { mkdirs() }
-    private val cacheDir = File(
-        cacheRootDir,
-        DubbingCachePath.directoryName(videoKey),
-    ).apply { mkdirs() }
+    private val cacheRootDir = DubbingCacheStorage.rootDirectory(appContext)
+    private val cacheDir = DubbingCacheStorage.videoDirectory(appContext, videoKey)
+    private val legacyCacheDir = DubbingCacheStorage.legacyVideoDirectory(appContext, videoKey)
     @Volatile private var pcmMemoryBudgetBytes = DubbingPcmMemoryPolicy.maxBytes(
         DevicePerformanceManager.snapshot(ctx),
     )
@@ -550,6 +548,21 @@ class DubbingEngine(
                 try {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
+                    val migratedCacheCount = DubbingCacheStorage.migrateLegacyVideoDirectory(
+                        legacyDirectory = legacyCacheDir,
+                        durableDirectory = cacheDir,
+                        checkActive = ::checkCacheInitActive,
+                    )
+                    if (migratedCacheCount > 0) {
+                        logDubbingInfo(
+                            "已迁移旧版配音 PCM 缓存",
+                            mapOf(
+                                "迁移字幕音频缓存文件数" to migratedCacheCount.toString(),
+                                "旧缓存目录" to "cacheDir/dub/${DubbingCachePath.directoryName(videoKey)}",
+                                "新缓存目录" to "noBackupFilesDir/dub/${DubbingCachePath.directoryName(videoKey)}",
+                            ),
+                        )
+                    }
                     logDubbingInfo(
                         "配音缓存预检开始",
                         mapOf(

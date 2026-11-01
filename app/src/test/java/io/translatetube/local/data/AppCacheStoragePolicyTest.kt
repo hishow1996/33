@@ -73,11 +73,16 @@ class AppCacheStoragePolicyTest {
                 parentFile?.mkdirs()
                 writeBytes(ByteArray(37))
             }
+            File(noBackupRoot, "dub/video/cue.pcm").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(23))
+            }
             File(noBackupRoot, "unrelated.keep").writeText("keep")
 
-            assertEquals(50L, AppCacheStoragePolicy.sizeBytes(cacheRoot, noBackupRoot))
+            assertEquals(73L, AppCacheStoragePolicy.sizeBytes(cacheRoot, noBackupRoot))
             assertTrue(AppCacheStoragePolicy.clear(cacheRoot, noBackupRoot))
             assertFalse(File(noBackupRoot, "asr_audio_retry").exists())
+            assertFalse(File(noBackupRoot, "dub").exists())
             assertTrue(File(noBackupRoot, "unrelated.keep").isFile)
             assertEquals(0L, AppCacheStoragePolicy.sizeBytes(cacheRoot, noBackupRoot))
         } finally {
