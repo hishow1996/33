@@ -13132,6 +13132,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val pipelineGeneration = activePipelineGeneration
         val mutationGeneration = beginDubbingMutationGeneration()
         speakerJob = scope.launch {
+            val speakerTaskJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             pipelineExecutionMutex.withLock {
             var pendingTts: TtsEngine? = null
             var oldEngineRetired = false
@@ -13457,12 +13458,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // A canceled diarization used to leave this progress marker behind. The UI
                 // treated the marker itself as an active job, so the menu stayed stuck forever.
                 if (
+                    speakerJob === speakerTaskJob &&
                     videoKey == sessionKey &&
-                    ui.value.key == sessionKey &&
-                    activePipelineGeneration == pipelineGeneration &&
-                    activeDubbingMutationGeneration == mutationGeneration
+                    ui.value.key == sessionKey
                 ) {
-                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                    updateUiForSession(sessionKey) { state ->
                         val staleRecognitionProgress = state.progress.contains("人物识别") ||
                             state.progress.contains("人物说话") || state.progress.contains("分离")
                         if (state.key == sessionKey && staleRecognitionProgress) {
