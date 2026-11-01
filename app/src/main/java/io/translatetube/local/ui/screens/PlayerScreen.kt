@@ -3302,37 +3302,50 @@ private fun StageProgressVisual(
         label = "transcriptionTextRevealPhase",
     )
 
-    // Translation DNA helix: continuous strand twist plus a travelling rung pulse.
-    val translationHelixRotationPhase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = if (
-            stageIndex == 3 && isAnimating &&
-            !isPaused && !isFailed && !isCompleted && !isSkipped
-        ) 6.2831855f else 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = 1800,
-                easing = androidx.compose.animation.core.LinearEasing,
-            ),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "translationDnaRotation",
-    )
-    val translationHelixPulsePhase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = if (
-            stageIndex == 3 && isAnimating &&
-            !isPaused && !isFailed && !isCompleted && !isSkipped
-        ) 1f else 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = 1100,
-                easing = androidx.compose.animation.core.LinearEasing,
-            ),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "translationDnaPulse",
-    )
+    // Animatable is used instead of an infinite transition so pause cancels motion
+    // without resetting the current helix pose; resuming continues from that pose.
+    val translationAnimationActive = stageIndex == 3 && isAnimating &&
+        !isPaused && !isFailed && !isCompleted && !isSkipped
+    val translationHelixRotation = remember {
+        androidx.compose.animation.core.Animatable(0f)
+    }
+    val translationHelixPulse = remember {
+        androidx.compose.animation.core.Animatable(0f)
+    }
+    LaunchedEffect(translationAnimationActive) {
+        if (translationAnimationActive) {
+            while (true) {
+                val remaining = (1f - translationHelixRotation.value / 6.2831855f)
+                    .coerceIn(0.001f, 1f)
+                translationHelixRotation.animateTo(
+                    targetValue = 6.2831855f,
+                    animationSpec = tween(
+                        durationMillis = (1800f * remaining).roundToInt().coerceAtLeast(1),
+                        easing = androidx.compose.animation.core.LinearEasing,
+                    ),
+                )
+                // 0 and 2π represent the same helix pose, so this reset is visually seamless.
+                translationHelixRotation.snapTo(0f)
+            }
+        }
+    }
+    LaunchedEffect(translationAnimationActive) {
+        if (translationAnimationActive) {
+            while (true) {
+                val remaining = (1f - translationHelixPulse.value).coerceIn(0.001f, 1f)
+                translationHelixPulse.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(
+                        durationMillis = (1100f * remaining).roundToInt().coerceAtLeast(1),
+                        easing = androidx.compose.animation.core.LinearEasing,
+                    ),
+                )
+                translationHelixPulse.snapTo(0f)
+            }
+        }
+    }
+    val translationHelixRotationPhase = translationHelixRotation.value
+    val translationHelixPulsePhase = translationHelixPulse.value
 
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
