@@ -3283,6 +3283,39 @@ private fun StageProgressVisual(
         label = "dubbingAudioWaveformPhase",
     )
 
+    // Transcription has two independent motions: a travelling light band
+    // and a stronger staggered pulse across every completed capsule.
+    val transcriptionMarqueePosition by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (
+            stageIndex == 2 && isAnimating &&
+            !isPaused && !isFailed && !isCompleted && !isSkipped
+        ) 1f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 1380,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "transcriptionMarqueePosition",
+    )
+    val transcriptionWavePhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (
+            stageIndex == 2 && isAnimating &&
+            !isPaused && !isFailed && !isCompleted && !isSkipped
+        ) 6.2831855f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 860,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "transcriptionWavePhase",
+    )
+
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
         isFailed -> Color(0xFFD74655)
@@ -3305,7 +3338,7 @@ private fun StageProgressVisual(
         modifier = Modifier
             .fillMaxWidth()
             .height(when (stageIndex) {
-                3, 4 -> 16.dp
+                2, 3, 4 -> 16.dp
                 1 -> 14.dp
                 else -> 12.dp
             }),
@@ -3406,42 +3439,97 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 3. Transcription — two rows of recognition dots, filled by completed segments.
+            // 3. Transcription — larger double-row capsules with a looping marquee
+            // and a strong staggered wave across the entire completed range.
             2 -> {
-                val columns = 24
+                val columns = 32
                 val rows = 2
-                val total = columns * rows
-                val radius = 1.55.dp.toPx()
-                val horizontalGap = (size.width - radius * 2f) / (columns - 1)
-                val verticalGap = (size.height - radius * 2f) / (rows - 1)
-                val completedDots = (fraction * total).toInt()
-                val scanIndex = (scanPosition * total).toInt().coerceIn(0, total - 1)
-                repeat(total) { i ->
-                    val row = i / columns
-                    val column = i % columns
-                    val isScanning = isIndeterminate && kotlin.math.abs(i - scanIndex) <= 1
-                    val dotRadius = if (isScanning && i == scanIndex) {
-                        radius * (0.85f + 0.3f * pulse)
-                    } else {
-                        radius
+                val cellWidth = (size.width / columns * 0.68f)
+                    .coerceIn(4.dp.toPx(), 6.dp.toPx())
+                val horizontalGap = ((size.width - cellWidth * columns) / (columns - 1))
+                    .coerceAtLeast(0f)
+                val slotHeight = 6.dp.toPx()
+                val verticalGap = 2.dp.toPx()
+                val gridHeight = slotHeight * rows + verticalGap
+                val firstCenterY = (size.height - gridHeight) / 2f + slotHeight / 2f
+                val filledColumns = when {
+                    isCompleted -> columns
+                    isSkipped -> 0
+                    else -> (fraction * columns).toInt().coerceIn(0, columns)
+                }
+                val running = isAnimating && !isPaused && !isFailed &&
+                    !isCompleted && !isSkipped
+                val activeMarquee = if (isIndeterminate && running) {
+                    columns.toFloat()
+                } else {
+                    filledColumns.toFloat()
+                }
+                val marqueePosition = transcriptionMarqueePosition * activeMarquee
+                val baseColor = when {
+                    isFailed -> Color(0xFFD74655)
+                    isPaused -> Color(0xFFD39A35)
+                    isCompleted -> Color(0xFF18A879)
+                    isSkipped -> Color(0xFFB8C1CE)
+                    else -> Color(0xFF3268F5)
+                }
+
+                repeat(rows) { row ->
+                    repeat(columns) { column ->
+                        val left = column * (cellWidth + horizontalGap)
+                        val centerY = firstCenterY + row * (slotHeight + verticalGap)
+                        val phaseOffset = column * 0.58f + row * 0.92f
+                        val waveOne = (kotlin.math.sin(transcriptionWavePhase - phaseOffset) + 1f) / 2f
+                        val waveTwo = (kotlin.math.sin(transcriptionWavePhase * 0.63f + phaseOffset * 0.72f) + 1f) / 2f
+                        val waveMotion = waveOne * 0.72f + waveTwo * 0.28f
+                        val naturalHeight = 0.28f + kotlin.math.abs(kotlin.math.sin(column * 1.71f + row * 1.13f)) * 0.25f
+                        val animatedHeight = (naturalHeight * 0.24f + waveMotion * 0.76f)
+                            .coerceIn(0.18f, 1f)
+                        val heightFactor = if (running && !isIndeterminate && column < filledColumns) {
+                            animatedHeight
+                        } else {
+                            naturalHeight
+                        }
+                        val capsuleHeight = (slotHeight * heightFactor).coerceAtLeast(2.2.dp.toPx())
+                        val top = centerY - capsuleHeight / 2f
+                        val corner = CornerRadius(cellWidth / 2f, cellWidth / 2f)
+                        val isFilled = column < filledColumns && !isSkipped
+                        val isInsideScan = isIndeterminate && running &&
+                            kotlin.math.abs(column - marqueePosition) <= 2.4f
+
+                        drawRoundRect(
+                            color = trackColor,
+                            topLeft = Offset(left, top),
+                            size = Size(cellWidth, capsuleHeight),
+                            cornerRadius = corner,
+                        )
+
+                        if (isFilled || isInsideScan) {
+                            var highlightStrength = 0f
+                            if (running && activeMarquee > 0f) {
+                                val rowOffset = row * 1.25f
+                                val head = (marqueePosition + rowOffset) % activeMarquee
+                                val rawDistance = kotlin.math.abs(column - head)
+                                val wrappedDistance = minOf(rawDistance, activeMarquee - rawDistance)
+                                highlightStrength = (1f - wrappedDistance / 3.2f).coerceIn(0f, 1f)
+                            }
+                            val cellColor = when {
+                                isInsideScan -> Color(0xFF83B3FF)
+                                highlightStrength > 0.72f && running -> Color(0xFF8DBAFF)
+                                highlightStrength > 0.32f && running -> Color(0xFF5F91F5)
+                                else -> baseColor
+                            }
+                            drawRoundRect(
+                                color = cellColor,
+                                topLeft = Offset(left, top),
+                                size = Size(cellWidth, capsuleHeight),
+                                cornerRadius = corner,
+                            )
+                        }
                     }
-                    val dotColor = when {
-                        i < completedDots -> fill
-                        isScanning -> fill.copy(alpha = if (i == scanIndex) pulseAlpha else 0.55f)
-                        else -> trackColor
-                    }
-                    drawCircle(
-                        color = dotColor,
-                        radius = dotRadius,
-                        center = Offset(
-                            radius + column * horizontalGap,
-                            radius + row * verticalGap,
-                        ),
-                    )
                 }
             }
 
-            // 4. Translation — a miniature road: blue road edges show source readiness,
+// 4. Translation — a miniature road: blue road edges show source readiness,
             // and the green car leaves a translated trail behind it.
             3 -> {
                 val roadStart = 5.dp.toPx()
