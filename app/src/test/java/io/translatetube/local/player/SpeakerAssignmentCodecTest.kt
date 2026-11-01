@@ -111,6 +111,37 @@ class SpeakerAssignmentCodecTest {
     }
 
     @Test
+    fun personTimelineCanBeStoredWithoutLeakingEngineSpecificToneIds() {
+        val engineSnapshot = SpeakerAssignmentSnapshot(
+            speakerVoices = mapOf(1 to 14),
+            lineVoices = mapOf("0:100" to 14),
+            lineOverrides = mapOf("100:200" to 21),
+            lineSpeakers = mapOf("0:100" to 0, "100:200" to 1),
+        )
+        val shared = SpeakerAssignmentCodec.personTimelineOnly(engineSnapshot)
+        assertEquals(mapOf("0:100" to 0, "100:200" to 1), shared.lineSpeakers)
+        assertTrue(shared.speakerVoices.isEmpty())
+        assertTrue(shared.lineVoices.isEmpty())
+        assertTrue(shared.lineOverrides.isEmpty())
+    }
+
+    @Test
+    fun sharedPersonTimelineOverridesOnlyPersonIdentityNotCurrentEngineVoices() {
+        val currentEngine = SpeakerAssignmentSnapshot(
+            speakerVoices = mapOf(0 to 15),
+            lineVoices = mapOf("0:100" to 15),
+            lineSpeakers = mapOf("0:100" to 0),
+        )
+        val merged = SpeakerAssignmentCodec.withSharedPersonTimeline(
+            currentEngine,
+            mapOf("0:100" to 0, "100:200" to 1),
+        )
+        assertEquals(mapOf(0 to 15), merged.speakerVoices)
+        assertEquals(mapOf("0:100" to 15), merged.lineVoices)
+        assertEquals(mapOf("0:100" to 0, "100:200" to 1), merged.lineSpeakers)
+    }
+
+    @Test
     fun storageIdentityIsStableButDifferentForEachTtsEngine() {
         assertEquals(
             SpeakerAssignmentCodec.storageIdentity("youtube:abc", "kokoro"),

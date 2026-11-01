@@ -12602,46 +12602,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 systemChineseVoiceCount =
                     (systemVoiceProbe as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
             }
-            if (!io.translatetube.local.tts.TtsSpeakerCapabilityPolicy
-                    .supportsDistinctVoices(selectedTts, systemChineseVoiceCount)
-            ) {
-                withContext(Dispatchers.IO) {
-                    io.translatetube.local.util.AppLogStore.info(
-                        this@PlaybackService,
-                        "SpeakerDiarization",
-                        "当前配音引擎不支持多人音色，跳过自动人物识别",
-                        diagnosticContext = mapOf(
-                            "配音引擎" to selectedTts,
-                            "本地转写字幕行数" to lines.size.toString(),
-                            "处理策略" to "保留正常转写、翻译和单人配音流程",
-                        ),
-                    )
-                }
-                return
-            }
-            if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
-                withContext(Dispatchers.IO) {
-                    io.translatetube.local.util.AppLogStore.info(
-                        this@PlaybackService,
-                        "SpeakerDiarization",
-                        "Kokoro 音色模型未就绪，跳过自动人物音色分配",
-                        diagnosticContext = mapOf(
-                            "配音引擎" to selectedTts,
-                            "本地转写字幕行数" to lines.size.toString(),
-                            "处理策略" to "不阻断转写与后续翻译",
-                        ),
-                    )
-                }
-                return
-            }
+            // Person detection is engine-independent. Even a single-tone engine such as Piper
+            // should retain the speaker timeline so switching to Kokoro/Edge/Gemini later does
+            // not require another diarization pass. Unsupported engines simply resolve each
+            // person's tone to their normal default when the timeline is applied.
             ensureCurrentSession(key, pipelineGeneration)
-            if (currentTtsEngineId() != selectedTts) {
-                android.util.Log.i(
-                    "PlaybackService",
-                    "Skipping automatic speaker assignment because the selected TTS engine changed during ASR",
-                )
-                return
-            }
 
             val lineKeys = lines.map { SpeakerAssignmentCodec.lineKey(it.startMs, it.endMs) }
             val previous = loadSpeakerAssignments(key, selectedTts)
@@ -13495,6 +13460,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         engineId: String = currentTtsEngineId(),
     ): String = assignmentStorageKey(SpeakerAssignmentCodec.storageIdentity(key, engineId))
 
+    /** Person identity is independent of the TTS engine; only tone IDs remain engine-scoped. */
+    private fun sharedSpeakerTimelinePrefsKey(key: String): String =
+        assignmentStorageKey("speaker-timeline-v1|$key")
+
     /** Key used before assignments were scoped by TTS engine; read it once for migration only. */
     private fun legacyAssignmentPrefsKey(key: String): String = assignmentStorageKey(key)
 
@@ -13536,26 +13505,43 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val prefs = getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
         val scopedKey = assignmentPrefsKey(key, engineId)
         val scopedRaw = prefs.getString(scopedKey, null)
-        if (scopedRaw != null) return SpeakerAssignmentCodec.decode(scopedRaw)
-
-        val legacyRaw = prefs.getString(legacyAssignmentPrefsKey(key), null)
-            ?: return SpeakerAssignmentSnapshot()
-        // On the first upgraded run, the player may load subtitle rows before SystemTts has
-        // persisted its real voice catalogue. Don't permanently migrate legacy Kokoro/system tone
-        // IDs without knowing what the system IDs refer to; retry migration after TTS initializes.
-        if (engineId == "system" &&
-            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
-                getSharedPreferences("settings", MODE_PRIVATE).getString(
-                    io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
-                    null,
-                )
-            ).isEmpty()
-        ) {
-            return SpeakerAssignmentSnapshot()
+        val scopedSnapshot = if (scopedRaw != null) {
+            SpeakerAssignmentCodec.decode(scopedRaw)
+        } else {
+            val legacyRaw = prefs.getString(legacyAssignmentPrefsKey(key), null)
+            if (legacyRaw == null) {
+                SpeakerAssignmentSnapshot()
+            } else {
+                // On the first upgraded run, the player may load subtitle rows before SystemTts
+                // persists its real voice catalogue. Keep the legacy payload pending in that case.
+                val systemCatalogMissing = engineId == "system" &&
+                    io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+                        getSharedPreferences("settings", MODE_PRIVATE).getString(
+                            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                            null,
+                        )
+                    ).isEmpty()
+                if (systemCatalogMissing) {
+                    SpeakerAssignmentSnapshot()
+                } else {
+                    migrateLegacyAssignments(SpeakerAssignmentCodec.decode(legacyRaw), engineId).also { migrated ->
+                        prefs.edit().putString(scopedKey, SpeakerAssignmentCodec.encode(migrated)).apply()
+                    }
+                }
+            }
         }
-        val migrated = migrateLegacyAssignments(SpeakerAssignmentCodec.decode(legacyRaw), engineId)
-        prefs.edit().putString(scopedKey, SpeakerAssignmentCodec.encode(migrated)).apply()
-        return migrated
+        val sharedTimeline = prefs.getString(sharedSpeakerTimelinePrefsKey(key), null)
+            ?.let(SpeakerAssignmentCodec::decode)
+            ?.lineSpeakers
+            .orEmpty()
+        // One-time migration: earlier builds stored person IDs alongside each engine's tone IDs.
+        if (sharedTimeline.isEmpty() && scopedSnapshot.lineSpeakers.isNotEmpty()) {
+            prefs.edit().putString(
+                sharedSpeakerTimelinePrefsKey(key),
+                SpeakerAssignmentCodec.encode(SpeakerAssignmentCodec.personTimelineOnly(scopedSnapshot)),
+            ).apply()
+        }
+        return SpeakerAssignmentCodec.withSharedPersonTimeline(scopedSnapshot, sharedTimeline)
     }
 
     private fun saveSpeakerAssignments(
@@ -13564,9 +13550,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         engineId: String = currentTtsEngineId(),
     ) {
         if (key.isBlank()) return
-        getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
-            .edit()
+        val prefs = getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
+        prefs.edit()
             .putString(assignmentPrefsKey(key, engineId), SpeakerAssignmentCodec.encode(snapshot))
+            .putString(
+                sharedSpeakerTimelinePrefsKey(key),
+                SpeakerAssignmentCodec.encode(SpeakerAssignmentCodec.personTimelineOnly(snapshot)),
+            )
             .apply()
     }
 
@@ -13671,7 +13661,34 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val neutralLines = lines.map { line ->
             if (line.speakerId == -1) line else line.copy(speakerId = -1)
         }
-        return SpeakerAssignmentResolver.apply(neutralLines, loadSpeakerAssignments(key, engineId))
+        val snapshot = loadSpeakerAssignments(key, engineId)
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val systemVoiceCount = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+            prefs.getString(
+                io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                null,
+            ),
+        ).size
+        val speakerVoices = snapshot.speakerVoices.toMutableMap()
+        val lineVoices = snapshot.lineVoices.toMutableMap()
+        val preferredKokoroVoice = prefs.getInt("kokoro_speaker", 14).coerceIn(0, 53)
+        for ((lineKey, personId) in snapshot.lineSpeakers) {
+            val voiceId = speakerVoices.getOrPut(personId) {
+                io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker(
+                    engineId = engineId,
+                    canonicalSpeakerId = personId,
+                    systemChineseVoiceCount = systemVoiceCount,
+                    preferredKokoroVoice = preferredKokoroVoice,
+                )
+            }
+            // Explicit line overrides remain authoritative in SpeakerAssignmentResolver.
+            if (!lineVoices.containsKey(lineKey)) lineVoices[lineKey] = voiceId
+        }
+        val resolved = snapshot.copy(speakerVoices = speakerVoices, lineVoices = lineVoices)
+        if (resolved.speakerVoices != snapshot.speakerVoices || resolved.lineVoices != snapshot.lineVoices) {
+            saveSpeakerAssignments(resolved, key, engineId)
+        }
+        return SpeakerAssignmentResolver.apply(neutralLines, resolved)
     }
 
     fun toggleDub() {

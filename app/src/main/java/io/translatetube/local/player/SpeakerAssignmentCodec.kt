@@ -30,6 +30,18 @@ internal object SpeakerAssignmentCodec {
         return "$videoKey|tts:$engine"
     }
 
+    /** Keep only the engine-independent person timeline; tone IDs are deliberately excluded. */
+    fun personTimelineOnly(snapshot: SpeakerAssignmentSnapshot): SpeakerAssignmentSnapshot =
+        SpeakerAssignmentSnapshot(lineSpeakers = snapshot.lineSpeakers)
+
+    /** Merge the shared person timeline into an engine-scoped voice snapshot. */
+    fun withSharedPersonTimeline(
+        snapshot: SpeakerAssignmentSnapshot,
+        sharedTimeline: Map<String, Int>,
+    ): SpeakerAssignmentSnapshot = snapshot.copy(
+        lineSpeakers = if (sharedTimeline.isNotEmpty()) sharedTimeline else snapshot.lineSpeakers,
+    )
+
     fun encode(snapshot: SpeakerAssignmentSnapshot): String {
         val parts = mutableListOf(VERSION)
         snapshot.speakerVoices.toSortedMap().forEach { (speaker, voice) ->
