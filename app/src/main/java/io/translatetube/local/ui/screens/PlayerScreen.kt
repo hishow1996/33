@@ -1904,6 +1904,9 @@ private fun VideoParsingPage(
             Box(
                 Modifier
                     .size(42.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(Color.White)
+                    .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(15.dp))
                     .clickable(onClick = onBack),
                 contentAlignment = androidx.compose.ui.Alignment.Center,
             ) {
@@ -1918,7 +1921,10 @@ private fun VideoParsingPage(
             Box {
                 IconButton(
                     onClick = { processingSettingsOpen = true },
-                    modifier = Modifier.size(42.dp),
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White),
                 ) {
                     Icon(
                         Icons.Filled.MoreVert,
@@ -3277,7 +3283,7 @@ private fun StageProgressVisual(
         label = "dubbingAudioWaveformPhase",
     )
 
-    // Every simulated text stroke in the processed range jumps independently.
+    // Each simulated text stroke in the processed range jumps independently.
     val transcriptionTextPhase by transition.animateFloat(
         initialValue = 0f,
         targetValue = if (
@@ -3519,8 +3525,8 @@ private fun StageProgressVisual(
                     }
                 }
 
-                // Unknown progress scans a single outline without inventing a completed range.
-                // With measured progress, outline the one segment currently being processed.
+                // Unknown progress scans one outline without inventing a completed range.
+                // With measured progress, outline the single segment currently being processed.
                 val boundaryX = if (isIndeterminate) scanX else revealX
                 if (!isSkipped && !isCompleted && boundaryX < size.width) {
                     val currentBounds = blockBounds.firstOrNull { (left, right) ->
