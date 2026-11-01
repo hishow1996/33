@@ -2,6 +2,7 @@ package io.translatetube.local.data
 
 import android.content.Context
 import io.translatetube.local.player.DubbingCachePath
+import io.translatetube.local.player.AsrAudioCacheStorage
 import io.translatetube.local.player.HlsAudioDownloader
 import io.translatetube.local.player.PlaybackService
 import java.io.File
@@ -16,7 +17,7 @@ internal object VideoHistoryCacheCleaner {
         )
         deleteDirectoryIfPresent(dubbingDirectory, "配音 PCM")
 
-        val audioDirectory = File(context.noBackupFilesDir, "asr_audio_retry")
+        val audioDirectory = AsrAudioCacheStorage.directory(context)
         val audioNames = VideoHistoryCacheIndex.audioCacheFileNames(context, video.key).toMutableSet()
         val youtubeId = video.videoId
             ?: video.key.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
