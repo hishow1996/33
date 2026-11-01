@@ -827,8 +827,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     Icon(
                         imageVector = Icons.Filled.ArrowBack,
                         contentDescription = "返回主页",
-                        tint = Color(0xFF273953),
-                        modifier = Modifier.size(21.dp),
+                        tint = OnBg,
+                        modifier = Modifier.size(26.dp),
                     )
                 }
                 Spacer(Modifier.width(4.dp))
