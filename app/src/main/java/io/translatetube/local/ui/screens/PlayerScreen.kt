@@ -3862,15 +3862,6 @@ private fun StageProgressVisual(
                         strokeWidth = 1.2.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
-                } else if (isIndeterminate && motionEnabled) {
-                    val scanX = (scanPosition * size.width).coerceIn(0f, size.width)
-                    drawLine(
-                        color = Color(0xFF3268F5).copy(alpha = 0.9f),
-                        start = Offset(scanX, 0f),
-                        end = Offset(scanX, size.height),
-                        strokeWidth = 1.2.dp.toPx(),
-                        cap = StrokeCap.Round,
-                    )
                 }
             }
 
