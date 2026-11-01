@@ -1032,7 +1032,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     progress = 0,
                     stageMessage = "正在解压并安装模型…",
                 )
-                withContext(Dispatchers.IO) {
+                val extractionStartedAtMs = android.os.SystemClock.elapsedRealtime()
+                val extractedModelBytes = withContext(Dispatchers.IO) {
                     // Do not pre-create destDir: extraction recovery must be able to distinguish
                     // "destination missing after a crash" from a real installed directory.
                     val extractionJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -1049,16 +1050,36 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                     else -> 160L
                                 }
                             ) * ModelStoragePreflightPolicy.MIB
+                            // Reserve the final 5% for validation and atomic publication. The
+                            // expanded archive can differ from its estimate; do not let the
+                            // estimate leave extraction visually stuck at 99%.
                             val extractionProgress = (
                                 extractedBytes * 100L / expectedExtractedBytes
-                            ).toInt().coerceIn(0, 99)
+                            ).toInt().coerceIn(0, 94)
                             state.value = state.value.copy(
                                 progress = extractionProgress,
                                 stageMessage = "正在解压并安装模型（已处理 ${handledMB} MB）",
                             )
                         },
+                        onStage = { message, progress ->
+                            state.value = state.value.copy(
+                                status = ModelStatus.EXTRACTING,
+                                progress = progress,
+                                stageMessage = message,
+                            )
+                        },
                     )
                 }
+                val extractionDurationMs =
+                    (android.os.SystemClock.elapsedRealtime() - extractionStartedAtMs).coerceAtLeast(0L)
+                logModelInfo(
+                    "模型压缩包解压和目录发布完成",
+                    modelKindDetails(kind) + mapOf(
+                        "解压后文件总大小 bytes" to extractedModelBytes.toString(),
+                        "解压和目录发布耗时 ms" to extractionDurationMs.toString(),
+                        "目标目录" to destDir.name,
+                    ),
+                )
                 if (kind == ModelKind.ASR) {
                     // VAD is its own download stage; expose progress instead of leaving the UI
                     // stuck on "installing" while a network request is running.
@@ -1123,15 +1144,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         return
                     }
                 }
+                state.value = state.value.copy(
+                    status = ModelStatus.EXTRACTING,
+                    progress = 99,
+                    stageMessage = "正在确认模型可用性…",
+                )
+                val validationStartedAtMs = android.os.SystemClock.elapsedRealtime()
                 val installed = when {
                     kind == ModelKind.TTS -> ModelFiles.ttsReady(ctx)
                     ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) -> ModelFiles.senseVoiceReady(ctx)
                     else -> ModelFiles.whisperReady(ctx)
                 }
+                val finalValidationDurationMs =
+                    (android.os.SystemClock.elapsedRealtime() - validationStartedAtMs).coerceAtLeast(0L)
                 if (!installed) throw java.io.IOException("模型文件安装后完整性检查未通过")
                 val installedArchiveBytes = pkg.length()
-                pkg.delete()
-                ResumableModelArchiveDownloader.cleanupPartialFiles(pkg)
                 state.value = state.value.copy(
                     status = ModelStatus.READY,
                     progress = 100,
@@ -1150,9 +1177,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         "总耗时 ms" to (System.currentTimeMillis() - downloadStartedAtMs).coerceAtLeast(0L).toString(),
                         "最终下载源主机" to if (reuseExistingPackage) "本地缓存" else (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
                         "最终校验状态" to "模型文件完整性检查通过",
-                        "压缩包已清理" to (!pkg.exists()).toString(),
+                        "解压后文件总大小 bytes" to extractedModelBytes.toString(),
+                        "解压和目录发布耗时 ms" to extractionDurationMs.toString(),
+                        "最终模型校验耗时 ms" to finalValidationDurationMs.toString(),
+                        "临时文件清理策略" to "模型就绪后后台清理",
                     ),
                 )
+                cleanupInstalledArtifactsAsync(pkg, destDir)
                 return
             } catch (e: kotlinx.coroutines.CancellationException) {
                 return
@@ -1272,6 +1303,41 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         )
     }
 
+    /**
+     * The new model is usable once validation succeeds. Deleting the large archive and a previous
+     * model backup must not hold the READY transition, so remove them on the application IO scope.
+     */
+    private fun cleanupInstalledArtifactsAsync(pkg: File, destDir: File) {
+        val parent = destDir.parentFile ?: return
+        val backup = File(parent, destDir.name + ".old")
+        scope.launch(Dispatchers.IO) {
+            val startedAtMs = android.os.SystemClock.elapsedRealtime()
+            val backupExisted = backup.exists()
+            val archiveExisted = pkg.exists()
+            val backupDeleted = !backupExisted || backup.deleteRecursively()
+            val archiveDeleted = !archiveExisted || pkg.delete()
+            val partialCleanupSucceeded = runCatching {
+                ResumableModelArchiveDownloader.cleanupPartialFiles(pkg)
+            }.isSuccess
+            val elapsedMs =
+                (android.os.SystemClock.elapsedRealtime() - startedAtMs).coerceAtLeast(0L)
+            val details = mapOf(
+                "目标模型目录" to destDir.name,
+                "旧模型备份原先存在" to backupExisted.toString(),
+                "旧模型备份清理成功" to backupDeleted.toString(),
+                "下载压缩包原先存在" to archiveExisted.toString(),
+                "下载压缩包清理成功" to archiveDeleted.toString(),
+                "断点续传临时文件清理成功" to partialCleanupSucceeded.toString(),
+                "后台清理耗时 ms" to elapsedMs.toString(),
+            )
+            if (backupDeleted && archiveDeleted && partialCleanupSucceeded) {
+                logModelInfo("模型就绪后的临时文件清理完成", details)
+            } else {
+                logModelWarning("模型已就绪，但部分临时文件未能清理", details = details)
+            }
+        }
+    }
+
     private fun sha256(file: File, checkActive: () -> Unit = {}): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         FileInputStream(file).use { input ->
@@ -1324,7 +1390,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         destDir: File,
         checkActive: () -> Unit = {},
         onProgress: ((Long) -> Unit)? = null,
-    ) {
+        onStage: ((message: String, progress: Int) -> Unit)? = null,
+    ): Long {
         checkActive()
         val parent = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型父目录")
@@ -1472,6 +1539,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             }
 
             checkActive()
+            onStage?.invoke("正在校验模型文件…", 95)
             // 不完整或伪造的压缩包不能覆盖已经可用的模型。
             val required = when (destDir.name) {
                 "tts" -> listOf(
@@ -1522,6 +1590,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             }
 
             checkActive()
+            onStage?.invoke("正在安装模型文件…", 98)
             val hadOld = destDir.exists()
             if (hadOld && !destDir.renameTo(old)) throw java.io.IOException("无法备份现有模型目录")
             if (!staging.renameTo(destDir)) {
@@ -1531,12 +1600,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
                 throw installError
             }
-            // The destination has been atomically published; an undeletable backup is safe and
-            // will be reconciled at the start of the next installation attempt.
-            runCatching { old.deleteRecursively() }
+            // Keep the previous directory until the caller validates the newly published model.
+            // The caller schedules its removal after switching the model state to READY.
         } catch (e: Exception) {
             staging.deleteRecursively()
             throw e
         }
+        return extractedBytes
     }
 }

@@ -1876,7 +1876,11 @@ private fun ModelRow(
                     )
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "解压安装 ${state.progress.coerceIn(0, 99)}%",
+                            if (state.progress >= 95) {
+                                state.stageMessage ?: "正在检查模型…"
+                            } else {
+                                "解压安装 ${state.progress.coerceIn(0, 94)}%"
+                            },
                             color = BrandBright,
                             style = MaterialTheme.typography.bodySmall,
                         )
