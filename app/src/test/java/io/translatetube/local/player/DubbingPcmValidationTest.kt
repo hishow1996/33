@@ -37,6 +37,25 @@ class DubbingPcmValidationTest {
     }
 
     @Test
+    fun cacheHeaderValidationAcceptsValidAudioAndEmptyMarkers() {
+        assertTrue(DubbingPcmValidation.isValidCacheHeader(24_000, 24_000, 8L + 24_000L * 4L))
+        assertTrue(DubbingPcmValidation.isValidCacheHeader(16_000, 0, 8L))
+    }
+
+    @Test
+    fun cacheHeaderValidationRejectsInvalidRateCountAndLength() {
+        assertFalse(DubbingPcmValidation.isValidCacheHeader(7_999, 1, 12L))
+        assertFalse(DubbingPcmValidation.isValidCacheHeader(192_001, 1, 12L))
+        assertFalse(DubbingPcmValidation.isValidCacheHeader(16_000, -1, 4L))
+        assertFalse(DubbingPcmValidation.isValidCacheHeader(
+            16_000,
+            DubbingPcmValidation.MAX_SAMPLE_COUNT + 1,
+            8L + (DubbingPcmValidation.MAX_SAMPLE_COUNT.toLong() + 1L) * 4L,
+        ))
+        assertFalse(DubbingPcmValidation.isValidCacheHeader(16_000, 10, 8L + 9L * 4L))
+    }
+
+    @Test
     fun largePcmValidationCanBeCancelledBetweenChunks() {
         val samples = FloatArray(20_000) { 0.01f }
         var checks = 0

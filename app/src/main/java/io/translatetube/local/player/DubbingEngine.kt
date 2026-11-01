@@ -2035,28 +2035,17 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(file))).use { input ->
                 val sampleRate = input.readInt()
                 val sampleCount = input.readInt()
-                if (sampleRate !in 8_000..192_000 || sampleCount < 0 || sampleCount > DubbingPcmValidation.MAX_SAMPLE_COUNT ||
-                    stamp.length != 8L + sampleCount.toLong() * 4L
-                ) {
+                if (!DubbingPcmValidation.isValidCacheHeader(sampleRate, sampleCount, stamp.length)) {
                     throw java.io.IOException("PCM 缓存头或长度无效")
                 }
-
-                // A non-empty file can still contain only zeroes (or invalid floats). Do not
-                // promote it to "ready" on attach; a translated cue with such a cache must
-                // be queued for synthesis again instead of silently falling back during playback.
-                var hasAudibleSample = false
-                repeat(sampleCount) { index ->
-                    // Large PCM caches can contain millions of samples. Check cancellation
-                    // periodically so replacing a video does not wait for a full cache scan.
-                    if ((index and 0x1fff) == 0) checkActive()
-                    val sample = input.readFloat()
-                    if (!sample.isFinite()) throw java.io.IOException("PCM 缓存包含无效采样值")
-                    if (DubbingPcmValidation.isAudibleSample(sample)) hasAudibleSample = true
-                }
-                when {
-                    sampleCount == 0 -> DubbingCacheInspection(false, stamp) // Valid explicit empty marker.
-                    hasAudibleSample -> DubbingCacheInspection(true, stamp)
-                    else -> throw java.io.IOException("PCM 缓存只有静音采样")
+                checkActive()
+                // Re-entry should not read every Float sample and then read the same file again
+                // when the cue is actually played. Check structure here; load() performs the full
+                // finite/audible-sample validation before playback and requeues any damaged cue.
+                if (sampleCount == 0) {
+                    DubbingCacheInspection(false, stamp) // Valid explicit empty marker.
+                } else {
+                    DubbingCacheInspection(true, stamp)
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {

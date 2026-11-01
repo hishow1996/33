@@ -15,6 +15,19 @@ internal object DubbingPcmValidation {
         sampleCount in 1..MAX_SAMPLE_COUNT
 
     /**
+     * Fast structural validation used while attaching an existing cache. The complete sample
+     * scan is deferred to load(), immediately before PCM is handed to the playback pipeline.
+     */
+    fun isValidCacheHeader(
+        sampleRate: Int,
+        sampleCount: Int,
+        fileLength: Long,
+    ): Boolean =
+        sampleRate in 8_000..192_000 &&
+            sampleCount in 0..MAX_SAMPLE_COUNT &&
+            fileLength == 8L + sampleCount.toLong() * 4L
+
+    /**
      * Cancellable prefix copy for long neural-TTS results. FloatArray.copyOf() cannot observe a
      * seek/release while copying tens of megabytes on lower-memory devices.
      */
