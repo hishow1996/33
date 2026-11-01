@@ -94,14 +94,34 @@ class SpeakerAssignmentPolicyTest {
     }
 
     @Test
-    fun confidenceBreaksEqualOverlapTiesAndRawIdMakesTheResultDeterministic() {
+    fun nearEqualOverlapsWithoutClearConfidenceLeadRemainUnassigned() {
         val observations = listOf(
-            SpeakerAssignmentPolicy.SpeakerObservation(7, 0L, 500L, 0.45f),
-            SpeakerAssignmentPolicy.SpeakerObservation(3, 0L, 500L, 0.91f),
-            SpeakerAssignmentPolicy.SpeakerObservation(1, 0L, 500L, 0.91f),
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 0L, 500L, 0.91f),
+            SpeakerAssignmentPolicy.SpeakerObservation(3, 0L, 500L, 0.89f),
+            SpeakerAssignmentPolicy.SpeakerObservation(1, 0L, 500L, 0.90f),
         )
 
-        assertEquals(1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 700L, 200L))
+        assertEquals(-1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 700L, 200L))
+    }
+
+    @Test
+    fun strongConfidenceLeadCanResolveAnEqualOverlap() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 0L, 500L, 0.45f),
+            SpeakerAssignmentPolicy.SpeakerObservation(3, 0L, 500L, 0.95f),
+        )
+
+        assertEquals(3, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 700L, 200L))
+    }
+
+    @Test
+    fun clearOverlapWinnerIsStillAssignedEvenWhenConfidenceIsSimilar() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 0L, 700L, 0.90f),
+            SpeakerAssignmentPolicy.SpeakerObservation(3, 400L, 700L, 0.89f),
+        )
+
+        assertEquals(7, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 1_000L, 200L))
     }
 
     @Test
@@ -111,6 +131,29 @@ class SpeakerAssignmentPolicyTest {
         assertEquals(-1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 1_000L, 100L))
         assertEquals(-1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, -1L, 1_000L, 0L))
         assertEquals(-1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 1_000L, 1_000L, 0L))
+    }
+
+    @Test
+    fun minimumOverlapUsesARealFloorForVeryShortCues() {
+        assertEquals(40L, SpeakerAssignmentPolicy.minimumOverlapMsForCue(100L))
+        assertEquals(100L, SpeakerAssignmentPolicy.minimumOverlapMsForCue(500L))
+        assertEquals(250L, SpeakerAssignmentPolicy.minimumOverlapMsForCue(5_000L))
+        assertEquals(40L, SpeakerAssignmentPolicy.minimumOverlapMsForCue(0L))
+    }
+
+    @Test
+    fun duplicateAndUnorderedSegmentsDoNotAmplifyOneSpeakersConfidenceScoreByOrder() {
+        val firstOrder = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(8, 0L, 700L, 0.30f),
+            SpeakerAssignmentPolicy.SpeakerObservation(8, 300L, 1_000L, 0.90f),
+            SpeakerAssignmentPolicy.SpeakerObservation(3, 0L, 600L, 0.60f),
+        )
+        val reversed = firstOrder.reversed()
+
+        assertEquals(
+            SpeakerAssignmentPolicy.bestSpeakerForCue(firstOrder, 0L, 1_000L, 200L),
+            SpeakerAssignmentPolicy.bestSpeakerForCue(reversed, 0L, 1_000L, 200L),
+        )
     }
 
     @Test

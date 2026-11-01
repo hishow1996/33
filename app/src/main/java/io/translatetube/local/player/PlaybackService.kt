@@ -13190,7 +13190,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     } else {
                         0L
                     }
-                    val minimumOverlapMs = minOf(250L, (cueDurationMs.toDouble() * 0.2).toLong())
+                    val minimumOverlapMs = SpeakerAssignmentPolicy.minimumOverlapMsForCue(cueDurationMs)
                     val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
                         observations = speakerObservations,
                         cueStartMs = line.startMs,

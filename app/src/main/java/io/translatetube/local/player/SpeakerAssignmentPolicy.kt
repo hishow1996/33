@@ -24,8 +24,13 @@ internal object SpeakerAssignmentPolicy {
 
     private data class CueScore(
         var overlapMs: Long = 0L,
-        var confidenceOverlap: Double = 0.0,
+        var confidenceWeight: Double = 0.5,
     )
+
+    private const val MIN_CUE_OVERLAP_MS = 40L
+    private const val MAX_CUE_OVERLAP_MS = 250L
+    private const val AMBIGUOUS_OVERLAP_RATIO = 0.85
+    private const val MIN_CONFIDENCE_LEAD = 0.18
 
     /** Convert native diarizer segments once, retaining confidence for every caller. */
     fun observationsFromSegments(segments: List<SpeakerDiarizer.Segment>): List<SpeakerObservation> =
@@ -82,6 +87,16 @@ internal object SpeakerAssignmentPolicy {
      * Returns the raw diarizer speaker label with the strongest time overlap with one cue.
      * Overlap wins first; confidence breaks ties, and lower IDs provide a deterministic final tie.
      */
+    /**
+     * Require a meaningful overlap even for tiny cues, while keeping the existing 20% rule
+     * and 250 ms cap for normal/longer subtitles.
+     */
+    fun minimumOverlapMsForCue(cueDurationMs: Long): Long {
+        if (cueDurationMs <= 0L) return MIN_CUE_OVERLAP_MS
+        val proportional = cueDurationMs / 5L + if (cueDurationMs % 5L == 0L) 0L else 1L
+        return minOf(MAX_CUE_OVERLAP_MS, maxOf(MIN_CUE_OVERLAP_MS, proportional))
+    }
+
     fun bestSpeakerForCue(
         observations: List<SpeakerObservation>,
         cueStartMs: Long,
@@ -107,24 +122,56 @@ internal object SpeakerAssignmentPolicy {
                 !row.confidence.isFinite() || row.confidence < 0f -> 0.5
                 else -> row.confidence.coerceIn(0f, 1f).toDouble()
             }
-            score.confidenceOverlap += acceptedOverlap.toDouble() * confidenceWeight
+            score.confidenceWeight = maxOf(score.confidenceWeight, confidenceWeight)
         }
 
+        // Keep both the strongest and runner-up speaker. A near tie usually means simultaneous
+        // speech or uncertain alignment; selecting an arbitrary ID would assign the wrong voice.
         var bestId = -1
-        var bestOverlap = -1L
-        var bestConfidence = -1.0
+        var bestScore: CueScore? = null
+        var runnerUpScore: CueScore? = null
+        fun outranks(
+            candidateId: Int,
+            candidate: CueScore,
+            currentId: Int,
+            current: CueScore?,
+        ): Boolean {
+            if (current == null) return true
+            return candidate.overlapMs > current.overlapMs ||
+                (candidate.overlapMs == current.overlapMs &&
+                    candidate.confidenceWeight > current.confidenceWeight) ||
+                (candidate.overlapMs == current.overlapMs &&
+                    candidate.confidenceWeight == current.confidenceWeight &&
+                    (currentId < 0 || candidateId < currentId))
+        }
+        var runnerUpId = -1
         for ((speakerId, score) in scores) {
-            val wins = score.overlapMs > bestOverlap ||
-                (score.overlapMs == bestOverlap && score.confidenceOverlap > bestConfidence) ||
-                (score.overlapMs == bestOverlap && score.confidenceOverlap == bestConfidence &&
-                    (bestId < 0 || speakerId < bestId))
-            if (wins) {
+            if (outranks(speakerId, score, bestId, bestScore)) {
+                runnerUpScore = bestScore
+                runnerUpId = bestId
+                bestScore = score
                 bestId = speakerId
-                bestOverlap = score.overlapMs
-                bestConfidence = score.confidenceOverlap
+            } else if (outranks(speakerId, score, runnerUpId, runnerUpScore)) {
+                runnerUpScore = score
+                runnerUpId = speakerId
             }
         }
-        return if (bestId >= 0 && bestOverlap >= minimumOverlapMs.coerceAtLeast(0L)) bestId else -1
+
+        val requiredOverlap = minimumOverlapMs.coerceAtLeast(0L)
+        val winner = bestScore ?: return -1
+        if (bestId < 0 || winner.overlapMs < requiredOverlap) return -1
+
+        val runnerUp = runnerUpScore
+        if (runnerUp != null && runnerUp.overlapMs >= requiredOverlap) {
+            val overlapRatio = runnerUp.overlapMs.toDouble() / winner.overlapMs.coerceAtLeast(1L)
+            val confidenceLead = winner.confidenceWeight - runnerUp.confidenceWeight
+            if (overlapRatio >= AMBIGUOUS_OVERLAP_RATIO &&
+                confidenceLead < MIN_CONFIDENCE_LEAD
+            ) {
+                return -1
+            }
+        }
+        return bestId
     }
 
     private fun saturatingAdd(first: Long, second: Long): Long =
