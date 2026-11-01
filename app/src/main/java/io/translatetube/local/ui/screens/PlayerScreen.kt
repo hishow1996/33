@@ -100,6 +100,7 @@ import io.translatetube.local.floating.FloatingHostLayout
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.floating.FloatingOverlayLifecycleOwner
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.SelectedWebMediaMetadata
 import io.translatetube.local.player.PlaybackHint
 import io.translatetube.local.player.PlaybackHintAction
 import io.translatetube.local.player.PlayerRebuildCoordinator
@@ -149,6 +150,7 @@ fun PlayerScreen(
     mediaReferrer: String = "",
     mediaCookie: String? = null,
     mediaUserAgent: String? = null,
+    selectedWebMediaMetadata: SelectedWebMediaMetadata? = null,
     requestToken: Long = 0L,
     showPlayerWhileRestoringHistory: Boolean = false,
 ) {
@@ -258,14 +260,14 @@ fun PlayerScreen(
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
-            service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, requestToken = requestToken)
+            service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, selectedWebMediaMetadata = selectedWebMediaMetadata, requestToken = requestToken)
         } else {
             retryNonce++
         }
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, mediaUrl, mediaTitle, mediaReferrer, mediaCookie, mediaUserAgent, requestToken, retryNonce) {
+    LaunchedEffect(videoId, localUri, mediaUrl, mediaTitle, mediaReferrer, mediaCookie, mediaUserAgent, selectedWebMediaMetadata, requestToken, retryNonce) {
         val key = requestKey
         val retryRequested = retryNonce != handledRetryNonce
         // A repeated tap on the same history row has the same media key but a new request token.
@@ -317,7 +319,7 @@ fun PlayerScreen(
                         failedState.phase == Phase.ERROR &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, requestToken = requestToken)
+                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, selectedWebMediaMetadata = selectedWebMediaMetadata, requestToken = requestToken)
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
@@ -2738,39 +2740,42 @@ private fun ProcessingStageCards(
                                     else -> "等待提取音频"
                                 }
                                 add("当前任务" to audioTask)
+                                val metadataPending = if (state.audioMetadataProbeInProgress) "检测中" else "未知"
                                 val liveAudioSource = when {
                                     progressText.contains("音画混合流") -> "音画混合流"
                                     progressText.contains("独立音轨") -> "独立音轨"
-                                    else -> state.audioTrackSourceType.trim().ifBlank {
-                                        if (active) "检测中" else "未知"
-                                    }
+                                    else -> state.audioTrackSourceType.trim().ifBlank { "未知" }
                                 }
                                 add("视频分辨率" to state.videoResolution.trim().ifBlank {
                                     state.selectedQuality.trim().ifBlank { "未知" }
                                 })
                                 add("音轨来源" to liveAudioSource)
-                                add("音频格式" to processingAudioFormatLabel(state.audioTrackMimeType).orEmpty().ifBlank {
-                                    if (active) "检测中" else "未知"
-                                })
+                                val sourceCodecLabel = state.audioTrackCodecLabel
+                                    .takeIf { it.isNotBlank() && '/' !in it }
+                                val audioFormatLabel = sourceCodecLabel
+                                    ?: processingAudioFormatLabel(
+                                        state.audioTrackMimeType.ifBlank { state.audioTrackCodecLabel }
+                                    )
+                                add("音频格式" to audioFormatLabel.orEmpty().ifBlank { metadataPending })
                                 val sampleRateHz = state.audioTrackSampleRateHz
                                 val sampleRateKHz = sampleRateHz / 1000f
                                 add(
                                     "采样率" to when {
-                                        sampleRateHz <= 0 -> if (active) "检测中" else "未知"
+                                        sampleRateHz <= 0 -> metadataPending
                                         sampleRateHz % 1_000 == 0 -> "${sampleRateHz / 1_000} kHz"
                                         else -> "${sampleRateKHz} kHz"
                                     },
                                 )
                                 add("音频时长" to if (state.audioTrackDurationMs > 0L) {
                                     formatFloatingTime(state.audioTrackDurationMs)
-                                } else if (active) "检测中" else "未知")
+                                } else metadataPending)
                                 add(
                                     "声道" to when {
                                         state.audioTrackChannelCount == 1 -> "单声道"
                                         state.audioTrackChannelCount == 2 -> "立体声"
                                         state.audioTrackChannelCount > 2 ->
                                             state.audioTrackChannelCount.toString() + " 声道"
-                                        else -> if (active) "检测中" else "未知"
+                                        else -> metadataPending
                                     },
                                 )
                             }

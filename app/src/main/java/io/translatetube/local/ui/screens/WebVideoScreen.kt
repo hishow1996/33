@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.TranslateTubeApp
+import io.translatetube.local.player.SelectedWebMediaMetadata
 import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.web.PikpakShare.PikpakEntry
 import io.translatetube.local.web.PikpakShare
@@ -239,6 +240,29 @@ private fun WebCandidateAudioHint.detailRows(): List<Pair<String, String>> {
     }
 }
 
+/** Reuse the selected candidate's existing probe instead of starting the next stage empty. */
+private fun WebCandidateAudioHint.toSelectedWebMediaMetadata(): SelectedWebMediaMetadata? {
+    val info = mediaInfo
+    val sourceType = when (kind) {
+        WebCandidateAudioHintKind.INDEPENDENT -> "独立音轨"
+        WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+        WebCandidateAudioHintKind.MUXED_DIRECT -> "音画混合流"
+        WebCandidateAudioHintKind.NO_AUDIO -> "无音轨"
+        else -> if (info?.hasAudio == true) "网页媒体音轨" else ""
+    }
+    if (info == null && sourceType.isBlank()) return null
+    val resolution = resolutionSummary().takeUnless {
+        it == "待识别" || it == "无视频"
+    }.orEmpty()
+    return SelectedWebMediaMetadata(
+        audioCodecLabel = info?.audioCodec.orEmpty(),
+        audioChannelCount = info?.audioChannels ?: 0,
+        audioSampleRateHz = info?.audioSampleRate ?: 0,
+        audioSourceType = sourceType,
+        videoResolution = resolution,
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -246,7 +270,7 @@ fun WebVideoScreen(
     initialUrl: String,
     visible: Boolean = true,
     onBack: () -> Unit,
-    onOpenMedia: (mediaUrl: String, title: String, referrer: String, cookie: String?, userAgent: String?) -> Unit,
+    onOpenMedia: (mediaUrl: String, title: String, referrer: String, cookie: String?, userAgent: String?, metadata: SelectedWebMediaMetadata?) -> Unit,
 ) {
     val appCtx = LocalContext.current.applicationContext
     val backgroundScope = remember(appCtx) { (appCtx as TranslateTubeApp).appScope }
@@ -770,6 +794,7 @@ fun WebVideoScreen(
                         media.referrer,
                         media.cookie.takeIf { it.isNotBlank() },
                         webViewState.value?.settings?.userAgentString,
+                        null,
                     )
                 }
             } catch (e: CancellationException) {
@@ -982,6 +1007,7 @@ fun WebVideoScreen(
                         result.referer,
                         cookie,
                         result.userAgent,
+                        null,
                     )
                 } else {
                     status = "B 站直连解析失败，改用 yt-dlp 解析（规则更全但更慢）…"
@@ -3021,6 +3047,7 @@ fun WebVideoScreen(
                                                     currentPage,
                                                     cookie,
                                                     webViewState.value?.settings?.userAgentString,
+                                                    hint.toSelectedWebMediaMetadata(),
                                                 )
                                             }
                                         },

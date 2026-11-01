@@ -551,6 +551,15 @@ data class SpeakerRecognitionUiState(
             phase == SpeakerRecognitionPhase.CANCELLING
 }
 
+/** Metadata already discovered for the exact webpage candidate selected by the user. */
+data class SelectedWebMediaMetadata(
+    val audioCodecLabel: String = "",
+    val audioChannelCount: Int = 0,
+    val audioSampleRateHz: Int = 0,
+    val audioSourceType: String = "",
+    val videoResolution: String = "",
+)
+
 data class PlayerUiState(
     val phase: Phase = Phase.IDLE,
     val progress: String = "",
@@ -558,6 +567,8 @@ data class PlayerUiState(
     val audioProgress: AudioProgressSnapshot? = null,
     val audioTrackLanguage: String = "",
     val audioTrackMimeType: String = "",
+    val audioTrackCodecLabel: String = "",
+    val audioMetadataProbeInProgress: Boolean = false,
     val audioTrackDurationMs: Long = 0L,
     val audioTrackChannelCount: Int = 0,
     val audioTrackSampleRateHz: Int = 0,
@@ -4227,6 +4238,7 @@ class PlaybackService : MediaSessionService() {
         remoteMediaReferrer: String = "",
         remoteMediaCookie: String? = null,
         remoteMediaUserAgent: String? = null,
+        selectedWebMediaMetadata: SelectedWebMediaMetadata? = null,
         requestToken: Long = 0L,
         reuseMountedMediaForRestart: Boolean = false,
         restoreReadySnapshot: Boolean = false,
@@ -4325,6 +4337,7 @@ class PlaybackService : MediaSessionService() {
                             remoteMediaReferrer = remoteMediaReferrer,
                             remoteMediaCookie = remoteMediaCookie,
                             remoteMediaUserAgent = remoteMediaUserAgent,
+                            selectedWebMediaMetadata = selectedWebMediaMetadata,
                             requestToken = requestToken,
                             reuseMountedMediaForRestart = reuseMountedMediaForRestart,
                             restoreReadySnapshot = restoreReadySnapshot,
@@ -4734,11 +4747,18 @@ class PlaybackService : MediaSessionService() {
             selectedQuality = effectiveResumeState?.selectedQuality.orEmpty(),
             audioTrackLanguage = effectiveResumeState?.audioTrackLanguage.orEmpty(),
             audioTrackMimeType = effectiveResumeState?.audioTrackMimeType.orEmpty(),
+            audioTrackCodecLabel = effectiveResumeState?.audioTrackCodecLabel
+                ?: selectedWebMediaMetadata?.audioCodecLabel.orEmpty(),
+            audioMetadataProbeInProgress = false,
             audioTrackDurationMs = effectiveResumeState?.audioTrackDurationMs ?: 0L,
-            audioTrackChannelCount = effectiveResumeState?.audioTrackChannelCount ?: 0,
-            audioTrackSampleRateHz = effectiveResumeState?.audioTrackSampleRateHz ?: 0,
-            audioTrackSourceType = effectiveResumeState?.audioTrackSourceType.orEmpty(),
-            videoResolution = effectiveResumeState?.videoResolution.orEmpty(),
+            audioTrackChannelCount = effectiveResumeState?.audioTrackChannelCount
+                ?: (selectedWebMediaMetadata?.audioChannelCount ?: 0),
+            audioTrackSampleRateHz = effectiveResumeState?.audioTrackSampleRateHz
+                ?: (selectedWebMediaMetadata?.audioSampleRateHz ?: 0),
+            audioTrackSourceType = effectiveResumeState?.audioTrackSourceType
+                ?: selectedWebMediaMetadata?.audioSourceType.orEmpty(),
+            videoResolution = effectiveResumeState?.videoResolution
+                ?: selectedWebMediaMetadata?.videoResolution.orEmpty(),
             availableSubtitleTracks = effectiveResumeState?.availableSubtitleTracks ?: emptyList(),
             subtitleTrackStatus = effectiveResumeState?.subtitleTrackStatus.orEmpty(),
             sourceLang = effectiveResumeState?.sourceLang.orEmpty(),
@@ -7599,16 +7619,22 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         phase = Phase.DOWNLOADING_AUDIO,
                         progress = "无字幕，正在提取视频音频…",
                         audioProgress = null,
-                        audioTrackLanguage = "",
-                        audioTrackMimeType = "",
-                        audioTrackDurationMs = 0L,
-                        audioTrackChannelCount = 0,
-                        audioTrackSampleRateHz = 0,
-                        audioTrackSourceType = when {
-                            videoId != null -> "独立音轨"
-                            remoteMediaUrl != null -> "检测中"
-                            localUri != null -> "本地音轨"
-                            else -> ""
+                        // Keep values already discovered on the selected webpage source card.
+                        // Extraction progress is not the same operation as metadata probing.
+                        audioTrackLanguage = it.audioTrackLanguage,
+                        audioTrackMimeType = it.audioTrackMimeType,
+                        audioTrackCodecLabel = it.audioTrackCodecLabel,
+                        audioMetadataProbeInProgress = false,
+                        audioTrackDurationMs = it.audioTrackDurationMs,
+                        audioTrackChannelCount = it.audioTrackChannelCount,
+                        audioTrackSampleRateHz = it.audioTrackSampleRateHz,
+                        audioTrackSourceType = it.audioTrackSourceType.ifBlank {
+                            when {
+                                videoId != null -> "独立音轨"
+                                remoteMediaUrl != null -> "未知"
+                                localUri != null -> "本地音轨"
+                                else -> "未知"
+                            }
                         },
                         transcriptionEngineName = transcriptionEngineDisplayName,
                         transcriptionProgressPercent = null,
@@ -7638,6 +7664,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
                     ?.absolutePath
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(audioMetadataProbeInProgress = true)
+                }
                 val audioProbe = try {
                     when (audioFile) {
                         is File -> withContext(Dispatchers.IO) { AudioExtract.probeMediaFile(audioFile) }
@@ -7651,19 +7680,32 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 } catch (probeFailure: Exception) {
                     android.util.Log.i("PlaybackService", "Selected audio track metadata is unavailable", probeFailure)
                     null
+                } finally {
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(audioMetadataProbeInProgress = false)
+                    }
                 }
                 if (audioProbe != null) {
                     updateUiForSession(key, pipelineGeneration) {
                         it.copy(
-                            audioTrackLanguage = audioProbe.selectedAudioLanguage.orEmpty(),
-                            audioTrackMimeType = audioProbe.selectedAudioMimeType.orEmpty(),
-                            audioTrackDurationMs = audioProbe.durationMs.coerceAtLeast(0L),
-                            audioTrackChannelCount = audioProbe.selectedAudioChannelCount ?: 0,
-                            audioTrackSampleRateHz = audioProbe.selectedAudioSampleRateHz ?: 0,
+                            audioTrackLanguage = audioProbe.selectedAudioLanguage
+                                ?.takeIf { value -> value.isNotBlank() } ?: it.audioTrackLanguage,
+                            audioTrackMimeType = audioProbe.selectedAudioMimeType
+                                ?.takeIf { value -> value.isNotBlank() } ?: it.audioTrackMimeType,
+                            audioTrackCodecLabel = it.audioTrackCodecLabel.ifBlank {
+                                audioProbe.selectedAudioMimeType.orEmpty()
+                            },
+                            audioTrackDurationMs = audioProbe.durationMs.takeIf { value -> value > 0L }
+                                ?: it.audioTrackDurationMs,
+                            audioTrackChannelCount = audioProbe.selectedAudioChannelCount
+                                ?.takeIf { value -> value > 0 } ?: it.audioTrackChannelCount,
+                            audioTrackSampleRateHz = audioProbe.selectedAudioSampleRateHz
+                                ?.takeIf { value -> value > 0 } ?: it.audioTrackSampleRateHz,
                             audioTrackSourceType = when {
                                 it.progress.contains("音画混合流") -> "音画混合流"
                                 it.progress.contains("独立音轨") -> "独立音轨"
                                 it.progress.contains("复用网页视频音频缓存") -> "缓存音轨"
+                                it.audioTrackSourceType.isNotBlank() -> it.audioTrackSourceType
                                 videoId != null -> "独立音轨"
                                 remoteMediaUrl != null -> "网页媒体音轨"
                                 localUri != null -> "本地音轨"

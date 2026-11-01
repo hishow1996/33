@@ -28,6 +28,7 @@ import io.translatetube.local.ui.screens.*
 import io.translatetube.local.ui.theme.BgDark
 import io.translatetube.local.ui.theme.TranslateTubeTheme
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.SelectedWebMediaMetadata
 import io.translatetube.local.player.Phase
 import io.translatetube.local.player.PendingMediaResumeContextPolicy
 import io.translatetube.local.yt.NewPipeRepo
@@ -54,6 +55,7 @@ data class PlayRequest(
     val mediaReferrer: String? = null,
     val mediaCookie: String? = null,
     val mediaUserAgent: String? = null,
+    val selectedWebMediaMetadata: SelectedWebMediaMetadata? = null,
     val webPageUrl: String? = null,
     /** Set only by Home history rows; the activity may reuse a compatible READY session. */
     val preferReadyHistoryResume: Boolean = false,
@@ -396,7 +398,7 @@ class MainActivity : ComponentActivity() {
                                     initialUrl = webDetectionUrl.orEmpty(),
                                     visible = displayedScreen == Screen.WEB,
                                     onBack = { screen = Screen.HOME },
-                                    onOpenMedia = { url, title, referrer, cookie, userAgent ->
+                                    onOpenMedia = { url, title, referrer, cookie, userAgent, sourceMetadata ->
                                         returnToWebAfterPlayer = true
                                         advancePlayRequest(
                                             PlayRequest(
@@ -405,6 +407,7 @@ class MainActivity : ComponentActivity() {
                                                 mediaReferrer = referrer,
                                                 mediaCookie = cookie,
                                                 mediaUserAgent = userAgent,
+                                                selectedWebMediaMetadata = sourceMetadata,
                                             )
                                         )
                                         screen = Screen.PLAYER
@@ -612,6 +615,7 @@ class MainActivity : ComponentActivity() {
                                 mediaReferrer = req?.mediaReferrer.orEmpty(),
                                 mediaCookie = req?.mediaCookie,
                                 mediaUserAgent = req?.mediaUserAgent,
+                                selectedWebMediaMetadata = req?.selectedWebMediaMetadata,
                                 requestToken = req?.ts ?: 0L,
                                 showPlayerWhileRestoringHistory = req?.showPlayerWhileRestoringHistory == true,
                                 onBack = {
