@@ -944,6 +944,9 @@ class PlaybackService : MediaSessionService() {
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
     val isReady: Boolean get() = playerReady && ::pm.isInitialized
 
+    /** Secondary speaker recognition/reassignment may still be reading the durable audio cache. */
+    val isSpeakerTaskActive: Boolean get() = speakerJob?.isActive == true
+
     /**
      * A video key identifies media, not a particular user action. The same history row can be
      * tapped again with different TTS settings, so compare the request token as well as the key.
