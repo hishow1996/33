@@ -2514,20 +2514,6 @@ private fun VideoParsingPage(
                     VideoSourceKind.LOCAL -> "本地视频"
                     VideoSourceKind.UNKNOWN -> "视频"
                 }
-                val audioSummary = listOfNotNull(
-                    processingAudioFormatLabel(state.audioTrackMimeType),
-                    state.audioTrackLanguage.trim().takeIf {
-                        it.isNotBlank() && it.lowercase(java.util.Locale.ROOT) !in
-                            setOf("und", "unknown", "undefined")
-                    }?.let { LangMap.display(it) },
-                    state.audioTrackChannelCount.takeIf { it > 0 }?.let {
-                        when (it) {
-                            1 -> "单声道"
-                            2 -> "立体声"
-                            else -> it.toString() + " 声道"
-                        }
-                    },
-                ).joinToString(" · ")
                 val transcriptionEngineSummary = state.transcriptionEngineName.trim()
                     .ifBlank { if (waitingForTranscriptionEngine) "等待转写引擎" else "语音识别" }
                 val translationEngineSummary = if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
