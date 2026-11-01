@@ -2829,6 +2829,7 @@ private fun VideoParsingPage(
                         enter = fadeIn(tween(150)) + expandVertically(animationSpec = tween(170)),
                         exit = fadeOut(tween(90)) + shrinkVertically(animationSpec = tween(130)),
                     ) {
+                        val compactStageDetails = !stageSkipped && index in setOf(0, 1, 2, 4)
                         val fullWidthDetailLabels = when (index) {
                             0 -> setOf("视频标题", "当前状态", "处理说明")
                             1 -> setOf("当前任务", "处理说明")
@@ -2836,14 +2837,14 @@ private fun VideoParsingPage(
                             3 -> setOf("处理说明")
                             else -> setOf("合成任务", "引擎状态", "处理说明")
                         }
-                        val gridRows = if (index == 3) {
+                        val gridRows = if (index == 3 || compactStageDetails) {
                             emptyList()
                         } else {
                             stageDetailRows.filter {
                                 it != stageProgressRow && it.first !in fullWidthDetailLabels
                             }
                         }
-                        val fullWidthRows = if (index == 3) {
+                        val fullWidthRows = if (index == 3 || compactStageDetails) {
                             emptyList()
                         } else {
                             stageDetailRows.filter {
@@ -2916,9 +2917,9 @@ private fun VideoParsingPage(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(start = 11.dp, end = 11.dp, top = 0.dp, bottom = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(if (index == 2 || index == 3) 5.dp else 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
-                            if (index != 3) {
+                            if (!compactStageDetails && index != 3) {
                                 HorizontalDivider(color = Color(0xFFE6ECF5))
                                 Text(
                                     when (index) {
@@ -2932,6 +2933,13 @@ private fun VideoParsingPage(
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                     ),
+                                )
+                            }
+
+                            if (compactStageDetails) {
+                                CompactProcessingStageDetails(
+                                    stageIndex = index,
+                                    rows = stageDetailRows.filter { it != stageProgressRow },
                                 )
                             }
 
@@ -3034,7 +3042,7 @@ private fun VideoParsingPage(
                                         color = Color(0xFF17243B),
                                         style = MaterialTheme.typography.titleSmall.copy(
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = if (index == 3) 12.sp else 13.sp,
+                                            fontSize = 12.sp,
                                         ),
                                     )
                                     Text(
@@ -3541,6 +3549,118 @@ private fun StageProgressVisual(
 }
 
 @Composable
+private fun CompactProcessingStageDetails(
+    stageIndex: Int,
+    rows: List<Pair<String, String>>,
+) {
+    fun value(label: String): Pair<String, String>? = rows.firstOrNull { it.first == label }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        when (stageIndex) {
+            0 -> {
+                CompactStageMetadataRow(value("视频来源"), value("视频时长"))
+                value("视频标题")?.let { CompactStageMetadataLine(it) }
+                CompactStageMetadataRow(value("频道"), value("视频清晰度"))
+                value("字幕检测")?.let { CompactStageMetadataLine(it) }
+                value("当前状态")?.let { CompactStageMetadataLine(it) }
+            }
+            1 -> {
+                value("当前任务")?.let { CompactStageMetadataLine(it) }
+                CompactStageMetadataRow(value("音轨语言"), value("音频格式"))
+                CompactStageMetadataRow(value("音频时长"), value("声道"))
+            }
+            2 -> {
+                CompactStageMetadataRow(value("转写引擎"), value("识别语言"))
+                value("已识别字幕")?.let { CompactStageMetadataLine(it) }
+            }
+            4 -> {
+                CompactStageMetadataRow(value("配音引擎"), value("音色"))
+                value("合成任务")?.let { CompactStageMetadataLine(it) }
+                value("引擎状态")?.let { CompactStageMetadataLine(it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactStageMetadataRow(
+    first: Pair<String, String>?,
+    second: Pair<String, String>? = null,
+) {
+    val items = listOfNotNull(first, second)
+    if (items.isEmpty()) return
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items.forEach { (label, value) ->
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    label,
+                    color = Color(0xFF8794A8),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 9.sp,
+                        lineHeight = 12.sp,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    value,
+                    modifier = Modifier.weight(1f),
+                    color = Color(0xFF3D4E65),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (items.size == 1) Spacer(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun CompactStageMetadataLine(item: Pair<String, String>) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            item.first,
+            color = Color(0xFF8794A8),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 9.sp,
+                lineHeight = 12.sp,
+            ),
+            maxLines = 1,
+        )
+        Text(
+            item.second,
+            modifier = Modifier.weight(1f),
+            color = Color(0xFF3D4E65),
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 10.sp,
+                lineHeight = 13.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
 private fun TranscriptionStageResultPreview(
     lines: List<SubLine>,
     emptyText: String,
@@ -3550,29 +3670,32 @@ private fun TranscriptionStageResultPreview(
         Text(
             "实时识别结果",
             color = Color(0xFF596B82),
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
         )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .requiredHeight(112.dp)
+                .requiredHeight(92.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
-                .padding(horizontal = 9.dp, vertical = 7.dp),
+                .padding(horizontal = 7.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.Center,
         ) {
             if (preview.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(84.dp),
+                        .height(76.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     Text(
                         emptyText,
                         color = Color(0xFF98A3B2),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -3586,22 +3709,22 @@ private fun TranscriptionStageResultPreview(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(40.dp),
+                            .height(38.dp),
                         contentAlignment = Alignment.CenterStart,
                     ) {
                         if (line != null) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
                                     "${formatFloatingTime(line.startMs)} – ${formatFloatingTime(line.endMs)}",
-                                    modifier = Modifier.width(82.dp),
+                                    modifier = Modifier.width(76.dp),
                                     color = Color(0xFF8B98AA),
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = 10.sp,
-                                        lineHeight = 14.sp,
+                                        fontSize = 9.sp,
+                                        lineHeight = 12.sp,
                                     ),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -3611,8 +3734,8 @@ private fun TranscriptionStageResultPreview(
                                     modifier = Modifier.weight(1f),
                                     color = Color(0xFF39485B),
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        fontSize = 12.sp,
-                                        lineHeight = 16.sp,
+                                        fontSize = 10.sp,
+                                        lineHeight = 13.sp,
                                     ),
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
