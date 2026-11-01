@@ -917,27 +917,28 @@ class PlaybackService : MediaSessionService() {
 
         /** Delete one history-owned local PCM cache only when no active ASR reader holds it. */
         fun deleteUnleasedLocalPcmCacheFile(file: File): Boolean {
-            if (!file.exists()) return true
             val service = instance
-            val deleted = if (service != null) {
-                service.activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
-            } else {
-                file.delete()
-            }
-            return deleted || !file.exists()
-        }
-
-        /** Delete one downloaded ASR source-audio cache only when no active reader owns it. */
-        fun deleteUnleasedAsrAudioCacheFile(file: File): Boolean {
-            val service = instance
-            val deleted = if (service != null) {
+            return if (service != null) {
+                // A lease may belong to an in-progress .part writer even before the final file exists.
                 service.activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) {
                     !file.exists() || file.delete()
                 }
             } else {
                 !file.exists() || file.delete()
             }
-            return deleted || !file.exists()
+        }
+
+        /** Delete one downloaded ASR source-audio cache only when no active reader owns it. */
+        fun deleteUnleasedAsrAudioCacheFile(file: File): Boolean {
+            val service = instance
+            return if (service != null) {
+                // Do not treat a not-yet-created .bin as idle: its download can still own a lease.
+                service.activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) {
+                    !file.exists() || file.delete()
+                }
+            } else {
+                !file.exists() || file.delete()
+            }
         }
     }
 
