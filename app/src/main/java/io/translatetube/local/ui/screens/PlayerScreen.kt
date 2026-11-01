@@ -3280,7 +3280,7 @@ private fun StageProgressVisual(
             ),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "dubbingEcgWaveformPhase",
+        label = "dubbingAudioWaveformPhase",
     )
 
     val primaryColor = when {
@@ -3299,73 +3299,6 @@ private fun StageProgressVisual(
         isCompleted -> 1f
         isSkipped -> 0f
         else -> progress?.coerceIn(0f, 1f) ?: 0f
-    }
-
-    val beatWidthsDp = remember { floatArrayOf(
-                    31f, 42f, 27f, 36f, 24f, 45f, 33f, 29f, 39f, 26f,
-    ) }
-    val waveformTemplates = remember { listOf(
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.10f, 0.50f, 0.16f, 0.39f, 0.22f, 0.50f,
-                        0.35f, 0.51f, 0.39f, 0.62f, 0.44f, 0.06f, 0.49f, 0.96f,
-                        0.55f, 0.50f, 0.68f, 0.50f, 0.76f, 0.36f, 0.85f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.08f, 0.50f, 0.13f, 0.45f, 0.19f, 0.50f,
-                        0.31f, 0.50f, 0.37f, 0.59f, 0.42f, 0.17f, 0.48f, 0.88f,
-                        0.54f, 0.50f, 0.72f, 0.50f, 0.79f, 0.42f, 0.87f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.12f, 0.50f, 0.18f, 0.34f, 0.25f, 0.51f,
-                        0.43f, 0.50f, 0.48f, 0.64f, 0.53f, 0.02f, 0.58f, 0.99f,
-                        0.64f, 0.50f, 0.77f, 0.50f, 0.84f, 0.44f, 0.91f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.07f, 0.50f, 0.13f, 0.42f, 0.20f, 0.50f,
-                        0.29f, 0.50f, 0.35f, 0.59f, 0.39f, 0.11f, 0.44f, 0.91f,
-                        0.50f, 0.50f, 0.69f, 0.50f, 0.75f, 0.39f, 0.83f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.15f, 0.50f, 0.22f, 0.46f, 0.28f, 0.51f,
-                        0.40f, 0.51f, 0.45f, 0.63f, 0.50f, 0.18f, 0.55f, 0.83f,
-                        0.60f, 0.50f, 0.74f, 0.50f, 0.81f, 0.33f, 0.89f, 0.49f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.09f, 0.50f, 0.15f, 0.37f, 0.22f, 0.50f,
-                        0.38f, 0.50f, 0.43f, 0.57f, 0.48f, 0.23f, 0.54f, 0.94f,
-                        0.60f, 0.50f, 0.67f, 0.50f, 0.74f, 0.43f, 0.82f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.11f, 0.50f, 0.17f, 0.43f, 0.23f, 0.50f,
-                        0.34f, 0.50f, 0.40f, 0.67f, 0.45f, 0.09f, 0.51f, 0.86f,
-                        0.57f, 0.50f, 0.73f, 0.50f, 0.80f, 0.38f, 0.88f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.06f, 0.50f, 0.12f, 0.46f, 0.18f, 0.50f,
-                        0.32f, 0.50f, 0.38f, 0.60f, 0.43f, 0.14f, 0.49f, 0.98f,
-                        0.55f, 0.50f, 0.70f, 0.50f, 0.78f, 0.41f, 0.86f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.13f, 0.50f, 0.19f, 0.35f, 0.26f, 0.50f,
-                        0.41f, 0.50f, 0.47f, 0.58f, 0.52f, 0.20f, 0.58f, 0.90f,
-                        0.64f, 0.50f, 0.75f, 0.50f, 0.82f, 0.45f, 0.90f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                    floatArrayOf(
-                        0.00f, 0.50f, 0.08f, 0.50f, 0.14f, 0.41f, 0.21f, 0.50f,
-                        0.36f, 0.50f, 0.42f, 0.65f, 0.47f, 0.04f, 0.53f, 0.93f,
-                        0.59f, 0.50f, 0.71f, 0.50f, 0.78f, 0.37f, 0.87f, 0.50f,
-                        1.00f, 0.50f,
-                    ),
-                )
     }
 
     Canvas(
@@ -3703,115 +3636,101 @@ private fun StageProgressVisual(
                     }
                     fraction > 0f -> {
                         clipRect(right = size.width * fraction) {
-                            drawPath(activePath, fill, style = stroke)
+                            drawPath(activePath, fill, styl// 5. Dubbing — an irregular audio waveform with a slim progress cursor.
+            // Every completed bar from the beginning to the cursor pulses continuously.
+            else -> {
+                val centerY = size.height / 2f
+                val maxBarHeight = size.height * 0.88f
+                val progressPosition = when {
+                    isIndeterminate && isAnimating -> scanPosition
+                    else -> fraction
+                }.coerceIn(0f, 1f)
+                val progressX = size.width * progressPosition
+                val waveformColor = when {
+                    isFailed -> Color(0xFFD74655)
+                    isPaused -> Color(0xFFD39A35)
+                    isCompleted -> Color(0xFF18A879)
+                    isSkipped -> Color(0xFFB8C1CE)
+                    else -> Color(0xFF22A77D)
+                }
+                val cursorColor = when {
+                    isFailed -> Color(0xFFD74655)
+                    isPaused -> Color(0xFFD39A35)
+                    isCompleted -> Color(0xFF18A879)
+                    isSkipped -> Color(0xFFB8C1CE)
+                    else -> Color(0xFF3268F5)
+                }
+                val shouldPulse = isAnimating && !isIndeterminate &&
+                    !isPaused && !isFailed && !isCompleted && !isSkipped
+
+                fun drawWaveBars(color: Color, animate: Boolean) {
+                    var x = 0.8.dp.toPx()
+                    var index = 0
+                    while (x < size.width) {
+                        // Deterministic variation keeps bar heights and gaps organic,
+                        // without changing the waveform layout on each animation frame.
+                        val heightA = (kotlin.math.abs(kotlin.math.sin(index * 2.17f)) * 0.34f)
+                        val heightB = (kotlin.math.abs(kotlin.math.sin(index * 0.71f + 1.4f)) * 0.36f)
+                        val baseHeight = (0.20f + heightA + heightB).coerceIn(0.18f, 0.94f)
+                        val widthFactor = (kotlin.math.sin(index * 1.37f) + 1f) / 2f
+                        val gapFactor = (kotlin.math.sin(index * 2.43f + 0.8f) + 1f) / 2f
+                        val barWidth = (1.35f + widthFactor * 0.95f).dp.toPx()
+                        val gap = (1.0f + gapFactor * 1.15f).dp.toPx()
+
+                        val waveA = (kotlin.math.sin(dubbingWaveformPhase * 1.2f - index * 0.52f) + 1f) / 2f
+                        val waveB = (kotlin.math.sin(dubbingWaveformPhase * 0.78f + index * 0.91f) + 1f) / 2f
+                        val motion = waveA * 0.72f + waveB * 0.28f
+                        // Large height range makes the entire completed voice track
+                        // visibly rise and fall instead of merely flickering in brightness.
+                        val animatedHeight = (baseHeight * 0.18f + motion * 0.82f)
+                            .coerceIn(0.14f, 1f)
+                        val heightFactor = if (animate) animatedHeight else baseHeight
+                        val barHeight = (maxBarHeight * heightFactor)
+                            .coerceAtLeast(1.8.dp.toPx())
+                        val top = centerY - barHeight / 2f
+
+                        drawRoundRect(
+                            color = color,
+                            topLeft = Offset(x, top),
+                            size = Size(barWidth, barHeight),
+                            cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+                        )
+                        x += barWidth + gap
+                        index += 1
+                    }
+                }
+
+                // Static grey waveform is the unprocessed audio track.
+                drawWaveBars(trackColor, animate = false)
+
+                // The completed section pulses as one travelling, irregular sound wave.
+                when {
+                    isIndeterminate && isAnimating -> {
+                        val scanWidth = size.width * 0.24f
+                        clipRect(
+                            left = (progressX - scanWidth / 2f).coerceAtLeast(0f),
+                            right = (progressX + scanWidth / 2f).coerceAtMost(size.width),
+                        ) {
+                            drawWaveBars(waveformColor, animate = true)
+                        }
+                    }
+                    fraction > 0f -> {
+                        clipRect(right = progressX) {
+                            drawWaveBars(waveformColor, animate = shouldPulse)
                         }
                     }
                 }
-            }
-        }
-    }
-}
 
-@Composable
-private fun CompactProcessingStageDetails(
-    stageIndex: Int,
-    rows: List<Pair<String, String>>,
-) {
-    fun value(label: String): Pair<String, String>? = rows.firstOrNull { it.first == label }
-
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        when (stageIndex) {
-            0 -> {
-                CompactStageMetadataRow(value("视频来源"), value("视频时长"))
-                value("视频标题")?.let { CompactStageMetadataLine(it) }
-                CompactStageMetadataRow(value("频道"), value("视频清晰度"))
-                value("字幕检测")?.let { CompactStageMetadataLine(it) }
-                value("当前状态")?.let { CompactStageMetadataLine(it) }
-            }
-            1 -> {
-                value("当前任务")?.let { CompactStageMetadataLine(it) }
-                CompactStageMetadataRow(value("音轨语言"), value("音频格式"))
-                CompactStageMetadataRow(value("音频时长"), value("声道"))
-            }
-            2 -> {
-                CompactStageMetadataRow(value("转写引擎"), value("识别语言"))
-                value("已识别字幕")?.let { CompactStageMetadataLine(it) }
-            }
-            4 -> {
-                CompactStageMetadataRow(value("配音引擎"), value("音色"))
-                value("合成任务")?.let { CompactStageMetadataLine(it) }
-                value("引擎状态")?.let { CompactStageMetadataLine(it) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CompactStageMetadataRow(
-    first: Pair<String, String>?,
-    second: Pair<String, String>? = null,
-) {
-    val items = listOfNotNull(first, second)
-    if (items.isEmpty()) return
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        items.forEach { (label, value) ->
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    label,
-                    color = Color(0xFF8794A8),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 9.sp,
-                        lineHeight = 12.sp,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                // Slim vertical cursor marks the exact synthesis boundary.
+                val cursorX = progressX.coerceIn(0.8.dp.toPx(), size.width - 0.8.dp.toPx())
+                drawLine(
+                    color = cursorColor,
+                    start = Offset(cursorX, (size.height - 14.dp.toPx()) / 2f),
+                    end = Offset(cursorX, (size.height + 14.dp.toPx()) / 2f),
+                    strokeWidth = 1.2.dp.toPx(),
+                    cap = StrokeCap.Round,
                 )
-                Text(
-                    value,
-                    modifier = Modifier.weight(1f),
-                    color = Color(0xFF3D4E65),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 10.sp,
-                        lineHeight = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        if (items.size == 1) Spacer(Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun CompactStageMetadataLine(item: Pair<String, String>) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            item.first,
-            color = Color(0xFF8794A8),
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 9.sp,
-                lineHeight = 12.sp,
-            ),
-            maxLines = 1,
-        )
-        Text(
-            item.second,
-            modifier = Modifier.weight(1f),
+            }fier = Modifier.weight(1f),
             color = Color(0xFF3D4E65),
             style = MaterialTheme.typography.bodySmall.copy(
                 fontSize = 10.sp,
