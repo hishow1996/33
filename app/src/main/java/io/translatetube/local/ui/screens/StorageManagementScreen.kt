@@ -134,7 +134,8 @@ fun StorageManagementScreen(
         asrState.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING)
     val playbackBusy = player.isPlaying ||
         player.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING, Phase.SYNTHESIZING) ||
-        (player.phase == Phase.READY && player.totalLines > 0 && player.preparedCount < player.totalLines)
+        (player.phase == Phase.READY && player.totalLines > 0 && player.preparedCount < player.totalLines) ||
+        PlaybackService.instance?.isSpeakerTaskActive == true
     val destructiveBusy = playbackBusy || downloadBusy
     val visibleHistoryVideos = if (historyFavoritesOnly) historyVideos.filter { it.isFavorite } else historyVideos
     val visibleHistoryKeys = visibleHistoryVideos.map { it.key }
