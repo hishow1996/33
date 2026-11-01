@@ -6771,6 +6771,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
+        // Optional local speaker diarization runs alongside translation and is joined before TTS
+        // so speaker/voice assignments are ready when dubbing synthesis starts.
+        var deferredSpeakerRecognitionJob: Job? = null
         // Keep local PCM protected from concurrent pruning while the current ASR pass reads it.
         var leasedLocalPcmCachePath: String? = null
         var transientCloudUploadAudio: File? = null
@@ -8605,17 +8608,63 @@ updateUiForSession(key, pipelineGeneration) {
                 lines = transcribedLines
                 if (asrProvider == "local") {
                     speakerAnalysisPcmFile?.let { analysisPcmFile ->
-                        assignSpeakersFromLocalTranscript(
-                            key = key,
-                            lines = transcribedLines,
-                            pcmFile = analysisPcmFile,
-                            pipelineGeneration = pipelineGeneration,
-                            analysisIdentity = sourceSubtitleCacheKey,
-                        )
+                        val ownsTransientPcm =
+                            transientPcmFile?.file?.absolutePath == analysisPcmFile.file.absolutePath
+                        // Speaker diarization is optional and may download models or run native CPU
+                        // inference. Do not keep the ASR stage open for it: begin translation now,
+                        // then join this task immediately before applying speaker IDs for TTS.
+                        deferredSpeakerRecognitionJob = scope.launch(Dispatchers.IO) {
+                            try {
+                                assignSpeakersFromLocalTranscript(
+                                    key = key,
+                                    lines = transcribedLines,
+                                    pcmFile = analysisPcmFile,
+                                    pipelineGeneration = pipelineGeneration,
+                                    analysisIdentity = sourceSubtitleCacheKey,
+                                )
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (error: OutOfMemoryError) {
+                                System.gc()
+                                updateUiForSession(key, pipelineGeneration) { state ->
+                                    if (state.key == key) state.copy(
+                                        speakerRecognition = SpeakerRecognitionUiState(
+                                            phase = SpeakerRecognitionPhase.FAILED,
+                                            message = "设备内存不足，已跳过人物识别",
+                                            error = error.message ?: "OutOfMemoryError",
+                                        ),
+                                    ) else state
+                                }
+                                android.util.Log.e(
+                                    "PlaybackService",
+                                    "Background speaker diarization skipped because of memory pressure",
+                                    error,
+                                )
+                            } catch (error: Throwable) {
+                                if (error is VirtualMachineError || error is ThreadDeath) throw error
+                                updateUiForSession(key, pipelineGeneration) { state ->
+                                    if (state.key == key) state.copy(
+                                        speakerRecognition = SpeakerRecognitionUiState(
+                                            phase = SpeakerRecognitionPhase.FAILED,
+                                            message = "人物识别失败",
+                                            error = error.message ?: error.javaClass.simpleName,
+                                        ),
+                                    ) else state
+                                }
+                                android.util.Log.e(
+                                    "PlaybackService",
+                                    "Background speaker diarization failed; translation continues",
+                                    error,
+                                )
+                            } finally {
+                                if (ownsTransientPcm) analysisPcmFile.file.delete()
+                            }
+                        }
+                        if (ownsTransientPcm) transientPcmFile = null
                     }
                 }
-                // The temporary ASR PCM is no longer needed after speaker analysis. Leased cache PCM
-                // remains owned by the outer pipeline and is released in its finally block.
+                // The background diarizer owns a temporary PCM file when it needs one. A leased
+                // reusable PCM remains protected by the outer pipeline until the diarizer is joined.
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
                 speakerAnalysisPcmFile = null
@@ -9020,6 +9069,12 @@ updateUiForSession(key, pipelineGeneration) {
                         pipelineGeneration = pipelineGeneration,
                     )
                     ensureCurrentSession(key, pipelineGeneration)
+                }
+                deferredSpeakerRecognitionJob?.let { speakerJob ->
+                    speakerJob.join()
+                    if (deferredSpeakerRecognitionJob === speakerJob) {
+                        deferredSpeakerRecognitionJob = null
+                    }
                 }
                 val finalLines = applySavedLineOverrides(calibratedLines, key)
                 updateUiForSession(key, pipelineGeneration) {
@@ -9688,6 +9743,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
         } finally {
+            deferredSpeakerRecognitionJob?.let { speakerJob ->
+                // A translation/TTS failure must not leave diarization reading a PCM file after
+                // the pipeline releases its cache lease or temporary-file ownership.
+                speakerJob.cancel()
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    speakerJob.join()
+                }
+            }
             leasedLocalPcmCachePath?.let(::releaseLocalAsrPcmFile)
             transientPcmFile?.file?.delete()
             transientCloudUploadAudio?.delete()
@@ -13016,16 +13079,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
 
             updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
+                if (state.key == key) {
                     state.copy(
-                        progress = "人物识别 · 准备本地模型…",
                         speakerRecognition = SpeakerRecognitionUiState(
                             phase = SpeakerRecognitionPhase.PREPARING,
                             message = "准备本地模型…",
                         ),
-                        transcriptionProgressPercent = null,
-                        transcriptionCompletedSegments = 0,
-                        transcriptionTotalSegments = 0,
                     )
                 } else state
             }
@@ -13043,9 +13102,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     samples,
                 ) { message ->
                     updateUiForSession(key, pipelineGeneration) { state ->
-                        if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
+                        if (state.key == key) {
                             state.copy(
-                                progress = "人物识别 · $message",
                                 speakerRecognition = SpeakerRecognitionUiState(
                                     phase = if (message.contains("下载")) {
                                         SpeakerRecognitionPhase.DOWNLOADING_MODELS
@@ -13055,9 +13113,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     message = message,
                                     progressPercent = speakerDownloadProgressPercent(message),
                                 ),
-                                transcriptionProgressPercent = null,
-                                transcriptionCompletedSegments = 0,
-                                transcriptionTotalSegments = 0,
                             )
                         } else state
                     }
@@ -13196,17 +13251,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
             updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key && (state.phase == Phase.TRANSCRIBING || state.phase == Phase.SYNTHESIZING)) {
+                if (state.key == key) {
                     state.copy(
-                        progress = "人物识别完成 · $speakerCount 人，已匹配 $assignedCueCount 条字幕",
                         speakerRecognition = SpeakerRecognitionUiState(
                             phase = SpeakerRecognitionPhase.SUCCEEDED,
                             message = "已识别 $speakerCount 位人物",
                             personCount = speakerCount,
                         ),
-                        transcriptionProgressPercent = null,
-                        transcriptionCompletedSegments = 0,
-                        transcriptionTotalSegments = 0,
                     )
                 } else state
             }
