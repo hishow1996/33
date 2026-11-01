@@ -2538,14 +2538,6 @@ private fun VideoParsingPage(
                                     state.translationTotalBatches,
                                     state.translationRetryCount,
                                 )?.let { add("翻译批次" to it) }
-                                add("当前状态" to when {
-                                    failed -> progressText.ifBlank { "字幕翻译失败" }
-                                    state.manualTranslationWaiting -> "等待导入外部译文"
-                                    state.manualTranslationModeEnabled -> "外部翻译模式"
-                                    done -> "字幕翻译已完成"
-                                    active -> progressText.ifBlank { "正在翻译字幕" }
-                                    else -> "等待翻译字幕"
-                                })
                             }
                             4 -> {
                                 add("配音引擎" to dubbingEngineSummary)
@@ -2691,14 +2683,22 @@ private fun VideoParsingPage(
                             0 -> setOf("视频标题", "当前状态", "处理说明")
                             1 -> setOf("当前任务", "处理说明")
                             2 -> setOf("处理说明")
-                            3 -> setOf("当前状态", "处理说明")
+                            3 -> setOf("处理说明")
                             else -> setOf("合成任务", "引擎状态", "处理说明")
                         }
-                        val gridRows = stageDetailRows.filter {
-                            it != stageProgressRow && it.first !in fullWidthDetailLabels
+                        val gridRows = if (index == 3) {
+                            emptyList()
+                        } else {
+                            stageDetailRows.filter {
+                                it != stageProgressRow && it.first !in fullWidthDetailLabels
+                            }
                         }
-                        val fullWidthRows = stageDetailRows.filter {
-                            it.first in fullWidthDetailLabels
+                        val fullWidthRows = if (index == 3) {
+                            emptyList()
+                        } else {
+                            stageDetailRows.filter {
+                                it.first in fullWidthDetailLabels
+                            }
                         }
                         val stageProgressText = if (index == 1) {
                             // Audio extraction can report both segment completion and byte
@@ -2783,6 +2783,47 @@ private fun VideoParsingPage(
                                     fontWeight = FontWeight.Bold,
                                 ),
                             )
+
+                            if (index == 3) {
+                                val engine = stageDetailRows.firstOrNull {
+                                    it.first == "翻译引擎" || it.first == "翻译方式"
+                                }?.second
+                                val direction = stageDetailRows.firstOrNull {
+                                    it.first == "翻译方向"
+                                }?.second
+                                val batch = stageDetailRows.firstOrNull {
+                                    it.first == "翻译批次"
+                                }?.second
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        listOfNotNull(engine, direction).joinToString(" · "),
+                                        modifier = Modifier.weight(1f),
+                                        color = Color(0xFF3D4E65),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 11.sp,
+                                            lineHeight = 15.sp,
+                                            fontWeight = FontWeight.Medium,
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    batch?.let {
+                                        Text(
+                                            it,
+                                            color = Color(0xFF8794A8),
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Medium,
+                                            ),
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
+                            }
 
                             if (gridRows.isNotEmpty()) {
                                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -3450,7 +3491,8 @@ private fun TranslationStageResultPreview(
     val preview = lines.mapNotNull { line ->
         SubtitleParsers.preferredTranslationText(line)?.let { translated -> line to translated }
     }.takeLast(2)
-    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(
             "翻译结果预览",
             color = Color(0xFF596B82),
@@ -3459,50 +3501,64 @@ private fun TranslationStageResultPreview(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(max = 144.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
-                .padding(horizontal = 9.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 9.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             if (preview.isEmpty()) {
                 Text(
                     emptyText,
                     color = Color(0xFF98A3B2),
                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             } else {
                 preview.forEachIndexed { index, (line, translated) ->
                     if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
-                    Text(
-                        formatFloatingTime(line.startMs),
-                        color = Color(0xFF9AA5B4),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    )
-                    Text(
-                        "原文",
-                        color = Color(0xFF929EAE),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    )
-                    Text(
-                        line.text,
-                        color = Color(0xFF6F7C8D),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 15.sp),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        "中文译文",
-                        color = Color(0xFF23865E),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
-                    )
-                    Text(
-                        translated,
-                        color = Color(0xFF344457),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium),
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Text(
+                            formatFloatingTime(line.startMs),
+                            modifier = Modifier.width(34.dp),
+                            color = Color(0xFF9AA5B4),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            maxLines = 1,
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                line.text,
+                                color = Color(0xFF6F7C8D),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp,
+                                ),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                translated,
+                                color = Color(0xFF344457),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    fontWeight = FontWeight.Medium,
+                                ),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                 }
             }
         }
