@@ -31,6 +31,12 @@ class RemoteAudioFailurePolicyTest {
             IllegalStateException("媒体地址不存在或已过期（HTTP 404）")).code)
     }
 
+    @Test fun categorizesGoneResponsesAsExpiredLinks() {
+        assertEquals("expired_or_missing", RemoteAudioFailurePolicy.classify(
+            IllegalStateException("HLS 音轨分段请求失败（HTTP 410）")
+        ).code)
+    }
+
     @Test fun categorizesForbiddenResponses() {
         assertEquals("access_denied", RemoteAudioFailurePolicy.classify(
             IOException("媒体文件未返回完整响应（HTTP 403）")).code)
