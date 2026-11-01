@@ -3598,24 +3598,14 @@ private fun StageProgressVisual(
                 val amplitude = size.height * 0.29f
                 val basePhase = -kotlin.math.PI.toFloat() / 2f
                 val totalPhase = 8f * kotlin.math.PI.toFloat()
-                // Rotate the inner helix through a full 360 degrees. A smooth edge envelope
-                // anchors both ends open while keeping the central helix pitch almost uniform.
-                val rotationRadians = translationHelixRotationPhase
-                val edgeBlend = 0.40f
+                // A periodic torsional phase animates the helix without a loop seam.
+                // The smooth envelope anchors both ends open and keeps all eight crossings ordered.
+                val twist = kotlin.math.sin(translationHelixRotationPhase) * 1.0f
                 fun phaseAt(x: Float): Float {
                     val t = (x / size.width).coerceIn(0f, 1f)
-                    val rotationEnvelope = when {
-                        t < edgeBlend -> {
-                            val u = (t / edgeBlend).coerceIn(0f, 1f)
-                            u * u * (3f - 2f * u)
-                        }
-                        t > 1f - edgeBlend -> {
-                            val u = ((1f - t) / edgeBlend).coerceIn(0f, 1f)
-                            u * u * (3f - 2f * u)
-                        }
-                        else -> 1f
-                    }
-                    return basePhase + totalPhase * t + rotationRadians * rotationEnvelope
+                    val envelopeWave = kotlin.math.sin(kotlin.math.PI.toFloat() * t)
+                    val rotationEnvelope = envelopeWave * envelopeWave
+                    return basePhase + totalPhase * t + twist * rotationEnvelope
                 }
                 fun strandY(x: Float, upperSign: Float): Float {
                     return centerY + upperSign * amplitude * kotlin.math.sin(phaseAt(x))
