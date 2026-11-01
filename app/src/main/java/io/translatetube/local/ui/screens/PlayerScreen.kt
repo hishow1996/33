@@ -1904,9 +1904,6 @@ private fun VideoParsingPage(
             Box(
                 Modifier
                     .size(42.dp)
-                    .clip(RoundedCornerShape(15.dp))
-                    .background(Color.White)
-                    .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(15.dp))
                     .clickable(onClick = onBack),
                 contentAlignment = androidx.compose.ui.Alignment.Center,
             ) {
@@ -1921,10 +1918,7 @@ private fun VideoParsingPage(
             Box {
                 IconButton(
                     onClick = { processingSettingsOpen = true },
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White),
+                    modifier = Modifier.size(42.dp),
                 ) {
                     Icon(
                         Icons.Filled.MoreVert,
