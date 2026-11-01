@@ -3575,20 +3575,29 @@ private fun StageProgressVisual(
                 }
             }
 
-// 4. Translation — folded-paper strip with a looping light sweep and staggered lift.
+// 4. Translation — equal folded-paper tiles with a restrained, continuous light sweep.
             3 -> {
                 val pieceCount = 20
                 val pieceGap = 1.5.dp.toPx()
                 val availableWidth = (size.width - pieceGap * (pieceCount - 1)).coerceAtLeast(0f)
                 val pieceWidth = availableWidth / pieceCount
-                // Keep the paper pieces close to square and fit them inside the 16dp track.
-                val paperHeight = minOf(13.dp.toPx(), pieceWidth)
+                // Reserve vertical breathing room so the paper never clips at the 16dp edge.
+                val paperHeight = minOf(
+                    12.5.dp.toPx(),
+                    pieceWidth,
+                    (size.height - 2.dp.toPx()).coerceAtLeast(1.dp.toPx()),
+                )
                 val baseTop = (size.height - paperHeight) / 2f
-                val foldSize = minOf(3.2.dp.toPx(), paperHeight * 0.24f)
-                val paperCorner = CornerRadius(2.2.dp.toPx(), 2.2.dp.toPx())
+                val foldSize = minOf(2.7.dp.toPx(), paperHeight * 0.22f)
+                val paperCorner = minOf(2.dp.toPx(), paperHeight * 0.17f)
+                val paperShape = CornerRadius(paperCorner, paperCorner)
                 val progressX = size.width * fraction
                 val motionEnabled = isAnimating && !isPaused && !isFailed &&
                     !isCompleted && !isSkipped
+                val maxLiftRoom = (
+                    (size.height - paperHeight * 1.03f) / 2f - 0.2.dp.toPx()
+                ).coerceAtLeast(0f)
+                val maxLift = minOf(0.55.dp.toPx(), maxLiftRoom)
                 val completedColor = when {
                     isFailed -> Color(0xFFD74655)
                     isPaused -> Color(0xFFD39A35)
@@ -3597,7 +3606,7 @@ private fun StageProgressVisual(
                     else -> Color(0xFF20A77D)
                 }
                 val pendingColor = trackColor
-                val lightColor = Color(0xFFDFFFF1)
+                val foldColor = Color(0xFFDFFFF1)
 
                 repeat(pieceCount) { index ->
                     val pieceLeft = index * (pieceWidth + pieceGap)
@@ -3605,43 +3614,55 @@ private fun StageProgressVisual(
                     val pieceCenter = (pieceLeft + pieceRight) / 2f
                     val isInCompletedRange = !isIndeterminate &&
                         !isSkipped && pieceLeft < progressX
-                    val phaseOffset = index * 0.82f
+                    val phaseOffset = index * 0.72f
                     val wave = (kotlin.math.sin(translationPaperLiftPhase - phaseOffset) + 1f) / 2f
                     val lift = if (motionEnabled && isInCompletedRange) {
-                        kotlin.math.sin(translationPaperLiftPhase - phaseOffset) * 1.05f.dp.toPx()
+                        kotlin.math.sin(translationPaperLiftPhase - phaseOffset) * maxLift
                     } else {
                         0f
                     }
-                    val scale = if (motionEnabled && isInCompletedRange) {
-                        0.91f + wave * 0.18f
+                    // Keep every tile's width fixed; only its height breathes slightly.
+                    val scaleY = if (motionEnabled && isInCompletedRange) {
+                        0.97f + wave * 0.06f
                     } else {
                         1f
                     }
-                    val animatedHeight = paperHeight * scale
-                    val animatedWidth = pieceWidth * scale
-                    val animatedLeft = pieceCenter - animatedWidth / 2f
+                    val animatedHeight = paperHeight * scaleY
                     val animatedTop = baseTop + lift + (paperHeight - animatedHeight) / 2f
-                    val animatedRight = animatedLeft + animatedWidth
+                    val animatedRight = pieceRight
                     val animatedBottom = animatedTop + animatedHeight
 
-                    // Pending paper pieces remain grey and completely still.
+                    // Pending tiles keep the exact same square-like dimensions and spacing.
                     drawRoundRect(
                         color = pendingColor,
                         topLeft = Offset(pieceLeft, baseTop),
                         size = Size(pieceWidth, paperHeight),
-                        cornerRadius = paperCorner,
+                        cornerRadius = paperShape,
+                    )
+                    drawRoundRect(
+                        color = Color(0xFFCCD6E2).copy(alpha = 0.55f),
+                        topLeft = Offset(pieceLeft, baseTop),
+                        size = Size(pieceWidth, paperHeight),
+                        cornerRadius = paperShape,
+                        style = Stroke(width = 0.45.dp.toPx()),
                     )
 
                     if (isInCompletedRange) {
-                        clipRect(right = progressX) {
+                        // Clip each tile at both its own edge and the real progress boundary.
+                        clipRect(
+                            left = pieceLeft,
+                            top = 0f,
+                            right = minOf(pieceRight, progressX),
+                            bottom = size.height,
+                        ) {
                             drawRoundRect(
                                 color = completedColor,
-                                topLeft = Offset(animatedLeft, animatedTop),
-                                size = Size(animatedWidth, animatedHeight),
-                                cornerRadius = paperCorner,
+                                topLeft = Offset(pieceLeft, animatedTop),
+                                size = Size(pieceWidth, animatedHeight),
+                                cornerRadius = paperShape,
                             )
 
-                            // Folded upper-right corner.
+                            // Proportional folded corner with a subtle seam.
                             val foldPath = Path().apply {
                                 moveTo(animatedRight - foldSize, animatedTop)
                                 lineTo(animatedRight, animatedTop + foldSize)
@@ -3650,64 +3671,80 @@ private fun StageProgressVisual(
                             }
                             drawPath(
                                 path = foldPath,
-                                color = lightColor.copy(alpha = 0.88f),
+                                color = foldColor.copy(alpha = 0.62f),
                             )
-
-                            // Short white strokes suggest text printed on each paper piece.
-                            val lineTop = animatedTop + animatedHeight * 0.40f
                             drawLine(
-                                color = Color.White.copy(alpha = 0.92f),
-                                start = Offset(animatedLeft + 3.dp.toPx(), lineTop),
-                                end = Offset(animatedLeft + animatedWidth * 0.48f, lineTop),
-                                strokeWidth = 1.05.dp.toPx(),
+                                color = Color.White.copy(alpha = 0.48f),
+                                start = Offset(animatedRight - foldSize, animatedTop),
+                                end = Offset(animatedRight, animatedTop + foldSize),
+                                strokeWidth = 0.55.dp.toPx(),
                                 cap = StrokeCap.Round,
                             )
+
+                            // Two tiny printed lines stay inside the tile boundaries.
+                            val lineTop = animatedTop + animatedHeight * 0.42f
+                            val lineStart = pieceLeft + pieceWidth * 0.17f
                             drawLine(
-                                color = Color.White.copy(alpha = 0.82f),
-                                start = Offset(animatedLeft + 3.dp.toPx(), lineTop + 2.5.dp.toPx()),
-                                end = Offset(animatedLeft + animatedWidth * 0.68f, lineTop + 2.5.dp.toPx()),
+                                color = Color.White.copy(alpha = 0.9f),
+                                start = Offset(lineStart, lineTop),
+                                end = Offset(pieceLeft + pieceWidth * 0.57f, lineTop),
                                 strokeWidth = 0.9.dp.toPx(),
                                 cap = StrokeCap.Round,
                             )
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.78f),
+                                start = Offset(lineStart, lineTop + 2.4.dp.toPx()),
+                                end = Offset(pieceLeft + pieceWidth * 0.72f, lineTop + 2.4.dp.toPx()),
+                                strokeWidth = 0.8.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
 
-                            // A bright band travels from the start to the real progress edge.
+                            // A soft travelling highlight, limited to the measured range.
                             if (motionEnabled && fraction > 0f) {
                                 val flowHead = translationPaperFlowPhase * progressX
                                 val distance = kotlin.math.abs(pieceCenter - flowHead)
-                                val flowRadius = 25.dp.toPx()
+                                val flowRadius = 21.dp.toPx()
                                 val flowStrength = (1f - distance / flowRadius).coerceIn(0f, 1f)
                                 if (flowStrength > 0f) {
                                     drawRoundRect(
-                                        color = Color.White.copy(alpha = flowStrength * 0.38f),
-                                        topLeft = Offset(animatedLeft, animatedTop),
-                                        size = Size(animatedWidth, animatedHeight),
-                                        cornerRadius = paperCorner,
+                                        color = Color.White.copy(alpha = flowStrength * 0.24f),
+                                        topLeft = Offset(pieceLeft, animatedTop),
+                                        size = Size(pieceWidth, animatedHeight),
+                                        cornerRadius = paperShape,
                                     )
-                                    // The folded corner flashes briefly as the light passes.
+                                    // Fold corner catches a softer, shorter glint.
                                     drawPath(
                                         path = foldPath,
-                                        color = Color.White.copy(alpha = flowStrength * 0.92f),
+                                        color = Color.White.copy(alpha = flowStrength * 0.58f),
                                     )
                                 }
                             }
+
+                            // Thin, consistent edge keeps adjacent paper pieces distinct.
+                            drawRoundRect(
+                                color = Color(0xFF168C68).copy(alpha = 0.38f),
+                                topLeft = Offset(pieceLeft, animatedTop),
+                                size = Size(pieceWidth, animatedHeight),
+                                cornerRadius = paperShape,
+                                style = Stroke(width = 0.45.dp.toPx()),
+                            )
                         }
                     } else if (isIndeterminate && isAnimating && !isPaused && !isFailed) {
                         val scanHead = scanPosition * size.width
                         val distance = kotlin.math.abs(pieceCenter - scanHead)
-                        if (distance < 24.dp.toPx()) {
+                        if (distance < 21.dp.toPx()) {
                             drawRoundRect(
-                                color = Color(0xFF6FA4F5).copy(alpha = 0.25f),
+                                color = Color(0xFF6FA4F5).copy(alpha = 0.22f),
                                 topLeft = Offset(pieceLeft, baseTop),
                                 size = Size(pieceWidth, paperHeight),
-                                cornerRadius = paperCorner,
-                                style = Stroke(width = 1.dp.toPx()),
+                                cornerRadius = paperShape,
+                                style = Stroke(width = 0.9.dp.toPx()),
                             )
                         }
                     }
-
                 }
 
-                // A slim blue boundary marks the exact measured translation progress.
+                // The marker follows the real progress; no future piece is painted early.
                 if (!isIndeterminate && !isCompleted && !isSkipped) {
                     val markerX = progressX.coerceIn(0f, size.width)
                     drawLine(
