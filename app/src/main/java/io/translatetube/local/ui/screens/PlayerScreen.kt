@@ -2638,8 +2638,6 @@ private fun VideoParsingPage(
                                 }
                                 add("当前任务" to audioTask)
                                 val liveAudioSource = when {
-                                    progressText.contains("正在缓存网页音轨", ignoreCase = true) ||
-                                        progressText.contains("HLS", ignoreCase = true) -> "HLS 分片"
                                     progressText.contains("音画混合流") -> "音画混合流"
                                     progressText.contains("独立音轨") -> "独立音轨"
                                     else -> state.audioTrackSourceType.trim().ifBlank {
