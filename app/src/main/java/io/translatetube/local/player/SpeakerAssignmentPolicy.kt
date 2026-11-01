@@ -27,10 +27,27 @@ internal object SpeakerAssignmentPolicy {
         var confidenceWeight: Double = 0.0,
     )
 
+    /** A subtitle cue and the person ID previously persisted for that exact time range. */
+    data class CueAnchor(
+        val startMs: Long,
+        val endMs: Long,
+        val previousPersonId: Int?,
+    )
+
     private const val MIN_CUE_OVERLAP_MS = 40L
     private const val MAX_CUE_OVERLAP_MS = 250L
     private const val AMBIGUOUS_OVERLAP_RATIO = 0.85
     private const val MIN_CONFIDENCE_LEAD = 0.18
+    private const val MIN_STABLE_ANCHOR_OVERLAP_MS = 450L
+    private const val MIN_SINGLE_CUE_STABLE_OVERLAP_MS = 1_200L
+    private const val MIN_STABLE_ANCHOR_CUE_COUNT = 2
+    private const val MIN_STABLE_ANCHOR_SHARE = 0.72
+    private const val MIN_STABLE_ANCHOR_LEAD_RATIO = 1.25
+    private const val MIN_STABLE_ANCHOR_OVERLAP_MS = 450L
+    private const val MIN_SINGLE_CUE_STABLE_OVERLAP_MS = 1_200L
+    private const val MIN_STABLE_ANCHOR_CUE_COUNT = 2
+    private const val MIN_STABLE_ANCHOR_SHARE = 0.72
+    private const val MIN_STABLE_ANCHOR_LEAD_RATIO = 1.25
 
     /** Convert native diarizer segments once, retaining confidence for every caller. */
     fun observationsFromSegments(segments: List<SpeakerDiarizer.Segment>): List<SpeakerObservation> =
@@ -81,6 +98,170 @@ internal object SpeakerAssignmentPolicy {
             )
             .mapIndexed { canonicalId, profile -> profile.rawId to canonicalId }
             .toMap()
+    }
+
+    /**
+     * Reuse persisted person IDs only when exact cue-time anchors strongly and consistently
+     * connect a new raw diarizer cluster to one previous person. This prevents a changed
+     * first-speaker order from silently swapping saved voices while refusing ambiguous merges.
+     */
+    fun stableSpeakerIds(
+        observations: List<SpeakerObservation>,
+        cueAnchors: List<CueAnchor>,
+    ): Map<Int, Int> {
+        val canonical = canonicalSpeakerIds(observations)
+        if (canonical.isEmpty() || cueAnchors.isEmpty()) return canonical
+
+        // Scan twice rather than copying all anchors into a filtered list; the Honor 10 has
+        // limited memory, and this pass runs immediately after local speaker analysis.
+        var maxPreviousPersonId = -1
+        for (anchor in cueAnchors) {
+            val previousPersonId = anchor.previousPersonId ?: continue
+            if (previousPersonId !in 0..999 ||
+                anchor.startMs < 0L ||
+                anchor.endMs <= anchor.startMs
+            ) continue
+            maxPreviousPersonId = maxOf(maxPreviousPersonId, previousPersonId)
+        }
+        if (maxPreviousPersonId < 0) return canonical
+
+        val scoresByRaw = HashMap<Int, HashMap<Int, AnchorScore>>()
+        val totalOverlapByRaw = HashMap<Int, Long>()
+        for (anchor in cueAnchors) {
+            val previousPersonId = anchor.previousPersonId ?: continue
+            if (previousPersonId !in 0..999 ||
+                anchor.startMs < 0L ||
+                anchor.endMs <= anchor.startMs
+            ) continue
+            val durationMs = anchor.endMs - anchor.startMs
+            val rawSpeakerId = bestSpeakerForCue(
+                observations = observations,
+                cueStartMs = anchor.startMs,
+                cueEndMs = anchor.endMs,
+                minimumOverlapMs = minimumOverlapMsForCue(durationMs),
+            )
+            if (rawSpeakerId !in canonical) continue
+
+            val overlapMs = overlapMsForSpeaker(
+                observations = observations,
+                cueStartMs = anchor.startMs,
+                cueEndMs = anchor.endMs,
+                speakerId = rawSpeakerId,
+            )
+            if (overlapMs < minimumOverlapMsForCue(durationMs)) continue
+
+            val score = scoresByRaw
+                .getOrPut(rawSpeakerId) { HashMap() }
+                .getOrPut(previousPersonId) { AnchorScore() }
+            score.overlapMs = saturatingAdd(score.overlapMs, overlapMs)
+            score.cueCount++
+            totalOverlapByRaw[rawSpeakerId] = saturatingAdd(
+                totalOverlapByRaw[rawSpeakerId] ?: 0L,
+                overlapMs,
+            )
+        }
+        if (scoresByRaw.isEmpty()) return canonical
+
+        val candidates = mutableListOf<AnchorCandidate>()
+        for ((rawSpeakerId, personScores) in scoresByRaw) {
+            val ranked = personScores.entries.sortedWith(
+                compareByDescending<Map.Entry<Int, AnchorScore>> { it.value.overlapMs }
+                    .thenBy { it.key },
+            )
+            val best = ranked.firstOrNull() ?: continue
+            val evidence = best.value
+            val totalOverlap = totalOverlapByRaw[rawSpeakerId] ?: 0L
+            val share = evidence.overlapMs.toDouble() / totalOverlap.coerceAtLeast(1L).toDouble()
+            val runnerUp = ranked.getOrNull(1)?.value
+            val enoughEvidence = evidence.overlapMs >= MIN_STABLE_ANCHOR_OVERLAP_MS &&
+                (evidence.cueCount >= MIN_STABLE_ANCHOR_CUE_COUNT ||
+                    evidence.overlapMs >= MIN_SINGLE_CUE_STABLE_OVERLAP_MS)
+            val clearWinner = runnerUp == null ||
+                evidence.overlapMs.toDouble() >= runnerUp.overlapMs.toDouble() *
+                MIN_STABLE_ANCHOR_LEAD_RATIO
+            if (!enoughEvidence || share < MIN_STABLE_ANCHOR_SHARE || !clearWinner) continue
+
+            candidates += AnchorCandidate(
+                rawSpeakerId = rawSpeakerId,
+                previousPersonId = best.key,
+                overlapMs = evidence.overlapMs,
+                share = share,
+            )
+        }
+        if (candidates.isEmpty()) return canonical
+
+        // One previous person may be claimed by only one new cluster. If diarization split one
+        // person into multiple raw labels, the weaker cluster receives a fresh ID rather than
+        // being merged based on timing alone.
+        candidates.sortWith(
+            compareByDescending<AnchorCandidate> { it.share }
+                .thenByDescending { it.overlapMs }
+                .thenBy { it.rawSpeakerId }
+                .thenBy { it.previousPersonId },
+        )
+        val stable = linkedMapOf<Int, Int>()
+        val usedPersonIds = mutableSetOf<Int>()
+        for (candidate in candidates) {
+            if (candidate.rawSpeakerId !in stable &&
+                candidate.previousPersonId !in usedPersonIds
+            ) {
+                stable[candidate.rawSpeakerId] = candidate.previousPersonId
+                usedPersonIds += candidate.previousPersonId
+            }
+        }
+        if (stable.isEmpty()) return canonical
+
+        // Unmatched speakers get IDs above the previous timeline's range, never an ID that
+        // could accidentally refer to a different person already saved for this video.
+        var nextPersonId = maxPreviousPersonId + 1
+        for (rawSpeakerId in canonical.entries.sortedBy { it.value }.map { it.key }) {
+            if (rawSpeakerId in stable) continue
+            while (nextPersonId <= 999 && nextPersonId in usedPersonIds) nextPersonId++
+            if (nextPersonId !in 0..999) continue
+            stable[rawSpeakerId] = nextPersonId
+            usedPersonIds += nextPersonId
+            nextPersonId++
+        }
+        return stable
+    }
+
+    private data class AnchorScore(
+        var overlapMs: Long = 0L,
+        var cueCount: Int = 0,
+    )
+
+    private data class AnchorCandidate(
+        val rawSpeakerId: Int,
+        val previousPersonId: Int,
+        val overlapMs: Long,
+        val share: Double,
+    )
+
+    private fun overlapMsForSpeaker(
+        observations: List<SpeakerObservation>,
+        cueStartMs: Long,
+        cueEndMs: Long,
+        speakerId: Int,
+    ): Long {
+        val cueDurationMs = cueEndMs - cueStartMs
+        if (speakerId < 0 || cueStartMs < 0L || cueDurationMs <= 0L) return 0L
+        var totalOverlapMs = 0L
+        for (row in observations) {
+            if (row.speakerId != speakerId ||
+                row.startMs < 0L ||
+                row.endMs <= row.startMs
+            ) continue
+            val overlapStart = maxOf(cueStartMs, row.startMs)
+            val overlapEnd = minOf(cueEndMs, row.endMs)
+            if (overlapEnd <= overlapStart) continue
+            val accepted = minOf(
+                overlapEnd - overlapStart,
+                (cueDurationMs - totalOverlapMs).coerceAtLeast(0L),
+            )
+            if (accepted > 0L) totalOverlapMs = saturatingAdd(totalOverlapMs, accepted)
+            if (totalOverlapMs >= cueDurationMs) break
+        }
+        return totalOverlapMs
     }
 
     /**

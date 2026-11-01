@@ -12796,7 +12796,20 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val speakerObservations = SpeakerAssignmentPolicy.observationsFromSegments(segments)
             // sherpa-onnx cluster labels are arbitrary; normalize by first appearance so voice
             // identities remain stable when the diarizer chooses different raw cluster numbers.
-            val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(speakerObservations)
+            val cueAnchors = lines.mapNotNull { line ->
+                val previousPersonId = previous.lineSpeakers[
+                    SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                ] ?: return@mapNotNull null
+                SpeakerAssignmentPolicy.CueAnchor(
+                    startMs = line.startMs,
+                    endMs = line.endMs,
+                    previousPersonId = previousPersonId,
+                )
+            }
+            val canonicalSpeakerIds = SpeakerAssignmentPolicy.stableSpeakerIds(
+                observations = speakerObservations,
+                cueAnchors = cueAnchors,
+            )
             val speakerVoiceAssignments = previous.speakerVoices.toMutableMap()
             val currentLineKeys = lineKeys.toSet()
             val lineVoiceAssignments = previous.lineVoices
@@ -13182,7 +13195,20 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // Normalize them by first appearance so a fresh diarization run cannot swap voices
                 // merely because the model numbered the same people differently.
                 val speakerObservations = SpeakerAssignmentPolicy.observationsFromSegments(segments)
-                val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(speakerObservations)
+                val cueAnchors = originalLines.mapNotNull { line ->
+                    val previousPersonId = assignmentSnapshot.lineSpeakers[
+                        SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                    ] ?: return@mapNotNull null
+                    SpeakerAssignmentPolicy.CueAnchor(
+                        startMs = line.startMs,
+                        endMs = line.endMs,
+                        previousPersonId = previousPersonId,
+                    )
+                }
+                val canonicalSpeakerIds = SpeakerAssignmentPolicy.stableSpeakerIds(
+                    observations = speakerObservations,
+                    cueAnchors = cueAnchors,
+                )
                 detectedSpeakerCount = canonicalSpeakerIds.size
                 val updated = originalLines.map { line ->
                     val cueDurationMs = if (line.startMs >= 0L && line.endMs > line.startMs) {

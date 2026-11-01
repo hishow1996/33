@@ -157,6 +157,64 @@ class SpeakerAssignmentPolicyTest {
     }
 
     @Test
+    fun previousTimelineKeepsPersonIdsWhenFirstAppearanceOrderChanges() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(42, 0L, 900L, 0.95f),
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 1_000L, 1_900L, 0.95f),
+            SpeakerAssignmentPolicy.SpeakerObservation(42, 2_000L, 2_900L, 0.95f),
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 3_000L, 3_900L, 0.95f),
+        )
+        val anchors = listOf(
+            SpeakerAssignmentPolicy.CueAnchor(0L, 900L, 1),
+            SpeakerAssignmentPolicy.CueAnchor(1_000L, 1_900L, 0),
+            SpeakerAssignmentPolicy.CueAnchor(2_000L, 2_900L, 1),
+            SpeakerAssignmentPolicy.CueAnchor(3_000L, 3_900L, 0),
+        )
+
+        assertEquals(
+            mapOf(42 to 1, 7 to 0),
+            SpeakerAssignmentPolicy.stableSpeakerIds(observations, anchors),
+        )
+    }
+
+    @Test
+    fun conflictingPreviousPeopleDoNotForceAnIdentityMatch() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(42, 0L, 900L, 0.95f),
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 1_000L, 1_900L, 0.95f),
+            SpeakerAssignmentPolicy.SpeakerObservation(42, 2_000L, 2_900L, 0.95f),
+        )
+        val anchors = listOf(
+            SpeakerAssignmentPolicy.CueAnchor(0L, 900L, 3),
+            SpeakerAssignmentPolicy.CueAnchor(1_000L, 1_900L, 4),
+            SpeakerAssignmentPolicy.CueAnchor(2_000L, 2_900L, 4),
+        )
+
+        assertEquals(
+            mapOf(42 to 0, 7 to 1),
+            SpeakerAssignmentPolicy.stableSpeakerIds(observations, anchors),
+        )
+    }
+
+    @Test
+    fun previousPersonIdCanBeInheritedByOnlyOneNewCluster() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(42, 0L, 1_500L, 0.95f),
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 2_000L, 3_500L, 0.95f),
+        )
+        val anchors = listOf(
+            SpeakerAssignmentPolicy.CueAnchor(0L, 1_500L, 4),
+            SpeakerAssignmentPolicy.CueAnchor(2_000L, 3_500L, 4),
+        )
+
+        val stable = SpeakerAssignmentPolicy.stableSpeakerIds(observations, anchors)
+
+        assertEquals(2, stable.values.toSet().size)
+        assertEquals(1, stable.values.count { it == 4 })
+        assertEquals(true, stable.values.any { it > 4 })
+    }
+
+    @Test
     fun canonicalSpeakerDurationAggregationDoesNotOverflowLong() {
         val observations = listOf(
             SpeakerAssignmentPolicy.SpeakerObservation(1, 0L, Long.MAX_VALUE),
