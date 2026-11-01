@@ -3285,22 +3285,30 @@ private fun StageProgressVisual(
         label = "dubbingAudioWaveformPhase",
     )
 
-    // Each simulated text stroke in the processed range jumps independently.
-    val transcriptionTextPhase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = if (
-            stageIndex == 2 && isAnimating &&
-            !isPaused && !isFailed && !isCompleted && !isSkipped
-        ) 6.2831855f else 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = 820,
-                easing = androidx.compose.animation.core.LinearEasing,
-            ),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "transcriptionTextRevealPhase",
-    )
+    // Music-equalizer rhythm for transcription. Animatable preserves the current
+    // bar heights when paused and resumes from the same rhythm phase.
+    val transcriptionAnimationActive = stageIndex == 2 && isAnimating &&
+        !isPaused && !isFailed && !isCompleted && !isSkipped
+    val transcriptionRhythm = remember(stageIndex) {
+        androidx.compose.animation.core.Animatable(0f)
+    }
+    LaunchedEffect(transcriptionAnimationActive) {
+        if (transcriptionAnimationActive) {
+            while (true) {
+                val remaining = (1f - transcriptionRhythm.value / 6.2831855f)
+                    .coerceIn(0.001f, 1f)
+                transcriptionRhythm.animateTo(
+                    targetValue = 6.2831855f,
+                    animationSpec = tween(
+                        durationMillis = (620f * remaining).roundToInt().coerceAtLeast(1),
+                        easing = androidx.compose.animation.core.LinearEasing,
+                    ),
+                )
+                // One full 2π cycle returns every bar to the same pose.
+                transcriptionRhythm.snapTo(0f)
+            }
+        }
+    }
 
     // Animatable is used instead of an infinite transition so pause cancels motion
     // without resetting the current helix pose; resuming continues from that pose.
@@ -3469,17 +3477,21 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 3. Transcription — equal-sized text blocks, each containing exactly three
-            // upright strokes that jump independently across the completed range.
+            // 3. Transcription — a full-width music equalizer with independently bouncing bars.
             2 -> {
-                val blockCount = 10
-                val blockGap = 1.8.dp.toPx()
-                val availableWidth = (size.width - blockGap * (blockCount - 1)).coerceAtLeast(0f)
-                val blockWidth = availableWidth / blockCount
-                val blockHeight = 11.dp.toPx()
-                val blockTop = (size.height - blockHeight) / 2f
-                val blockCorner = CornerRadius(3.5.dp.toPx(), 3.5.dp.toPx())
-                val lineColor = Color(0xFFB7C4D5)
+                val rhythmPhase = transcriptionRhythm.value
+                val barCount = 64
+                val barGap = 3.2.dp.toPx()
+                val availableBarWidth = (size.width - barGap * (barCount - 1)).coerceAtLeast(0f)
+                val barWidth = (availableBarWidth / barCount).coerceAtLeast(0.8.dp.toPx())
+                val actualGap = if (barCount > 1) {
+                    ((size.width - barWidth * barCount) / (barCount - 1)).coerceAtLeast(0f)
+                } else {
+                    0f
+                }
+                val centerY = size.height / 2f
+                val maxBarHeight = (size.height - 1.4.dp.toPx()).coerceAtLeast(2.dp.toPx())
+                val minBarHeight = 2.2.dp.toPx()
                 val activeColor = when {
                     isFailed -> Color(0xFFD74655)
                     isPaused -> Color(0xFFD39A35)
@@ -3489,105 +3501,94 @@ private fun StageProgressVisual(
                 }
                 val motionEnabled = isAnimating && !isPaused && !isFailed &&
                     !isCompleted && !isSkipped
-                val revealX = if (isIndeterminate) 0f else size.width * fraction
+                val revealX = size.width * fraction
                 val scanX = if (isIndeterminate && motionEnabled) {
                     scanPosition * size.width
                 } else {
                     revealX
                 }
-                val linePositions = floatArrayOf(0.25f, 0.50f, 0.75f)
-                val blockBounds = ArrayList<Pair<Float, Float>>(blockCount)
+                val scanHalfWidth = 22.dp.toPx()
 
-                // Every text block has exactly the same width, height and three-line layout.
-                repeat(blockCount) { blockIndex ->
-                    val blockLeft = blockIndex * (blockWidth + blockGap)
-                    val blockRight = blockLeft + blockWidth
-                    blockBounds.add(blockLeft to blockRight)
+                // A fixed seed creates a stable music-spectrum silhouette while every
+                // active bar follows two independent rhythms and a travelling beat.
+                val staticHeights = FloatArray(barCount) { index ->
+                    val broad = (kotlin.math.sin(index * 0.31f + 0.4f) + 1f) / 2f
+                    val detail = (kotlin.math.sin(index * 0.79f + 1.7f) + 1f) / 2f
+                    minBarHeight + (maxBarHeight - minBarHeight) * (broad * 0.58f + detail * 0.42f)
+                }
+
+                // The unprocessed portion remains grey, with varied but still heights.
+                repeat(barCount) { index ->
+                    val x = index * (barWidth + actualGap)
+                    val barHeight = staticHeights[index]
                     drawRoundRect(
-                        color = trackColor,
-                        topLeft = Offset(blockLeft, blockTop),
-                        size = Size(blockWidth, blockHeight),
-                        cornerRadius = blockCorner,
+                        color = trackColor.copy(alpha = 0.86f),
+                        topLeft = Offset(x, centerY - barHeight / 2f),
+                        size = Size(barWidth, barHeight),
+                        cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
                     )
+                }
 
-                    // Three upright grey strokes are visible in waiting blocks.
-                    repeat(3) { lineIndex ->
-                        val lineX = blockLeft + blockWidth * linePositions[lineIndex]
-                        val baseHeight = (3.0f + ((blockIndex + lineIndex * 2) % 3) * 1.0f).dp.toPx()
-                        val centerY = blockTop + blockHeight / 2f
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(lineX, centerY - baseHeight / 2f),
-                            end = Offset(lineX, centerY + baseHeight / 2f),
-                            strokeWidth = 1.3.dp.toPx(),
-                            cap = StrokeCap.Round,
+                fun drawRhythmBars(color: Color, animate: Boolean) {
+                    repeat(barCount) { index ->
+                        val x = index * (barWidth + actualGap)
+                        val mainBeat = (kotlin.math.sin(rhythmPhase * 1.22f - index * 0.43f) + 1f) / 2f
+                        val syncopation = (kotlin.math.sin(rhythmPhase * 1.78f + index * 1.07f) + 1f) / 2f
+                        val rollingBeat = (kotlin.math.sin(rhythmPhase * 0.72f - index * 0.19f + 1.2f) + 1f) / 2f
+                        val energy = (mainBeat * 0.54f + syncopation * 0.29f + rollingBeat * 0.17f)
+                            .coerceIn(0f, 1f)
+                        val barHeight = if (animate) {
+                            minBarHeight + (maxBarHeight - minBarHeight) * energy
+                        } else {
+                            staticHeights[index]
+                        }
+                        drawRoundRect(
+                            color = color.copy(alpha = if (animate) 0.78f + energy * 0.22f else 1f),
+                            topLeft = Offset(x, centerY - barHeight / 2f),
+                            size = Size(barWidth, barHeight),
+                            cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
                         )
                     }
                 }
 
-                // Paint only the measured processed range; no segment beyond real progress lights up.
-                if (!isIndeterminate && fraction > 0f && !isSkipped) {
-                    clipRect(right = revealX) {
-                        blockBounds.forEach { (left, right) ->
-                            drawRoundRect(
-                                color = activeColor,
-                                topLeft = Offset(left, blockTop),
-                                size = Size(right - left, blockHeight),
-                                cornerRadius = blockCorner,
-                            )
+                when {
+                    isIndeterminate && motionEnabled -> {
+                        // Unknown progress only lights a moving window; it does not imply
+                        // that any transcription segment has already completed.
+                        clipRect(
+                            left = (scanX - scanHalfWidth).coerceAtLeast(0f),
+                            right = (scanX + scanHalfWidth).coerceAtMost(size.width),
+                        ) {
+                            drawRhythmBars(activeColor, animate = true)
                         }
-
-                        // All three strokes in every completed block jump independently.
-                        blockBounds.forEachIndexed { blockIndex, (left, right) ->
-                            repeat(3) { lineIndex ->
-                                val phase = transcriptionTextPhase -
-                                    blockIndex * 0.73f - lineIndex * 1.61f
-                                val wave = (kotlin.math.sin(phase) + 1f) / 2f
-                                val verticalTravel = kotlin.math.sin(phase * 1.17f) * 1.0f.dp.toPx()
-                                val lineX = left + (right - left) * linePositions[lineIndex]
-                                // Each vertical stroke varies evenly from 3dp to 7dp.
-                                val barHeight = (3.0f + wave * 4.0f).dp.toPx()
-                                val centerY = (blockTop + blockHeight / 2f + verticalTravel)
-                                    .coerceIn(
-                                        blockTop + barHeight / 2f + 0.8.dp.toPx(),
-                                        blockTop + blockHeight - barHeight / 2f - 0.8.dp.toPx(),
-                                    )
-                                drawLine(
-                                    color = Color.White,
-                                    start = Offset(lineX, centerY - barHeight / 2f),
-                                    end = Offset(lineX, centerY + barHeight / 2f),
-                                    strokeWidth = 1.3.dp.toPx(),
-                                    cap = StrokeCap.Round,
-                                )
-                            }
+                    }
+                    !isIndeterminate && fraction > 0f && !isSkipped -> {
+                        // The active equalizer is clipped to the exact measured progress.
+                        clipRect(right = revealX.coerceIn(0f, size.width)) {
+                            drawRhythmBars(activeColor, animate = motionEnabled)
                         }
                     }
                 }
 
-                // Unknown progress scans one block outline without inventing completion;
-                // determinate mode outlines the block at the current real progress position.
-                val boundaryX = if (isIndeterminate) scanX else revealX
-                if (!isSkipped && !isCompleted && boundaryX < size.width) {
-                    val currentBounds = blockBounds.firstOrNull { (_, right) ->
-                        boundaryX < right
-                    } ?: blockBounds.last()
-                    val (left, right) = currentBounds
-                    val outlineAlpha = if (isIndeterminate && motionEnabled) {
-                        0.55f + pulse * 0.45f
-                    } else {
-                        1f
+                // The current position stays visible without restoring the old block outline.
+                if (!isSkipped && !isCompleted) {
+                    val cursorX = if (isIndeterminate) scanX else revealX
+                    val cursorColor = when {
+                        isFailed -> Color(0xFFD74655)
+                        isPaused -> Color(0xFFD39A35)
+                        else -> Color(0xFF3268F5)
                     }
-                    drawRoundRect(
-                        color = activeColor.copy(alpha = outlineAlpha),
-                        topLeft = Offset(left, blockTop),
-                        size = Size(right - left, blockHeight),
-                        cornerRadius = blockCorner,
-                        style = Stroke(width = 1.dp.toPx()),
+                    drawLine(
+                        color = cursorColor,
+                        start = Offset(cursorX.coerceIn(0f, size.width), 0f),
+                        end = Offset(cursorX.coerceIn(0f, size.width), size.height),
+                        strokeWidth = 1.1.dp.toPx(),
+                        cap = StrokeCap.Round,
                     )
                 }
             }
 
-// 4. Translation — four open-ended DNA double-helix cycles.
+            // 4. Translation — four open-ended DNA double-helix cycles.
             3 -> {
                 // Read animation values during Canvas drawing so frames invalidate drawing,
                 // not the whole composable tree.
