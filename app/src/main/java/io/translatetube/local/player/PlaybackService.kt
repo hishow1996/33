@@ -11083,17 +11083,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
             // The index is scoped to this history key, but older entries may have been produced
             // by a different source selection. Validate that the cached container still exposes a
-            // readable audio track before handing it to transcription.
+            // readable audio track before handing it to transcription. Do not delete a failed
+            // candidate unless this lookup is its only active lease.
             val probe = runCatching {
-                validateRemoteAudioFile(
-                    mediaUrl = mediaUrl,
-                    referrer = referrer,
-                    cookie = cookie,
-                    stage = "历史记录来源音频缓存复核",
-                    file = candidate,
-                )
+                io.translatetube.local.asr.AudioExtract.probeMediaFile(candidate)
             }.getOrNull()
-            if (probe == null || probe.audioTrackCount <= 0) {
+            if (probe == null || probe.audioTrackCount <= 0 ||
+                probe.selectedAudioDecoderAvailable == false
+            ) {
+                activeAsrAudioPaths.deleteIfLeaseCountAtMost(path, allowedLeaseCount = 1) {
+                    candidate.delete()
+                }
                 activeAsrAudioPaths.release(path)
                 continue
             }
