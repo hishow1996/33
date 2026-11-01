@@ -983,14 +983,17 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
                             title = "人物默认音色",
-                            enabled = !isSpeakerBusy && state.currentLine in state.lines.indices,
+                            enabled = !isSpeakerBusy && state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
                                 val people = PlaybackService.instance?.getDetectedSpeakerPeople().orEmpty()
                                 if (people.isNotEmpty()) {
                                     detectedSpeakerPeople = people
                                     showSpeakerPeopleDialog = true
-                                } else if (voiceSelectionEnabled) {
+                                } else if (
+                                    voiceSelectionEnabled &&
+                                    state.currentLine in state.lines.indices
+                                ) {
                                     personTargetIndex = state.currentLine
                                     personTargetTitle = "人物默认音色"
                                     val currentVoice = state.lines.getOrNull(personTargetIndex)?.speakerId ?: -1
@@ -1000,9 +1003,14 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                     personVoiceMenuExpanded = false
                                     showPersonVoiceDialog = true
                                 } else {
+                                    val message = if (voiceSelectionEnabled) {
+                                        "当前没有可用字幕行，请先播放到有字幕的位置。"
+                                    } else {
+                                        "当前配音引擎不支持多人物音色，但仍可识别和查看人物。切换到支持多音色的引擎后即可分别设置。"
+                                    }
                                     android.widget.Toast.makeText(
                                         ctx,
-                                        "当前配音引擎不支持多人物音色，但仍可识别和查看人物。切换到支持多音色的引擎后即可分别设置。",
+                                        message,
                                         android.widget.Toast.LENGTH_LONG,
                                     ).show()
                                 }
