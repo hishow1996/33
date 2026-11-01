@@ -26,7 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
@@ -230,10 +230,10 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = Icons.Filled.ArrowBack,
+                    imageVector = Icons.Filled.ChevronLeft,
                     contentDescription = "返回",
                     tint = Color(0xFF273953),
-                    modifier = Modifier.size(21.dp),
+                    modifier = Modifier.size(26.dp),
                 )
             }
             Spacer(Modifier.width(12.dp))
