@@ -3508,7 +3508,6 @@ private fun StageProgressVisual(
                 } else {
                     revealX
                 }
-                val scanHalfWidth = 22.dp.toPx()
 
                 // A fixed seed creates a stable music-spectrum silhouette while every
                 // active bar follows two independent rhythms and a travelling beat.
@@ -3556,11 +3555,11 @@ private fun StageProgressVisual(
 
                 when {
                     isIndeterminate && motionEnabled -> {
-                        // Unknown progress only lights a moving window; it does not imply
-                        // that any transcription segment has already completed.
+                        // Unknown progress animates the full prefix up to the moving cursor.
+                        // The scan then loops without claiming a measured percentage.
                         clipRect(
-                            left = (scanX - scanHalfWidth).coerceAtLeast(0f),
-                            right = (scanX + scanHalfWidth).coerceAtMost(size.width),
+                            left = 0f,
+                            right = scanX.coerceIn(0f, size.width),
                         ) {
                             drawRhythmBars(activeColor, animate = true)
                         }
