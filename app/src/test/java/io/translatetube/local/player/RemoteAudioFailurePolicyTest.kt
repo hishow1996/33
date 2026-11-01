@@ -82,4 +82,29 @@ class RemoteAudioFailurePolicyTest {
         ))
     }
 
+    @Test fun deepestHttpStatusOverridesStaleOuterWrapperStatus() {
+        val outerForbidden = IOException(
+            "wrapper says HTTP 403",
+            IOException("HLS segment request failed; HTTP 429 Too Many Requests"),
+        )
+        assertEquals("rate_limited", RemoteAudioFailurePolicy.classify(outerForbidden).code)
+        assertEquals(false, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(outerForbidden))
+
+        val outerMissing = IOException(
+            "wrapper says HTTP 404",
+            IOException("media endpoint returned HTTP 503 Service Unavailable"),
+        )
+        assertEquals("server_error", RemoteAudioFailurePolicy.classify(outerMissing).code)
+        assertEquals(false, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(outerMissing))
+    }
+
+    @Test fun cyclicCauseChainIsBoundedDuringClassification() {
+        val first = IOException("wrapper HTTP 403")
+        val second = IllegalStateException("inner HTTP 429")
+        first.initCause(second)
+        second.initCause(first)
+        assertEquals("rate_limited", RemoteAudioFailurePolicy.classify(first).code)
+        assertEquals(false, RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(first))
+    }
+
 }

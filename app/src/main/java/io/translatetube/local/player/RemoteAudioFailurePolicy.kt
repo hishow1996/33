@@ -4,6 +4,8 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.Locale
 import javax.net.ssl.SSLException
 
@@ -16,28 +18,44 @@ internal object RemoteAudioFailurePolicy {
         val nextStep: String,
     )
 
+    private val httpStatusRegex = Regex(
+        """(?i)(?:HTTP(?:/\d+(?:\.\d+)?)?(?:\s+(?:Error|错误))?\s*|失败\s*[（(]?\s*|(?:status(?:\s+code)?|code)\s*[:=]\s*)(\d{3})"""
+    )
+
     /**
      * A fresh page extraction can recover expired or temporarily rejected signed CDN URLs.
-     * Keep this narrowly scoped: network/DNS/rate-limit failures must not trigger page retries.
+     * Keep this narrowly scoped: network/DNS/rate-limit/server failures must not trigger page retries.
      */
     fun shouldRetryWithFreshPageExtraction(failure: Throwable): Boolean =
         classify(failure).code in setOf("expired_or_missing", "access_denied")
 
     fun classify(failure: Throwable): Diagnosis {
-        val chain = generateSequence(failure) { it.cause }.take(8).toList()
+        val chain = causeChain(failure)
+        val statusCode = deepestHttpStatus(chain)
         val text = chain.joinToString(" ") { it.javaClass.name + " " + it.message.orEmpty() }
             .lowercase(Locale.ROOT)
         fun has(vararg terms: String) = terms.any { text.contains(it) }
-        fun http(code: Int) = Regex("""\bhttp\s*[:=]?\s*$code\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)
 
         return when {
             chain.any { it is java.util.concurrent.CancellationException } ->
                 Diagnosis("cancelled", "任务已取消", "任务被取消或播放会话已切换", "不要按网络故障处理；确认没有继续写入缓存。")
-            http(401) || http(403) || has("unauthorized", "forbidden", "访问被拒绝") ->
+            statusCode == 401 || statusCode == 403 ->
                 Diagnosis("access_denied", "媒体地址访问被拒绝", "可能需要 Referer、Cookie、User-Agent，或签名已失效", "检查网页会话凭证和请求头；不要把完整 Cookie 或签名 URL 写入日志。")
-            http(404) || http(410) || has("not found", "链接可能过期", "地址已过期", "资源已失效") ->
+            statusCode == 404 || statusCode == 410 ->
                 Diagnosis("expired_or_missing", "媒体地址不存在或已过期", "临时媒体地址可能失效，或资源已被移除", "重新打开网页并重新检测媒体源，再立即提取。")
-            http(429) || has("too many requests", "rate limit", "限流") ->
+            statusCode == 408 ->
+                Diagnosis("network_timeout", "媒体请求超时", "媒体服务器未能及时完成请求", "检查网络和代理状态，恢复后重试。")
+            statusCode == 429 ->
+                Diagnosis("rate_limited", "请求受到站点限流", "请求频率过高或站点限制自动化访问", "减少重复检测，遵循 Retry-After，稍后重试并优先复用音轨缓存。")
+            statusCode != null && statusCode in 500..599 ->
+                Diagnosis("server_error", "媒体服务器暂时异常", "媒体服务器返回 HTTP $statusCode", "稍后重试；不要把服务器临时故障当作签名过期反复重新解析。")
+            statusCode != null ->
+                Diagnosis("http_error", "媒体服务器返回 HTTP 错误", "媒体服务器返回 HTTP $statusCode", "检查请求地址、请求头和站点响应；该状态不会触发过期链接刷新。")
+            has("unauthorized", "forbidden", "访问被拒绝") ->
+                Diagnosis("access_denied", "媒体地址访问被拒绝", "可能需要 Referer、Cookie、User-Agent，或签名已失效", "检查网页会话凭证和请求头；不要把完整 Cookie 或签名 URL 写入日志。")
+            has("not found", "链接可能过期", "地址已过期", "资源已失效") ->
+                Diagnosis("expired_or_missing", "媒体地址不存在或已过期", "临时媒体地址可能失效，或资源已被移除", "重新打开网页并重新检测媒体源，再立即提取。")
+            has("too many requests", "rate limit", "限流") ->
                 Diagnosis("rate_limited", "请求受到站点限流", "请求频率过高或站点限制自动化访问", "减少重复检测，稍后重试并优先复用音轨缓存。")
             chain.any { it is SocketTimeoutException } || has("timed out", "timeout", "超时") ->
                 Diagnosis("network_timeout", "媒体请求超时", "网络慢、服务器无响应或分段请求卡住", "检查网络和代理状态，记录处理阶段后重试。")
@@ -62,5 +80,29 @@ internal object RemoteAudioFailurePolicy {
             else ->
                 Diagnosis("unknown", "未分类的音轨处理失败", "异常没有匹配已有故障特征", "保留异常类型、根因和轨道摘要，再依据日志补充分类。")
         }
+    }
+
+    private fun deepestHttpStatus(chain: List<Throwable>): Int? {
+        for (cause in chain.asReversed()) {
+            val status = httpStatusRegex.findAll(cause.message.orEmpty())
+                .lastOrNull()
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+            if (status != null) return status
+        }
+        return null
+    }
+
+    /** Throwable causes are normally linear, but hand-built wrappers can form cycles. */
+    private fun causeChain(failure: Throwable): List<Throwable> {
+        val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+        val result = ArrayList<Throwable>()
+        var current: Throwable? = failure
+        while (current != null && result.size < 8 && seen.add(current)) {
+            result += current
+            current = current.cause
+        }
+        return result
     }
 }
