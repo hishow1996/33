@@ -2865,23 +2865,24 @@ private fun VideoParsingPage(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(start = 11.dp, end = 11.dp, top = 0.dp, bottom = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(if (index == 2) 5.dp else 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(if (index == 2 || index == 3) 5.dp else 8.dp),
                         ) {
-                            HorizontalDivider(color = Color(0xFFE6ECF5))
-                            Text(
-                                when (index) {
-                                    0 -> "视频解析详情"
-                                    1 -> "音频提取详情"
-                                    2 -> "转写详情"
-                                    3 -> "翻译详情"
-                                    else -> "配音详情"
-                                },
-                                color = Color(0xFF52637B),
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                            )
+                            if (index != 3) {
+                                HorizontalDivider(color = Color(0xFFE6ECF5))
+                                Text(
+                                    when (index) {
+                                        0 -> "视频解析详情"
+                                        1 -> "音频提取详情"
+                                        2 -> "转写详情"
+                                        else -> "配音详情"
+                                    },
+                                    color = Color(0xFF52637B),
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    ),
+                                )
+                            }
 
                             if (index == 3) {
                                 val engine = stageDetailRows.firstOrNull {
@@ -2903,8 +2904,8 @@ private fun VideoParsingPage(
                                         modifier = Modifier.weight(1f),
                                         color = Color(0xFF3D4E65),
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = 11.sp,
-                                            lineHeight = 15.sp,
+                                            fontSize = 10.sp,
+                                            lineHeight = 13.sp,
                                             fontWeight = FontWeight.Medium,
                                         ),
                                         maxLines = 1,
@@ -2915,7 +2916,7 @@ private fun VideoParsingPage(
                                             it,
                                             color = Color(0xFF8794A8),
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
+                                                fontSize = 9.sp,
                                                 fontWeight = FontWeight.Medium,
                                             ),
                                             maxLines = 1,
@@ -2982,7 +2983,7 @@ private fun VideoParsingPage(
                                         color = Color(0xFF17243B),
                                         style = MaterialTheme.typography.titleSmall.copy(
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp,
+                                            fontSize = if (index == 3) 12.sp else 13.sp,
                                         ),
                                     )
                                     Text(
@@ -3591,11 +3592,14 @@ private fun TranslationStageResultPreview(
         SubtitleParsers.preferredTranslationText(line)?.let { translated -> line to translated }
     }.takeLast(2)
 
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             "翻译结果预览",
             color = Color(0xFF596B82),
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
         )
         Column(
             modifier = Modifier
@@ -3605,14 +3609,14 @@ private fun TranslationStageResultPreview(
                 .background(Color(0xFFF7F9FC))
                 .border(1.dp, Color(0xFFE9EEF5), RoundedCornerShape(12.dp))
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 9.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+                .padding(horizontal = 7.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             if (preview.isEmpty()) {
                 Text(
                     emptyText,
                     color = Color(0xFF98A3B2),
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -3621,26 +3625,26 @@ private fun TranslationStageResultPreview(
                     if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.Top,
                     ) {
                         Text(
                             formatFloatingTime(line.startMs),
                             modifier = Modifier.width(34.dp),
                             color = Color(0xFF9AA5B4),
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                             maxLines = 1,
                         )
                         Column(
                             modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalArrangement = Arrangement.spacedBy(1.dp),
                         ) {
                             Text(
                                 line.text,
                                 color = Color(0xFF6F7C8D),
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = 11.sp,
-                                    lineHeight = 15.sp,
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.sp,
                                 ),
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
@@ -3649,8 +3653,8 @@ private fun TranslationStageResultPreview(
                                 translated,
                                 color = Color(0xFF344457),
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = 12.sp,
-                                    lineHeight = 16.sp,
+                                    fontSize = 11.sp,
+                                    lineHeight = 14.sp,
                                     fontWeight = FontWeight.Medium,
                                 ),
                                 maxLines = 2,
