@@ -7657,8 +7657,6 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             audioTrackChannelCount = audioProbe.selectedAudioChannelCount ?: 0,
                             audioTrackSampleRateHz = audioProbe.selectedAudioSampleRateHz ?: 0,
                             audioTrackSourceType = when {
-                                state.progress.contains("正在缓存网页音轨", ignoreCase = true) ||
-                                    state.progress.contains("HLS", ignoreCase = true) -> "HLS 分片"
                                 state.progress.contains("音画混合流") -> "音画混合流"
                                 state.progress.contains("独立音轨") -> "独立音轨"
                                 state.progress.contains("复用网页视频音频缓存") -> "缓存音轨"
