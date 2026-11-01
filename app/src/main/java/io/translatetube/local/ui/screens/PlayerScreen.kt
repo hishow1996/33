@@ -3577,18 +3577,15 @@ private fun StageProgressVisual(
 
 // 4. Translation — folded-paper strip with a looping light sweep and staggered lift.
             3 -> {
-                val pieceWeights = floatArrayOf(
-                    0.88f, 1.12f, 0.72f, 1.18f, 0.96f,
-                    0.78f, 1.14f, 0.82f, 1.06f, 0.92f,
-                )
-                val pieceCount = pieceWeights.size
-                val pieceGap = 2.dp.toPx()
-                val totalWeight = pieceWeights.sum()
+                val pieceCount = 20
+                val pieceGap = 1.5.dp.toPx()
                 val availableWidth = (size.width - pieceGap * (pieceCount - 1)).coerceAtLeast(0f)
-                val paperHeight = 10.5.dp.toPx()
+                val pieceWidth = availableWidth / pieceCount
+                // Keep the paper pieces close to square and fit them inside the 16dp track.
+                val paperHeight = minOf(13.dp.toPx(), pieceWidth)
                 val baseTop = (size.height - paperHeight) / 2f
-                val foldSize = 3.6.dp.toPx()
-                val paperCorner = CornerRadius(2.1.dp.toPx(), 2.1.dp.toPx())
+                val foldSize = minOf(3.2.dp.toPx(), paperHeight * 0.24f)
+                val paperCorner = CornerRadius(2.2.dp.toPx(), 2.2.dp.toPx())
                 val progressX = size.width * fraction
                 val motionEnabled = isAnimating && !isPaused && !isFailed &&
                     !isCompleted && !isSkipped
@@ -3602,9 +3599,8 @@ private fun StageProgressVisual(
                 val pendingColor = trackColor
                 val lightColor = Color(0xFFDFFFF1)
 
-                var pieceLeft = 0f
                 repeat(pieceCount) { index ->
-                    val pieceWidth = availableWidth * pieceWeights[index] / totalWeight
+                    val pieceLeft = index * (pieceWidth + pieceGap)
                     val pieceRight = pieceLeft + pieceWidth
                     val pieceCenter = (pieceLeft + pieceRight) / 2f
                     val isInCompletedRange = !isIndeterminate &&
@@ -3709,7 +3705,6 @@ private fun StageProgressVisual(
                         }
                     }
 
-                    pieceLeft = pieceRight + pieceGap
                 }
 
                 // A slim blue boundary marks the exact measured translation progress.
