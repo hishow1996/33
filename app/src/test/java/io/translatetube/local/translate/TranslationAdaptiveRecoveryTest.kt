@@ -133,24 +133,22 @@ class TranslationAdaptiveRecoveryTest {
     }
 
     @Test
-    fun sourceEchoThatPersistsInSingleRowFailsAfterOneRetry() = runBlocking {
+    fun sourceEchoThatPersistsInSingleRowIsHandedBackAfterOneRetry() = runBlocking {
         var calls = 0
-        val error = runCatching {
-            translateBatchWithAdaptiveRecovery(
-                lines = listOf("Bonjour"),
-                isAcceptableTranslation = { source, candidate ->
-                    !SubtitleTranslationQualityPolicy.isSourceEcho(source, candidate, "fr")
-                },
-            ) { rows, _ ->
-                calls++
-                rows
-            }
-        }.exceptionOrNull()
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = listOf("Bonjour"),
+            isAcceptableTranslation = { source, candidate ->
+                !SubtitleTranslationQualityPolicy.isSourceEcho(source, candidate, "fr")
+            },
+        ) { rows, _ ->
+            calls++
+            rows
+        }
 
-        assertTrue(error is IllegalStateException)
+        // One stubborn cue must not abort the whole batch; the caller treats it as a missing row.
+        assertEquals(listOf("Bonjour"), result)
         assertEquals(2, calls)
     }
-
 
     @Test
     fun retriesAnEchoedSingleCueWithAForcedTranslationRequest() = runBlocking {
@@ -174,9 +172,13 @@ class TranslationAdaptiveRecoveryTest {
 
     @Test
     fun reportsWhySingleCueRecoveryWasRejectedWithoutLoggingSubtitleText() = runBlocking {
+        // The first MAX_ISOLATED_CUE_FAILURES_PER_BATCH stubborn cues are tolerated; the next one
+        // fails the batch and its message must explain why without leaking subtitle text.
+        val lines = listOf("Thanks", "Welcome", "Goodbye")
+        assertEquals(MAX_ISOLATED_CUE_FAILURES_PER_BATCH + 1, lines.size)
         val error = runCatching {
             translateBatchWithAdaptiveRecovery(
-                lines = listOf("Thanks"),
+                lines = lines,
                 isAcceptableTranslation = { source, candidate -> source != candidate },
                 retrySingle = { source, _ -> source },
                 translate = { rows, _ -> rows },
@@ -184,9 +186,23 @@ class TranslationAdaptiveRecoveryTest {
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("单条恢复请求仍与原文相同"))
-        assertTrue(error?.message.orEmpty().contains("原文字符数=6"))
-        assertTrue(!error?.message.orEmpty().contains("Thanks"))
+        val message = error?.message.orEmpty()
+        assertTrue(message.contains("单条恢复请求仍与原文相同"))
+        assertTrue(message.contains("原文字符数=7"))
+        lines.forEach { assertTrue(!message.contains(it)) }
+    }
+
+    @Test
+    fun toleratesIsolatedStubbornCuesWhileKeepingTheRestOfTheBatch() = runBlocking {
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = listOf("Thanks", "Welcome", "Goodbye"),
+            isAcceptableTranslation = { source, candidate -> source != candidate },
+            retrySingle = { source, _ -> if (source == "Welcome") source else "译:$source" },
+            translate = { rows, _ -> rows },
+        )
+
+        // Only the stubborn cue stays unusable; the caller treats it as a missing row.
+        assertEquals(listOf("译:Thanks", "Welcome", "译:Goodbye"), result)
     }
 
 

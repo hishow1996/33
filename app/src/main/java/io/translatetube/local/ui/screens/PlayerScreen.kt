@@ -102,6 +102,7 @@ import io.translatetube.local.floating.FloatingOverlayLifecycleOwner
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlaybackHint
 import io.translatetube.local.player.PlaybackHintAction
+import io.translatetube.local.player.PlayerRebuildCoordinator
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.player.Phase
@@ -219,6 +220,20 @@ fun PlayerScreen(
     }
     var dismissedNoModelHint by remember(requestKey) { mutableStateOf<String?>(null) }
 
+    // 黑屏/无响应的自动兜底：服务端请求重建播放器时，彻底停掉播放服务再重启并重新打开当前视频。
+    // 初始值取当前令牌，进入页面时不会误处理上一次留下的旧请求。
+    var forceServiceRestart by remember { mutableStateOf(false) }
+    val rebuildRequest by PlayerRebuildCoordinator.request.collectAsState()
+    var handledRebuildToken by remember { mutableStateOf(PlayerRebuildCoordinator.request.value.token) }
+    LaunchedEffect(rebuildRequest.token) {
+        if (rebuildRequest.token == handledRebuildToken) return@LaunchedEffect
+        handledRebuildToken = rebuildRequest.token
+        if (rebuildRequest.sessionKey == requestKey) {
+            forceServiceRestart = true
+            retryNonce++
+        }
+    }
+
     // Keep this sticky for the current video. A subtitle seek can briefly set isPlaying=false
     // while the stream buffers; that is not a reason to return to the parsing page.
     var playbackHasStarted by remember(requestKey) { mutableStateOf(false) }
@@ -262,8 +277,11 @@ fun PlayerScreen(
             if (retryRequested) handledRetryNonce = retryNonce
             try {
                 var s = PlaybackService.instance
-                if (retryRequested && s?.isReady == false) {
+                val rebuildPlayer = retryRequested && forceServiceRestart
+                if (rebuildPlayer) forceServiceRestart = false
+                if (retryRequested && (s?.isReady == false || rebuildPlayer)) {
                     // 初始化失败的旧实例可能尚在销毁过程中，先等待它退出再重启服务。
+                    // 黑屏兜底（rebuildPlayer）同样要彻底销毁旧播放器，否则旧实例里卡住的解码器还在。
                     ctx.stopService(android.content.Intent(ctx, PlaybackService::class.java))
                     var stopTries = 0
                     while (PlaybackService.instance != null && stopTries < 20) {

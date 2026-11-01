@@ -840,6 +840,10 @@ class PlaybackService : MediaSessionService() {
     private var playbackStallWatchPositionMs = -1L
     private var playbackStallWatchLastProgressAtMs = 0L
     private var idleRecoveryAttemptedKey = ""
+    // Black-screen escalation (soft reload -> one player rebuild -> final error). Main thread only.
+    private var firstFrameEscalationKey = ""
+    private var firstFrameEscalationStage = FirstFrameTimeoutPolicy.SOFT_RELOAD_STAGE
+    private var blackScreenErrorLoggedKey = ""
     private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
     private var importedLines: List<SubLine>? = null
@@ -2771,6 +2775,16 @@ class PlaybackService : MediaSessionService() {
             noFrameWaitStartedAtMs = 0L
             noFrameWaitSessionKey = state.key
             idleRecoveryAttemptedKey = ""
+            if (blackScreenErrorLoggedKey == state.key || PlayerRebuildCoordinator.wasRebuilt(state.key)) {
+                // The picture is back: close the black-screen error (once) and allow a future rebuild.
+                blackScreenErrorLoggedKey = ""
+                PlayerRebuildCoordinator.clear(state.key)
+                pm.resolveBlackScreenError(
+                    mapOf("视频会话指纹" to safeDiagnosticSessionFingerprint(state.key)),
+                )
+            }
+            firstFrameEscalationKey = state.key
+            firstFrameEscalationStage = FirstFrameTimeoutPolicy.SOFT_RELOAD_STAGE
             publishPlaybackHintCandidate(null, force = true)
             return
         }
@@ -2817,6 +2831,11 @@ class PlaybackService : MediaSessionService() {
             noFrameWaitStartedAtMs = 0L
             false
         }
+        // A real player error already has its own hint and log; this targets the silent case where
+        // the player reports no error yet never shows a picture (black screen, play does nothing).
+        if (noFirstFrameTimedOut && playerPhase && failure == null && !playbackRecoveryInProgress) {
+            handleFirstFrameTimeout(state, now)
+        }
 
         val blocked = state.playBlockedHint?.takeIf { state.key == videoKey }
             ?: if (playerPhase && (
@@ -2859,6 +2878,62 @@ class PlaybackService : MediaSessionService() {
             playbackStalled = playbackStalled,
         )
         publishPlaybackHintCandidate(PlaybackHintPolicy.hintFor(input))
+    }
+
+    /**
+     * No first frame after the wait window although the player reported no error. Log it as an
+     * ERROR (same "视频播放：…" title family as other player logs), then escalate: reload the
+     * player, then rebuild the whole playback service once per video, then give up with a hint.
+     */
+    private fun handleFirstFrameTimeout(state: PlayerUiState, now: Long) {
+        if (firstFrameEscalationKey != state.key) {
+            firstFrameEscalationKey = state.key
+            firstFrameEscalationStage = FirstFrameTimeoutPolicy.SOFT_RELOAD_STAGE
+        }
+        val action = FirstFrameTimeoutPolicy.nextAction(
+            stage = firstFrameEscalationStage,
+            isBuffering = pm.isBuffering.value,
+            bufferingDurationMs = pm.bufferingDurationMs(),
+            rebuildAlreadyUsed = PlayerRebuildCoordinator.wasRebuilt(state.key),
+        )
+        if (action == FirstFrameTimeoutAction.WAIT || action == FirstFrameTimeoutAction.DONE) return
+
+        val surfaceView = requestedVideoSurface?.get()
+        val context = mapOf(
+            "视频来源" to diagnosticMediaSourceType(state),
+            "视频会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+            "当前处理阶段" to state.phase.name,
+            "画面控件是否存在" to (surfaceView != null).toString(),
+            "画面控件是否可用" to (surfaceView?.isAvailable?.toString() ?: "无画面控件"),
+            "画面是否已绑定播放器" to (boundVideoSurface?.get() != null).toString(),
+            "自动处理阶段" to firstFrameEscalationStage.toString(),
+            "此前是否已自动重建" to PlayerRebuildCoordinator.wasRebuilt(state.key).toString(),
+        )
+        blackScreenErrorLoggedKey = state.key
+        when (action) {
+            FirstFrameTimeoutAction.SOFT_RELOAD -> {
+                pm.logBlackScreenError(
+                    "画面黑屏或播放无响应，正在自动重新加载",
+                    context + ("自动处理" to "重新准备播放器并继续播放"),
+                )
+                // Give the reloaded player a fresh wait window before the next escalation step.
+                noFrameWaitStartedAtMs = now
+                pm.retryPlayback()
+            }
+            FirstFrameTimeoutAction.REBUILD_PLAYER -> {
+                pm.logBlackScreenError(
+                    "画面黑屏或播放无响应，已自动重建播放器",
+                    context + ("自动处理" to "重启播放服务并重新打开当前视频"),
+                )
+                noFrameWaitStartedAtMs = now
+                PlayerRebuildCoordinator.requestRebuild(state.key)
+            }
+            else -> pm.logBlackScreenError(
+                "画面黑屏或播放无响应，自动重建后仍无画面，请完全退出应用后重试",
+                context + ("自动处理" to "已用尽自动恢复手段，保留手动重试提示"),
+            )
+        }
+        firstFrameEscalationStage = FirstFrameTimeoutPolicy.stageAfter(firstFrameEscalationStage, action)
     }
 
     private fun markPlaybackRecoveryFailed(
@@ -9926,6 +10001,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         hasUsableTranslation = hasUsableTranslation,
                         sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
                         isLocalTranslationEngine = EngineFactory.isLocalTranslationEngine(activeId),
+                        isApiLanguageModelEngine =
+                            TranslationBatchFallbackPolicy.isApiLanguageModelEngine(engine!!.id),
                     )
                 ) {
                     // If a batch contains useful translations but a small number of rows remain

@@ -92,4 +92,47 @@ class TranslationBatchFallbackPolicyTest {
             )
         )
     }
+
+    @Test
+    fun apiLanguageModelsMayKeepASmallTailOnOriginalAudio() {
+        assertTrue(TranslationBatchFallbackPolicy.isApiLanguageModelEngine("openai"))
+        assertTrue(TranslationBatchFallbackPolicy.isApiLanguageModelEngine("gemini"))
+        assertFalse(TranslationBatchFallbackPolicy.isApiLanguageModelEngine("local"))
+        // Echoes stay rejected for these engines; only the small unresolved tail is tolerated.
+        assertFalse(TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback("openai"))
+        assertTrue(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 1,
+                batchSize = 10,
+                hasUsableTranslation = true,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = false,
+                isApiLanguageModelEngine = true,
+            )
+        )
+    }
+
+    @Test
+    fun apiLanguageModelsStillFailWhenMostOfTheBatchIsUnusable() {
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 6,
+                batchSize = 10,
+                hasUsableTranslation = true,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = false,
+                isApiLanguageModelEngine = true,
+            )
+        )
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 1,
+                batchSize = 10,
+                hasUsableTranslation = false,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = false,
+                isApiLanguageModelEngine = true,
+            )
+        )
+    }
 }

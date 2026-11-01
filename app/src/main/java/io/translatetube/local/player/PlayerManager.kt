@@ -268,12 +268,18 @@ class PlayerManager(private val ctx: Context) {
         details: Map<String, String>,
         failure: Throwable? = null,
         issueKey: String? = null,
+        isError: Boolean = false,
     ) {
         runCatching {
             mixerLogExecutor.execute {
                 runCatching {
                     // 沿用 PlayerManager 标签：日志页会归到"视频播放"分类，标题由 AppLogTitleResolver 生成。
-                    if (isWarning) {
+                    if (isError) {
+                        io.translatetube.local.util.AppLogStore.error(
+                            ctx, "PlayerManager", message, failure,
+                            diagnosticContext = details, issueKey = issueKey,
+                        )
+                    } else if (isWarning) {
                         io.translatetube.local.util.AppLogStore.warning(
                             ctx, "PlayerManager", message, failure,
                             diagnosticContext = details, issueKey = issueKey,
@@ -326,6 +332,62 @@ class PlayerManager(private val ctx: Context) {
                 },
             ),
         )
+    }
+
+    /** 黑屏/无响应的所有阶段共用同一个问题标识，画面恢复后可一次性标记为已解决。 */
+    private val blackScreenIssueKey: String by lazy {
+        io.translatetube.local.util.AppLogStore.stableIssueKey("PlayerManager", BLACK_SCREEN_ISSUE_IDENTITY)
+    }
+
+    /**
+     * 记录"迟迟没有首帧画面/点播放无反应"的错误日志（ERROR 级别，标题格式与其他播放日志一致）。
+     * [message] 必须以"画面黑屏或播放无响应"开头，保证日志标题统一为"视频播放：…"。
+     * [extra] 由调用方补充会话相关信息（均为不含地址/字幕的安全字段）。
+     */
+    fun logBlackScreenError(message: String, extra: Map<String, String> = emptyMap()) {
+        if (released) return
+        val details = LinkedHashMap<String, String>()
+        runCatching {
+            val state = player.playbackState
+            details["播放器状态"] = playerStateName(state)
+            details["播放意图 playWhenReady"] = player.playWhenReady.toString()
+            details["是否正在播放 isPlaying"] = player.isPlaying.toString()
+            details["已挂载媒体数"] = player.mediaItemCount.toString()
+            details["播放位置 ms"] = player.currentPosition.toString()
+            details["视频流域名"] = currentMediaHost()
+            details["是否已渲染首帧"] = _hasRenderedFirstFrame.value.toString()
+            details["是否缓冲中"] = _isBuffering.value.toString()
+            details["缓冲持续 ms"] = bufferingDurationMs().toString()
+            details["加载重试次数"] = loadRetryCount.value.toString()
+            val videoFormat = player.videoFormat
+            details["视频编码"] = videoFormat?.sampleMimeType ?: "未选出视频轨"
+            details["视频分辨率"] = videoFormat?.let { "${it.width}x${it.height}" } ?: "未知"
+            val videoSize = player.videoSize
+            details["已解码画面尺寸"] = "${videoSize.width}x${videoSize.height}"
+            details["当前错误"] = _playbackFailure.value?.errorCodeName ?: "无"
+        }
+        details.putAll(extra)
+        logPlayerDiagnostic(
+            isWarning = false,
+            isError = true,
+            message = message,
+            details = details,
+            issueKey = blackScreenIssueKey,
+        )
+    }
+
+    /** 首帧终于渲染出来后，把此前的黑屏错误标记为已解决（只在确实记录过黑屏错误时调用）。 */
+    fun resolveBlackScreenError(extra: Map<String, String> = emptyMap()) {
+        if (released) return
+        runCatching {
+            mixerLogExecutor.execute {
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.resolveIssue(
+                        ctx, blackScreenIssueKey, "视频已恢复出画面", extra,
+                    )
+                }
+            }
+        }
     }
 
     private var bufferingStartedAtMs = 0L
@@ -930,5 +992,10 @@ class PlayerManager(private val ctx: Context) {
         runCatching { player.release() }
             .onFailure { android.util.Log.w("PlayerManager", "Player release failed", it) }
         runCatching { mixerLogExecutor.shutdown() }
+    }
+
+    private companion object {
+        /** 黑屏/无响应问题的稳定标识种子；不含视频地址，所有视频共用同一类问题。 */
+        const val BLACK_SCREEN_ISSUE_IDENTITY = "画面黑屏或播放无响应"
     }
 }

@@ -117,8 +117,24 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
  */
 internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 64
 
+/**
+ * How many single cues per original batch may still come back unusable (unchanged or blank)
+ * after their own retry before the whole batch is treated as a provider failure. A model that
+ * stubbornly echoes one short interjection must not abort the entire video, but a model that
+ * fails on many cues is broken and should still stop quickly.
+ */
+internal const val MAX_ISOLATED_CUE_FAILURES_PER_BATCH = 2
+
 private class TranslationRecoveryBudget {
     private var attempts = 0
+    private var isolatedCueFailures = 0
+
+    /** True while this batch may still hand an unusable single cue back to the caller. */
+    fun tolerateIsolatedCueFailure(): Boolean {
+        if (isolatedCueFailures >= MAX_ISOLATED_CUE_FAILURES_PER_BATCH) return false
+        isolatedCueFailures++
+        return true
+    }
 
     fun consumeAttempt() {
         if (attempts >= MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH) {
@@ -257,6 +273,12 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
             isAcceptableTranslation(lines.single(), retryCandidate)
         ) {
             return listOf(retryCandidate)
+        }
+        if (budget.tolerateIsolatedCueFailure()) {
+            // Hand the unusable text (or blank) back instead of failing the whole video. The
+            // caller sees it as a missing row, retries it once and may keep that single cue on
+            // its original audio when the rest of the batch translated normally.
+            return listOf(retryCandidate.orEmpty())
         }
         val failureReason = when {
             retryCandidate.isNullOrBlank() -> "单条恢复请求仍未返回可用文本"

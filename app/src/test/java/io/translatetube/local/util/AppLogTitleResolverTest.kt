@@ -135,4 +135,23 @@ class AppLogTitleResolverTest {
         assertEquals("视频播放：缓冲较慢", AppLogTitleResolver.title("PlayerManager", "视频缓冲较慢"))
         assertEquals("视频播放", AppLogTitleResolver.featureLabel("PlayerManager", "播放器报告错误"))
     }
+
+    @Test
+    fun blackScreenRecoveryLogsUseTheSamePlaybackTitleFormat() {
+        assertEquals(
+            "视频播放：画面黑屏或播放无响应，正在自动重新加载",
+            AppLogTitleResolver.title("PlayerManager", "画面黑屏或播放无响应，正在自动重新加载"),
+        )
+        assertEquals(
+            "视频播放：画面黑屏或播放无响应，已自动重建播放器",
+            AppLogTitleResolver.title("PlayerManager", "画面黑屏或播放无响应，已自动重建播放器"),
+        )
+        assertEquals(
+            "视频播放：画面黑屏或播放无响应，自动重建后仍无画面，请完全退出应用后重试",
+            AppLogTitleResolver.title(
+                "PlayerManager",
+                "画面黑屏或播放无响应，自动重建后仍无画面，请完全退出应用后重试",
+            ),
+        )
+    }
 }

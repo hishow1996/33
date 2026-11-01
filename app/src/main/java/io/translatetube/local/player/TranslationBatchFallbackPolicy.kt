@@ -15,6 +15,10 @@ internal object TranslationBatchFallbackPolicy {
             "baidu-web",
         )
 
+    /** OpenAI-compatible and Gemini language models, which can stubbornly echo a short cue. */
+    fun isApiLanguageModelEngine(engineId: String): Boolean =
+        engineId == "openai" || engineId == "gemini"
+
     /**
      * Keep a small number of invalid subtitle rows on original audio only when the batch has
      * usable translations. Global provider/model failures must still fail the task.
@@ -25,6 +29,7 @@ internal object TranslationBatchFallbackPolicy {
         hasUsableTranslation: Boolean,
         sourceEchoAsUntranslatedFallback: Boolean,
         isLocalTranslationEngine: Boolean,
+        isApiLanguageModelEngine: Boolean = false,
     ): Boolean {
         if (unresolvedCount <= 0 || batchSize <= 0 || unresolvedCount >= batchSize) return false
         // Only treat a genuinely small tail of failures as recoverable. For a normal 10-row
@@ -32,6 +37,6 @@ internal object TranslationBatchFallbackPolicy {
         val maximumRecoverableRows = (batchSize / 4).coerceAtLeast(1)
         return unresolvedCount <= maximumRecoverableRows &&
             hasUsableTranslation &&
-            (sourceEchoAsUntranslatedFallback || isLocalTranslationEngine)
+            (sourceEchoAsUntranslatedFallback || isLocalTranslationEngine || isApiLanguageModelEngine)
     }
 }
