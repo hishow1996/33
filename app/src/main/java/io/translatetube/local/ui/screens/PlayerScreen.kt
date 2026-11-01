@@ -3598,14 +3598,24 @@ private fun StageProgressVisual(
                 val amplitude = size.height * 0.29f
                 val basePhase = -kotlin.math.PI.toFloat() / 2f
                 val totalPhase = 8f * kotlin.math.PI.toFloat()
-                // The twist envelope is zero at both ends, so neither end ever closes.
-                // Its moving phase changes the crossover positions while preserving four cycles.
-                val twist = kotlin.math.sin(translationHelixRotationPhase) * 0.62f
+                // Rotate the inner helix through a full 360 degrees. A smooth edge envelope
+                // anchors both ends open while keeping the central helix pitch almost uniform.
+                val rotationRadians = translationHelixRotationPhase
+                val edgeBlend = 0.40f
                 fun phaseAt(x: Float): Float {
                     val t = (x / size.width).coerceIn(0f, 1f)
-                    val envelopeWave = kotlin.math.sin(kotlin.math.PI.toFloat() * t)
-                    val envelope = envelopeWave * envelopeWave
-                    return basePhase + totalPhase * t + twist * envelope
+                    val rotationEnvelope = when {
+                        t < edgeBlend -> {
+                            val u = (t / edgeBlend).coerceIn(0f, 1f)
+                            u * u * (3f - 2f * u)
+                        }
+                        t > 1f - edgeBlend -> {
+                            val u = ((1f - t) / edgeBlend).coerceIn(0f, 1f)
+                            u * u * (3f - 2f * u)
+                        }
+                        else -> 1f
+                    }
+                    return basePhase + totalPhase * t + rotationRadians * rotationEnvelope
                 }
                 fun strandY(x: Float, upperSign: Float): Float {
                     return centerY + upperSign * amplitude * kotlin.math.sin(phaseAt(x))
@@ -3687,6 +3697,11 @@ private fun StageProgressVisual(
                 }
                 drawPath(strandA, color = pendingColor, style = curveStyle)
                 drawPath(strandB, color = pendingColor, style = curveStyle)
+                drawOverUnderWeave(
+                    colorA = pendingColor,
+                    colorB = pendingColor,
+                    strokeWidth = curveStroke,
+                )
 
                 fun drawActiveRungs(pulseHead: Float?, pulseRadius: Float) {
                     rungPositions.forEach { x ->
@@ -3734,29 +3749,66 @@ private fun StageProgressVisual(
                     )
                 }
 
-                // Alternate which strand appears in front at each crossover.
-                // The full base paths remain continuous underneath these short overpass accents.
-                fun drawAlternatingOverpasses(
+                // At each crossover, mask a short section of the rear strand and
+                // redraw the front strand on top. The underlying paths remain geometrically
+                // continuous; the visual overlap now reads as an actual over/under helix.
+                fun crossoverSegment(crossingX: Float, strandSign: Float): Path {
+                    val segment = Path()
+                    val halfSpan = 3.2.dp.toPx()
+                    val startX = (crossingX - halfSpan).coerceAtLeast(0f)
+                    val endX = (crossingX + halfSpan).coerceAtMost(size.width)
+                    val samples = 10
+                    for (sample in 0..samples) {
+                        val x = startX + (endX - startX) * sample / samples.toFloat()
+                        val y = strandY(x, strandSign)
+                        if (sample == 0) segment.moveTo(x, y) else segment.lineTo(x, y)
+                    }
+                    return segment
+                }
+
+                fun drawOverUnderWeave(
+                    colorA: Color,
+                    colorB: Color,
                     alpha: Float = 1f,
-                    strokeWidth: Float = curveStroke + 0.35.dp.toPx(),
+                    strokeWidth: Float = curveStroke,
+                    maskRear: Boolean = true,
                 ) {
                     crossings.forEachIndexed { crossingIndex, crossingX ->
-                        val startX = (crossingX - 3.dp.toPx()).coerceAtLeast(0f)
-                        val endX = (crossingX + 3.dp.toPx()).coerceAtMost(size.width)
                         val strandAIsFront = crossingIndex % 2 == 0
-                        val overpass = Path()
-                        val segmentSamples = 8
-                        for (sample in 0..segmentSamples) {
-                            val x = startX + (endX - startX) * sample / segmentSamples.toFloat()
-                            val y = strandY(x, if (strandAIsFront) -1f else 1f)
-                            if (sample == 0) overpass.moveTo(x, y) else overpass.lineTo(x, y)
+                        val frontSign = if (strandAIsFront) -1f else 1f
+                        val backSign = -frontSign
+                        val frontColor = if (strandAIsFront) colorA else colorB
+                        val backColor = if (strandAIsFront) colorB else colorA
+                        val backPath = crossoverSegment(crossingX, backSign)
+                        val frontPath = crossoverSegment(crossingX, frontSign)
+
+                        if (maskRear) {
+                            // The near-white mask blends into the light processing card.
+                            drawPath(
+                                backPath,
+                                color = Color.White.copy(alpha = 0.92f),
+                                style = Stroke(
+                                    width = strokeWidth + 1.5.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                ),
+                            )
+                            // A faint rear trace keeps the hidden strand visually continuous.
+                            drawPath(
+                                backPath,
+                                color = backColor.copy(alpha = alpha * 0.28f),
+                                style = Stroke(
+                                    width = (strokeWidth * 0.72f).coerceAtLeast(1.dp.toPx()),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                ),
+                            )
                         }
                         drawPath(
-                            overpass,
-                            color = (if (strandAIsFront) blueStrandColor else greenStrandColor)
-                                .copy(alpha = alpha),
+                            frontPath,
+                            color = frontColor.copy(alpha = alpha),
                             style = Stroke(
-                                width = strokeWidth,
+                                width = strokeWidth + 0.2.dp.toPx(),
                                 cap = StrokeCap.Round,
                                 join = StrokeJoin.Round,
                             ),
@@ -3775,7 +3827,10 @@ private fun StageProgressVisual(
                             pulseRadius = pulseRadius,
                         )
                         drawActiveCurves()
-                        drawAlternatingOverpasses()
+                        drawOverUnderWeave(
+                            colorA = blueStrandColor,
+                            colorB = greenStrandColor,
+                        )
 
                         // A bright, short trailing glow travels across both continuous strands.
                         if (motionEnabled) {
@@ -3788,7 +3843,13 @@ private fun StageProgressVisual(
                                     alpha = 0.56f,
                                     strokeWidth = 3.1.dp.toPx(),
                                 )
-                                drawAlternatingOverpasses(alpha = 0.72f, strokeWidth = 3.4.dp.toPx())
+                                drawOverUnderWeave(
+                                    colorA = blueStrandColor,
+                                    colorB = greenStrandColor,
+                                    alpha = 0.72f,
+                                    strokeWidth = 3.1.dp.toPx(),
+                                    maskRear = false,
+                                )
                             }
                         }
                     }
@@ -3802,7 +3863,12 @@ private fun StageProgressVisual(
                     ) {
                         drawActiveRungs(pulseHead = scanHead, pulseRadius = scanRadius)
                         drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
-                        drawAlternatingOverpasses(alpha = 0.88f, strokeWidth = 2.9.dp.toPx())
+                        drawOverUnderWeave(
+                            colorA = blueStrandColor,
+                            colorB = greenStrandColor,
+                            alpha = 0.88f,
+                            strokeWidth = 2.6.dp.toPx(),
+                        )
                     }
                 }
 
