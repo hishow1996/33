@@ -2819,8 +2819,12 @@ class PlaybackService : MediaSessionService() {
             playbackRestoreRequested = false
         }
 
+        // A prepared player renders its first frame even while paused, so a bound video view that
+        // never gets one is a black screen whether or not playback intent was ever applied. Waiting
+        // for playWhenReady here missed the case where play silently never took effect.
+        val videoViewBound = boundVideoSurface?.get() != null
         val noFirstFrameTimedOut = if (
-            playWhenReady && mediaAttached && !firstFrame && !state.audioOnly
+            (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
         ) {
             if (noFrameWaitSessionKey != state.key || noFrameWaitStartedAtMs <= 0L) {
                 noFrameWaitSessionKey = state.key
