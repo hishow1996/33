@@ -516,6 +516,14 @@ data class AudioProgressSnapshot(
     }
 }
 
+private fun speakerDownloadProgressPercent(message: String): Int? =
+    Regex("""(\d{1,3})%$""")
+        .find(message)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toIntOrNull()
+        ?.coerceIn(0, 100)
+
 enum class SpeakerRecognitionPhase {
     IDLE,
     PREPARING,
@@ -531,6 +539,7 @@ enum class SpeakerRecognitionPhase {
 data class SpeakerRecognitionUiState(
     val phase: SpeakerRecognitionPhase = SpeakerRecognitionPhase.IDLE,
     val message: String = "",
+    val progressPercent: Int? = null,
     val personCount: Int = 0,
     val error: String? = null,
 ) {
@@ -12875,6 +12884,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                         SpeakerRecognitionPhase.ANALYZING
                                     },
                                     message = message,
+                                    progressPercent = speakerDownloadProgressPercent(message),
                                 ),
                                 transcriptionProgressPercent = null,
                                 transcriptionCompletedSegments = 0,
@@ -13273,7 +13283,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ),
             ) else state
         }
-        speakerJob = scope.launch {
+        val recognitionJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             val speakerTaskJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             pipelineExecutionMutex.withLock {
             var pendingTts: TtsEngine? = null
@@ -13382,6 +13392,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                         SpeakerRecognitionPhase.ANALYZING
                                     },
                                     message = message,
+                                    progressPercent = speakerDownloadProgressPercent(message),
                                 ),
                                 transcriptionProgressPercent = null,
                                 transcriptionCompletedSegments = 0,
@@ -13411,6 +13422,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         speakerRecognition = SpeakerRecognitionUiState(
                             phase = SpeakerRecognitionPhase.APPLYING,
                             message = "正在关联人物与字幕…",
+                            progressPercent = null,
                         ),
                     ) else state
                 }
@@ -13674,28 +13686,28 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             }
         }
-        // Cancellation can happen while queued on the pipeline mutex, before the inner
-        // try/finally is entered. Handle that edge case without overwriting a newer task.
-        speakerJob?.let { recognitionJob ->
-            recognitionJob.invokeOnCompletion { cause ->
-                if (
-                    cause is kotlinx.coroutines.CancellationException &&
-                    speakerJob === recognitionJob
-                ) {
-                    ui.update { state ->
-                        if (state.key == sessionKey && state.speakerRecognition.isActive) {
-                            state.copy(
-                                progress = "",
-                                speakerRecognition = SpeakerRecognitionUiState(
-                                    phase = SpeakerRecognitionPhase.CANCELLED,
-                                    message = "人物识别已取消",
-                                ),
-                            )
-                        } else state
-                    }
+        // Install cancellation cleanup before start(): the coroutine may otherwise be
+        // cancelled while queued on pipelineExecutionMutex before its inner try/finally.
+        speakerJob = recognitionJob
+        recognitionJob.invokeOnCompletion { cause ->
+            if (
+                cause is kotlinx.coroutines.CancellationException &&
+                speakerJob === recognitionJob
+            ) {
+                ui.update { state ->
+                    if (state.key == sessionKey && state.speakerRecognition.isActive) {
+                        state.copy(
+                            progress = "",
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.CANCELLED,
+                                message = "人物识别已取消",
+                            ),
+                        )
+                    } else state
                 }
             }
         }
+        recognitionJob.start()
     }
 
     fun setLineSpeaker(index: Int, speakerId: Int, applyToPerson: Boolean = false) {

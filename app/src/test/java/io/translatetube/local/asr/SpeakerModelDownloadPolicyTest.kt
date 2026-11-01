@@ -2,6 +2,7 @@ package io.translatetube.local.asr
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -36,6 +37,17 @@ class SpeakerModelDownloadPolicyTest {
         assertFalse(SpeakerModelDownloadPolicy.isFullResponse(206))
         assertFalse(SpeakerModelDownloadPolicy.isFullResponse(204))
         assertFalse(SpeakerModelDownloadPolicy.isFullResponse(302))
+    }
+
+    @Test
+    fun downloadProgressIsBoundedAndUnknownLengthsRemainIndeterminate() {
+        assertEquals(0, SpeakerModelDownloadPolicy.progressPercent(0L, 100L))
+        assertEquals(25, SpeakerModelDownloadPolicy.progressPercent(25L, 100L))
+        assertEquals(100, SpeakerModelDownloadPolicy.progressPercent(100L, 100L))
+        assertEquals(100, SpeakerModelDownloadPolicy.progressPercent(120L, 100L))
+        assertNull(SpeakerModelDownloadPolicy.progressPercent(20L, -1L))
+        assertNull(SpeakerModelDownloadPolicy.progressPercent(20L, 0L))
+        assertNull(SpeakerModelDownloadPolicy.progressPercent(-1L, 100L))
     }
 
     @Test

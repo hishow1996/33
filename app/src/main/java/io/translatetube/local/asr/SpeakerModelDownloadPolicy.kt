@@ -16,6 +16,14 @@ internal object SpeakerModelDownloadPolicy {
     /** These model endpoints do not send Range requests; 206 must not be installed as a full asset. */
     fun isFullResponse(statusCode: Int): Boolean = statusCode == 200
 
+    /** Return an exact bounded percentage when the response has a known positive total size. */
+    fun progressPercent(downloadedBytes: Long, totalBytes: Long): Int? {
+        if (downloadedBytes < 0L || totalBytes <= 0L) return null
+        return ((downloadedBytes.toDouble() / totalBytes.toDouble()) * 100.0)
+            .toInt()
+            .coerceIn(0, 100)
+    }
+
     /** HTTP uses -1 only when Content-Length is unknown. Other negative and zero lengths are invalid. */
     fun isValidExpectedLength(expectedBytes: Long, maxBytes: Long): Boolean =
         maxBytes > 0L && (expectedBytes == -1L || expectedBytes in 1L..maxBytes)

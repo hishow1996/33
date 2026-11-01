@@ -69,8 +69,17 @@ object SpeakerDiarizer {
                 val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
                 try {
                     checkActive()
-                    download(SEGMENTATION_URL, archive, 32L * 1024 * 1024, checkActive, ownerJob)
+                    download(
+                        url = SEGMENTATION_URL,
+                        destination = archive,
+                        maxBytes = 32L * 1024 * 1024,
+                        checkActive = checkActive,
+                        ownerJob = ownerJob,
+                        progressLabel = "下载人物分离模型",
+                        onProgress = onProgress,
+                    )
                     checkActive()
+                    onProgress("正在解压人物分离模型…")
                     extractSegmentation(archive, segmentation, checkActive)
                     checkActive()
                 } finally {
@@ -84,7 +93,15 @@ object SpeakerDiarizer {
                 val temp = File(dir, "embedding.onnx.download")
                 try {
                     checkActive()
-                    download(EMBEDDING_URL, temp, 100L * 1024 * 1024, checkActive, ownerJob)
+                    download(
+                        url = EMBEDDING_URL,
+                        destination = temp,
+                        maxBytes = 100L * 1024 * 1024,
+                        checkActive = checkActive,
+                        ownerJob = ownerJob,
+                        progressLabel = "下载人物声纹模型",
+                        onProgress = onProgress,
+                    )
                     checkActive()
                     if (temp.length() < 5_000_000L) throw java.io.IOException("人物声纹模型文件不完整")
                     AtomicFileInstaller.install(temp, embedding)
@@ -170,6 +187,8 @@ object SpeakerDiarizer {
         maxBytes: Long,
         checkActive: () -> Unit,
         ownerJob: kotlinx.coroutines.Job?,
+        progressLabel: String,
+        onProgress: (String) -> Unit,
     ) {
         checkActive()
         val temp = File(destination.parentFile, destination.name + ".part")
@@ -186,6 +205,8 @@ object SpeakerDiarizer {
                     throw java.io.IOException("模型响应声明的文件大小无效或超过限制")
                 }
                 var total = 0L
+                var lastProgressPercent = -1
+                var lastUnknownLengthReportBytes = 0L
                 body.byteStream().use { input ->
                     FileOutputStream(temp).use { output ->
                         val buffer = ByteArray(64 * 1024)
@@ -196,6 +217,18 @@ object SpeakerDiarizer {
                             total += n
                             if (total > maxBytes) throw java.io.IOException("模型文件超过大小限制")
                             output.write(buffer, 0, n)
+
+                            val percent = SpeakerModelDownloadPolicy.progressPercent(total, expectedBytes)
+                            if (percent != null && percent != lastProgressPercent) {
+                                onProgress("$progressLabel · $percent%")
+                                lastProgressPercent = percent
+                            } else if (
+                                percent == null &&
+                                total - lastUnknownLengthReportBytes >= 512L * 1024L
+                            ) {
+                                onProgress("$progressLabel · 已下载 ${total / (1024L * 1024L)} MB")
+                                lastUnknownLengthReportBytes = total
+                            }
                         }
                         output.fd.sync()
                     }
@@ -205,6 +238,7 @@ object SpeakerDiarizer {
                         "模型下载不完整或大小异常：响应声明 ${expectedBytes} 字节，实际收到 ${total} 字节"
                     )
                 }
+                onProgress("$progressLabel · 100%")
             }
             AtomicFileInstaller.install(temp, destination)
         } catch (e: Exception) {

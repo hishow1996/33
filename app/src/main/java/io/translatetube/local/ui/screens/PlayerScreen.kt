@@ -957,9 +957,17 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        LinearProgressIndicator(
-                                            modifier = Modifier.weight(1f),
-                                        )
+                                        val progressPercent = speakerRecognition.progressPercent
+                                        if (progressPercent != null) {
+                                            LinearProgressIndicator(
+                                                progress = { progressPercent / 100f },
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                        } else {
+                                            LinearProgressIndicator(
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                        }
                                         if (
                                             PlaybackService.instance?.canCancelSpeakerRecognition == true &&
                                             speakerRecognition.phase != io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING
