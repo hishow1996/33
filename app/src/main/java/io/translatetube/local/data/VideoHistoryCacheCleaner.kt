@@ -26,6 +26,9 @@ internal object VideoHistoryCacheCleaner {
         }
         for (name in audioNames) {
             if (!Regex("^[0-9a-f]{32}\\.bin$").matches(name)) continue
+            if (VideoHistoryCacheIndex.isAudioCacheFileReferencedByAnotherHistory(context, video.key, name)) {
+                continue
+            }
             val audioFile = File(audioDirectory, name)
             if (!PlaybackService.deleteUnleasedAsrAudioCacheFile(audioFile)) {
                 throw IOException("转写音轨缓存正在使用，暂时无法删除：$name")
