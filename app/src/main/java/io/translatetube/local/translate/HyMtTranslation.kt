@@ -318,14 +318,22 @@ object HyMtModelManager {
 
             mutableState.value = when {
                 runtimeError != null && !supportsArm64 -> HyMtDownloadState(
-                    status = HyMtStatus.FAILED,
+                    status = if (modelBytes > 0L || partialBytes > 0L) {
+                        HyMtStatus.PAUSED
+                    } else {
+                        HyMtStatus.NOT_DOWNLOADED
+                    },
                     progress = if (modelBytes > 0L) 100
                         else (partialBytes * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
                     downloadedBytes = if (modelBytes > 0L) modelBytes else partialBytes,
                     totalBytes = if (modelBytes > 0L) modelBytes else DISPLAY_BYTES,
-                    error = runtimeError?.message?.takeIf { it.isNotBlank() }
-                        ?: "当前设备不支持 ARM64，无法运行 HY-MT1.5。",
+                    error = when {
+                        modelBytes > 0L -> "模型文件已下载，等待运行时验证"
+                        partialBytes > 0L -> "下载已暂停"
+                        else -> ""
+                    },
                     runtimeAvailable = false,
+                    runtimeError = runtimeErrorMessage,
                 )
                 runtimeError == null && isReady(app) -> HyMtDownloadState(
                     status = HyMtStatus.READY,
@@ -377,8 +385,7 @@ object HyMtModelManager {
             runCatching { HyMtNative.ensureLibraryLoaded(app) }.exceptionOrNull()
         }
         val libraryLoadable = initialRuntimeError == null
-        val runtimeErrorText = initialRuntimeError?.takeIf { supportsArm64 }
-            ?.let { runtimeUnavailableMessage(it) }.orEmpty()
+        val runtimeErrorText = initialRuntimeError?.let { runtimeUnavailableMessage(it) }.orEmpty()
         fun keepRuntimeStatus(state: HyMtDownloadState): HyMtDownloadState = state.copy(
             runtimeAvailable = libraryLoadable,
             runtimeError = runtimeErrorText,
@@ -394,22 +401,34 @@ object HyMtModelManager {
                 val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
                 val downloadedBytes = if (modelBytes > 0L) modelBytes else partialBytes
                 val totalBytes = if (modelBytes > 0L) modelBytes else DISPLAY_BYTES
+                val runtimeFailureMessage = runtimeUnavailableMessage(error)
                 mutableState.value = HyMtDownloadState(
-                    status = HyMtStatus.FAILED,
+                    status = if (modelBytes > 0L || partialBytes > 0L) {
+                        HyMtStatus.PAUSED
+                    } else {
+                        HyMtStatus.NOT_DOWNLOADED
+                    },
                     progress = if (modelBytes > 0L) 100
                         else (partialBytes * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
                     downloadedBytes = downloadedBytes,
                     totalBytes = totalBytes,
-                    error = error.message?.takeIf { it.isNotBlank() }
-                        ?: "HY-MT1.5 推理运行库不可用。",
+                    error = when {
+                        modelBytes > 0L -> "模型文件已下载，等待运行时验证"
+                        partialBytes > 0L -> "下载已暂停"
+                        else -> ""
+                    },
                     runtimeAvailable = false,
+                    runtimeError = runtimeFailureMessage,
                 )
                 AppLogStore.error(
                     app,
-                    "LocalTranslationModel",
-                    "HY-MT1.5 推理运行库检查失败，已停止模型下载",
+                    "HyMtRuntime",
+                    "检查失败",
                     error,
                     diagnosticContext = mapOf(
+                        "检查时机" to "用户发起模型下载前",
+                        "运行库检查结论" to runtimeFailureMessage,
+                        "模型下载处理" to "运行库不可用，已阻止本次下载",
                         "需要的原生库" to "lib/arm64-v8a/libhymt.so",
                         "原生库实际路径" to nativeLibrary.absolutePath,
                         "原生库文件存在" to nativeLibrary.isFile.toString(),
@@ -426,8 +445,10 @@ object HyMtModelManager {
             AppLogStore.info(
                 app,
                 "LocalTranslationModel",
-                "HY-MT1.5 推理运行库检查完成，模型下载可继续",
+                "HY-MT1.5 运行库暂不可用，允许先下载模型",
                 diagnosticContext = mapOf(
+                    "运行库检查结论" to runtimeErrorText,
+                    "模型下载策略" to "先完成模型下载，待运行库可用后再执行验证",
                     "需要的原生库" to "lib/arm64-v8a/libhymt.so",
                     "原生库实际路径" to nativeLibrary.absolutePath,
                     "System.loadLibrary 可加载" to libraryLoadable.toString(),
