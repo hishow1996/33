@@ -715,7 +715,7 @@ internal fun LocalTranslationSection(
                                                         HyMtModelManager.download(context)
                                                     } catch (cancelled: CancellationException) {
                                                         throw cancelled
-                                                    } catch (_: Throwable) {
+                                                    } catch (_: Exception) {
                                                         // Exact error remains in model state and diagnostics.
                                                     }
                                                 }
