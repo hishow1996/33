@@ -7664,6 +7664,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     ?.absolutePath
                 // Reuse the selected source-card metadata; do not run a second display probe
                 // after extraction. Missing source-card fields intentionally remain absent.
+                if (missingLocalModel || missingCloudKey) {
                     val hint = when (asrProvider) {
                         "local" -> {
                             val modelName = io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
