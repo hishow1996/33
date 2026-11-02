@@ -1681,7 +1681,7 @@ private fun LocalEngineCard(
         AsyncImage(
             model = logo,
             contentDescription = "$name 官方图形标识",
-            modifier = Modifier.size(48.dp).padding(2.dp),
+            modifier = Modifier.size(48.dp),
             contentScale = ContentScale.Fit,
             alignment = Alignment.Center,
         )
