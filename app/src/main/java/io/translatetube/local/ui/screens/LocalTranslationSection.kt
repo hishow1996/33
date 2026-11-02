@@ -761,7 +761,7 @@ internal fun LocalTranslationSection(
                         }
                         if (hyMtState.status == HyMtStatus.DOWNLOADING ||
                             hyMtState.status == HyMtStatus.VERIFYING ||
-                            (hyMtState.hasCompleteFiles && hyMtState.status != HyMtStatus.READY)
+                            (hyMtState.downloadedBytes > 0L && hyMtState.status != HyMtStatus.READY)
                         ) {
                             LinearProgressIndicator(
                                 progress = (hyMtState.progress / 100f).coerceIn(0f, 1f),
