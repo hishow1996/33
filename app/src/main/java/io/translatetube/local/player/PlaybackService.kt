@@ -553,6 +553,8 @@ data class SpeakerRecognitionUiState(
 
 /** Metadata already discovered for the exact webpage candidate selected by the user. */
 data class SelectedWebMediaMetadata(
+    /** Digest binding the detected values to this media URL + page-origin + cookie session. */
+    val sourceIdentity: String = "",
     val audioCodecLabel: String = "",
     val audioChannelCount: Int = 0,
     val audioSampleRateHz: Int = 0,
@@ -569,6 +571,8 @@ data class PlayerUiState(
     val audioTrackLanguage: String = "",
     val audioTrackMimeType: String = "",
     val audioTrackCodecLabel: String = "",
+    /** Source/session identity for every audio metadata field above; never stores the source URL. */
+    val audioMetadataSourceIdentity: String = "",
     val audioTrackDurationMs: Long = 0L,
     val audioTrackChannelCount: Int = 0,
     val audioTrackSampleRateHz: Int = 0,
@@ -4249,6 +4253,21 @@ class PlaybackService : MediaSessionService() {
         localIdentityResolutionToken: Long? = null,
         skipInProgressCheckpointRestore: Boolean = false,
     ) {
+        val verifiedSelectedWebMediaMetadata = selectedWebMediaMetadata?.takeIf { metadata ->
+            !remoteMediaUrl.isNullOrBlank() &&
+                SelectedWebMediaMetadataIdentityPolicy.matches(
+                    metadata = metadata,
+                    mediaUrl = remoteMediaUrl,
+                    referrer = remoteMediaReferrer,
+                    cookie = remoteMediaCookie,
+                )
+        }
+        if (selectedWebMediaMetadata != null && verifiedSelectedWebMediaMetadata == null) {
+            android.util.Log.w(
+                "PlaybackService",
+                "Discarded webpage source metadata because its media/session identity did not match the active request",
+            )
+        }
         val checkpointLookupToken = if (skipInProgressCheckpointRestore) {
             processingCheckpointRestoreGeneration.get()
         } else {
@@ -4337,7 +4356,7 @@ class PlaybackService : MediaSessionService() {
                             remoteMediaReferrer = remoteMediaReferrer,
                             remoteMediaCookie = remoteMediaCookie,
                             remoteMediaUserAgent = remoteMediaUserAgent,
-                            selectedWebMediaMetadata = selectedWebMediaMetadata,
+                            selectedWebMediaMetadata = verifiedSelectedWebMediaMetadata,
                             requestToken = requestToken,
                             reuseMountedMediaForRestart = reuseMountedMediaForRestart,
                             restoreReadySnapshot = restoreReadySnapshot,
@@ -4460,6 +4479,7 @@ class PlaybackService : MediaSessionService() {
                         remoteMediaReferrer = remoteMediaReferrer,
                         remoteMediaCookie = remoteMediaCookie,
                         remoteMediaUserAgent = remoteMediaUserAgent,
+                        selectedWebMediaMetadata = verifiedSelectedWebMediaMetadata,
                         requestToken = requestToken,
                         reuseMountedMediaForRestart = reuseMountedMediaForRestart,
                         restoreReadySnapshot = restoreReadySnapshot,
@@ -4693,6 +4713,16 @@ class PlaybackService : MediaSessionService() {
             localMediaIdentityKey != null -> localMediaIdentityKey
             else -> key
         }
+        val currentAudioMetadataSourceIdentity = remoteMediaUrl?.let {
+            SelectedWebMediaMetadataIdentityPolicy.identity(it, remoteMediaReferrer, remoteMediaCookie)
+        }
+        // A same-key retry can still arrive with a different Cookie session. Reuse old metadata
+        // only when the previous state was explicitly bound to this exact source/session identity.
+        val reusableAudioMetadataState = effectiveResumeState?.takeIf { previous ->
+            remoteMediaUrl == null ||
+                (!currentAudioMetadataSourceIdentity.isNullOrBlank() &&
+                    previous.audioMetadataSourceIdentity == currentAudioMetadataSourceIdentity)
+        }
         val effectiveTranslationCacheKey = TranslationCacheIdentity.forProvider(
             baseKey = cacheKeyBase,
             activeId = activeTranslationId,
@@ -4745,26 +4775,28 @@ class PlaybackService : MediaSessionService() {
             videoAspect = effectiveResumeState?.videoAspect ?: (16f / 9f),
             qualityOptions = effectiveResumeState?.qualityOptions ?: emptyList(),
             selectedQuality = effectiveResumeState?.selectedQuality.orEmpty(),
-            audioTrackLanguage = effectiveResumeState?.audioTrackLanguage.orEmpty(),
-            audioTrackMimeType = effectiveResumeState?.audioTrackMimeType.orEmpty(),
-            audioTrackCodecLabel = effectiveResumeState?.audioTrackCodecLabel
+            audioTrackLanguage = reusableAudioMetadataState?.audioTrackLanguage.orEmpty(),
+            audioTrackMimeType = reusableAudioMetadataState?.audioTrackMimeType.orEmpty(),
+            audioTrackCodecLabel = reusableAudioMetadataState?.audioTrackCodecLabel
                 ?.takeIf { it.isNotBlank() }
-                ?: selectedWebMediaMetadata?.audioCodecLabel.orEmpty(),
-            audioTrackDurationMs = effectiveResumeState?.audioTrackDurationMs
+                ?: verifiedSelectedWebMediaMetadata?.audioCodecLabel.orEmpty(),
+            audioMetadataSourceIdentity = currentAudioMetadataSourceIdentity
+                ?: reusableAudioMetadataState?.audioMetadataSourceIdentity.orEmpty(),
+            audioTrackDurationMs = reusableAudioMetadataState?.audioTrackDurationMs
                 ?.takeIf { it > 0L }
-                ?: (selectedWebMediaMetadata?.mediaDurationMs ?: 0L),
-            audioTrackChannelCount = effectiveResumeState?.audioTrackChannelCount
+                ?: (verifiedSelectedWebMediaMetadata?.mediaDurationMs ?: 0L),
+            audioTrackChannelCount = reusableAudioMetadataState?.audioTrackChannelCount
                 ?.takeIf { it > 0 }
-                ?: (selectedWebMediaMetadata?.audioChannelCount ?: 0),
-            audioTrackSampleRateHz = effectiveResumeState?.audioTrackSampleRateHz
+                ?: (verifiedSelectedWebMediaMetadata?.audioChannelCount ?: 0),
+            audioTrackSampleRateHz = reusableAudioMetadataState?.audioTrackSampleRateHz
                 ?.takeIf { it > 0 }
-                ?: (selectedWebMediaMetadata?.audioSampleRateHz ?: 0),
-            audioTrackSourceType = effectiveResumeState?.audioTrackSourceType
+                ?: (verifiedSelectedWebMediaMetadata?.audioSampleRateHz ?: 0),
+            audioTrackSourceType = reusableAudioMetadataState?.audioTrackSourceType
                 ?.takeIf { it.isNotBlank() }
-                ?: selectedWebMediaMetadata?.audioSourceType.orEmpty(),
-            videoResolution = effectiveResumeState?.videoResolution
+                ?: verifiedSelectedWebMediaMetadata?.audioSourceType.orEmpty(),
+            videoResolution = reusableAudioMetadataState?.videoResolution
                 ?.takeIf { it.isNotBlank() }
-                ?: selectedWebMediaMetadata?.videoResolution.orEmpty(),
+                ?: verifiedSelectedWebMediaMetadata?.videoResolution.orEmpty(),
             availableSubtitleTracks = effectiveResumeState?.availableSubtitleTracks ?: emptyList(),
             subtitleTrackStatus = effectiveResumeState?.subtitleTrackStatus.orEmpty(),
             sourceLang = effectiveResumeState?.sourceLang.orEmpty(),

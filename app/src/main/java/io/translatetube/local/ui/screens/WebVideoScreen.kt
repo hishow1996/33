@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.TranslateTubeApp
 import io.translatetube.local.player.SelectedWebMediaMetadata
+import io.translatetube.local.player.SelectedWebMediaMetadataIdentityPolicy
 import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.web.PikpakShare.PikpakEntry
 import io.translatetube.local.web.PikpakShare
@@ -241,7 +242,11 @@ private fun WebCandidateAudioHint.detailRows(): List<Pair<String, String>> {
 }
 
 /** Reuse the selected candidate's existing probe instead of starting the next stage empty. */
-private fun WebCandidateAudioHint.toSelectedWebMediaMetadata(): SelectedWebMediaMetadata? {
+private fun WebCandidateAudioHint.toSelectedWebMediaMetadata(
+    mediaUrl: String,
+    referrer: String,
+    cookie: String?,
+): SelectedWebMediaMetadata? {
     val info = mediaInfo
     val sourceType = when (kind) {
         WebCandidateAudioHintKind.INDEPENDENT -> "独立音轨"
@@ -255,6 +260,7 @@ private fun WebCandidateAudioHint.toSelectedWebMediaMetadata(): SelectedWebMedia
         it == "待识别" || it == "无视频"
     }.orEmpty()
     return SelectedWebMediaMetadata(
+        sourceIdentity = SelectedWebMediaMetadataIdentityPolicy.identity(mediaUrl, referrer, cookie),
         audioCodecLabel = info?.audioCodec.orEmpty(),
         audioChannelCount = info?.audioChannels ?: 0,
         audioSampleRateHz = info?.audioSampleRate ?: 0,
@@ -3051,7 +3057,11 @@ fun WebVideoScreen(
                                                     currentPage,
                                                     cookie,
                                                     webViewState.value?.settings?.userAgentString,
-                                                    hint.toSelectedWebMediaMetadata(),
+                                                    hint.toSelectedWebMediaMetadata(
+                                                        mediaUrl = mediaUrl,
+                                                        referrer = currentPage,
+                                                        cookie = cookie,
+                                                    ),
                                                 )
                                             }
                                         },
