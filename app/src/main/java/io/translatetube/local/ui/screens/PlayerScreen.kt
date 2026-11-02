@@ -956,10 +956,14 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> "重新区分人物"
                                 else -> "区分人物"
                             },
-                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
+                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy &&
+                                state.phase in setOf(Phase.READY, Phase.SYNTHESIZING),
                             onClick = {
                                 advancedMenuExpanded = false
-                                PlaybackService.instance?.autoAssignSpeakers()
+                                PlaybackService.instance?.autoAssignSpeakers(
+                                    forceRecognition = speakerRecognition.phase ==
+                                        io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED,
+                                )
                             },
                         )
                         if (isSpeakerRecognitionVisible) {
