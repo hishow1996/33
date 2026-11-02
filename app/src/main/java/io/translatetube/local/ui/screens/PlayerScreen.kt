@@ -4155,7 +4155,12 @@ private fun CompactProcessingStageDetails(
                 value("当前状态")?.let { CompactStageMetadataLine(it) }
             }
             1 -> {
-                value("当前任务")?.let { CompactStageMetadataLine(it) }
+                value("当前任务")?.let {
+                    CompactStageMetadataLine(
+                        item = it,
+                        modifier = Modifier.padding(start = 37.dp),
+                    )
+                }
                 CompactStageMetadataRow(value("视频分辨率"), value("音轨来源"))
                 CompactStageMetadataRow(value("音频格式"), value("采样率"))
                 CompactStageMetadataRow(value("音频时长"), value("声道"))
@@ -4221,9 +4226,12 @@ private fun CompactStageMetadataRow(
 }
 
 @Composable
-private fun CompactStageMetadataLine(item: Pair<String, String>) {
+private fun CompactStageMetadataLine(
+    item: Pair<String, String>,
+    modifier: Modifier = Modifier,
+) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
