@@ -12970,19 +12970,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         assignedCueCount = cachedAssignedCueCount,
                         personCount = cachedPersonCount,
                     )
-                if (reuseSavedSpeakerTimeline) {
-                    detectedSpeakerCount = cachedPersonCount
-                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                        if (state.key == sessionKey) state.copy(
-                            speakerRecognition = SpeakerRecognitionUiState(
-                                phase = SpeakerRecognitionPhase.APPLYING,
-                                message = "复用已保存的人物识别结果…",
-                                personCount = cachedPersonCount,
-                            ),
-                            progress = "人物识别 · 复用已保存结果…",
-                        ) else state
-                    }
-                }
+                if (reuseSavedSpeakerTimeline) detectedSpeakerCount = cachedPersonCount
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
                         error = null,
@@ -13010,10 +12998,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
-                        progress = if (selectedTts == "system") {
-                            "人物识别 · 检查手机可用的中文音色…"
-                        } else {
-                            if (reuseSavedSpeakerTimeline) "人物识别 · 复用已保存结果…" else "人物识别 · 初始化所选配音引擎…"
+                        progress = when {
+                            reuseSavedSpeakerTimeline -> "人物识别 · 复用已保存结果…"
+                            selectedTts == "system" -> "人物识别 · 检查手机可用的中文音色…"
+                            else -> "人物识别 · 初始化所选配音引擎…"
                         },
                     )
                 }
