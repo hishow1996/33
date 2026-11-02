@@ -38,7 +38,7 @@ private val http: OkHttpClient = OkHttpClient.Builder()
     .build()
 
 /** 批间衔接时携带的上批尾部行数（原文+译文对照）。 */
-private const val CONTEXT_LINES = 3
+private const val CONTEXT_LINES = 5
 private const val SLOW_TRANSLATION_REQUEST_WARNING_MS = 8_000L
 
 /**
@@ -1408,6 +1408,7 @@ class OpenAiCompatEngine(
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
+            append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
             append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
             append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
         }
@@ -1564,6 +1565,7 @@ class GeminiEngine(
             append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
+            append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
             append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
         }

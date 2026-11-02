@@ -10034,7 +10034,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         io.translatetube.local.translate.TranslationContextPolicy.mostRecentPairsBefore(
                             size = updatedLines.size,
                             beforeIndex = firstIndex,
-                            maxRows = 3,
+                            maxRows = 5,
                             checkActive = { translationJob?.ensureActive() },
                             sourceAt = { index -> updatedLines[index].text },
                             translationAt = { index ->
