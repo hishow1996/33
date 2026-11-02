@@ -14,10 +14,12 @@ class TranslationContextPromptTest {
             "0|Please continue.",
         ) ?: throw AssertionError("Expected a prompt with prior context")
 
-        assertTrue(prompt.contains("reference material only"))
-        assertTrue(prompt.contains("Use their aligned translations as a small terminology and character-name guide"))
-        assertTrue(prompt.contains("We will meet Sam tomorrow. => 我们明天和萨姆见面。"))
-        assertTrue(prompt.contains("Use the Orion name. => 使用“猎户座”这个名称。"))
+        assertTrue(prompt.contains("chronological order as JSON"))
+        assertTrue(prompt.contains("one aligned pair"))
+        assertTrue(prompt.contains("\\"source\\":\\"We will meet Sam tomorrow.\\""))
+        assertTrue(prompt.contains("\\"translation\\":\\"我们明天和萨姆见面。\\""))
+        assertTrue(prompt.contains("current source text is authoritative"))
+        assertTrue(prompt.contains("Do not infer a speaker's identity"))
         assertTrue(prompt.contains("Translate only the current numbered subtitle cues below."))
         assertTrue(prompt.contains("0|Please continue."))
     }
@@ -51,4 +53,31 @@ class TranslationContextPromptTest {
             ),
         )
     }
+    
+    @Test
+    fun multilineAndDelimiterTextRemainsInsideItsAlignedJsonPair() {
+        val source = "He said \\"go\\".\\nActually, wait => stop."
+        val translation = "他说“走”。\\n不，等等。"
+        val prompt = buildContextUserPrompt(
+            listOf(source) to listOf(translation),
+            "0|Continue.",
+        ) ?: throw AssertionError("Expected context with one complete pair")
+        val expectedPair = org.json.JSONArray().put(
+            org.json.JSONObject().put("source", source).put("translation", translation)
+        ).toString()
+
+        assertTrue(prompt.contains(expectedPair))
+        assertTrue(prompt.contains("0|Continue."))
+    }
+
+    @Test
+    fun chineseContextRulesAvoidUnsupportedSpeakerAndReferentAssumptions() {
+        val instructions = SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES
+
+        assertTrue(instructions.contains("当前字幕原文优先"))
+        assertTrue(instructions.contains("不要猜测说话者身份、性别、人物关系"))
+        assertTrue(instructions.contains("每行只翻译自己的内容"))
+        assertTrue(instructions.contains("不重复前后行"))
+    }
+
 }

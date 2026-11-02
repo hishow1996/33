@@ -775,7 +775,10 @@ private object HyMtPromptBuilder {
         } else {
             HyMtLanguagePolicy.display(sourceLanguage)
         }
-        val fidelityGuidelines = SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES
+        val fidelityGuidelines = listOf(
+            SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES,
+            SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES,
+        ).joinToString("\n")
         if (previous.isEmpty()) {
             return "$fidelityGuidelines\n将以下${sourceLabel}字幕台词翻译为简体中文。保持人物称呼；字幕可能是被切开的半句话，请结合当前文本理解，但只翻译当前这一条。不要删减、概括或扩写，只输出译文，不要解释：\n\n$sourceText"
         }

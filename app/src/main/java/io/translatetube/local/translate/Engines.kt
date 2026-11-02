@@ -54,11 +54,13 @@ internal fun buildContextUserPrompt(
         .filter { (source, translated) -> source.isNotBlank() && translated.isNotBlank() }
         .takeLast(CONTEXT_LINES)
     if (previousCues.isEmpty()) return null
-    val ctxText = previousCues.joinToString("\n") { (source, translated) ->
-        "$source => $translated"
-    }
-    return "Previous subtitle cues are reference material only. Use their aligned translations as a small terminology and character-name guide; keep recurring names, terms, pronouns and tone consistent. Do not translate or repeat these reference cues.\n" +
-        "$ctxText\n\nTranslate only the current numbered subtitle cues below. A sentence may continue across cue boundaries, so use the context to understand fragments, but keep each current cue in its own index. Do not omit, summarize, add information or move content between rows.\n$numbered"
+    val ctxText = JSONArray().apply {
+        previousCues.forEach { (source, translated) ->
+            put(JSONObject().put("source", source).put("translation", translated))
+        }
+    }.toString()
+    return "Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Use these completed pairs only as reference for established names, terms, pronouns, references and tone; do not translate or repeat them. Do not infer a speaker's identity, gender, relationship or an ambiguous referent unless the source and context clearly support it. The current source text is authoritative; never alter its meaning just to match an earlier translation. A sentence may continue across cue boundaries, so use nearby context to understand its grammar while keeping every current cue's meaning within its own index; do not duplicate, omit, summarize or move content between rows.\n" +
+        "$ctxText\n\nTranslate only the current numbered subtitle cues below. Include each current index exactly once and return no reference cues.\n$numbered"
 }
 
 /**

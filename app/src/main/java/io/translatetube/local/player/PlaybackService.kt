@@ -10008,26 +10008,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                 }
                 val batchStartedAtNanos = System.nanoTime()
-                // The playback layer calls the engine once per small batch, so carry the previous
-                // completed cues here; otherwise engine-local context resets at every boundary.
-                val previousContext = batchIndices.firstOrNull()?.let { firstIndex ->
-                    val contextIndices = io.translatetube.local.translate.TranslationContextPolicy
-                        .mostRecentIndicesBefore(
-                            size = updatedLines.size,
-                            beforeIndex = firstIndex,
-                            maxRows = 3,
-                            checkActive = { translationJob?.ensureActive() },
-                        ) { index ->
-                            val line = updatedLines[index]
-                            line.text.isNotBlank() &&
-                                !needsSubtitleTranslation(line, src) &&
-                                !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
-                        }
-                    contextIndices.takeIf { it.isNotEmpty() }?.let { indices ->
-                        indices.map { updatedLines[it].text } to
-                            indices.map { SubtitleParsers.cleanTranslatedText(updatedLines[it].zh).orEmpty() }
-                    }
-                }
+                // Context is rebuilt for each attempt. On retries, already accepted rows from
+                // this batch become available to later missing cues instead of reusing stale context.
                 // Retry missing rows up to twice after the initial request. A failed cue is isolated
                 // so successful rows are retained and only the unresolved rows are requested again.
                 var unresolvedIndices = batchIndices
@@ -10048,12 +10030,34 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             },
                         )
                     }
+                    val retryContext = unresolvedIndices.firstOrNull()?.let { firstIndex ->
+                        io.translatetube.local.translate.TranslationContextPolicy.mostRecentPairsBefore(
+                            size = updatedLines.size,
+                            beforeIndex = firstIndex,
+                            maxRows = 3,
+                            checkActive = { translationJob?.ensureActive() },
+                            sourceAt = { index -> updatedLines[index].text },
+                            translationAt = { index ->
+                                if (resolvedBatch.containsKey(index)) {
+                                    SubtitleParsers.cleanTranslatedText(resolvedBatch[index])
+                                } else {
+                                    SubtitleParsers.cleanTranslatedText(updatedLines[index].zh)
+                                }
+                            },
+                            isUsable = { source, translated ->
+                                !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                                    .isSourceEcho(source, translated, src) &&
+                                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                                        .isTargetLanguageMismatch(source, translated, src, tgt)
+                            },
+                        )
+                    }
                     // 请求可能要几十秒：用户这时启用外部翻译，就放弃等待这一批，立刻进入"等待外部译文"。
                     val racedBatch = try {
                         runUntilInterrupted(
                             manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
                         ) {
-                            engine!!.translateWithContext(batch, src, tgt, previousContext)
+                            engine!!.translateWithContext(batch, src, tgt, retryContext)
                         }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
