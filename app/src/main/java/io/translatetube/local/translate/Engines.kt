@@ -50,13 +50,15 @@ internal fun buildContextUserPrompt(
     numbered: String,
 ): String? {
     val (srcCtx, tgtCtx) = context ?: return null
-    if (srcCtx.isEmpty()) return null
-    val ctxText = srcCtx.mapIndexed { j, l ->
-        val t = tgtCtx.getOrNull(j).orEmpty()
-        "$l => $t"
-    }.joinToString("\n")
-    return "Previous cues for continuity (context only — do not translate or output these):\n" +
-        "$ctxText\n\nNow translate:\n$numbered"
+    val previousCues = srcCtx.zip(tgtCtx)
+        .filter { (source, translated) -> source.isNotBlank() && translated.isNotBlank() }
+        .takeLast(CONTEXT_LINES)
+    if (previousCues.isEmpty()) return null
+    val ctxText = previousCues.joinToString("\n") { (source, translated) ->
+        "$source => $translated"
+    }
+    return "Previous subtitle cues are reference material only. Use their aligned translations as a small terminology and character-name guide; keep recurring names, terms, pronouns and tone consistent. Do not translate or repeat these reference cues.\n" +
+        "$ctxText\n\nTranslate only the current numbered subtitle cues below. A sentence may continue across cue boundaries, so use the context to understand fragments, but keep each current cue in its own index. Do not omit, summarize, add information or move content between rows.\n$numbered"
 }
 
 /**
@@ -1400,6 +1402,8 @@ class OpenAiCompatEngine(
                 append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
             }
             append("Translate as coherent dialogue: keep pronouns, references and tone consistent across lines. ")
+            append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
+            append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
             append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
@@ -1553,8 +1557,10 @@ class GeminiEngine(
             if (forceTranslate) {
                 append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
             }
-            append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines, ")
-            append("and render the same person, place or recurring term identically every time it appears. ")
+            append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines. ")
+            append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
+            append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
+            append("Render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
         }
         val user = buildContextUserPrompt(context, numbered)
