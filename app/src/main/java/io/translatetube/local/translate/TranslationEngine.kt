@@ -33,6 +33,8 @@ interface TranslationEngine {
         srcLang: String,
         tgtLang: String,
         context: Pair<List<String>, List<String>>?,
+        lookaheadSource: List<String> = emptyList(),
+        videoTitle: String? = null,
     ): List<String> = translate(lines, srcLang, tgtLang)
 }
 

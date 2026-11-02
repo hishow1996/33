@@ -627,11 +627,14 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
         tgtLang: String,
     ): List<String> = translateInternal(lines, srcLang, tgtLang, null)
 
+    @Suppress("UNUSED_PARAMETER")
     override suspend fun translateWithContext(
         lines: List<String>,
         srcLang: String,
         tgtLang: String,
         context: Pair<List<String>, List<String>>?,
+        lookaheadSource: List<String>,
+        videoTitle: String?,
     ): List<String> = translateInternal(lines, srcLang, tgtLang, context)
 
     private suspend fun translateInternal(

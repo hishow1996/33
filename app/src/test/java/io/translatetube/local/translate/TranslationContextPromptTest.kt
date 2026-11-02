@@ -81,4 +81,42 @@ class TranslationContextPromptTest {
         assertTrue(instructions.contains("每行只翻译自己的内容"))
         assertTrue(instructions.contains("不重复前后行"))
     }
+    @Test
+    fun lookaheadSourceOnlyAddsFollowingCuesWithoutRequiringPriorTranslations() {
+        val prompt = buildContextUserPrompt(
+            context = null,
+            numbered = "0|We should go",
+            lookaheadSource = listOf("before the rain", "", "when it starts", "after the call", "ignore this cue"),
+        ) ?: throw AssertionError("Expected lookahead context")
+
+        val expectedFollowing = org.json.JSONArray()
+            .put("before the rain")
+            .put("when it starts")
+            .put("after the call")
+            .toString()
+        assertTrue(prompt.contains("Following cues (source only, for understanding sentence continuation; do not translate or return them):"))
+        assertTrue(prompt.contains(expectedFollowing))
+        assertFalse(prompt.contains("ignore this cue"))
+        assertTrue(prompt.contains("0|We should go"))
+    }
+
+    @Test
+    fun followingCuesDoNotReplaceAlignedPreviousTranslationContext() {
+        val prompt = buildContextUserPrompt(
+            context = listOf("I called Alex.") to listOf("我给亚历克斯打了电话。"),
+            numbered = "0|He answered.",
+            lookaheadSource = listOf("Then we talked."),
+        ) ?: throw AssertionError("Expected prior and following context")
+
+        val expectedPrevious = org.json.JSONArray().put(
+            org.json.JSONObject()
+                .put("source", "I called Alex.")
+                .put("translation", "我给亚历克斯打了电话。")
+        ).toString()
+        val expectedFollowing = org.json.JSONArray().put("Then we talked.").toString()
+        assertTrue(prompt.contains(expectedPrevious))
+        assertTrue(prompt.contains(expectedFollowing))
+        assertTrue(prompt.contains("0|He answered."))
+    }
+
 }

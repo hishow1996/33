@@ -48,21 +48,39 @@ private const val SLOW_TRANSLATION_REQUEST_WARNING_MS = 8_000L
 internal fun buildContextUserPrompt(
     context: Pair<List<String>, List<String>>?,
     numbered: String,
+    lookaheadSource: List<String> = emptyList(),
 ): String? {
-    val (srcCtx, tgtCtx) = context ?: return null
-    val previousCues = srcCtx.zip(tgtCtx)
-        .filter { (source, translated) -> source.isNotBlank() && translated.isNotBlank() }
-        .takeLast(CONTEXT_LINES)
-    if (previousCues.isEmpty()) return null
+    val previousCues = context?.let { (srcCtx, tgtCtx) ->
+        srcCtx.zip(tgtCtx)
+            .filter { (source, translated) -> source.isNotBlank() && translated.isNotBlank() }
+            .takeLast(CONTEXT_LINES)
+    }.orEmpty()
+    val followingCues = lookaheadSource.filter { it.isNotBlank() }.take(3)
+    if (previousCues.isEmpty() && followingCues.isEmpty()) return null
+
     val ctxText = JSONArray().apply {
         previousCues.forEach { (source, translated) ->
             put(JSONObject().put("source", source).put("translation", translated))
         }
     }.toString()
-    return "Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Use these completed pairs only as reference for established names, terms, pronouns, references and tone; do not translate or repeat them. Do not infer a speaker's identity, gender, relationship or an ambiguous referent unless the source and context clearly support it. The current source text is authoritative; never alter its meaning just to match an earlier translation. A sentence may continue across cue boundaries, so use nearby context to understand its grammar while keeping every current cue's meaning within its own index; do not duplicate, omit, summarize or move content between rows.\n" +
-        "$ctxText\n\nTranslate only the current numbered subtitle cues below. Include each current index exactly once and return no reference cues.\n$numbered"
+    val followingText = JSONArray().apply {
+        followingCues.forEach { put(it) }
+    }.toString()
+    return buildString {
+        if (previousCues.isNotEmpty()) {
+            append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Use these completed pairs only as reference for established names, terms, pronouns, references and tone; do not translate or repeat them. Do not infer a speaker's identity, gender, relationship or an ambiguous referent unless the source and context clearly support it. The current source text is authoritative; never alter its meaning just to match an earlier translation. A sentence may continue across cue boundaries, so use nearby context to understand its grammar while keeping every current cue's meaning within its own index; do not duplicate, omit, summarize or move content between rows.\n")
+            append(ctxText)
+            append("\n\n")
+        }
+        if (followingCues.isNotEmpty()) {
+            append("Following cues (source only, for understanding sentence continuation; do not translate or return them): ")
+            append(followingText)
+            append("\n\n")
+        }
+        append("Translate only the current numbered subtitle cues below. Include each current index exactly once and return no reference cues.\n")
+        append(numbered)
+    }
 }
-
 /**
  * Whether a compatible chat endpoint returned an assistant message without usable final text.
  * This is narrow on purpose: only this response-shape failure may try one alternate request
@@ -1338,13 +1356,15 @@ class OpenAiCompatEngine(
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
-        translateWithContext(lines, srcLang, tgtLang, null)
+        translateWithContext(lines, srcLang, tgtLang, null, emptyList(), null)
 
     override suspend fun translateWithContext(
         lines: List<String>,
         srcLang: String,
         tgtLang: String,
         initialContext: Pair<List<String>, List<String>>?,
+        lookaheadSource: List<String>,
+        videoTitle: String?,
     ): List<String> {
         val out = mutableListOf<String>()
         var context = initialContext
@@ -1367,10 +1387,16 @@ class OpenAiCompatEngine(
                         tgtLang,
                         cueContext,
                         forceTranslate = true,
+                        lookaheadSource = lookaheadSource,
+                        videoTitle = videoTitle,
                     ).singleOrNull()
                 },
             ) { rows, cueContext ->
-                translateBatch(rows, srcLang, tgtLang, cueContext)
+                translateBatch(
+                    rows, srcLang, tgtLang, cueContext,
+                    lookaheadSource = lookaheadSource,
+                    videoTitle = videoTitle,
+                )
             }
             out += translated
             val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
@@ -1386,6 +1412,8 @@ class OpenAiCompatEngine(
         tgtLang: String,
         context: Pair<List<String>, List<String>>? = null,
         forceTranslate: Boolean = false,
+        lookaheadSource: List<String> = emptyList(),
+        videoTitle: String? = null,
     ): List<String> {
         if (apiKey.isBlank()) {
             throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
@@ -1409,10 +1437,13 @@ class OpenAiCompatEngine(
             append("Render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
             append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
+            videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
+                append("Video title (for topic and terminology only): $title. ")
+            }
             append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
             append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
         }
-        val user = buildContextUserPrompt(context, numbered)
+        val user = buildContextUserPrompt(context, numbered, lookaheadSource)
             ?: numbered
         val params = ChatCompletionParamsPolicy.forModel(baseUrl, model)
         val payload = JSONObject()
@@ -1498,13 +1529,15 @@ class GeminiEngine(
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
-        translateWithContext(lines, srcLang, tgtLang, null)
+        translateWithContext(lines, srcLang, tgtLang, null, emptyList(), null)
 
     override suspend fun translateWithContext(
         lines: List<String>,
         srcLang: String,
         tgtLang: String,
         initialContext: Pair<List<String>, List<String>>?,
+        lookaheadSource: List<String>,
+        videoTitle: String?,
     ): List<String> {
         val out = mutableListOf<String>()
         var context = initialContext
@@ -1527,10 +1560,16 @@ class GeminiEngine(
                         tgtLang,
                         cueContext,
                         forceTranslate = true,
+                        lookaheadSource = lookaheadSource,
+                        videoTitle = videoTitle,
                     ).singleOrNull()
                 },
             ) { rows, cueContext ->
-                translateBatch(rows, srcLang, tgtLang, cueContext)
+                translateBatch(
+                    rows, srcLang, tgtLang, cueContext,
+                    lookaheadSource = lookaheadSource,
+                    videoTitle = videoTitle,
+                )
             }
             out += translated
             val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
@@ -1546,6 +1585,8 @@ class GeminiEngine(
         tgtLang: String,
         context: Pair<List<String>, List<String>>? = null,
         forceTranslate: Boolean = false,
+        lookaheadSource: List<String> = emptyList(),
+        videoTitle: String? = null,
     ): List<String> {
         if (normalizedApiKey.isBlank()) {
             throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
@@ -1566,10 +1607,13 @@ class GeminiEngine(
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
             append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
+            videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
+                append("Video title (for topic and terminology only): $title. ")
+            }
             append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
         }
-        val user = buildContextUserPrompt(context, numbered)
+        val user = buildContextUserPrompt(context, numbered, lookaheadSource)
             ?: numbered
         val configuredModel = model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }
         val payload = JSONObject().put(

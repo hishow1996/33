@@ -9943,6 +9943,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
             }
             val sourceLanguageForUi = src.ifBlank { srcLang }
+            val batchSize = 16
+            val translationVideoTitle = ui.value.takeIf { it.key == key }
+                ?.title?.trim()?.take(120)?.takeIf { it.isNotBlank() }
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.info(
                     this@PlaybackService,
@@ -9965,14 +9968,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "输入字幕行数" to lines.size.toString(),
                         "本次需要翻译的字幕行数" to pendingIndices.size.toString(),
                         "无需翻译/已具备有效译文行数" to completed.toString(),
-                        "翻译批次总数" to ((pendingIndices.size + 9) / 10).toString(),
-                        "单批字幕行数" to "10",
+                        "翻译批次总数" to ((pendingIndices.size + batchSize - 1) / batchSize).toString(),
+                        "单批字幕行数" to batchSize.toString(),
                         "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
                         "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
                     ),
                 )
             }
-            val batchSize = 10
             val translationBatches = pendingIndices.chunked(batchSize)
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
@@ -9995,7 +9997,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
             // Checkpoint the first batch immediately, then every few successful batches and
             // always at the end. This bounds crash recovery loss while avoiding serializing the full
-            // subtitle timeline to Room after every 10 translated cues.
+            // subtitle timeline to Room after every 16 translated cues.
             for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
                 awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)?.let { return it }
                 awaitProcessingResumed(key, pipelineGeneration)
@@ -10008,6 +10010,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                 }
                 val batchStartedAtNanos = System.nanoTime()
+                val lastBatchIndex = batchIndices.maxOrNull() ?: -1
+                val lookaheadSource = updatedLines.asSequence()
+                    .drop(lastBatchIndex + 1)
+                    .map { it.text }
+                    .filter { it.isNotBlank() }
+                    .take(3)
+                    .toList()
                 // Context is rebuilt for each attempt. On retries, already accepted rows from
                 // this batch become available to later missing cues instead of reusing stale context.
                 // Retry missing rows up to twice after the initial request. A failed cue is isolated
@@ -10057,7 +10066,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         runUntilInterrupted(
                             manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
                         ) {
-                            engine!!.translateWithContext(batch, src, tgt, retryContext)
+                            engine!!.translateWithContext(
+                                batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
+                            )
                         }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
