@@ -655,20 +655,33 @@ internal fun LocalTranslationSection(
                                     )
                                 }
                                 Text(
-                                    when (hyMtState.status) {
-                                        HyMtStatus.READY -> "已下载并通过本地试译验证"
-                                        HyMtStatus.DOWNLOADING -> "下载中 ${hyMtState.progress}%"
-                                        HyMtStatus.VERIFYING -> "正在加载并验证模型"
-                                        HyMtStatus.PAUSED -> if (hyMtState.hasCompleteFiles) {
+                                    when {
+                                        hyMtState.status == HyMtStatus.READY ->
+                                            "已下载并通过本地试译验证"
+                                        hyMtState.status == HyMtStatus.DOWNLOADING ->
+                                            "下载中 ${hyMtState.progress}%"
+                                        hyMtState.status == HyMtStatus.VERIFYING ->
+                                            "正在加载并验证模型"
+                                        hyMtState.status == HyMtStatus.PAUSED &&
+                                            hyMtState.hasCompleteFiles ->
                                             "模型文件已下载，等待运行时验证"
-                                        } else "下载已暂停"
-                                        HyMtStatus.FAILED -> hyMtState.error.ifBlank { "下载或验证失败" }
+                                        !hyMtState.runtimeAvailable &&
+                                            hyMtState.error.isNotBlank() ->
+                                            hyMtState.error
+                                        hyMtState.status == HyMtStatus.PAUSED ->
+                                            "下载已暂停"
+                                        hyMtState.status == HyMtStatus.FAILED ->
+                                            hyMtState.error.ifBlank { "下载或验证失败" }
                                         else -> "未下载"
                                     },
-                                    color = when (hyMtState.status) {
-                                        HyMtStatus.READY, HyMtStatus.DOWNLOADING, HyMtStatus.VERIFYING ->
+                                    color = when {
+                                        hyMtState.status == HyMtStatus.READY ||
+                                            hyMtState.status == HyMtStatus.DOWNLOADING ||
+                                            hyMtState.status == HyMtStatus.VERIFYING ->
                                             Color(0xFF3569D4)
-                                        HyMtStatus.FAILED -> Color(0xFFB42318)
+                                        hyMtState.status == HyMtStatus.FAILED ||
+                                            (!hyMtState.runtimeAvailable && !hyMtState.hasCompleteFiles) ->
+                                            Color(0xFFB42318)
                                         else -> Color(0xFF64748B)
                                     },
                                     style = MaterialTheme.typography.labelSmall,
