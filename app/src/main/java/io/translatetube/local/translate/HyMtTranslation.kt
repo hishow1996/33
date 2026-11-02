@@ -170,13 +170,12 @@ object HyMtModelManager {
     }
 
     private fun missingNativeLibraryName(linkerMessage: String): String? =
-        Regex("""(?i)library ["']([^"']+\\.so)["'] not found""")
+        Regex("""(?i)library ["']([^"']+\.so)["'] not found""")
             .find(linkerMessage)
             ?.groupValues
             ?.getOrNull(1)
 
-    private fun runtimeUnavailableMessage(context: Context, error: Throwable): String {
-        val app = context.applicationContext
+    private fun runtimeUnavailableMessage(error: Throwable): String {
         val supportedAbis = android.os.Build.SUPPORTED_ABIS
         if (supportedAbis.none { it.equals("arm64-v8a", ignoreCase = true) }) {
             return "设备不支持 ARM64，无法运行 HY-MT1.5（当前 ABI：${supportedAbis.joinToString(", ")}）"
@@ -254,7 +253,7 @@ object HyMtModelManager {
             val nativeLibrary = File(app.applicationInfo.nativeLibraryDir, System.mapLibraryName("hymt"))
             val runtimeError = runCatching { HyMtNative.ensureLibraryLoaded(app) }.exceptionOrNull()
             val runtimeErrorMessage = runtimeError?.let {
-                runtimeUnavailableMessage(app, it)
+                runtimeUnavailableMessage(it)
             }.orEmpty()
 
             // A missing or unloadable native runtime is recorded as a warning immediately
@@ -379,7 +378,7 @@ object HyMtModelManager {
         }
         val libraryLoadable = initialRuntimeError == null
         val runtimeErrorText = initialRuntimeError?.takeIf { supportsArm64 }
-            ?.let { runtimeUnavailableMessage(app, it) }.orEmpty()
+            ?.let { runtimeUnavailableMessage(it) }.orEmpty()
         fun keepRuntimeStatus(state: HyMtDownloadState): HyMtDownloadState = state.copy(
             runtimeAvailable = libraryLoadable,
             runtimeError = runtimeErrorText,
@@ -611,7 +610,7 @@ object HyMtModelManager {
                     runCatching { HyMtNative.ensureLibraryLoaded(app) }.exceptionOrNull()
                 }
             } else null
-            val nativeLibraryMissing = runtimeErrorAfterFailure != null
+            val runtimeUnavailableAfterFailure = runtimeErrorAfterFailure != null
             val runtimeMessageAfterFailure = runtimeErrorAfterFailure?.let {
                 runtimeUnavailableMessage(app, it)
             }.orEmpty()
@@ -631,7 +630,7 @@ object HyMtModelManager {
             AppLogStore.error(
                 app,
                 "LocalTranslationModel",
-                if (nativeLibraryMissing && completeModel) {
+                if (runtimeUnavailableAfterFailure && completeModel) {
                     "HY-MT1.5 模型已下载，推理运行库暂不可用"
                 } else {
                     "HY-MT1.5 2-bit 模型下载或验证失败"
@@ -649,7 +648,7 @@ object HyMtModelManager {
                         ?.firstOrNull { it is UnsatisfiedLinkError }
                         ?.message.orEmpty()
                         .ifBlank { "无" },
-                    "System.loadLibrary 可加载" to (!nativeLibraryMissing).toString(),
+                    "System.loadLibrary 可加载" to (!runtimeUnavailableAfterFailure).toString(),
                     "nativeLibraryDir" to app.applicationInfo.nativeLibraryDir,
                     "splitSourceDirs" to (app.applicationInfo.splitSourceDirs?.joinToString(",") ?: "无"),
                     "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
