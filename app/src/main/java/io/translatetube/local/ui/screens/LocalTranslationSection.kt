@@ -8,8 +8,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import android.content.Intent
-import android.net.Uri
 import android.widget.Toast
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
@@ -662,9 +660,15 @@ internal fun LocalTranslationSection(
                                         HyMtStatus.DOWNLOADING -> "下载中 ${hyMtState.progress}%"
                                         HyMtStatus.VERIFYING -> "正在加载并验证模型"
                                         HyMtStatus.PAUSED -> if (hyMtState.hasCompleteFiles) {
-                                            "模型文件已下载，等待运行时验证"
+                                            if (hyMtState.runtimeAvailable) {
+                                                "模型文件已下载，等待运行时验证"
+                                            } else "模型已下载，等待推理运行库可用"
                                         } else "下载已暂停"
-                                        HyMtStatus.FAILED -> hyMtState.error.ifBlank { "下载或验证失败" }
+                                        HyMtStatus.FAILED -> if (
+                                            hyMtState.hasCompleteFiles && !hyMtState.runtimeAvailable
+                                        ) {
+                                            "模型已下载，等待推理运行库可用"
+                                        } else hyMtState.error.ifBlank { "下载或验证失败" }
                                         else -> "未下载"
                                     },
                                     color = when (hyMtState.status) {
@@ -710,50 +714,17 @@ internal fun LocalTranslationSection(
                                     style = MaterialTheme.typography.labelMedium,
                                     maxLines = 1,
                                 )
-                            } else if (
-                                !hyMtState.runtimeAvailable &&
-                                hyMtState.error.contains("未包含 HY-MT1.5 ARM64") &&
-                                !hyMtState.hasCompleteFiles
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        hyMtJob = launchTrackedModelDownload(
-                                            taskId = "hy-mt-2bit",
-                                            title = "正在下载 HY-MT1.5 2-bit 模型",
-                                        ) {
-                                            try {
-                                                HyMtModelManager.download(context)
-                                            } catch (cancelled: CancellationException) {
-                                                throw cancelled
-                                            } catch (_: Exception) {
-                                                // Exact error remains in model state and diagnostics.
-                                            }
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                ) { Text("下载模型", maxLines = 1) }
-                            } else if (!hyMtState.runtimeAvailable) {
-                                TextButton(
-                                    onClick = {
-                                        runCatching {
-                                            context.startActivity(
-                                                Intent(
-                                                    Intent.ACTION_VIEW,
-                                                    Uri.parse("https://github.com/hishow1996/33/actions/workflows/build-apk.yml"),
-                                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                            )
-                                        }.onFailure {
-                                            Toast.makeText(context, "无法打开应用更新页面", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                ) { Text("更新应用", maxLines = 1) }
                             } else {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                                 ) {
-                                    if (hyMtState.status != HyMtStatus.READY) {
+                                    // A complete model cannot be revalidated until its runtime is
+                                    // available. Incomplete downloads remain resumable/retryable.
+                                    if (
+                                        hyMtState.status != HyMtStatus.READY &&
+                                        !(hyMtState.hasCompleteFiles && !hyMtState.runtimeAvailable)
+                                    ) {
                                         TextButton(
                                             onClick = {
                                                 hyMtJob = launchTrackedModelDownload(
