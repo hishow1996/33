@@ -18,7 +18,6 @@ llama_model * g_model = nullptr;
 llama_context * g_context = nullptr;
 const llama_vocab * g_vocab = nullptr;
 std::string g_model_path;
-uint32_t g_seed = 42;
 bool g_backend_initialized = false;
 
 bool abort_callback(void *) {
@@ -224,16 +223,12 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
             return throw_illegal_state(env, "HY-MT1.5 输入编码失败，推理已停止。");
         }
 
-        auto sampler_params = llama_sampler_chain_default_params();
-        llama_sampler * sampler = llama_sampler_chain_init(sampler_params);
+        // Deterministic decoding is preferable for translation: repeated runs
+        // should not randomly change subtitle wording.
+        llama_sampler * sampler = llama_sampler_init_greedy();
         if (sampler == nullptr) {
             return throw_illegal_state(env, "HY-MT1.5 采样器初始化失败。");
         }
-        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(20));
-        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.6f, 1));
-        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, 1.05f, 0.0f, 0.0f));
-        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
-        llama_sampler_chain_add(sampler, llama_sampler_init_dist(g_seed++));
 
         std::string output;
         output.reserve(raw.size() * 3U);
