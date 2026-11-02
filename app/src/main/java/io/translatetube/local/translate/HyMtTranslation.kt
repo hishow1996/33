@@ -332,7 +332,7 @@ object HyMtModelManager {
             )
             AppLogStore.info(app, "LocalTranslationModel", "HY-MT1.5 模型下载已暂停，已保留断点")
             throw cancelled
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
             mutableState.value = mutableState.value.copy(
                 status = HyMtStatus.FAILED,
                 error = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName,
