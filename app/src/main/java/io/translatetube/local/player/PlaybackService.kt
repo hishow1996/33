@@ -7994,17 +7994,43 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val pcmFile = try {
                     withContext(Dispatchers.IO) {
                         val decoded = if (audioFile is File) {
-                            AudioExtract.decodeTo16kMonoFile(
-                                this@PlaybackService, null, audioFile,
-                                checkActive = { pcmOwnerJob?.ensureActive() },
-                                onProgressPercent = { percent ->
-                                    updateUiForSession(key, pipelineGeneration) { state ->
-                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
-                                        } else state
-                                    }
-                                },
-                            )
+                            val decodeDownloadedAudio = {
+                                AudioExtract.decodeTo16kMonoFile(
+                                    this@PlaybackService, null, audioFile,
+                                    checkActive = { pcmOwnerJob?.ensureActive() },
+                                    onProgressPercent = { percent ->
+                                        updateUiForSession(key, pipelineGeneration) { state ->
+                                            if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
+                                            } else state
+                                        }
+                                    },
+                                )
+                            }
+                            // Keep the decoded PCM of downloaded audio in the shared PCM cache so
+                            // person recognition (and a re-run) does not decode the same track again.
+                            val sharedPcmIdentity = when {
+                                videoId != null -> AsrPcmCacheIdentity.youtube(requireNotNull(videoId))
+                                remoteMediaUrl != null -> AsrPcmCacheIdentity.remote(
+                                    MediaUrlCacheIdentity.audioKey(
+                                        requireNotNull(remoteMediaUrl),
+                                        remoteMediaReferrer,
+                                        remoteMediaCookie,
+                                    ),
+                                )
+                                else -> null
+                            }
+                            if (sharedPcmIdentity != null) {
+                                val prepared = obtainLocalAsrPcmFile(
+                                    cacheFile = localAsrPcmCacheFile(sharedPcmIdentity),
+                                    sessionKey = key,
+                                    pipelineGeneration = pipelineGeneration,
+                                ) { decodeDownloadedAudio() }
+                                leasedLocalPcmCachePath = prepared.second
+                                prepared.first
+                            } else {
+                                decodeDownloadedAudio()
+                            }
                         } else if (localPcmCacheFile != null) {
                             val prepared = obtainLocalAsrPcmFile(
                                 cacheFile = localPcmCacheFile,
@@ -10518,7 +10544,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cacheFile: File,
         sessionKey: String,
         pipelineGeneration: Long,
-        decode: () -> AudioExtract.PcmFile,
+        // Suspending so a caller can fetch its source audio only on a cache miss.
+        decode: suspend () -> AudioExtract.PcmFile,
     ): Pair<AudioExtract.PcmFile, String?> {
         val path = cacheFile.absolutePath
         VideoHistoryCacheIndex.rememberLocalPcmCacheFile(this@PlaybackService, sessionKey, cacheFile.name)
@@ -13069,54 +13096,86 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 } else {
                     val speakerDecodeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                     val speakerDecodeStartedNs = System.nanoTime()
+                    // Reuse the PCM that local transcription already decoded (shared PCM cache). The
+                    // source audio is fetched and decoded only on a cache miss.
+                    var leasedSpeakerPcmPath: String? = null
+                    var speakerAudioDecodedFresh = false
                     val pcmFile = withContext(Dispatchers.IO) {
-                        val sourceFile: File?
-                        val sourceUri: Uri?
-                        if (sessionVideoId != null) {
-                            sourceFile = obtainAsrAudioFile(
-                                sessionVideoId,
-                                sessionKey,
-                                "人物识别 · 复用已下载音频，正在准备分析…",
-                                pipelineGeneration = pipelineGeneration,
-                                dubbingMutationGeneration = mutationGeneration,
-                            )
-                            sourceUri = null
-                        } else if (sessionRemoteMediaUrl != null) {
-                            sourceFile = obtainRemoteMediaAsrFile(
-                                sessionRemoteMediaUrl,
-                                sessionRemoteMediaReferrer,
-                                sessionRemoteMediaCookie,
-                                sessionKey,
-                                "人物识别 · 复用网页视频音频，正在准备分析…",
-                                pipelineGeneration = pipelineGeneration,
-                                dubbingMutationGeneration = mutationGeneration,
-                            )
-                            sourceUri = null
-                        } else {
-                            sourceFile = null
-                            sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
+                        val decodeFresh: suspend () -> AudioExtract.PcmFile = {
+                            speakerAudioDecodedFresh = true
+                            val sourceFile: File?
+                            val sourceUri: Uri?
+                            if (sessionVideoId != null) {
+                                sourceFile = obtainAsrAudioFile(
+                                    sessionVideoId,
+                                    sessionKey,
+                                    "人物识别 · 复用已下载音频，正在准备分析…",
+                                    pipelineGeneration = pipelineGeneration,
+                                    dubbingMutationGeneration = mutationGeneration,
+                                )
+                                sourceUri = null
+                            } else if (sessionRemoteMediaUrl != null) {
+                                sourceFile = obtainRemoteMediaAsrFile(
+                                    sessionRemoteMediaUrl,
+                                    sessionRemoteMediaReferrer,
+                                    sessionRemoteMediaCookie,
+                                    sessionKey,
+                                    "人物识别 · 复用网页视频音频，正在准备分析…",
+                                    pipelineGeneration = pipelineGeneration,
+                                    dubbingMutationGeneration = mutationGeneration,
+                                )
+                                sourceUri = null
+                            } else {
+                                sourceFile = null
+                                sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
+                            }
+                            val leasedPath = sourceFile?.absolutePath
+                            try {
+                                AudioExtract.decodeTo16kMonoFile(
+                                    this@PlaybackService,
+                                    sourceUri,
+                                    sourceFile,
+                                    checkActive = { speakerDecodeJob?.ensureActive() },
+                                    onProgressPercent = { percent ->
+                                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                                            if (state.key == sessionKey) state.copy(
+                                                progress = "人物识别 · 解码音频 $percent%",
+                                                speakerRecognition = state.speakerRecognition.copy(
+                                                    phase = SpeakerRecognitionPhase.PREPARING,
+                                                    message = "正在准备完整音频…",
+                                                ),
+                                            ) else state
+                                        }
+                                    },
+                                )
+                            } finally {
+                                releaseActiveAsrAudio(leasedPath)
+                            }
                         }
-                        val leasedPath = sourceFile?.absolutePath
-                        try {
-                            AudioExtract.decodeTo16kMonoFile(
-                                this@PlaybackService,
-                                sourceUri,
-                                sourceFile,
-                                checkActive = { speakerDecodeJob?.ensureActive() },
-                                onProgressPercent = { percent ->
-                                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                                        if (state.key == sessionKey) state.copy(
-                                            progress = "人物识别 · 解码音频 $percent%",
-                                            speakerRecognition = state.speakerRecognition.copy(
-                                                phase = SpeakerRecognitionPhase.PREPARING,
-                                                message = "正在准备完整音频…",
-                                            ),
-                                        ) else state
-                                    }
-                                },
+                        val sharedPcmIdentity = when {
+                            sessionVideoId != null -> AsrPcmCacheIdentity.youtube(sessionVideoId)
+                            sessionRemoteMediaUrl != null -> AsrPcmCacheIdentity.remote(
+                                MediaUrlCacheIdentity.audioKey(
+                                    sessionRemoteMediaUrl,
+                                    sessionRemoteMediaReferrer,
+                                    sessionRemoteMediaCookie,
+                                ),
                             )
-                        } finally {
-                            releaseActiveAsrAudio(leasedPath)
+                            sessionLocalUri != null -> AsrPcmCacheIdentity.local(
+                                LocalMediaCacheIdentity.identityKey(this@PlaybackService, sessionLocalUri),
+                            )
+                            else -> null
+                        }
+                        if (sharedPcmIdentity != null) {
+                            val prepared = obtainLocalAsrPcmFile(
+                                cacheFile = localAsrPcmCacheFile(sharedPcmIdentity),
+                                sessionKey = sessionKey,
+                                pipelineGeneration = pipelineGeneration,
+                            ) { decodeFresh() }
+                            leasedSpeakerPcmPath = prepared.second
+                            prepared.first
+                        } else {
+                            decodeFresh()
                         }
                     }
                     val speakerDecodeMs = (System.nanoTime() - speakerDecodeStartedNs) / 1_000_000L
@@ -13150,6 +13209,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             diagnosticContext = mapOf(
                                 "视频来源" to diagnosticMediaSourceType(ui.value),
                                 "音频时长（秒）" to (pcmFile.sampleCount / pcmFile.sampleRate).toString(),
+                                "音频来源" to if (speakerAudioDecodedFresh) "重新获取并解码" else "复用已解码音频缓存",
                                 "获取并解码音频 ms" to speakerDecodeMs.toString(),
                                 "模型准备与分段推理 ms" to speakerDiarizeMs.toString(),
                                 "识别出的说话片段数" to diarizedSegments.size.toString(),
@@ -13157,7 +13217,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                         diarizedSegments
                     } finally {
-                        pcmFile.file.delete()
+                        // A cached PCM stays for the next run; only release this run's lease.
+                        val leasedPcm = leasedSpeakerPcmPath
+                        if (leasedPcm != null) releaseLocalAsrPcmFile(leasedPcm) else pcmFile.file.delete()
                     }
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()

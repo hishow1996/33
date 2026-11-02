@@ -31,6 +31,14 @@ object SpeakerDiarizer {
 
     data class Segment(val startSec: Float, val endSec: Float, val speaker: Int, val confidence: Float)
 
+    /**
+     * Window length. 4 min of 16 kHz float samples is 15.36 MB, within the 16 MB safety limit.
+     * The overlap must stay long enough for most people to speak inside it: a person who is silent
+     * in the overlap cannot be matched to the previous window and would be split into a new ID.
+     */
+    internal const val DEFAULT_CHUNK_DURATION_MS = 4L * 60L * 1_000L
+    internal const val DEFAULT_OVERLAP_MS = 20L * 1_000L
+
     private const val SEGMENTATION_URL =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
     private const val EMBEDDING_URL =
@@ -321,15 +329,16 @@ object SpeakerDiarizer {
     /**
      * Analyze a complete decoded audio file in bounded windows.
      *
-     * Only one 3-minute FloatArray is resident at a time. The native ONNX models and diarizer
+     * Only one 4-minute FloatArray (about 15 MB, just under the 16 MB guard below) is resident
+     * at a time. Longer windows mean fewer boundaries and less duplicated overlap work. The native ONNX models and diarizer
      * instance are initialized once per file, then reused for every window. Adjacent windows
      * overlap so local speaker IDs can be reconciled without rereading the entire prior timeline.
      */
     suspend fun diarizePcmFile(
         context: Context,
         pcmFile: AudioExtract.PcmFile,
-        chunkDurationMs: Long = 3L * 60L * 1_000L,
-        overlapMs: Long = 20L * 1_000L,
+        chunkDurationMs: Long = DEFAULT_CHUNK_DURATION_MS,
+        overlapMs: Long = DEFAULT_OVERLAP_MS,
         onProgress: (String) -> Unit = {},
     ): List<Segment> = diarizeMutex.withLock {
         require(pcmFile.sampleRate == 16_000) {
