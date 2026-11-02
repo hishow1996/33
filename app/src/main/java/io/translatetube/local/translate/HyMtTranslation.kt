@@ -479,7 +479,7 @@ object HyMtModelManager {
                 totalBytes = if (completeModel) model.length() else DISPLAY_BYTES,
                 error = when {
                     nativeLibraryMissing && completeModel ->
-                        "模型已下载；当前应用缺少 HY-MT1.5 ARM64 推理库，请更新应用后重新验证。"
+                        "模型已下载，推理运行库暂不可用，已保留模型文件。"
                     else -> error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
                 },
                 runtimeAvailable = !nativeLibraryMissing,
@@ -488,7 +488,7 @@ object HyMtModelManager {
                 app,
                 "LocalTranslationModel",
                 if (nativeLibraryMissing && completeModel) {
-                    "HY-MT1.5 模型已下载，等待推理运行库更新"
+                    "HY-MT1.5 模型已下载，推理运行库暂不可用"
                 } else {
                     "HY-MT1.5 2-bit 模型下载或验证失败"
                 },
