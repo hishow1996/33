@@ -3428,16 +3428,16 @@ private fun StageProgressVisual(
             })
             .graphicsLayer {
                 if (stageIndex == 3) {
-                    // Rotate the whole long bar around its vertical center axis so
-                    // its existing 16dp layout height and card geometry stay unchanged.
-                    rotationY = when {
+                    // Roll the complete translation bar around its own horizontal
+                    // centerline. Keep the layer bounds and 16dp layout height unchanged.
+                    rotationX = when {
                         translationAnimationActive || isPaused ->
                             translationWholeRotation.value * (180f / kotlin.math.PI.toFloat())
                         else -> 0f
                     }
                     cameraDistance = 12f * density
                 } else {
-                    rotationY = 0f
+                    rotationX = 0f
                 }
             },
     ) {
