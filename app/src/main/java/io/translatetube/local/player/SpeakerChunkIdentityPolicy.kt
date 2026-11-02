@@ -84,7 +84,7 @@ internal object SpeakerChunkIdentityPolicy {
             }
         }
 
-        val bestByCurrent = HashMap<Int, Candidate>()
+        val candidates = ArrayList<Candidate>()
         overlapByPair.forEach { (pair, overlap) ->
             val currentDuration = currentStats[pair.first]?.durationMs ?: 0L
             val previousDuration = previousStats[pair.second]?.durationMs ?: 0L
@@ -94,18 +94,20 @@ internal object SpeakerChunkIdentityPolicy {
             val previousShare = overlap.toDouble() / previousDuration.toDouble()
             val score = minOf(currentShare, previousShare)
             if (score < MIN_MATCH_SHARE) return@forEach
-            val candidate = Candidate(pair.first, pair.second, overlap, score)
-            val oldBest = bestByCurrent[pair.first]
-            if (oldBest == null || compareCandidate(candidate, oldBest) < 0) {
-                bestByCurrent[pair.first] = candidate
-            }
+            candidates += Candidate(pair.first, pair.second, overlap, score)
         }
 
-        val accepted = bestByCurrent.values.filter { candidate ->
-            val alternatives = bestByCurrent.values
+        // A pair must be the clear best match from both directions. Otherwise preserve
+        // separate IDs instead of merging ambiguous or overlapping voices.
+        val accepted = candidates.filter { candidate ->
+            val currentAlternative = candidates
+                .filter { it.currentId == candidate.currentId && it.previousId != candidate.previousId }
+                .maxOfOrNull { it.score } ?: 0.0
+            val previousAlternative = candidates
                 .filter { it.previousId == candidate.previousId && it.currentId != candidate.currentId }
                 .maxOfOrNull { it.score } ?: 0.0
-            candidate.score >= alternatives * MIN_MATCH_LEAD
+            candidate.score >= currentAlternative * MIN_MATCH_LEAD &&
+                candidate.score >= previousAlternative * MIN_MATCH_LEAD
         }.sortedWith(
             compareByDescending<Candidate> { it.score }
                 .thenByDescending { it.overlapMs }
