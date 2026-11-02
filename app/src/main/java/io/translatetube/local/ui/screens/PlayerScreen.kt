@@ -78,7 +78,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -3585,6 +3587,9 @@ private fun StageProgressVisual(
                         1f
                     }
                     cameraDistance = 32f * density
+                    // BlendMode.Clear below must erase only this progress visual,
+                    // never pixels belonging to the parent card or other UI.
+                    compositingStrategy = CompositingStrategy.Offscreen
                 } else {
                     rotationX = 0f
                     alpha = 1f
@@ -3910,15 +3915,17 @@ private fun StageProgressVisual(
                         val frontPath = crossing.frontPath
 
                         if (maskRear) {
-                            // The near-white mask blends into the light processing card.
+                            // Clear only the rear strand segment inside this isolated Canvas
+                            // layer. The card's real background remains visible underneath.
                             drawPath(
                                 backPath,
-                                color = Color.White.copy(alpha = 0.92f),
+                                color = Color.Transparent,
                                 style = Stroke(
                                     width = strokeWidth + 1.5.dp.toPx(),
                                     cap = StrokeCap.Round,
                                     join = StrokeJoin.Round,
                                 ),
+                                blendMode = BlendMode.Clear,
                             )
                             // A faint rear trace keeps the hidden strand visually continuous.
                             drawPath(
