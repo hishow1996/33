@@ -3263,27 +3263,41 @@ private fun ProcessingStageCards(
 }
 
 
-private data class TranslationHelixRungGeometry(
-    val x: Float,
-    val start: Offset,
-    val end: Offset,
-)
+private class TranslationHelixRungGeometry {
+    var x: Float = 0f
+    var start: Offset = Offset.Zero
+    var end: Offset = Offset.Zero
+}
 
-private data class TranslationHelixCrossingGeometry(
-    val x: Float,
-    val strandAIsFront: Boolean,
-    val frontPath: Path,
-    val backPath: Path,
-)
+private class TranslationHelixCrossingGeometry {
+    var x: Float = 0f
+    var strandAIsFront: Boolean = true
+    val frontPath: Path = Path()
+    val backPath: Path = Path()
+}
 
-private data class TranslationHelixGeometry(
-    val strandA: Path,
-    val strandB: Path,
-    val rungs: List<TranslationHelixRungGeometry>,
-    val crossings: List<TranslationHelixCrossingGeometry>,
-)
+/**
+ * Mutable draw buffers are kept for the lifetime of the measured progress lane.
+ * Paths and rung/crossover records are reused instead of recreated every frame.
+ */
+private class TranslationHelixGeometry {
+    val strandA: Path = Path()
+    val strandB: Path = Path()
+    val rungs: ArrayList<TranslationHelixRungGeometry> = ArrayList(20)
+    val crossings: ArrayList<TranslationHelixCrossingGeometry> = ArrayList(10)
+    var rungCount: Int = 0
+    var crossingCount: Int = 0
 
-/** Size-dependent values and sample positions reused while the helix rotates. */
+    fun ensureRungCapacity(count: Int) {
+        while (rungs.size < count) rungs.add(TranslationHelixRungGeometry())
+    }
+
+    fun ensureCrossingCapacity(count: Int) {
+        while (crossings.size < count) crossings.add(TranslationHelixCrossingGeometry())
+    }
+}
+
+/** Size-dependent samples and their base trigonometry are calculated only on resize. */
 private data class TranslationHelixTemplate(
     val width: Float,
     val height: Float,
@@ -3293,6 +3307,8 @@ private data class TranslationHelixTemplate(
     val totalPhase: Float,
     val density: Float,
     val sampleXs: FloatArray,
+    val sampleBaseSines: FloatArray,
+    val sampleBaseCosines: FloatArray,
 )
 
 private fun buildTranslationHelixTemplate(
@@ -3301,129 +3317,159 @@ private fun buildTranslationHelixTemplate(
     density: Float,
 ): TranslationHelixTemplate {
     val sampleCount = (width / (1.5f * density)).toInt().coerceAtLeast(160)
+    val basePhase = -kotlin.math.PI.toFloat() / 2f
+    val totalPhase = 8f * kotlin.math.PI.toFloat()
     val sampleXs = FloatArray(sampleCount + 1) { index ->
         width * index.toFloat() / sampleCount
+    }
+    val sampleBaseSines = FloatArray(sampleCount + 1)
+    val sampleBaseCosines = FloatArray(sampleCount + 1)
+    for (index in 0..sampleCount) {
+        val phase = basePhase + totalPhase * (index.toFloat() / sampleCount)
+        sampleBaseSines[index] = kotlin.math.sin(phase)
+        sampleBaseCosines[index] = kotlin.math.cos(phase)
     }
     return TranslationHelixTemplate(
         width = width,
         height = height,
         centerY = height / 2f,
         amplitude = height * 0.29f,
-        basePhase = -kotlin.math.PI.toFloat() / 2f,
-        totalPhase = 8f * kotlin.math.PI.toFloat(),
+        basePhase = basePhase,
+        totalPhase = totalPhase,
         density = density,
         sampleXs = sampleXs,
+        sampleBaseSines = sampleBaseSines,
+        sampleBaseCosines = sampleBaseCosines,
     )
+}
+
+private fun fillTranslationCrossoverSegment(
+    path: Path,
+    template: TranslationHelixTemplate,
+    crossingX: Float,
+    strandSign: Float,
+    sinRotation: Float,
+    cosRotation: Float,
+) {
+    path.reset()
+    val halfSpan = 3.2f * template.density
+    val startX = (crossingX - halfSpan).coerceAtLeast(0f)
+    val endX = (crossingX + halfSpan).coerceAtMost(template.width)
+    val samples = 10
+    for (sample in 0..samples) {
+        val x = startX + (endX - startX) * sample / samples.toFloat()
+        val phase = template.basePhase + template.totalPhase * (x / template.width)
+        val phaseSin = kotlin.math.sin(phase) * cosRotation +
+            kotlin.math.cos(phase) * sinRotation
+        val y = template.centerY + strandSign * template.amplitude * phaseSin
+        if (sample == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
 }
 
 /**
  * Project a real axial helix rotation into the horizontal progress lane.
- * Advancing the phase rotates the helix around its long horizontal axis while
- * keeping its projected height constant, instead of turning a flat 2D card edge-on.
+ * The base curve trigonometry is cached; each frame applies only a phase rotation
+ * and updates reusable paths and geometry records.
  */
 private fun buildTranslationHelixGeometry(
     template: TranslationHelixTemplate,
     rotationPhase: Float,
-): TranslationHelixGeometry {
+    geometry: TranslationHelixGeometry,
+) {
+    val sinRotation = kotlin.math.sin(rotationPhase)
+    val cosRotation = kotlin.math.cos(rotationPhase)
     val width = template.width
     val centerY = template.centerY
     val amplitude = template.amplitude
-    val basePhase = template.basePhase
-    val totalPhase = template.totalPhase
-    val density = template.density
+    val sampleXs = template.sampleXs
+    val sampleBaseSines = template.sampleBaseSines
+    val sampleBaseCosines = template.sampleBaseCosines
 
-    fun phaseAt(x: Float): Float =
-        basePhase + totalPhase * (x / width).coerceIn(0f, 1f) + rotationPhase
-
-    fun strandY(x: Float, upperSign: Float): Float =
-        centerY + upperSign * amplitude * kotlin.math.sin(phaseAt(x))
-
-    val strandA = Path()
-    val strandB = Path()
-    template.sampleXs.forEachIndexed { index, x ->
-        val yA = strandY(x, -1f)
-        val yB = strandY(x, 1f)
+    geometry.strandA.reset()
+    geometry.strandB.reset()
+    for (index in sampleXs.indices) {
+        val phaseSin = sampleBaseSines[index] * cosRotation +
+            sampleBaseCosines[index] * sinRotation
+        val x = sampleXs[index]
+        val yA = centerY - amplitude * phaseSin
+        val yB = centerY + amplitude * phaseSin
         if (index == 0) {
-            strandA.moveTo(x, yA)
-            strandB.moveTo(x, yB)
+            geometry.strandA.moveTo(x, yA)
+            geometry.strandB.moveTo(x, yB)
         } else {
-            strandA.lineTo(x, yA)
-            strandB.lineTo(x, yB)
+            geometry.strandA.lineTo(x, yA)
+            geometry.strandB.lineTo(x, yB)
         }
     }
 
-    // Solve crossover x coordinates directly from the linear helix phase.
-    // Crossovers may enter/leave the viewport during a full axial turn.
+    fun strandY(x: Float, strandSign: Float): Float {
+        val phase = template.basePhase + template.totalPhase * (x / width)
+        val phaseSin = kotlin.math.sin(phase) * cosRotation +
+            kotlin.math.cos(phase) * sinRotation
+        return centerY + strandSign * amplitude * phaseSin
+    }
+
+    // Find crossover positions directly from the linear phase; no temporary lists or zips.
+    val phaseStart = template.basePhase + rotationPhase
     val firstCrossingNumber = kotlin.math.ceil(
-        (phaseAt(0f) / kotlin.math.PI.toFloat()).toDouble(),
+        (phaseStart / kotlin.math.PI.toFloat()).toDouble(),
     ).toInt()
     val lastCrossingNumber = kotlin.math.floor(
-        (phaseAt(width) / kotlin.math.PI.toFloat()).toDouble(),
+        ((phaseStart + template.totalPhase) / kotlin.math.PI.toFloat()).toDouble(),
     ).toInt()
-    val crossingNumbers: List<Int> = if (firstCrossingNumber <= lastCrossingNumber) {
-        (firstCrossingNumber..lastCrossingNumber).toList()
-    } else {
-        emptyList()
-    }
-    val crossingXs = crossingNumbers.map { crossingNumber ->
-        (
-            (crossingNumber * kotlin.math.PI.toFloat() - basePhase - rotationPhase) /
-                totalPhase * width
+    val crossingCount = (lastCrossingNumber - firstCrossingNumber + 1).coerceAtLeast(0)
+    geometry.ensureCrossingCapacity(crossingCount)
+    geometry.crossingCount = crossingCount
+
+    for (index in 0 until crossingCount) {
+        val crossingNumber = firstCrossingNumber + index
+        val crossing = geometry.crossings[index]
+        val x = (
+            (crossingNumber * kotlin.math.PI.toFloat() - phaseStart) /
+                template.totalPhase * width
             ).coerceIn(0f, width)
-    }
-
-    val rungGeometry = ArrayList<TranslationHelixRungGeometry>(
-        ((crossingXs.size - 1).coerceAtLeast(0)) * 2,
-    )
-    for (index in 0 until (crossingXs.size - 1).coerceAtLeast(0)) {
-        val left = crossingXs[index]
-        val right = crossingXs[index + 1]
-        // Keep each pair of rungs symmetric at 25% and 75% of the visible helix loop.
-        listOf(0.25f, 0.75f).forEach { offset ->
-            val x = left + (right - left) * offset
-            rungGeometry.add(
-                TranslationHelixRungGeometry(
-                    x = x,
-                    start = Offset(x, strandY(x, -1f)),
-                    end = Offset(x, strandY(x, 1f)),
-                ),
-            )
-        }
-    }
-
-    fun crossoverSegment(crossingX: Float, strandSign: Float): Path {
-        val segment = Path()
-        val halfSpan = 3.2f * density
-        val startX = (crossingX - halfSpan).coerceAtLeast(0f)
-        val endX = (crossingX + halfSpan).coerceAtMost(width)
-        val samples = 10
-        for (sample in 0..samples) {
-            val x = startX + (endX - startX) * sample / samples.toFloat()
-            val y = strandY(x, strandSign)
-            if (sample == 0) segment.moveTo(x, y) else segment.lineTo(x, y)
-        }
-        return segment
-    }
-
-    val crossingGeometry = crossingNumbers.zip(crossingXs).map { (crossingNumber, x) ->
-        // The strand in front alternates with each successive half-turn of the helix.
-        val strandAIsFront = crossingNumber % 2 == 0
-        val frontSign = if (strandAIsFront) -1f else 1f
-        val backSign = -frontSign
-        TranslationHelixCrossingGeometry(
-            x = x,
-            strandAIsFront = strandAIsFront,
-            frontPath = crossoverSegment(x, frontSign),
-            backPath = crossoverSegment(x, backSign),
+        crossing.x = x
+        crossing.strandAIsFront = crossingNumber % 2 == 0
+        val frontSign = if (crossing.strandAIsFront) -1f else 1f
+        fillTranslationCrossoverSegment(
+            path = crossing.frontPath,
+            template = template,
+            crossingX = x,
+            strandSign = frontSign,
+            sinRotation = sinRotation,
+            cosRotation = cosRotation,
+        )
+        fillTranslationCrossoverSegment(
+            path = crossing.backPath,
+            template = template,
+            crossingX = x,
+            strandSign = -frontSign,
+            sinRotation = sinRotation,
+            cosRotation = cosRotation,
         )
     }
 
-    return TranslationHelixGeometry(
-        strandA = strandA,
-        strandB = strandB,
-        rungs = rungGeometry,
-        crossings = crossingGeometry,
-    )
+    // The two rungs in every loop remain symmetrically positioned at 25% and 75%.
+    val rungCount = (crossingCount - 1).coerceAtLeast(0) * 2
+    geometry.ensureRungCapacity(rungCount)
+    geometry.rungCount = rungCount
+    var rungIndex = 0
+    for (index in 0 until (crossingCount - 1).coerceAtLeast(0)) {
+        val left = geometry.crossings[index].x
+        val right = geometry.crossings[index + 1].x
+        val firstX = left + (right - left) * 0.25f
+        val secondX = left + (right - left) * 0.75f
+
+        val firstRung = geometry.rungs[rungIndex++]
+        firstRung.x = firstX
+        firstRung.start = Offset(firstX, strandY(firstX, -1f))
+        firstRung.end = Offset(firstX, strandY(firstX, 1f))
+
+        val secondRung = geometry.rungs[rungIndex++]
+        secondRung.x = secondX
+        secondRung.start = Offset(secondX, strandY(secondX, -1f))
+        secondRung.end = Offset(secondX, strandY(secondX, 1f))
+    }
 }
 
 @Composable
@@ -3450,6 +3496,9 @@ private fun StageProgressVisual(
         } else {
             null
         }
+    }
+    val translationHelixGeometry = remember(translationHelixTemplate) {
+        translationHelixTemplate?.let { TranslationHelixGeometry() }
     }
     val transition = rememberInfiniteTransition(label = "stageProgressMotion")
     val pulse by transition.animateFloat(
@@ -3834,15 +3883,19 @@ private fun StageProgressVisual(
                 // Reuse size-dependent samples, but project the helix at its current
                 // axial rotation phase on each animation frame.
                 val template = translationHelixTemplate ?: return@Canvas
-                val geometry = buildTranslationHelixGeometry(
+                val geometry = translationHelixGeometry ?: return@Canvas
+                buildTranslationHelixGeometry(
                     template = template,
                     rotationPhase = translationWholeRotation.value,
+                    geometry = geometry,
                 )
                 val progressX = size.width * fraction
                 val strandA = geometry.strandA
                 val strandB = geometry.strandB
                 val rungs = geometry.rungs
                 val crossings = geometry.crossings
+                val rungCount = geometry.rungCount
+                val crossingCount = geometry.crossingCount
 
                 val pendingColor = if (isSkipped) Color(0xFFBBC5D2) else Color(0xFFD1DAE5)
                 val blueStrandColor = when {
@@ -3867,7 +3920,8 @@ private fun StageProgressVisual(
 
                 // Draw the complete muted structure first; both strands stay continuous
                 // and the left/right ends remain visibly open.
-                rungs.forEach { rung ->
+                for (rungIndex in 0 until rungCount) {
+                    val rung = rungs[rungIndex]
                     drawLine(
                         color = pendingColor,
                         start = rung.start,
@@ -3883,7 +3937,8 @@ private fun StageProgressVisual(
                     pulseRadius: Float,
                     pulseIntensity: Float = 1f,
                 ) {
-                    rungs.forEach { rung ->
+                    for (rungIndex in 0 until rungCount) {
+                        val rung = rungs[rungIndex]
                         val strength = if (pulseHead != null) {
                             (1f - kotlin.math.abs(rung.x - pulseHead) / pulseRadius)
                                 .coerceIn(0f, 1f) * pulseIntensity
@@ -3936,7 +3991,8 @@ private fun StageProgressVisual(
                     strokeWidth: Float = curveStroke,
                     maskRear: Boolean = true,
                 ) {
-                    crossings.forEach { crossing ->
+                    for (crossingIndex in 0 until crossingCount) {
+                        val crossing = crossings[crossingIndex]
                         val frontColor = if (crossing.strandAIsFront) colorA else colorB
                         val backColor = if (crossing.strandAIsFront) colorB else colorA
                         val backPath = crossing.backPath
@@ -4014,12 +4070,14 @@ private fun StageProgressVisual(
                         kotlin.math.sin(kotlin.math.PI.toFloat() * translationFlowPhase.value)
                             .coerceIn(0f, 1f)
                 }
-                val nearestCrossoverDistance = if (flowHead == null) {
-                    size.width
-                } else {
-                    crossings.minOfOrNull { crossing ->
-                        kotlin.math.abs(crossing.x - flowHead)
-                    } ?: size.width
+                var nearestCrossoverDistance = size.width
+                if (flowHead != null) {
+                    for (crossingIndex in 0 until crossingCount) {
+                        val distance = kotlin.math.abs(crossings[crossingIndex].x - flowHead)
+                        if (distance < nearestCrossoverDistance) {
+                            nearestCrossoverDistance = distance
+                        }
+                    }
                 }
                 val crossoverBlend = (
                     (nearestCrossoverDistance - 3.dp.toPx()) / 11.dp.toPx()
