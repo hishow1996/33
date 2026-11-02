@@ -19,6 +19,8 @@ object AppLogTitleResolver {
             terms.any { combined.contains(it.lowercase(Locale.ROOT)) }
 
         return when {
+            normalizedTag.contains("hymtruntime") ->
+                "HY-MT1.5 运行库"
             normalizedTag.contains("notificationdiagnostics") ->
                 "通知诊断"
             normalizedTag.contains("uncaughtexception") &&
