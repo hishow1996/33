@@ -1,5 +1,6 @@
 package io.translatetube.local.translate
 
+import android.app.ActivityManager
 import android.content.Context
 import io.translatetube.local.asr.AtomicFileInstaller
 import io.translatetube.local.data.ResumableModelArchiveDownloader
@@ -21,7 +22,6 @@ import kotlinx.coroutines.flow.StateFlow
 import okhttp3.OkHttpClient
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -232,7 +232,9 @@ object HyMtModelManager {
                 if (result.downloadedBytes !in 500_000_000L..MAX_BYTES ||
                     !hasGgufHeader(part)
                 ) {
-                    throw IOException("下载文件大小或 GGUF 文件头校验失败")
+                    part.delete()
+                    ResumableModelArchiveDownloader.clearResumeMetadata(part)
+                    throw IOException("下载文件大小或 GGUF 文件头校验失败，已清理异常下载文件")
                 }
                 AtomicFileInstaller.install(part, model)
                 ResumableModelArchiveDownloader.clearResumeMetadata(part)
@@ -269,7 +271,7 @@ object HyMtModelManager {
             val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
             val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
             mutableState.value = HyMtDownloadState(
-                status = if (modelLength > 0L) HyMtStatus.PAUSED else HyMtStatus.PAUSED,
+                status = HyMtStatus.PAUSED,
                 progress = when {
                     modelLength > 0L -> 100
                     partialBytes > 0L -> (partialBytes * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99)
@@ -351,7 +353,8 @@ internal object HyMtNative {
 
 /** Serializes inference and keeps one mapped model alive across adjacent subtitle batches. */
 private object HyMtRuntime {
-    private const val CONTEXT_TOKENS = 4096
+    private const val CONTEXT_TOKENS = 2048
+    private const val MIN_FREE_MEMORY_BYTES = 768L * 1024L * 1024L
     private val inferenceMutex = Mutex()
     private val runtimeLock = Any()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -392,7 +395,20 @@ private object HyMtRuntime {
         return model.absolutePath + ":" + model.length() + ":" + model.lastModified()
     }
 
+    private fun ensureMemoryAvailable(context: Context) {
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return
+        val memoryInfo = ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(memoryInfo)
+        if (memoryInfo.lowMemory || memoryInfo.availMem < MIN_FREE_MEMORY_BYTES) {
+            throw IllegalStateException(
+                "设备当前可用内存不足，暂不加载 HY-MT1.5。请关闭占用内存的应用后重试。"
+            )
+        }
+    }
+
     private fun ensureLoaded(context: Context, threads: Int) {
+        ensureMemoryAvailable(context)
         val model = HyMtModelManager.modelFile(context)
         if (!HyMtModelManager.isReady(context) && !model.isFile) {
             throw IllegalStateException("HY-MT1.5 2-bit 模型尚未下载，请先在本地翻译模型管理页下载。")
@@ -442,6 +458,7 @@ private object HyMtRuntime {
 
     suspend fun validate(context: Context) = inferenceMutex.withLock {
         withContext(Dispatchers.IO) {
+            ensureMemoryAvailable(context)
             HyMtNative.ensureLibraryLoaded()
             val model = HyMtModelManager.modelFile(context)
             if (!model.isFile) throw IOException("HY-MT1.5 GGUF 模型文件不存在")
@@ -549,7 +566,7 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                     } else if (SourceLanguagePolicy.isChinese(source)) {
                         line
                     } else {
-                        val prompt = HyMtPromptBuilder.build(line, context)
+                        val prompt = HyMtPromptBuilder.build(line, source, context)
                         val maxTokens = (line.length * 2 + 64).coerceIn(96, 512)
                         val translated = HyMtRuntime.translate(appContext, prompt, maxTokens)
                         if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
@@ -584,18 +601,24 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
 private object HyMtPromptBuilder {
     fun build(
         sourceText: String,
+        sourceLanguage: String,
         context: Pair<List<String>, List<String>>?,
     ): String {
         val previous = context?.first.orEmpty()
             .zip(context?.second.orEmpty())
             .filter { it.first.isNotBlank() && it.second.isNotBlank() }
             .takeLast(3)
+        val sourceLabel = if (SourceLanguagePolicy.isUndetermined(sourceLanguage)) {
+            "自动识别原文语言"
+        } else {
+            LangMap.display(sourceLanguage)
+        }
         if (previous.isEmpty()) {
-            return "将以下文本翻译为中文，注意只需要输出翻译后的结果，不要额外解释：\n\n$sourceText"
+            return "将以下${sourceLabel}文本翻译为简体中文，只输出译文，不要额外解释：\n\n$sourceText"
         }
         val contextText = previous.joinToString("\n") { (source, target) ->
             "原文：$source\n译文：$target"
         }
-        return "$contextText\n参考上面的信息，把下面的文本翻译为中文，注意不需要翻译上文，也不要额外解释：\n$sourceText"
+        return "$contextText\n参考上面的信息，将下面的${sourceLabel}文本翻译为简体中文，只输出当前文本的译文，不要翻译上文，也不要额外解释：\n$sourceText"
     }
 }
