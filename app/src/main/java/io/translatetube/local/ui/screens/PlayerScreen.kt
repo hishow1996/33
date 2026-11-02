@@ -3357,6 +3357,29 @@ private fun StageProgressVisual(
     val translationWholeRotation = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
     }
+    // Keep the original travelling highlight while the complete graphic rotates.
+    // The highlighted head repeatedly travels only within the measured progress range.
+    val translationFlowActive = translationAnimationActive && !isIndeterminate
+    val translationFlowPhase = remember(stageIndex) {
+        androidx.compose.animation.core.Animatable(0f)
+    }
+    LaunchedEffect(translationFlowActive, isPaused) {
+        if (translationFlowActive) {
+            while (true) {
+                val remaining = (1f - translationFlowPhase.value).coerceIn(0.001f, 1f)
+                translationFlowPhase.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(
+                        durationMillis = (1250f * remaining).roundToInt().coerceAtLeast(1),
+                        easing = androidx.compose.animation.core.LinearEasing,
+                    ),
+                )
+                translationFlowPhase.snapTo(0f)
+            }
+        } else if (!isPaused) {
+            translationFlowPhase.snapTo(0f)
+        }
+    }
     LaunchedEffect(translationAnimationActive, isPaused) {
         if (translationAnimationActive) {
             while (true) {
@@ -3720,10 +3743,15 @@ private fun StageProgressVisual(
                 }
                 drawPath(strandA, color = pendingColor, style = curveStyle)
                 drawPath(strandB, color = pendingColor, style = curveStyle)
-                fun drawActiveRungs() {
+                fun drawActiveRungs(pulseHead: Float?, pulseRadius: Float) {
                     rungPositions.forEach { x ->
                         val yA = strandY(x, -1f)
                         val yB = strandY(x, 1f)
+                        val strength = if (pulseHead != null) {
+                            (1f - kotlin.math.abs(x - pulseHead) / pulseRadius).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
                         val gradient = Brush.linearGradient(
                             colors = listOf(blueStrandColor, greenStrandColor),
                             start = Offset(x, yA),
@@ -3733,9 +3761,18 @@ private fun StageProgressVisual(
                             brush = gradient,
                             start = Offset(x, yA),
                             end = Offset(x, yB),
-                            strokeWidth = rungStroke,
+                            strokeWidth = rungStroke + strength * 1.0.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
+                        if (strength > 0.04f) {
+                            drawLine(
+                                color = Color.White.copy(alpha = strength * 0.82f),
+                                start = Offset(x, yA),
+                                end = Offset(x, yB),
+                                strokeWidth = 0.8.dp.toPx() + strength * 0.55.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
+                        }
                     }
                 }
 
@@ -3826,19 +3863,54 @@ private fun StageProgressVisual(
                     strokeWidth = curveStroke,
                 )
 
+                val motionEnabled = translationAnimationActive
+                val pulseRadius = if (isIndeterminate) 15.dp.toPx() else 24.dp.toPx()
+                val flowHead = when {
+                    !motionEnabled -> null
+                    isIndeterminate -> scanPosition * size.width
+                    else -> translationFlowPhase.value * progressX
+                }
+
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = progressX.coerceIn(0f, size.width)) {
-                        drawActiveRungs()
+                        drawActiveRungs(
+                            pulseHead = flowHead,
+                            pulseRadius = pulseRadius,
+                        )
                         drawActiveCurves()
                         drawOverUnderWeave(
                             colorA = blueStrandColor,
                             colorB = greenStrandColor,
                         )
+
+                        // A short, bright highlight travels along both strands and
+                        // the rungs, looping over the already-completed portion.
+                        if (motionEnabled && flowHead != null) {
+                            clipRect(
+                                left = (flowHead - pulseRadius * 1.15f).coerceAtLeast(0f),
+                                right = (flowHead + pulseRadius * 0.35f).coerceAtMost(progressX),
+                            ) {
+                                drawActiveCurves(
+                                    alpha = 0.62f,
+                                    strokeWidth = 3.1.dp.toPx(),
+                                )
+                                drawOverUnderWeave(
+                                    colorA = blueStrandColor,
+                                    colorB = greenStrandColor,
+                                    alpha = 0.78f,
+                                    strokeWidth = 3.1.dp.toPx(),
+                                    maskRear = false,
+                                )
+                            }
+                        }
                     }
-                } else if (isIndeterminate && translationAnimationActive) {
-                    // Unknown progress keeps its measured value untouched while the
-                    // complete translation graphic rotates as a single indeterminate visual.
-                    drawActiveRungs()
+                } else if (isIndeterminate && motionEnabled) {
+                    // Unknown progress has no percentage claim: keep the full track
+                    // softly active and move the highlight across it as an indeterminate flow.
+                    drawActiveRungs(
+                        pulseHead = flowHead,
+                        pulseRadius = pulseRadius,
+                    )
                     drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
                     drawOverUnderWeave(
                         colorA = blueStrandColor,
@@ -3846,6 +3918,24 @@ private fun StageProgressVisual(
                         alpha = 0.88f,
                         strokeWidth = 2.6.dp.toPx(),
                     )
+                    if (flowHead != null) {
+                        clipRect(
+                            left = (flowHead - pulseRadius * 1.15f).coerceAtLeast(0f),
+                            right = (flowHead + pulseRadius * 0.35f).coerceAtMost(size.width),
+                        ) {
+                            drawActiveCurves(
+                                alpha = 0.68f,
+                                strokeWidth = 3.1.dp.toPx(),
+                            )
+                            drawOverUnderWeave(
+                                colorA = blueStrandColor,
+                                colorB = greenStrandColor,
+                                alpha = 0.8f,
+                                strokeWidth = 3.1.dp.toPx(),
+                                maskRear = false,
+                            )
+                        }
+                    }
                 }
 
                 // The slim blue cursor follows the exact measured translation boundary.
