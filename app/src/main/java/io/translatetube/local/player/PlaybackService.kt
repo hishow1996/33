@@ -8626,6 +8626,8 @@ updateUiForSession(key, pipelineGeneration) {
                 // The decoded ASR PCM is no longer needed after the transcript has been produced.
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
+                leasedLocalPcmCachePath?.let(::releaseLocalAsrPcmFile)
+                leasedLocalPcmCachePath = null
                 sourceTranscriptProducedInThisRun = true
                 srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
                     .resolveTranscriptionLanguageFromCues(
