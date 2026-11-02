@@ -160,19 +160,24 @@ object HyMtModelManager {
             val model = modelFile(context)
             val marker = readyMarker(context)
             val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
+            val completeModel = hasGgufHeader(model)
+            val runtimeError = if (completeModel) {
+                runCatching { HyMtNative.ensureLibraryLoaded() }.exceptionOrNull()
+            } else null
             mutableState.value = when {
-                isReady(context) -> HyMtDownloadState(
+                isReady(context) && runtimeError == null -> HyMtDownloadState(
                     status = HyMtStatus.READY,
                     progress = 100,
                     downloadedBytes = model.length(),
                     totalBytes = model.length(),
                 )
-                hasGgufHeader(model) -> HyMtDownloadState(
-                    status = HyMtStatus.PAUSED,
+                completeModel -> HyMtDownloadState(
+                    status = if (runtimeError == null) HyMtStatus.PAUSED else HyMtStatus.FAILED,
                     progress = 100,
                     downloadedBytes = model.length(),
                     totalBytes = model.length(),
-                    error = if (marker.isFile) "模型需要重新验证" else "模型文件已下载，等待运行时验证",
+                    error = runtimeError?.message
+                        ?: if (marker.isFile) "模型需要重新验证" else "模型文件已下载，等待运行时验证",
                 )
                 part.isFile && part.length() > 0L -> HyMtDownloadState(
                     status = HyMtStatus.PAUSED,
@@ -198,6 +203,38 @@ object HyMtModelManager {
             throw IOException(error)
         }
         val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
+        try {
+            withContext(Dispatchers.IO) { HyMtNative.ensureLibraryLoaded() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            val modelBytes = model.takeIf { hasGgufHeader(it) }?.length() ?: 0L
+            val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
+            val downloadedBytes = if (modelBytes > 0L) modelBytes else partialBytes
+            val totalBytes = if (modelBytes > 0L) modelBytes else DISPLAY_BYTES
+            mutableState.value = HyMtDownloadState(
+                status = HyMtStatus.FAILED,
+                progress = if (modelBytes > 0L) 100
+                    else (partialBytes * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
+                downloadedBytes = downloadedBytes,
+                totalBytes = totalBytes,
+                error = error.message?.takeIf { it.isNotBlank() }
+                    ?: "HY-MT1.5 ARM64 推理库不可用，请升级应用后重试。",
+            )
+            AppLogStore.error(
+                app,
+                "LocalTranslationModel",
+                "HY-MT1.5 ARM64 推理库不可用，已阻止模型下载或安装",
+                error,
+                diagnosticContext = mapOf(
+                    "需要的原生库" to "lib/arm64-v8a/libhymt.so",
+                    "模型文件已下载" to (modelBytes > 0L).toString(),
+                    "模型文件字节数" to modelBytes.toString(),
+                    "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
+                ),
+            )
+            throw error
+        }
         if (!isReady(app) && !hasGgufHeader(model)) {
             val remainingBytes = if (part.isFile) {
                 (DISPLAY_BYTES - part.length()).coerceAtLeast(0L)
@@ -412,7 +449,7 @@ internal object HyMtNative {
             libraryLoaded = true
         } catch (error: UnsatisfiedLinkError) {
             throw IllegalStateException(
-                "HY-MT1.5 ARM64 推理库未随应用安装，请安装包含混元本地运行时的版本。",
+                "当前应用安装包缺少 HY-MT1.5 ARM64 推理库（lib/arm64-v8a/libhymt.so），请升级到包含混元本地运行时的新版应用后重试。",
                 error,
             )
         }

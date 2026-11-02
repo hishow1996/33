@@ -56,8 +56,8 @@ android {
         applicationId = "io.translatetube.local"
         minSdk = 24
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.0.7"
+        versionCode = 10
+        versionName = "1.0.8"
         ndk {
             abiFilters += "arm64-v8a"
         }
