@@ -1680,8 +1680,8 @@ private fun LocalEngineCard(
     ) {
         AsyncImage(
             model = logo,
-            contentDescription = "$name 官方图形标识",
-            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(9.dp)),
+            contentDescription = "混元官方图形标志",
+            modifier = Modifier.size(48.dp).padding(2.dp),
             contentScale = logoContentScale,
             alignment = logoAlignment,
         )
