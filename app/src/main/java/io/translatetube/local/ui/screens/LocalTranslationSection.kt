@@ -712,7 +712,6 @@ internal fun LocalTranslationSection(
                                 )
                             } else if (
                                 !hyMtState.runtimeAvailable &&
-                                hyMtState.error.contains("未包含 HY-MT1.5 ARM64") &&
                                 !hyMtState.hasCompleteFiles
                             ) {
                                 TextButton(
