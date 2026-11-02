@@ -366,13 +366,14 @@ object HyMtModelManager {
     }
 
     suspend fun delete(context: Context) = lock.withLock {
-        HyMtRuntime.closeLoadedModel()
-        withContext(Dispatchers.IO) {
-            val directory = modelDirectory(context)
-            if (directory.exists() && !directory.deleteRecursively()) {
-                throw IOException("无法完整删除 HY-MT1.5 模型目录")
+        HyMtRuntime.deleteModelFiles {
+            withContext(Dispatchers.IO) {
+                val directory = modelDirectory(context)
+                if (directory.exists() && !directory.deleteRecursively()) {
+                    throw IOException("无法完整删除 HY-MT1.5 模型目录")
+                }
+                mutableState.value = HyMtDownloadState(status = HyMtStatus.NOT_DOWNLOADED)
             }
-            mutableState.value = HyMtDownloadState(status = HyMtStatus.NOT_DOWNLOADED)
         }
     }
 }
@@ -410,10 +411,14 @@ private object HyMtRuntime {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var loadedIdentity: String? = null
     private var leases = 0
+    private var deletingModel = false
     private var unloadJob: Job? = null
 
     fun acquireLease() {
         synchronized(runtimeLock) {
+            if (deletingModel) {
+                throw IllegalStateException("HY-MT1.5 模型正在删除，请稍后重试。")
+            }
             leases += 1
             unloadJob?.cancel()
             unloadJob = null
@@ -548,17 +553,24 @@ private object HyMtRuntime {
         }
     }
 
-    suspend fun closeLoadedModel() = inferenceMutex.withLock {
-        val inUse = synchronized(runtimeLock) {
-            if (leases == 0) {
-                unloadJob?.cancel()
-                unloadJob = null
+    suspend fun deleteModelFiles(deleteFiles: suspend () -> Unit) = inferenceMutex.withLock {
+        synchronized(runtimeLock) {
+            if (leases > 0) {
+                throw IllegalStateException("HY-MT1.5 正在翻译，暂时不能删除模型")
             }
-            leases > 0
+            deletingModel = true
+            unloadJob?.cancel()
+            unloadJob = null
         }
-        if (inUse) throw IllegalStateException("HY-MT1.5 正在翻译，暂时不能删除模型")
-        runCatching { HyMtNative.nativeClose() }
-        loadedIdentity = null
+        try {
+            runCatching { HyMtNative.nativeClose() }
+            loadedIdentity = null
+            deleteFiles()
+        } finally {
+            synchronized(runtimeLock) {
+                deletingModel = false
+            }
+        }
     }
 }
 
