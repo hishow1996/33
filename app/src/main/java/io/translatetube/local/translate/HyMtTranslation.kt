@@ -204,30 +204,48 @@ object HyMtModelManager {
                 runtimeUnavailableMessage(app, it)
             }.orEmpty()
 
-            // A missing runtime is a recoverable prerequisite on ARM64: the model can still be
-            // downloaded. Record the check immediately as INFO, rather than waiting for a later
-            // download/verification failure and presenting the prerequisite as a model failure.
-            if (runtimeError != null && supportsArm64) {
+            // A missing or unloadable native runtime is recorded as a warning immediately
+            // when the management page refreshes, before any model download/validation is attempted.
+            if (runtimeError != null) {
                 val diagnosticKey = listOf(
                     runtimeError.javaClass.name,
                     runtimeError.message.orEmpty(),
+                    runtimeError.cause?.javaClass?.name.orEmpty(),
+                    runtimeError.cause?.message.orEmpty(),
                     nativeLibrary.absolutePath,
                     app.applicationInfo.splitSourceDirs?.joinToString(",").orEmpty(),
                 ).joinToString("|")
                 if (lastRuntimeCheckLogKey != diagnosticKey) {
-                    AppLogStore.info(
+                    val linkerError = runtimeError.cause as? UnsatisfiedLinkError
+                    val linkerMessage = linkerError?.message.orEmpty()
+                    val missingDependency = Regex("""library ["']([^"']+)["'] not found""")
+                        .find(linkerMessage)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        .orEmpty()
+                    val rootCause = runtimeError.cause ?: runtimeError
+                    AppLogStore.warning(
                         app,
-                        "LocalTranslationModel",
-                        "HY-MT1.5 推理运行库检查完成",
+                        "HyMtRuntime",
+                        "检查失败",
+                        runtimeError,
                         diagnosticContext = mapOf(
-                            "检查时机" to "打开模型管理页时的状态刷新",
+                            "检查时机" to "打开 HY-MT1.5 模型管理页面时自动检查",
+                            "运行库检查结论" to runtimeErrorMessage,
                             "System.loadLibrary 可加载" to "false",
-                            "运行库检查结果" to runtimeErrorMessage,
-                            "需要的原生库" to "lib/arm64-v8a/libhymt.so",
+                            "异常类型" to runtimeError.javaClass.name,
+                            "异常信息" to runtimeError.message.orEmpty(),
+                            "根因类型" to rootCause.javaClass.name,
+                            "根因信息" to rootCause.message.orEmpty(),
+                            "Linker 错误信息" to linkerMessage.ifBlank { "未提供" },
+                            "缺失的依赖库" to missingDependency.ifBlank { "未能从 Linker 错误中提取" },
+                            "目标运行库" to "lib/arm64-v8a/libhymt.so",
                             "nativeLibraryDir" to app.applicationInfo.nativeLibraryDir,
                             "splitSourceDirs" to (app.applicationInfo.splitSourceDirs?.joinToString(",") ?: "无"),
+                            "sourceDir" to app.applicationInfo.sourceDir.orEmpty(),
                             "原生库实际路径" to nativeLibrary.absolutePath,
                             "原生库文件存在" to nativeLibrary.isFile.toString(),
+                            "原生库文件字节数" to (nativeLibrary.takeIf { it.isFile }?.length()?.toString() ?: "0"),
                             "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
                             "模型文件存在" to model.isFile.toString(),
                             "模型文件字节数" to modelBytes.toString(),
@@ -236,7 +254,7 @@ object HyMtModelManager {
                     )
                     lastRuntimeCheckLogKey = diagnosticKey
                 }
-            } else if (runtimeError == null) {
+            } else {
                 lastRuntimeCheckLogKey = null
             }
 
