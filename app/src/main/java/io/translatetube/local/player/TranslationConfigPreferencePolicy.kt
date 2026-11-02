@@ -40,6 +40,9 @@ internal object TranslationConfigPreferencePolicy {
             key.startsWith("single_pair_") ->
                 activeTranslationId == EngineFactory.ID_LOCAL_SINGLE_PAIR
 
+            key.startsWith("hymt_") ->
+                activeTranslationId == EngineFactory.ID_LOCAL_HYMT
+
             // Preserve unclassified/common translation settings until their consumer is known.
             else -> true
         }
