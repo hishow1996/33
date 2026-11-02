@@ -3694,13 +3694,13 @@ class PlaybackService : MediaSessionService() {
                 )
             )
             .apply {
+                val processingPendingFlags =
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 if (hasProcessingActions) {
                     val toggleIntent = Intent(this@PlaybackService, PlaybackService::class.java)
                         .setAction(ACTION_TOGGLE_PROCESSING_PAUSE)
                         .setData(Uri.parse("translate-tube://processing/pause/" + Uri.encode(state.key)))
                         .putExtra(EXTRA_PROCESSING_SESSION_KEY, state.key)
-                    val processingPendingFlags =
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     val togglePending = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                         PendingIntent.getForegroundService(this@PlaybackService, 1002, toggleIntent, processingPendingFlags)
                     } else {
