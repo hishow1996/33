@@ -325,7 +325,7 @@ object HyMtModelManager {
                     downloadedBytes = downloadedBytes,
                     totalBytes = totalBytes,
                     error = error.message?.takeIf { it.isNotBlank() }
-                        ?: "HY-MT1.5 ARM64 推理库不可用，请更新应用。",
+                        ?: "HY-MT1.5 推理运行库不可用。",
                     runtimeAvailable = false,
                 )
                 AppLogStore.error(
