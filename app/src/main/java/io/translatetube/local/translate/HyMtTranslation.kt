@@ -73,6 +73,12 @@ object HyMtLanguagePolicy {
         if (SourceLanguagePolicy.isUndetermined(languageTag)) return true
         return canonicalCode(languageTag).lowercase(Locale.ROOT) in supported
     }
+
+    fun display(languageTag: String): String {
+        val code = canonicalCode(languageTag)
+        return languages.firstOrNull { it.first.equals(code, ignoreCase = true) }?.second
+            ?: LangMap.display(languageTag)
+    }
 }
 
 /** A pinned GGUF model plus the Q2_0C llama.cpp runtime used to execute it. */
@@ -410,8 +416,8 @@ private object HyMtRuntime {
     private fun ensureLoaded(context: Context, threads: Int) {
         ensureMemoryAvailable(context)
         val model = HyMtModelManager.modelFile(context)
-        if (!HyMtModelManager.isReady(context) && !model.isFile) {
-            throw IllegalStateException("HY-MT1.5 2-bit 模型尚未下载，请先在本地翻译模型管理页下载。")
+        if (!HyMtModelManager.isReady(context)) {
+            throw IllegalStateException("HY-MT1.5 2-bit 模型尚未通过本地试译验证，请先在本地翻译模型管理页重新验证。")
         }
         val requestedIdentity = identity(context)
         if (loadedIdentity == requestedIdentity) return
@@ -420,6 +426,12 @@ private object HyMtRuntime {
         val error = HyMtNative.nativeOpen(model.absolutePath, threads.coerceIn(1, 4), CONTEXT_TOKENS)
         if (!error.isNullOrBlank()) throw IllegalStateException(error)
         loadedIdentity = requestedIdentity
+    }
+
+    suspend fun prepare(context: Context) = inferenceMutex.withLock {
+        withContext(Dispatchers.IO) {
+            ensureLoaded(context, LocalTranslationRuntimePolicy.inferenceThreads(context))
+        }
     }
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
@@ -557,32 +569,51 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
             }
         }
         try {
+            HyMtRuntime.prepare(appContext)
             return withContext(Dispatchers.Default) {
                 val taskContext = currentCoroutineContext()
+                val simplifiedChineseSource = HyMtLanguagePolicy.canonicalCode(source) == "zh"
                 lines.mapIndexed { index, line ->
                     taskContext.ensureActive()
-                    if (line.isBlank()) {
-                        ""
-                    } else if (SourceLanguagePolicy.isChinese(source)) {
-                        line
-                    } else {
-                        val prompt = HyMtPromptBuilder.build(line, source, context)
-                        val maxTokens = (line.length * 2 + 64).coerceIn(96, 512)
-                        val translated = HyMtRuntime.translate(appContext, prompt, maxTokens)
-                        if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
-                            AppLogStore.info(
+                    val translated = when {
+                        line.isBlank() -> ""
+                        simplifiedChineseSource -> line
+                        else -> try {
+                            val prompt = HyMtPromptBuilder.build(line, source, context)
+                            val maxTokens = (line.length * 2 + 64).coerceIn(96, 512)
+                            HyMtRuntime.translate(appContext, prompt, maxTokens)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            AppLogStore.warning(
                                 appContext,
                                 "Translation",
-                                "HY-MT1.5 本地翻译进度",
+                                "HY-MT1.5 单条字幕翻译失败，已交给批次恢复逻辑",
+                                error,
                                 diagnosticContext = mapOf(
-                                    "已完成字幕" to (index + 1).toString(),
+                                    "字幕序号" to (index + 1).toString(),
                                     "字幕总数" to lines.size.toString(),
+                                    "字幕字符数" to line.length.toString(),
                                     "模型版本" to "1.8B · 2-bit",
+                                    "未记录字幕原文" to "true",
                                 ),
                             )
+                            ""
                         }
-                        translated
                     }
+                    if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
+                        AppLogStore.info(
+                            appContext,
+                            "Translation",
+                            "HY-MT1.5 本地翻译进度",
+                            diagnosticContext = mapOf(
+                                "已完成字幕" to (index + 1).toString(),
+                                "字幕总数" to lines.size.toString(),
+                                "模型版本" to "1.8B · 2-bit",
+                            ),
+                        )
+                    }
+                    translated
                 }
             }
         } finally {
@@ -611,7 +642,7 @@ private object HyMtPromptBuilder {
         val sourceLabel = if (SourceLanguagePolicy.isUndetermined(sourceLanguage)) {
             "自动识别原文语言"
         } else {
-            LangMap.display(sourceLanguage)
+            HyMtLanguagePolicy.display(sourceLanguage)
         }
         if (previous.isEmpty()) {
             return "将以下${sourceLabel}文本翻译为简体中文，只输出译文，不要额外解释：\n\n$sourceText"
