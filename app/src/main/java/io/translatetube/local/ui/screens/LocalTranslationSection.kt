@@ -734,7 +734,10 @@ internal fun LocalTranslationSection(
                                 )
                             } else if (
                                 !hyMtState.runtimeAvailable &&
-                                !hyMtState.hasCompleteFiles
+                                !hyMtState.hasCompleteFiles &&
+                                android.os.Build.SUPPORTED_ABIS.any {
+                                    it.equals("arm64-v8a", ignoreCase = true)
+                                }
                             ) {
                                 TextButton(
                                     onClick = {
@@ -766,15 +769,7 @@ internal fun LocalTranslationSection(
                                         maxLines = 1,
                                     )
                                 }
-                            } else if (
-                                !hyMtState.runtimeAvailable &&
-                                (
-                                    hyMtState.hasCompleteFiles ||
-                                        android.os.Build.SUPPORTED_ABIS.none {
-                                            it.equals("arm64-v8a", ignoreCase = true)
-                                        }
-                                )
-                            ) {
+                            } else if (!hyMtState.runtimeAvailable) {
                                 // Complete models wait for runtime recovery; unsupported ABIs cannot use this runtime.
                             } else {
                                 Row(
