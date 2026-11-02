@@ -544,10 +544,8 @@ internal fun LocalTranslationSection(
     ) {
         if (detail.isBlank()) {
             LocalEngineCard(
-                logo = R.drawable.hunyuan_logo,
+                logo = R.drawable.hunyuan_symbol,
                 name = "HY-MT1.5 1.8B · 2-bit",
-                logoContentScale = ContentScale.Crop,
-                logoAlignment = Alignment.CenterStart,
                 selected = activeId == EngineFactory.ID_LOCAL_HYMT,
                 onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_HYMT, "HY-MT1.5 2-bit") },
                 onManage = { detail = "hymt" },
@@ -1663,8 +1661,6 @@ private fun SourceLanguageMenu(
 private fun LocalEngineCard(
     logo: Int,
     name: String,
-    logoContentScale: ContentScale = ContentScale.Fit,
-    logoAlignment: Alignment = Alignment.Center,
     selected: Boolean,
     onSelect: () -> Unit,
     onManage: () -> Unit,
@@ -1684,10 +1680,10 @@ private fun LocalEngineCard(
     ) {
         AsyncImage(
             model = logo,
-            contentDescription = "混元官方图形标志",
+            contentDescription = "$name 官方图形标识",
             modifier = Modifier.size(48.dp).padding(2.dp),
-            contentScale = logoContentScale,
-            alignment = logoAlignment,
+            contentScale = ContentScale.Fit,
+            alignment = Alignment.Center,
         )
         Spacer(Modifier.width(12.dp))
         Column(
