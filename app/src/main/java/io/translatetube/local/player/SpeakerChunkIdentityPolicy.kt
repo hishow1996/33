@@ -16,9 +16,12 @@ internal object SpeakerChunkIdentityPolicy {
     )
 
     data class MergeResult(
+        /** Newly emitted segments, clipped so audio from the overlap is not duplicated. */
         val segments: List<Segment>,
         val nextSpeakerId: Int,
         val linkedSpeakerCount: Int,
+        /** Complete current window with global IDs, retained only for the next adjacent match. */
+        val windowSegments: List<Segment> = segments,
     )
 
     private data class SpeakerWindowStats(
@@ -54,7 +57,12 @@ internal object SpeakerChunkIdentityPolicy {
             if (segment.endMs <= segment.startMs) return@mapNotNull null
             segment.copy(speakerId = id)
         }
-        return MergeResult(normalized, mapping.size, 0)
+        return MergeResult(
+            segments = normalized,
+            nextSpeakerId = mapping.size,
+            linkedSpeakerCount = 0,
+            windowSegments = normalized,
+        )
     }
 
     fun mergeWindow(
@@ -134,22 +142,26 @@ internal object SpeakerChunkIdentityPolicy {
             mapping[rawId] = nextId++
         }
 
+        // Retain the complete mapped current window for the next iteration. Only its emitted
+        // tail is appended to the final timeline; the overlap itself is kept for identity matching.
+        val windowSegments = ArrayList<Segment>(current.size)
         val merged = ArrayList<Segment>(current.size)
         current.forEach { segment ->
             val globalId = mapping[segment.speakerId] ?: return@forEach
+            if (segment.endMs <= segment.startMs) return@forEach
+            val mapped = segment.copy(speakerId = globalId)
+            windowSegments += mapped
             if (segment.endMs <= overlapEndMs) return@forEach
             val clippedStart = maxOf(segment.startMs, overlapEndMs)
             if (segment.endMs > clippedStart) {
-                merged += segment.copy(
-                    speakerId = globalId,
-                    startMs = clippedStart,
-                )
+                merged += mapped.copy(startMs = clippedStart)
             }
         }
         return MergeResult(
             segments = merged,
             nextSpeakerId = nextId,
             linkedSpeakerCount = accepted.count { mapping[it.currentId] == it.previousId },
+            windowSegments = windowSegments,
         )
     }
 

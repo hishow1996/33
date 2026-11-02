@@ -48,6 +48,14 @@ class SpeakerChunkIdentityPolicyTest {
         assertEquals(listOf(0, 1), result.segments.map { it.speakerId })
         assertEquals(listOf(15_000L, 18_000L), result.segments.map { it.startMs })
         assertEquals(2, result.nextSpeakerId)
+        assertEquals(
+            listOf(0, 1, 0, 1),
+            result.windowSegments.map { it.speakerId },
+        )
+        assertEquals(
+            listOf(10_000L, 12_000L, 15_000L, 18_000L),
+            result.windowSegments.map { it.startMs },
+        )
     }
 
     @Test

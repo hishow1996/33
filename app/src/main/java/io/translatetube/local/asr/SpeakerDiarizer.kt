@@ -41,6 +41,247 @@ object SpeakerDiarizer {
     // Model download/extraction writes shared files; serialize it with native diarizer instances.
     private val diarizeMutex = kotlinx.coroutines.sync.Mutex()
 
+    private data class ModelFiles(
+        val segmentation: File,
+        val embedding: File,
+    )
+
+    /**
+     * A single native instance can process multiple independent windows. Keeping it alive for
+     * the complete file avoids reloading both ONNX models every three minutes on lower-memory phones.
+     */
+    private class NativeDiarizerSession(
+        private val instance: Any,
+        private val processMethod: java.lang.reflect.Method,
+        private val releaseMethod: java.lang.reflect.Method,
+        val sampleRate: Int,
+    ) {
+        fun process(
+            samples: FloatArray,
+            checkActive: () -> Unit,
+        ): List<Segment> {
+            require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
+            checkActive()
+            val raw = processMethod.invoke(instance, samples) ?: return emptyList()
+            checkActive()
+            val count = java.lang.reflect.Array.getLength(raw)
+            if (count == 0) return emptyList()
+
+            val first = java.lang.reflect.Array.get(raw, 0)
+            val segmentClass = first.javaClass
+            val startGetter = segmentClass.getMethod("getStart")
+            val endGetter = segmentClass.getMethod("getEnd")
+            val speakerGetter = segmentClass.getMethod("getSpeaker")
+            val confidenceGetter = runCatching {
+                segmentClass.getMethod("getConfidence")
+            }.getOrNull()
+
+            val durationSec = samples.size.toFloat() / sampleRate.toFloat()
+            val out = ArrayList<Segment>(count)
+            for (i in 0 until count) {
+                checkActive()
+                val item = java.lang.reflect.Array.get(raw, i)
+                val start = (startGetter.invoke(item) as Number).toFloat()
+                val end = (endGetter.invoke(item) as Number).toFloat()
+                val speaker = (speakerGetter.invoke(item) as Number).toInt()
+                val confidence = confidenceGetter?.let { getter ->
+                    runCatching { (getter.invoke(item) as Number).toFloat() }.getOrNull()
+                } ?: SpeakerSegmentPolicy.UNKNOWN_CONFIDENCE
+                SpeakerSegmentPolicy.normalize(start, end, speaker, confidence, durationSec)?.let(out::add)
+            }
+            return out
+        }
+
+        fun close() {
+            runCatching { releaseMethod.invoke(instance) }
+        }
+    }
+
+    private fun checkSpeakerRuntimeAvailable() {
+        try {
+            Class.forName("com.k2fsa.sherpa.onnx.OfflineSpeakerDiarization", true, javaClass.classLoader)
+        } catch (e: ClassNotFoundException) {
+            throw IllegalStateException(
+                "当前内置 sherpa-onnx.aar 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色",
+                e,
+            )
+        } catch (e: LinkageError) {
+            throw IllegalStateException(
+                "当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试",
+                e,
+            )
+        }
+    }
+
+    private fun prepareModelFiles(
+        context: Context,
+        ownerJob: Job?,
+        checkActive: () -> Unit,
+        onProgress: (String) -> Unit,
+    ): ModelFiles {
+        checkActive()
+        checkSpeakerRuntimeAvailable()
+        onProgress("检查人物识别模型…")
+        val dir = File(context.filesDir, "models/speaker")
+        if (!dir.isDirectory && !dir.mkdirs()) {
+            throw java.io.IOException("无法创建人物识别模型目录，请检查设备可用存储空间")
+        }
+
+        val segmentation = File(dir, "segmentation.onnx")
+        val embedding = File(dir, "embedding.onnx")
+        if (!SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(
+                segmentation.isFile,
+                segmentation.length(),
+            )
+        ) {
+            val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
+            try {
+                checkActive()
+                download(
+                    url = SEGMENTATION_URL,
+                    destination = archive,
+                    maxBytes = 32L * 1024 * 1024,
+                    checkActive = checkActive,
+                    ownerJob = ownerJob,
+                    progressLabel = "下载人物分离模型",
+                    onProgress = onProgress,
+                )
+                checkActive()
+                onProgress("正在解压人物分离模型…")
+                extractSegmentation(archive, segmentation, checkActive)
+                checkActive()
+            } finally {
+                archive.delete()
+            }
+        }
+
+        if (!SpeakerModelDownloadPolicy.isValidCachedEmbeddingModel(
+                embedding.isFile,
+                embedding.length(),
+            )
+        ) {
+            val temp = File(dir, "embedding.onnx.download")
+            try {
+                checkActive()
+                download(
+                    url = EMBEDDING_URL,
+                    destination = temp,
+                    maxBytes = 100L * 1024 * 1024,
+                    checkActive = checkActive,
+                    ownerJob = ownerJob,
+                    progressLabel = "下载人物声纹模型",
+                    onProgress = onProgress,
+                )
+                checkActive()
+                if (temp.length() < SpeakerModelDownloadPolicy.MIN_EMBEDDING_MODEL_BYTES) {
+                    throw java.io.IOException("人物声纹模型文件不完整")
+                }
+                AtomicFileInstaller.install(temp, embedding)
+            } finally {
+                temp.delete()
+            }
+        }
+        checkActive()
+        return ModelFiles(segmentation, embedding)
+    }
+
+    private fun createNativeSession(
+        models: ModelFiles,
+        checkActive: () -> Unit,
+    ): NativeDiarizerSession {
+        try {
+            val loader = javaClass.classLoader
+                ?: throw IllegalStateException("无法初始化人物识别运行环境")
+            fun type(name: String) = Class.forName("com.k2fsa.sherpa.onnx." + name, true, loader)
+            val pyannoteClass = type("OfflineSpeakerSegmentationPyannoteModelConfig")
+            val segmentationClass = type("OfflineSpeakerSegmentationModelConfig")
+            val embeddingClass = type("SpeakerEmbeddingExtractorConfig")
+            val clusteringClass = type("FastClusteringConfig")
+            val configClass = type("OfflineSpeakerDiarizationConfig")
+            val diarizerClass = type("OfflineSpeakerDiarization")
+
+            val pyannote = pyannoteClass.constructors.first { it.parameterCount == 2 }
+                .newInstance(models.segmentation.absolutePath, 0.1f)
+            val segmentationConfig = segmentationClass.constructors.first { it.parameterCount == 4 }
+                .newInstance(pyannote, 1, false, "cpu")
+            val embeddingConfig = embeddingClass.constructors.first { it.parameterCount == 4 }
+                .newInstance(models.embedding.absolutePath, 1, false, "cpu")
+            val clustering = clusteringClass.constructors.firstOrNull { it.parameterCount == 3 }
+                ?.newInstance(-1, 0.5f, true)
+                ?: clusteringClass.constructors.first { it.parameterCount == 2 }
+                    .newInstance(-1, 0.5f)
+            val config = configClass.constructors.first { it.parameterCount == 5 }
+                .newInstance(segmentationConfig, embeddingConfig, clustering, 0.2f, 0.5f)
+
+            checkActive()
+            val instance = diarizerClass.constructors.first { it.parameterCount == 2 }
+                .newInstance(null, config)
+            try {
+                val sampleRate = diarizerClass.getMethod("sampleRate").invoke(instance) as Int
+                require(sampleRate == 16_000) {
+                    "人物识别模型要求 16kHz 音频，当前为 " + sampleRate + "Hz"
+                }
+                val processMethod = diarizerClass.getMethod("process", FloatArray::class.java)
+                val releaseMethod = diarizerClass.getMethod("release")
+                checkActive()
+                return NativeDiarizerSession(instance, processMethod, releaseMethod, sampleRate)
+            } catch (failure: Throwable) {
+                runCatching { diarizerClass.getMethod("release").invoke(instance) }
+                throw failure
+            }
+        } catch (e: ClassNotFoundException) {
+            throw IllegalStateException(
+                "当前内置 sherpa-onnx AAR 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色",
+                e,
+            )
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw IllegalStateException(
+                "说话人分离模型初始化失败：" + (e.targetException.message ?: e.targetException.javaClass.simpleName),
+                e.targetException,
+            )
+        } catch (e: ReflectiveOperationException) {
+            throw IllegalStateException(
+                "当前 sherpa-onnx AAR 的说话人分离 API 与应用不兼容，请更新内置运行库后重试",
+                e,
+            )
+        } catch (e: NoSuchElementException) {
+            throw IllegalStateException(
+                "当前 sherpa-onnx AAR 缺少所需的说话人分离构造函数，请更新内置运行库后重试",
+                e,
+            )
+        } catch (e: LinkageError) {
+            throw IllegalStateException(
+                "当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试",
+                e,
+            )
+        }
+    }
+
+    private fun processWithNativeSession(
+        session: NativeDiarizerSession,
+        samples: FloatArray,
+        checkActive: () -> Unit,
+    ): List<Segment> {
+        try {
+            return session.process(samples, checkActive)
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw IllegalStateException(
+                "说话人分离推理失败：" + (e.targetException.message ?: e.targetException.javaClass.simpleName),
+                e.targetException,
+            )
+        } catch (e: ReflectiveOperationException) {
+            throw IllegalStateException(
+                "当前 sherpa-onnx AAR 的说话人分离 API 与应用不兼容，请更新内置运行库后重试",
+                e,
+            )
+        } catch (e: LinkageError) {
+            throw IllegalStateException(
+                "当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试",
+                e,
+            )
+        }
+    }
+
     suspend fun diarize(
         context: Context,
         samples: FloatArray,
@@ -49,138 +290,15 @@ object SpeakerDiarizer {
         val ownerJob = currentCoroutineContext()[Job]
         val checkActive: () -> Unit = { ownerJob?.ensureActive() }
         withContext(Dispatchers.IO) {
-            checkActive()
             require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
-            // Check the bundled AAR before downloading ~45 MB of models.
+            val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
+            onProgress("正在初始化人物识别模型…")
+            val session = createNativeSession(models, checkActive)
             try {
-                Class.forName("com.k2fsa.sherpa.onnx.OfflineSpeakerDiarization", true, javaClass.classLoader)
-            } catch (e: ClassNotFoundException) {
-                throw IllegalStateException("当前内置 sherpa-onnx.aar 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色", e)
-            } catch (e: LinkageError) {
-                throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
-            }
-            onProgress("下载人物识别模型…")
-            val dir = File(context.filesDir, "models/speaker")
-            if (!dir.isDirectory && !dir.mkdirs()) {
-                throw java.io.IOException("无法创建人物识别模型目录，请检查设备可用存储空间")
-            }
-            val segmentation = File(dir, "segmentation.onnx")
-            val embedding = File(dir, "embedding.onnx")
-            if (!SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(
-                    segmentation.isFile, segmentation.length(),
-                )
-            ) {
-                val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
-                try {
-                    checkActive()
-                    download(
-                        url = SEGMENTATION_URL,
-                        destination = archive,
-                        maxBytes = 32L * 1024 * 1024,
-                        checkActive = checkActive,
-                        ownerJob = ownerJob,
-                        progressLabel = "下载人物分离模型",
-                        onProgress = onProgress,
-                    )
-                    checkActive()
-                    onProgress("正在解压人物分离模型…")
-                    extractSegmentation(archive, segmentation, checkActive)
-                    checkActive()
-                } finally {
-                    archive.delete()
-                }
-            }
-            if (!SpeakerModelDownloadPolicy.isValidCachedEmbeddingModel(
-                    embedding.isFile, embedding.length(),
-                )
-            ) {
-                val temp = File(dir, "embedding.onnx.download")
-                try {
-                    checkActive()
-                    download(
-                        url = EMBEDDING_URL,
-                        destination = temp,
-                        maxBytes = 100L * 1024 * 1024,
-                        checkActive = checkActive,
-                        ownerJob = ownerJob,
-                        progressLabel = "下载人物声纹模型",
-                        onProgress = onProgress,
-                    )
-                    checkActive()
-                    if (temp.length() < 5_000_000L) throw java.io.IOException("人物声纹模型文件不完整")
-                    AtomicFileInstaller.install(temp, embedding)
-                } finally {
-                    temp.delete()
-                }
-            }
-
-            checkActive()
-            onProgress("识别人物说话片段…")
-            try {
-                val loader = javaClass.classLoader
-                    ?: throw IllegalStateException("无法初始化人物识别运行环境")
-                fun type(name: String) = Class.forName("com.k2fsa.sherpa.onnx.$name", true, loader)
-                val pyannoteClass = type("OfflineSpeakerSegmentationPyannoteModelConfig")
-                val segmentationClass = type("OfflineSpeakerSegmentationModelConfig")
-                val embeddingClass = type("SpeakerEmbeddingExtractorConfig")
-                val clusteringClass = type("FastClusteringConfig")
-                val configClass = type("OfflineSpeakerDiarizationConfig")
-                val diarizerClass = type("OfflineSpeakerDiarization")
-
-                val pyannote = pyannoteClass.constructors.first { it.parameterCount == 2 }
-                    .newInstance(segmentation.absolutePath, 0.1f)
-                val segmentationConfig = segmentationClass.constructors.first { it.parameterCount == 4 }
-                    .newInstance(pyannote, 1, false, "cpu")
-                val embeddingConfig = embeddingClass.constructors.first { it.parameterCount == 4 }
-                    .newInstance(embedding.absolutePath, 1, false, "cpu")
-                val clustering = clusteringClass.constructors.firstOrNull { it.parameterCount == 3 }
-                    ?.newInstance(-1, 0.5f, true)
-                    ?: clusteringClass.constructors.first { it.parameterCount == 2 }
-                        .newInstance(-1, 0.5f)
-                val config = configClass.constructors.first { it.parameterCount == 5 }
-                    .newInstance(segmentationConfig, embeddingConfig, clustering, 0.2f, 0.5f)
-                val instance = diarizerClass.constructors.first { it.parameterCount == 2 }
-                    .newInstance(null, config)
-                try {
-                    val sampleRate = diarizerClass.getMethod("sampleRate").invoke(instance) as Int
-                    require(sampleRate == 16000) { "人物识别模型要求 16kHz 音频，当前为 ${sampleRate}Hz" }
-                    checkActive()
-                    // AudioExtract caps analysis at 3 minutes on low-memory devices.
-                    // Avoid copyOf(): duplicating a multi-minute FloatArray can cause OOM on older phones.
-                    val raw = diarizerClass.getMethod("process", FloatArray::class.java).invoke(instance, samples)
-                    checkActive()
-                    val count = java.lang.reflect.Array.getLength(raw)
-                    val out = ArrayList<Segment>(count)
-                    val durationSec = samples.size.toFloat() / sampleRate.toFloat()
-                    for (i in 0 until count) {
-                        checkActive()
-                        val item = java.lang.reflect.Array.get(raw, i)
-                        val cls = item.javaClass
-                        val start = (cls.getMethod("getStart").invoke(item) as Number).toFloat()
-                        val end = (cls.getMethod("getEnd").invoke(item) as Number).toFloat()
-                        val speaker = (cls.getMethod("getSpeaker").invoke(item) as Number).toInt()
-                        val confidence = (runCatching {
-                            cls.getMethod("getConfidence").invoke(item) as Number
-                        }.getOrNull()?.toFloat() ?: SpeakerSegmentPolicy.UNKNOWN_CONFIDENCE)
-                        SpeakerSegmentPolicy.normalize(start, end, speaker, confidence, durationSec)?.let(out::add)
-                    }
-                    out
-                } finally {
-                    runCatching { diarizerClass.getMethod("release").invoke(instance) }
-                }
-            } catch (e: ClassNotFoundException) {
-                throw IllegalStateException(
-                    "当前内置 sherpa-onnx AAR 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色",
-                    e,
-                )
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw IllegalStateException("说话人分离模型初始化或推理失败：${e.targetException.message ?: e.targetException.javaClass.simpleName}", e.targetException)
-            } catch (e: ReflectiveOperationException) {
-                throw IllegalStateException("当前 sherpa-onnx AAR 的说话人分离 API 与应用不兼容，请更新内置运行库后重试", e)
-            } catch (e: NoSuchElementException) {
-                throw IllegalStateException("当前 sherpa-onnx AAR 缺少所需的说话人分离构造函数，请更新内置运行库后重试", e)
-            } catch (e: LinkageError) {
-                throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
+                onProgress("识别人物说话片段…")
+                processWithNativeSession(session, samples, checkActive)
+            } finally {
+                session.close()
             }
         }
     }
@@ -188,8 +306,9 @@ object SpeakerDiarizer {
     /**
      * Analyze a complete decoded audio file in bounded windows.
      *
-     * Only one 3-minute FloatArray is resident at a time. Adjacent windows overlap so speaker
-     * labels can be reconciled using shared speech instead of assuming raw sherpa IDs are stable.
+     * Only one 3-minute FloatArray is resident at a time. The native ONNX models and diarizer
+     * instance are initialized once per file, then reused for every window. Adjacent windows
+     * overlap so local speaker IDs can be reconciled without rereading the entire prior timeline.
      */
     suspend fun diarizePcmFile(
         context: Context,
@@ -197,13 +316,14 @@ object SpeakerDiarizer {
         chunkDurationMs: Long = 3L * 60L * 1_000L,
         overlapMs: Long = 20L * 1_000L,
         onProgress: (String) -> Unit = {},
-    ): List<Segment> {
+    ): List<Segment> = diarizeMutex.withLock {
         require(pcmFile.sampleRate == 16_000) {
-            "人物识别需要 16 kHz PCM，当前采样率为 ${pcmFile.sampleRate} Hz"
+            "人物识别需要 16 kHz PCM，当前采样率为 " + pcmFile.sampleRate + " Hz"
         }
         require(pcmFile.sampleCount >= pcmFile.sampleRate.toLong()) {
             "转写音频不足 1 秒，无法可靠识别说话人"
         }
+
         val rate = pcmFile.sampleRate.toLong()
         val chunkSamples = (chunkDurationMs.coerceAtLeast(60_000L) * rate / 1_000L)
             .coerceAtMost(Int.MAX_VALUE.toLong())
@@ -212,6 +332,7 @@ object SpeakerDiarizer {
         require(chunkSamples > overlapSamples && chunkSamples * 4L <= 16L * 1024L * 1024L) {
             "人物识别分段大小超过设备内存安全范围"
         }
+
         val strideSamples = chunkSamples - overlapSamples
         val totalChunks = if (pcmFile.sampleCount <= chunkSamples) {
             1L
@@ -219,87 +340,98 @@ object SpeakerDiarizer {
             (pcmFile.sampleCount - chunkSamples + strideSamples - 1L) / strideSamples + 1L
         }
         val ownerJob = currentCoroutineContext()[Job]
-        val merged = ArrayList<SpeakerChunkIdentityPolicy.Segment>()
-        var nextSpeakerId = 0
-        var chunkIndex = 0L
-        var chunkStartSample = 0L
-        var previousChunkEndSample = 0L
+        val checkActive: () -> Unit = { ownerJob?.ensureActive() }
 
         withContext(Dispatchers.IO) {
-            pcmFile.openReader { ownerJob?.ensureActive() }.use { reader ->
-                while (chunkStartSample < pcmFile.sampleCount) {
-                    ownerJob?.ensureActive()
-                    val chunkEndSample = minOf(
-                        pcmFile.sampleCount,
-                        chunkStartSample + chunkSamples,
-                    )
-                    val sampleCount = (chunkEndSample - chunkStartSample).toInt()
-                    if (sampleCount <= 0) break
-                    chunkIndex++
-                    onProgress("正在分析音频分段 $chunkIndex/$totalChunks…")
-                    val samples = reader.readFloatSamples(
-                        startSample = chunkStartSample,
-                        count = sampleCount,
-                    )
-                    val localSegments = try {
-                        diarize(context, samples) { message ->
-                            onProgress("音频分段 $chunkIndex/$totalChunks · $message")
-                        }
-                    } finally {
-                        samples.fill(0f)
-                    }
-                    ownerJob?.ensureActive()
+            val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
+            onProgress("正在初始化人物识别模型…")
+            val session = createNativeSession(models, checkActive)
+            try {
+                val merged = ArrayList<SpeakerChunkIdentityPolicy.Segment>()
+                var previousWindowSegments = emptyList<SpeakerChunkIdentityPolicy.Segment>()
+                var nextSpeakerId = 0
+                var chunkIndex = 0L
+                var chunkStartSample = 0L
+                var previousChunkEndSample = 0L
 
-                    val offsetMs = chunkStartSample * 1_000L / rate
-                    val absoluteSegments = ArrayList<SpeakerChunkIdentityPolicy.Segment>(localSegments.size)
-                    localSegments.forEach { segment ->
-                        val localStartMs = (segment.startSec * 1_000f).toLong().coerceAtLeast(0L)
-                        val localEndMs = (segment.endSec * 1_000f).toLong().coerceAtLeast(localStartMs)
-                        val absoluteStart = offsetMs + localStartMs
-                        val absoluteEnd = offsetMs + localEndMs
-                        if (segment.speaker >= 0 && absoluteEnd > absoluteStart) {
-                            absoluteSegments += SpeakerChunkIdentityPolicy.Segment(
-                                speakerId = segment.speaker,
-                                startMs = absoluteStart,
-                                endMs = absoluteEnd,
-                                confidence = segment.confidence,
-                            )
-                        }
-                    }
-
-                    if (chunkIndex == 1L) {
-                        val normalized = SpeakerChunkIdentityPolicy.normalizeFirstWindow(absoluteSegments)
-                        merged.addAll(normalized.segments)
-                        nextSpeakerId = normalized.nextSpeakerId
-                    } else {
-                        val overlapStartMs = chunkStartSample * 1_000L / rate
-                        val overlapEndMs = previousChunkEndSample * 1_000L / rate
-                        val reconciled = SpeakerChunkIdentityPolicy.mergeWindow(
-                            previous = merged,
-                            current = absoluteSegments,
-                            overlapStartMs = overlapStartMs,
-                            overlapEndMs = overlapEndMs,
-                            nextSpeakerId = nextSpeakerId,
+                pcmFile.openReader { checkActive() }.use { reader ->
+                    while (chunkStartSample < pcmFile.sampleCount) {
+                        checkActive()
+                        val chunkEndSample = minOf(
+                            pcmFile.sampleCount,
+                            chunkStartSample + chunkSamples,
                         )
-                        merged.addAll(reconciled.segments)
-                        nextSpeakerId = reconciled.nextSpeakerId
+                        val sampleCount = (chunkEndSample - chunkStartSample).toInt()
+                        if (sampleCount <= 0) break
+                        chunkIndex++
+                        onProgress("正在分析音频分段 " + chunkIndex + "/" + totalChunks + "…")
+                        val samples = reader.readFloatSamples(
+                            startSample = chunkStartSample,
+                            count = sampleCount,
+                        )
+                        val localSegments = try {
+                            processWithNativeSession(session, samples, checkActive)
+                        } finally {
+                            samples.fill(0f)
+                        }
+                        checkActive()
+
+                        val offsetMs = chunkStartSample * 1_000L / rate
+                        val absoluteSegments = ArrayList<SpeakerChunkIdentityPolicy.Segment>(localSegments.size)
+                        localSegments.forEach { segment ->
+                            val localStartMs = (segment.startSec * 1_000f).toLong().coerceAtLeast(0L)
+                            val localEndMs = (segment.endSec * 1_000f).toLong().coerceAtLeast(localStartMs)
+                            val absoluteStart = offsetMs + localStartMs
+                            val absoluteEnd = offsetMs + localEndMs
+                            if (segment.speaker >= 0 && absoluteEnd > absoluteStart) {
+                                absoluteSegments += SpeakerChunkIdentityPolicy.Segment(
+                                    speakerId = segment.speaker,
+                                    startMs = absoluteStart,
+                                    endMs = absoluteEnd,
+                                    confidence = segment.confidence,
+                                )
+                            }
+                        }
+
+                        if (chunkIndex == 1L) {
+                            val normalized = SpeakerChunkIdentityPolicy.normalizeFirstWindow(absoluteSegments)
+                            merged.addAll(normalized.segments)
+                            previousWindowSegments = normalized.windowSegments
+                            nextSpeakerId = normalized.nextSpeakerId
+                        } else {
+                            val overlapStartMs = chunkStartSample * 1_000L / rate
+                            val overlapEndMs = previousChunkEndSample * 1_000L / rate
+                            val reconciled = SpeakerChunkIdentityPolicy.mergeWindow(
+                                previous = previousWindowSegments,
+                                current = absoluteSegments,
+                                overlapStartMs = overlapStartMs,
+                                overlapEndMs = overlapEndMs,
+                                nextSpeakerId = nextSpeakerId,
+                            )
+                            merged.addAll(reconciled.segments)
+                            previousWindowSegments = reconciled.windowSegments
+                            nextSpeakerId = reconciled.nextSpeakerId
+                        }
+
+                        previousChunkEndSample = chunkEndSample
+                        if (chunkEndSample >= pcmFile.sampleCount) break
+                        chunkStartSample = (chunkEndSample - overlapSamples)
+                            .coerceAtLeast(chunkStartSample + 1L)
                     }
-
-                    previousChunkEndSample = chunkEndSample
-                    if (chunkEndSample >= pcmFile.sampleCount) break
-                    chunkStartSample = (chunkEndSample - overlapSamples)
-                        .coerceAtLeast(chunkStartSample + 1L)
                 }
-            }
-        }
 
-        return merged.map { segment ->
-            Segment(
-                startSec = segment.startMs / 1_000f,
-                endSec = segment.endMs / 1_000f,
-                speaker = segment.speakerId,
-                confidence = segment.confidence,
-            )
+                checkActive()
+                merged.map { segment ->
+                    Segment(
+                        startSec = segment.startMs / 1_000f,
+                        endSec = segment.endMs / 1_000f,
+                        speaker = segment.speakerId,
+                        confidence = segment.confidence,
+                    )
+                }
+            } finally {
+                session.close()
+            }
         }
     }
 
