@@ -154,32 +154,37 @@ object HyMtModelManager {
     }
 
     suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
-        if (lock.isLocked) return@withContext
-        val model = modelFile(context)
-        val marker = readyMarker(context)
-        val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
-        mutableState.value = when {
-            isReady(context) -> HyMtDownloadState(
-                status = HyMtStatus.READY,
-                progress = 100,
-                downloadedBytes = model.length(),
-                totalBytes = model.length(),
-            )
-            hasGgufHeader(model) -> HyMtDownloadState(
-                status = HyMtStatus.PAUSED,
-                progress = 100,
-                downloadedBytes = model.length(),
-                totalBytes = model.length(),
-                error = if (marker.isFile) "模型需要重新验证" else "模型文件已下载，等待运行时验证",
-            )
-            part.isFile && part.length() > 0L -> HyMtDownloadState(
-                status = HyMtStatus.PAUSED,
-                progress = (part.length() * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
-                downloadedBytes = part.length(),
-                totalBytes = DISPLAY_BYTES,
-                error = "下载已暂停，可继续",
-            )
-            else -> HyMtDownloadState(status = HyMtStatus.NOT_DOWNLOADED)
+        // Do not race an active download/verification and overwrite its live StateFlow status.
+        if (!lock.tryLock()) return@withContext
+        try {
+            val model = modelFile(context)
+            val marker = readyMarker(context)
+            val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
+            mutableState.value = when {
+                isReady(context) -> HyMtDownloadState(
+                    status = HyMtStatus.READY,
+                    progress = 100,
+                    downloadedBytes = model.length(),
+                    totalBytes = model.length(),
+                )
+                hasGgufHeader(model) -> HyMtDownloadState(
+                    status = HyMtStatus.PAUSED,
+                    progress = 100,
+                    downloadedBytes = model.length(),
+                    totalBytes = model.length(),
+                    error = if (marker.isFile) "模型需要重新验证" else "模型文件已下载，等待运行时验证",
+                )
+                part.isFile && part.length() > 0L -> HyMtDownloadState(
+                    status = HyMtStatus.PAUSED,
+                    progress = (part.length() * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
+                    downloadedBytes = part.length(),
+                    totalBytes = DISPLAY_BYTES,
+                    error = "下载已暂停，可继续",
+                )
+                else -> HyMtDownloadState(status = HyMtStatus.NOT_DOWNLOADED)
+            }
+        } finally {
+            lock.unlock()
         }
     }
 
@@ -379,6 +384,8 @@ object HyMtModelManager {
                     mutableState.value = HyMtDownloadState(status = HyMtStatus.NOT_DOWNLOADED)
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Exception) {
             val model = modelFile(context)
             val complete = hasGgufHeader(model)
