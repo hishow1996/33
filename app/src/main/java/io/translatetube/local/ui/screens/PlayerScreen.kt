@@ -3702,11 +3702,16 @@ private fun StageProgressVisual(
                 }
 
                 val rungPositions = ArrayList<Float>(14)
+                val lastGapIndex = crossings.size - 2
                 for (index in 0 until (crossings.size - 1).coerceAtLeast(0)) {
                     val left = crossings[index]
                     val right = crossings[index + 1]
-                    rungPositions.add(left + (right - left) * 0.18f)
-                    rungPositions.add(left + (right - left) * 0.82f)
+                    // Move only the two outermost rungs inward from the end crossovers.
+                    // Keep every interior rung at its original spacing.
+                    val leftRungOffset = if (index == 0) 0.25f else 0.18f
+                    val rightRungOffset = if (index == lastGapIndex) 0.75f else 0.82f
+                    rungPositions.add(left + (right - left) * leftRungOffset)
+                    rungPositions.add(left + (right - left) * rightRungOffset)
                 }
 
                 val pendingColor = if (isSkipped) Color(0xFFBBC5D2) else Color(0xFFD1DAE5)
