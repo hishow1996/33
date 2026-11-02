@@ -313,3 +313,5 @@ jobs:
 # User-requested APK build retry after fixing PlayerScreen waveform template syntax (2026-11-01).
 # User-requested APK build retry after importing DubbingCacheStorage (2026-11-01).
 # Explicit user-requested APK build trigger (2026-11-02 08:37 +08:00; latest main 0fa529c9).
+
+# HY-MT1.5 integration update is source-only; no Gradle build was requested for this change.
