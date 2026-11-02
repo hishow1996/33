@@ -4230,7 +4230,6 @@ private fun CompactProcessingStageDetails(
                 value("当前任务")?.let {
                     CompactStageMetadataLine(
                         item = it,
-                        modifier = Modifier.padding(start = 37.dp),
                         valueColor = Color(0xFF3268F5),
                         valueFontWeight = FontWeight.SemiBold,
                     )
