@@ -44,6 +44,7 @@ internal object SpeakerChunkIdentityPolicy {
                 if (old == null || segment.startMs < old) firstBySpeaker[segment.speakerId] = segment.startMs
             }
         }
+        require(firstBySpeaker.size <= 1_000) { "检测到的人物数量超过安全上限" }
         val mapping = firstBySpeaker.entries
             .sortedWith(compareBy<Map.Entry<Int, Long>> { it.value }.thenBy { it.key })
             .mapIndexed { index, entry -> entry.key to index }
