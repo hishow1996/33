@@ -89,7 +89,8 @@ object HyMtModelManager {
     const val DISPLAY_BYTES = 601_000_000L
     private const val MAX_BYTES = 650_000_000L
     private const val DOWNLOAD_SPACE_RESERVE_BYTES = 32L * 1024L * 1024L
-    private const val MODEL_REVISION = "4b99bde"
+    internal const val RUNTIME_REVISION = "4b99bde"
+    private const val MODEL_REVISION = RUNTIME_REVISION
     private const val VALIDATION_SCHEMA = 1
     private const val MODEL_NAME = "Hy-MT1.5-1.8B-2bit.gguf"
     private const val MODEL_URL =
@@ -440,7 +441,8 @@ private object HyMtRuntime {
 
     private fun identity(context: Context): String {
         val model = HyMtModelManager.modelFile(context)
-        return model.absolutePath + ":" + model.length() + ":" + model.lastModified()
+        return HyMtModelManager.RUNTIME_REVISION + ":" + model.absolutePath + ":" +
+            model.length() + ":" + model.lastModified()
     }
 
     private fun ensureMemoryAvailable(context: Context) {
@@ -494,6 +496,7 @@ private object HyMtRuntime {
             }
             try {
                 ensureLoaded(context, LocalTranslationRuntimePolicy.inferenceThreads(context))
+                ownerJob?.ensureActive()
                 val result = HyMtNative.nativeTranslate(prompt, maxTokens)
                     ?.trim()
                     .orEmpty()
@@ -544,7 +547,13 @@ private object HyMtRuntime {
     }
 
     suspend fun closeLoadedModel() = inferenceMutex.withLock {
-        val inUse = synchronized(runtimeLock) { leases > 0 }
+        val inUse = synchronized(runtimeLock) {
+            if (leases == 0) {
+                unloadJob?.cancel()
+                unloadJob = null
+            }
+            leases > 0
+        }
         if (inUse) throw IllegalStateException("HY-MT1.5 正在翻译，暂时不能删除模型")
         runCatching { HyMtNative.nativeClose() }
         loadedIdentity = null
