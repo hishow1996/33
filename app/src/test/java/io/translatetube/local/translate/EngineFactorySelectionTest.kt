@@ -46,6 +46,10 @@ class EngineFactorySelectionTest {
         assertEquals("zh", HyMtLanguagePolicy.canonicalCode("zh-CN"))
         assertEquals("zh-Hant", HyMtLanguagePolicy.canonicalCode("zh-TW"))
         assertEquals("繁体中文", HyMtLanguagePolicy.display("zh-Hant"))
+        assertFalse(HyMtLanguagePolicy.requiresTranslation("zh-CN"))
+        assertTrue(HyMtLanguagePolicy.requiresTranslation("zh-Hant"))
+        assertTrue(HyMtLanguagePolicy.requiresTranslation("yue"))
+        assertTrue(HyMtLanguagePolicy.requiresTranslation("en"))
     }
 
     @Test
