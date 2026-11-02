@@ -3268,6 +3268,7 @@ private data class TranslationHelixRungGeometry(
 )
 
 private data class TranslationHelixCrossingGeometry(
+    val x: Float,
     val strandAIsFront: Boolean,
     val frontPath: Path,
     val backPath: Path,
@@ -3367,6 +3368,7 @@ private fun buildTranslationHelixGeometry(
         val frontSign = if (strandAIsFront) -1f else 1f
         val backSign = -frontSign
         TranslationHelixCrossingGeometry(
+            x = x,
             strandAIsFront = strandAIsFront,
             frontPath = crossoverSegment(x, frontSign),
             backPath = crossoverSegment(x, backSign),
@@ -3571,14 +3573,21 @@ private fun StageProgressVisual(
                 if (stageIndex == 3) {
                     // Roll the complete translation bar around its own horizontal
                     // centerline. Keep the layer bounds and 16dp layout height unchanged.
-                    rotationX = when {
-                        translationAnimationActive || isPaused ->
-                            translationWholeRotation.value * (180f / kotlin.math.PI.toFloat())
-                        else -> 0f
+                    val rolling = translationAnimationActive || isPaused
+                    val angleRadians = if (rolling) translationWholeRotation.value else 0f
+                    rotationX = angleRadians * (180f / kotlin.math.PI.toFloat())
+                    // A small front/back brightness difference gives the flip depth
+                    // without darkening the text or changing any measured progress.
+                    alpha = if (rolling) {
+                        val facing = (kotlin.math.cos(angleRadians) + 1f) * 0.5f
+                        (0.92f + 0.08f * facing).coerceIn(0.92f, 1f)
+                    } else {
+                        1f
                     }
-                    cameraDistance = 12f * density
+                    cameraDistance = 32f * density
                 } else {
                     rotationX = 0f
+                    alpha = 1f
                 }
             },
     ) {
@@ -3958,13 +3967,29 @@ private fun StageProgressVisual(
                         kotlin.math.sin(kotlin.math.PI.toFloat() * translationFlowPhase.value)
                             .coerceIn(0f, 1f)
                 }
+                val nearestCrossoverDistance = if (flowHead == null) {
+                    size.width
+                } else {
+                    crossings.minOfOrNull { crossing ->
+                        kotlin.math.abs(crossing.x - flowHead)
+                    } ?: size.width
+                }
+                val crossoverBlend = (
+                    (nearestCrossoverDistance - 3.dp.toPx()) / 11.dp.toPx()
+                ).coerceIn(0f, 1f)
+                val smoothCrossoverBlend = crossoverBlend * crossoverBlend *
+                    (3f - 2f * crossoverBlend)
+                // Keep at least 48% of the glow at a crossover so the flow never
+                // appears to stop; only its brightest edge is softened.
+                val crossoverIntensity = 0.48f + 0.52f * smoothCrossoverBlend
+                val effectiveFlowIntensity = flowIntensity * crossoverIntensity
 
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = progressX.coerceIn(0f, size.width)) {
                         drawActiveRungs(
                             pulseHead = flowHead,
                             pulseRadius = pulseRadius,
-                            pulseIntensity = flowIntensity,
+                            pulseIntensity = effectiveFlowIntensity,
                         )
                         drawActiveCurves()
                         drawOverUnderWeave(
@@ -3980,13 +4005,13 @@ private fun StageProgressVisual(
                                 right = (flowHead + pulseRadius * 0.35f).coerceAtMost(progressX),
                             ) {
                                 drawActiveCurves(
-                                    alpha = 0.62f * flowIntensity,
+                                    alpha = 0.62f * effectiveFlowIntensity,
                                     strokeWidth = 3.1.dp.toPx(),
                                 )
                                 drawOverUnderWeave(
                                     colorA = blueStrandColor,
                                     colorB = greenStrandColor,
-                                    alpha = 0.78f * flowIntensity,
+                                    alpha = 0.78f * effectiveFlowIntensity,
                                     strokeWidth = 3.1.dp.toPx(),
                                     maskRear = false,
                                 )
@@ -3999,7 +4024,7 @@ private fun StageProgressVisual(
                     drawActiveRungs(
                         pulseHead = flowHead,
                         pulseRadius = pulseRadius,
-                        pulseIntensity = flowIntensity,
+                        pulseIntensity = effectiveFlowIntensity,
                     )
                     drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
                     drawOverUnderWeave(
@@ -4014,13 +4039,13 @@ private fun StageProgressVisual(
                             right = (flowHead + pulseRadius * 0.35f).coerceAtMost(size.width),
                         ) {
                             drawActiveCurves(
-                                alpha = 0.68f * flowIntensity,
+                                alpha = 0.68f * effectiveFlowIntensity,
                                 strokeWidth = 3.1.dp.toPx(),
                             )
                             drawOverUnderWeave(
                                 colorA = blueStrandColor,
                                 colorB = greenStrandColor,
-                                alpha = 0.8f * flowIntensity,
+                                alpha = 0.8f * effectiveFlowIntensity,
                                 strokeWidth = 3.1.dp.toPx(),
                                 maskRear = false,
                             )
