@@ -473,19 +473,12 @@ internal object HyMtNative {
             System.mapLibraryName("hymt"),
         )
         try {
+            // JNI_OnLoad registers and validates every native method before this returns.
             System.loadLibrary("hymt")
-
-            // Loading the ELF alone does not resolve Kotlin's external JNI methods.
-            // Probe safe control methods before marking the runtime ready.
-            nativeResetCancel()
-            nativeClose()
-            nativeCancel()
-            nativeResetCancel()
-
             libraryLoaded = true
         } catch (error: UnsatisfiedLinkError) {
             val message = if (nativeLibrary.isFile) {
-                "HY-MT1.5 ARM64 推理库已存在，但加载失败或 JNI 接口不匹配，请更新应用后重试。"
+                "HY-MT1.5 ARM64 推理库已存在，但加载失败或 JNI 接口签名不匹配，请更新应用后重试。"
             } else {
                 "当前应用安装包未包含 HY-MT1.5 ARM64 推理库，请更新到包含混元运行时的版本。"
             }

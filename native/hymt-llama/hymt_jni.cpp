@@ -414,3 +414,57 @@ extern "C" JNIEXPORT void JNICALL
 Java_io_translatetube_local_translate_HyMtNative_nativeCancel(JNIEnv *, jobject) {
     g_cancelled.store(true, std::memory_order_relaxed);
 }
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM * vm, void *) {
+    JNIEnv * env = nullptr;
+    if (vm == nullptr ||
+        vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK ||
+        env == nullptr) {
+        return JNI_ERR;
+    }
+
+    // Resolve every Kotlin external declaration at library-load time. This prevents
+    // a partially compatible ELF from being accepted and failing after model download.
+    jclass native_class = env->FindClass("io/translatetube/local/translate/HyMtNative");
+    if (native_class == nullptr) {
+        return JNI_ERR;
+    }
+
+    const JNINativeMethod methods[] = {
+        {
+            const_cast<char *>("nativeOpen"),
+            const_cast<char *>("(Ljava/lang/String;II)Ljava/lang/String;"),
+            reinterpret_cast<void *>(Java_io_translatetube_local_translate_HyMtNative_nativeOpen),
+        },
+        {
+            const_cast<char *>("nativeTranslate"),
+            const_cast<char *>("(Ljava/lang/String;I)Ljava/lang/String;"),
+            reinterpret_cast<void *>(Java_io_translatetube_local_translate_HyMtNative_nativeTranslate),
+        },
+        {
+            const_cast<char *>("nativeClose"),
+            const_cast<char *>("()V"),
+            reinterpret_cast<void *>(Java_io_translatetube_local_translate_HyMtNative_nativeClose),
+        },
+        {
+            const_cast<char *>("nativeCancel"),
+            const_cast<char *>("()V"),
+            reinterpret_cast<void *>(Java_io_translatetube_local_translate_HyMtNative_nativeCancel),
+        },
+        {
+            const_cast<char *>("nativeResetCancel"),
+            const_cast<char *>("()V"),
+            reinterpret_cast<void *>(Java_io_translatetube_local_translate_HyMtNative_nativeResetCancel),
+        },
+    };
+
+    const jint registration = env->RegisterNatives(
+        native_class,
+        methods,
+        static_cast<jint>(sizeof(methods) / sizeof(methods[0]))
+    );
+    env->DeleteLocalRef(native_class);
+    if (registration != JNI_OK) {
+        return JNI_ERR;
+    }
+    return JNI_VERSION_1_6;
+}
