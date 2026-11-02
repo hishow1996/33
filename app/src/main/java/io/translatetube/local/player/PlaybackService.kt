@@ -12923,450 +12923,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
     }
 
-    /**
-     * Automatically identify speakers immediately after local ASR, reusing the exact 16 kHz PCM
-     * file that Whisper/SenseVoice just consumed. The diarizer is deliberately best-effort:
-     * a missing optional runtime/model must never block translation or ordinary dubbing.
-     */
-    private suspend fun assignSpeakersFromLocalTranscript(
-        key: String,
-        lines: List<SubLine>,
-        pcmFile: io.translatetube.local.asr.AudioExtract.PcmFile,
-        pipelineGeneration: Long,
-        analysisIdentity: String = key,
-    ) {
-        if (lines.isEmpty()) return
-        val analysisPrefs = getSharedPreferences("speaker_analysis_state_v1", MODE_PRIVATE)
-        val analysisMarkerKey = speakerAnalysisMarkerKey(analysisIdentity)
-        if (analysisPrefs.getBoolean(analysisMarkerKey, false)) {
-            android.util.Log.i(
-                "PlaybackService",
-                "Skipping speaker diarization; this local ASR transcript was already analyzed",
-            )
-            return
-        }
-        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
-            prefs.getString("tts_engine", "edge"),
-        )
-        var systemVoiceProbe: TtsEngine? = null
-        updateUiForSession(key, pipelineGeneration) { state ->
-            if (state.key == key) state.copy(
-                speakerRecognition = SpeakerRecognitionUiState(
-                    phase = SpeakerRecognitionPhase.PREPARING,
-                    message = "准备本地人物识别音频…",
-                ),
-            ) else state
-        }
-        try {
-            var systemChineseVoiceCount = 0
-            if (selectedTts == "system") {
-                systemVoiceProbe = makeTtsOffMainThread("system")
-                systemChineseVoiceCount =
-                    (systemVoiceProbe as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
-            }
-            // Person detection is engine-independent. Even a single-tone engine such as Piper
-            // should retain the speaker timeline so switching to Kokoro/Edge/Gemini later does
-            // not require another diarization pass. Unsupported engines simply resolve each
-            // person's tone to their normal default when the timeline is applied.
-            ensureCurrentSession(key, pipelineGeneration)
-
-            val lineKeys = lines.map { SpeakerAssignmentCodec.lineKey(it.startMs, it.endMs) }
-            val previous = loadSpeakerAssignments(key, selectedTts)
-            if (lineKeys.isNotEmpty() && lineKeys.all { it in previous.lineSpeakers }) {
-                analysisPrefs.edit().putBoolean(analysisMarkerKey, true).apply()
-                val cachedPersonCount = previous.lineSpeakers.values.distinct().size
-                updateUiForSession(key, pipelineGeneration) { state ->
-                    if (state.key == key) state.copy(
-                        speakerRecognition = SpeakerRecognitionUiState(
-                            phase = SpeakerRecognitionPhase.SUCCEEDED,
-                            message = "已恢复人物识别结果",
-                            personCount = cachedPersonCount,
-                        ),
-                    ) else state
-                }
-                android.util.Log.i(
-                    "PlaybackService",
-                    "Reusing saved speaker timeline for local ASR transcript: cues=${lineKeys.size}",
-                )
-                return
-            }
-
-            if (pcmFile.sampleRate != 16_000) {
-                throw IllegalStateException("本地人物识别需要 16 kHz PCM，当前采样率为 ${pcmFile.sampleRate} Hz")
-            }
-            val maxSamples = 3L * 60L * pcmFile.sampleRate.toLong()
-            val sampleCount = minOf(pcmFile.sampleCount, maxSamples)
-            if (sampleCount < pcmFile.sampleRate.toLong()) {
-                throw IllegalStateException("转写音频不足 1 秒，无法可靠识别说话人")
-            }
-
-            updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key) {
-                    state.copy(
-                        speakerRecognition = SpeakerRecognitionUiState(
-                            phase = SpeakerRecognitionPhase.PREPARING,
-                            message = "准备本地模型…",
-                        ),
-                    )
-                } else state
-            }
-            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-            val samples = withContext(Dispatchers.IO) {
-                pcmFile.readFloatSamples(
-                    startSample = 0L,
-                    count = sampleCount.toInt(),
-                    checkActive = { ownerJob?.ensureActive() },
-                )
-            }
-            val segments = try {
-                io.translatetube.local.asr.SpeakerDiarizer.diarize(
-                    this@PlaybackService,
-                    samples,
-                ) { message ->
-                    updateUiForSession(key, pipelineGeneration) { state ->
-                        if (state.key == key) {
-                            state.copy(
-                                speakerRecognition = SpeakerRecognitionUiState(
-                                    phase = if (message.contains("下载")) {
-                                        SpeakerRecognitionPhase.DOWNLOADING_MODELS
-                                    } else {
-                                        SpeakerRecognitionPhase.ANALYZING
-                                    },
-                                    message = message,
-                                    progressPercent = speakerDownloadProgressPercent(message),
-                                ),
-                            )
-                        } else state
-                    }
-                }
-            } finally {
-                // The PCM sample copy can be several megabytes on longer videos.
-                samples.fill(0f)
-            }
-            ensureCurrentSession(key, pipelineGeneration)
-            if (currentTtsEngineId() != selectedTts) {
-                updateUiForSession(key, pipelineGeneration) { state ->
-                    if (state.key == key) state.copy(
-                        speakerRecognition = SpeakerRecognitionUiState(
-                            phase = SpeakerRecognitionPhase.CANCELLED,
-                            message = "配音引擎已切换，人物识别结果未应用",
-                        ),
-                    ) else state
-                }
-                android.util.Log.i(
-                    "PlaybackService",
-                    "Discarding automatic speaker result because the selected TTS engine changed during diarization",
-                )
-                return
-            }
-            if (segments.isEmpty()) {
-                updateUiForSession(key, pipelineGeneration) { state ->
-                    if (state.key == key) state.copy(
-                        speakerRecognition = SpeakerRecognitionUiState(
-                            phase = SpeakerRecognitionPhase.FAILED,
-                            message = "没有找到可区分的人物",
-                            error = "这段音频中没有检测到足够清晰、可区分的说话人片段。可以重新识别，或继续使用默认音色。",
-                        ),
-                    ) else state
-                }
-                withContext(Dispatchers.IO) {
-                    io.translatetube.local.util.AppLogStore.info(
-                        this@PlaybackService,
-                        "SpeakerDiarization",
-                        "本地人物识别没有找到可区分的说话人",
-                        diagnosticContext = mapOf(
-                            "配音引擎" to selectedTts,
-                            "分析音频时长 ms" to (sampleCount * 1000L / pcmFile.sampleRate).toString(),
-                            "转写字幕行数" to lines.size.toString(),
-                        ),
-                    )
-                }
-                return
-            }
-
-            // Build observations once: the Honor 10 class of devices benefits from avoiding
-            // a second per-segment list allocation during the two speaker-matching passes.
-            val speakerObservations = SpeakerAssignmentPolicy.observationsFromSegments(segments)
-            // sherpa-onnx cluster labels are arbitrary; normalize by first appearance so voice
-            // identities remain stable when the diarizer chooses different raw cluster numbers.
-            val cueAnchors = lines.mapNotNull { line ->
-                val previousPersonId = previous.lineSpeakers[
-                    SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
-                ] ?: return@mapNotNull null
-                SpeakerAssignmentPolicy.CueAnchor(
-                    startMs = line.startMs,
-                    endMs = line.endMs,
-                    previousPersonId = previousPersonId,
-                )
-            }
-            val canonicalSpeakerIds = SpeakerAssignmentPolicy.stableSpeakerIds(
-                observations = speakerObservations,
-                cueAnchors = cueAnchors,
-            )
-            val speakerVoiceAssignments = previous.speakerVoices.toMutableMap()
-            val currentLineKeys = lineKeys.toSet()
-            val lineVoiceAssignments = previous.lineVoices
-                .filterKeys { it in currentLineKeys }
-                .toMutableMap()
-            val linePersonAssignments = previous.lineSpeakers
-                .filterKeys { it in currentLineKeys }
-                .toMutableMap()
-            val preferredKokoroVoice = prefs.getInt("kokoro_speaker", 14).coerceIn(0, 53)
-            var assignedCueCount = 0
-            for (line in lines) {
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                val durationMs = (line.endMs - line.startMs).coerceAtLeast(0L)
-                val minimumOverlapMs = SpeakerAssignmentPolicy.minimumOverlapMsForCue(durationMs)
-                val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
-                    observations = speakerObservations,
-                    cueStartMs = line.startMs,
-                    cueEndMs = line.endMs,
-                    minimumOverlapMs = minimumOverlapMs,
-                )
-                val personId = canonicalSpeakerIds[detectedSpeaker] ?: -1
-                val lineKey = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
-                if (personId in 0..999) {
-                    val suggestedVoice = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
-                        .voiceForCanonicalSpeaker(
-                            engineId = selectedTts,
-                            canonicalSpeakerId = personId,
-                            systemChineseVoiceCount = systemChineseVoiceCount,
-                            preferredKokoroVoice = preferredKokoroVoice,
-                        )
-                    val voiceId = previous.lineOverrides[lineKey]
-                        ?: speakerVoiceAssignments.getOrPut(personId) { suggestedVoice }
-                    lineVoiceAssignments[lineKey] = voiceId
-                    linePersonAssignments[lineKey] = personId
-                    assignedCueCount++
-                } else {
-                    lineVoiceAssignments.remove(lineKey)
-                    linePersonAssignments.remove(lineKey)
-                }
-            }
-            saveSpeakerAssignments(
-                previous.copy(
-                    speakerVoices = speakerVoiceAssignments,
-                    lineVoices = lineVoiceAssignments,
-                    lineSpeakers = linePersonAssignments,
-                ),
-                key,
-                selectedTts,
-            )
-            // Record completion against the exact ASR source-cache identity. The marker is
-            // engine-independent so switching TTS voices never repeats expensive diarization.
-            analysisPrefs.edit().putBoolean(analysisMarkerKey, true).apply()
-            val speakerCount = canonicalSpeakerIds.size
-            withContext(Dispatchers.IO) {
-                io.translatetube.local.util.AppLogStore.info(
-                    this@PlaybackService,
-                    "SpeakerDiarization",
-                    "本地转写后自动人物识别完成",
-                    diagnosticContext = mapOf(
-                        "配音引擎" to selectedTts,
-                        "人物数量" to speakerCount.toString(),
-                        "已匹配人物的字幕行数" to assignedCueCount.toString(),
-                        "转写字幕总行数" to lines.size.toString(),
-                        "分析音频时长 ms" to (sampleCount * 1000L / pcmFile.sampleRate).toString(),
-                        "是否因低内存设备限制为前三分钟" to (pcmFile.sampleCount > sampleCount).toString(),
-                        "人物音色映射" to "已按当前配音引擎的实际可用音色编号分配",
-                    ),
-                )
-            }
-            updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key) {
-                    state.copy(
-                        speakerRecognition = SpeakerRecognitionUiState(
-                            phase = SpeakerRecognitionPhase.SUCCEEDED,
-                            message = "已识别 $speakerCount 位人物",
-                            personCount = speakerCount,
-                        ),
-                    )
-                } else state
-            }
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key && state.speakerRecognition.isActive) state.copy(
-                    speakerRecognition = SpeakerRecognitionUiState(
-                        phase = SpeakerRecognitionPhase.CANCELLED,
-                        message = "人物识别已取消",
-                    ),
-                ) else state
-            }
-            throw cancelled
-        } catch (error: Exception) {
-            updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key) state.copy(
-                    speakerRecognition = SpeakerRecognitionUiState(
-                        phase = SpeakerRecognitionPhase.FAILED,
-                        message = "人物识别失败",
-                        error = error.message ?: error.javaClass.simpleName,
-                    ),
-                ) else state
-            }
-            withContext(Dispatchers.IO) {
-                io.translatetube.local.util.AppLogStore.error(
-                    this@PlaybackService,
-                    "SpeakerDiarization",
-                    "本地转写后的自动人物识别失败，继续翻译和配音",
-                    error,
-                    diagnosticContext = mapOf(
-                        "配音引擎" to selectedTts,
-                        "转写字幕行数" to lines.size.toString(),
-                        "处理策略" to "人物识别失败不影响正常字幕与配音流程",
-                    ),
-                )
-            }
-            android.util.Log.w("PlaybackService", "Automatic local speaker diarization failed; continuing pipeline", error)
-        } finally {
-            systemVoiceProbe?.let { engine ->
-                runCatching { engine.close() }
-                    .onFailure { android.util.Log.w("PlaybackService", "Could not close temporary system TTS speaker probe", it) }
-            }
-        }
-    }
-
-    /**
-     * Backfill speaker identities for a validated cached local-ASR transcript. Only existing
-     * ASR audio/PCM cache files are considered; a cache miss is a safe no-op, never a redownload.
-     */
-    private suspend fun restoreSpeakersFromCachedLocalAsrTranscript(
-        key: String,
-        lines: List<SubLine>,
-        analysisIdentity: String,
-        videoId: String?,
-        localUri: Uri?,
-        remoteMediaUrl: String?,
-        remoteMediaReferrer: String,
-        remoteMediaCookie: String?,
-        cacheKeyBase: String,
-        pipelineGeneration: Long,
-    ) {
-        if (lines.isEmpty() || isSpeakerAnalysisComplete(analysisIdentity)) return
-
-        var localPcmLeasePath: String? = null
-        var audioLeasePath: String? = null
-        var temporaryPcmFile: io.translatetube.local.asr.AudioExtract.PcmFile? = null
-        try {
-            val localPcm = if (
-                localUri != null &&
-                !cacheKeyBase.startsWith("local-media-unverified-v1:")
-            ) {
-                reusableCachedLocalPcmForSpeakerAnalysis(
-                    identity = "$cacheKeyBase|local-asr-pcm16-v1",
-                    sessionKey = key,
-                )
-            } else {
-                null
-            }
-
-            if (localPcm != null) {
-                localPcmLeasePath = localPcm.second
-                updateUiForSession(key, pipelineGeneration) { state ->
-                    if (state.key == key) state.copy(
-                        phase = Phase.SYNTHESIZING,
-                        progress = "人物识别 · 复用已解码音频缓存…",
-                        speakerRecognition = SpeakerRecognitionUiState(
-                            phase = SpeakerRecognitionPhase.PREPARING,
-                            message = "复用已解码音频缓存…",
-                        ),
-                    ) else state
-                }
-                releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
-                assignSpeakersFromLocalTranscript(
-                    key = key,
-                    lines = lines,
-                    pcmFile = localPcm.first,
-                    pipelineGeneration = pipelineGeneration,
-                    analysisIdentity = analysisIdentity,
-                )
-                return
-            }
-
-            val cachedAudio = reusableCachedAsrAudioForSpeakerAnalysis(
-                videoId = videoId,
-                mediaUrl = remoteMediaUrl,
-                referrer = remoteMediaReferrer,
-                cookie = remoteMediaCookie,
-                sessionKey = key,
-            )
-            if (cachedAudio == null) {
-                android.util.Log.i(
-                    "PlaybackService",
-                    "Skipping cached-transcript speaker backfill because no reusable source-audio cache exists",
-                )
-                return
-            }
-            audioLeasePath = cachedAudio.absolutePath
-            ensureCurrentSession(key, pipelineGeneration)
-            updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key) state.copy(
-                    phase = Phase.SYNTHESIZING,
-                    progress = "人物识别 · 复用缓存音频，正在分析人物声音…",
-                    speakerRecognition = SpeakerRecognitionUiState(
-                        phase = SpeakerRecognitionPhase.PREPARING,
-                        message = "复用缓存音频，准备识别人物…",
-                    ),
-                ) else state
-            }
-            releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
-            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-            temporaryPcmFile = withContext(Dispatchers.IO) {
-                io.translatetube.local.asr.AudioExtract.decodeTo16kMonoFile(
-                    this@PlaybackService,
-                    src = null,
-                    file = cachedAudio,
-                    maxDurationMs = 3 * 60 * 1000L,
-                    checkActive = { ownerJob?.ensureActive() },
-                )
-            }
-            assignSpeakersFromLocalTranscript(
-                key = key,
-                lines = lines,
-                pcmFile = requireNotNull(temporaryPcmFile),
-                pipelineGeneration = pipelineGeneration,
-                analysisIdentity = analysisIdentity,
-            )
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            updateUiForSession(key, pipelineGeneration) { state ->
-                if (state.key == key && state.speakerRecognition.isActive) state.copy(
-                    speakerRecognition = SpeakerRecognitionUiState(
-                        phase = SpeakerRecognitionPhase.FAILED,
-                        message = "人物识别失败",
-                        error = error.message ?: error.javaClass.simpleName,
-                    ),
-                ) else state
-            }
-            io.translatetube.local.util.AppLogStore.error(
-                this@PlaybackService,
-                "SpeakerDiarization",
-                "恢复本地转写缓存的人物识别失败，继续使用现有字幕和配音",
-                error,
-                diagnosticContext = mapOf(
-                    "视频来源" to when {
-                        videoId != null -> "YouTube 原声转写缓存"
-                        remoteMediaUrl != null -> "网页视频转写缓存"
-                        localUri != null -> "本地视频转写缓存"
-                        else -> "其他"
-                    },
-                    "是否重新转写" to "否",
-                    "是否重新下载或提取音轨" to "否",
-                ),
-            )
-            android.util.Log.w(
-                "PlaybackService",
-                "Cached local-ASR speaker backfill failed; continuing with ordinary dubbing",
-                error,
-            )
-        } finally {
-            temporaryPcmFile?.file?.delete()
-            releaseActiveAsrAudio(audioLeasePath)
-            localPcmLeasePath?.let(::releaseLocalAsrPcmFile)
-        }
-    }
-
     // ============ UI 控制命令 ============
     /**
      * 手动为某条字幕指定 Kokoro 音色。修改后重建配音缓存队列，
@@ -13376,7 +12932,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
      * 从当前视频音轨执行本地说话人分离，并把说话人编号映射到不同 Kokoro 预设音色。
      * 模型仅在用户点击自动区分时下载，不会拖慢普通视频打开流程。
      */
-    fun autoAssignSpeakers() {
+    fun autoAssignSpeakers(forceRecognition: Boolean = false) {
         if (speakerJob?.isActive == true) return
         val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
             getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
@@ -14124,12 +13680,56 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         return "video_" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
-    private fun speakerAnalysisMarkerKey(analysisIdentity: String): String =
-        assignmentStorageKey("speaker-analysis-complete-v1|$analysisIdentity")
+    private fun speakerRecognitionCachePrefsKey(sessionKey: String): String =
+        assignmentStorageKey("speaker-recognition-cache-v2|$sessionKey")
 
-    private fun isSpeakerAnalysisComplete(analysisIdentity: String): Boolean =
-        getSharedPreferences("speaker_analysis_state_v1", MODE_PRIVATE)
-            .getBoolean(speakerAnalysisMarkerKey(analysisIdentity), false)
+    /**
+     * Audio identity is separate from TTS. Local document metadata invalidates cached results
+     * when a file is replaced in place, where the content provider exposes that metadata.
+     */
+    private fun speakerRecognitionSourceAudioIdentity(
+        sessionKey: String,
+        videoId: String?,
+        localUri: Uri?,
+        remoteMediaUrl: String?,
+        remoteMediaReferrer: String,
+        remoteMediaCookie: String?,
+    ): String {
+        if (videoId != null) return "youtube-original-track:$videoId"
+        if (remoteMediaUrl != null) {
+            return "remote-audio:${MediaUrlCacheIdentity.audioKey(remoteMediaUrl, remoteMediaReferrer, remoteMediaCookie)}"
+        }
+        if (localUri != null) {
+            val metadata = runCatching {
+                if (localUri.scheme.equals("file", ignoreCase = true)) {
+                    val file = File(localUri.path.orEmpty())
+                    "size=${file.length()};modified=${file.lastModified()}"
+                } else {
+                    contentResolver.query(
+                        localUri,
+                        arrayOf(android.provider.OpenableColumns.SIZE, "last_modified"),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        if (!cursor.moveToFirst()) {
+                            "metadata-unavailable"
+                        } else {
+                            val sizeIndex = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                            val modifiedIndex = cursor.getColumnIndex("last_modified")
+                            val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else -1L
+                            val modified = if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) {
+                                cursor.getLong(modifiedIndex)
+                            } else -1L
+                            "size=$size;modified=$modified"
+                        }
+                    } ?: "metadata-unavailable"
+                }
+            }.getOrElse { "metadata-unavailable" }
+            return "local-uri:$localUri|$metadata"
+        }
+        return "session:$sessionKey"
+    }
 
     private fun assignmentPrefsKey(
         key: String,
