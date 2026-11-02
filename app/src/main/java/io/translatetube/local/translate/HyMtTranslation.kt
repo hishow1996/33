@@ -612,7 +612,7 @@ object HyMtModelManager {
             } else null
             val runtimeUnavailableAfterFailure = runtimeErrorAfterFailure != null
             val runtimeMessageAfterFailure = runtimeErrorAfterFailure?.let {
-                runtimeUnavailableMessage(app, it)
+                runtimeUnavailableMessage(it)
             }.orEmpty()
             val completeModel = hasGgufHeader(model)
             val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
