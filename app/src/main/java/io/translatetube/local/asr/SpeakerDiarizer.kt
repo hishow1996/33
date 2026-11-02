@@ -23,6 +23,9 @@ import java.util.concurrent.TimeUnit
  * the UI reports that the bundled runtime must be updated instead of crashing playback.
  */
 object SpeakerDiarizer {
+    /** Bump whenever the diarization models or chunk-reconciliation rules change. */
+    const val MODEL_VERSION = "pyannote-3-0-3dspeaker-16k-sherpa-1.13.8-chunk-v2"
+
     data class Segment(val startSec: Float, val endSec: Float, val speaker: Int, val confidence: Float)
 
     private const val SEGMENTATION_URL =
@@ -178,6 +181,124 @@ object SpeakerDiarizer {
             } catch (e: LinkageError) {
                 throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
             }
+        }
+    }
+
+    /**
+     * Analyze a complete decoded audio file in bounded windows.
+     *
+     * Only one 3-minute FloatArray is resident at a time. Adjacent windows overlap so speaker
+     * labels can be reconciled using shared speech instead of assuming raw sherpa IDs are stable.
+     */
+    suspend fun diarizePcmFile(
+        context: Context,
+        pcmFile: AudioExtract.PcmFile,
+        chunkDurationMs: Long = 3L * 60L * 1_000L,
+        overlapMs: Long = 20L * 1_000L,
+        onProgress: (String) -> Unit = {},
+    ): List<Segment> {
+        require(pcmFile.sampleRate == 16_000) {
+            "人物识别需要 16 kHz PCM，当前采样率为 ${pcmFile.sampleRate} Hz"
+        }
+        require(pcmFile.sampleCount >= pcmFile.sampleRate.toLong()) {
+            "转写音频不足 1 秒，无法可靠识别说话人"
+        }
+        val rate = pcmFile.sampleRate.toLong()
+        val chunkSamples = (chunkDurationMs.coerceAtLeast(60_000L) * rate / 1_000L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+        val overlapSamples = (overlapMs.coerceAtLeast(1_000L) * rate / 1_000L)
+            .coerceAtMost(chunkSamples / 3L)
+        require(chunkSamples > overlapSamples && chunkSamples * 4L <= 16L * 1024L * 1024L) {
+            "人物识别分段大小超过设备内存安全范围"
+        }
+        val strideSamples = chunkSamples - overlapSamples
+        val totalChunks = if (pcmFile.sampleCount <= chunkSamples) {
+            1L
+        } else {
+            (pcmFile.sampleCount - chunkSamples + strideSamples - 1L) / strideSamples + 1L
+        }
+        val ownerJob = currentCoroutineContext()[Job]
+        val merged = ArrayList<SpeakerChunkIdentityPolicy.Segment>()
+        var nextSpeakerId = 0
+        var chunkIndex = 0L
+        var chunkStartSample = 0L
+        var previousChunkEndSample = 0L
+
+        withContext(Dispatchers.IO) {
+            pcmFile.openReader { ownerJob?.ensureActive() }.use { reader ->
+                while (chunkStartSample < pcmFile.sampleCount) {
+                    ownerJob?.ensureActive()
+                    val chunkEndSample = minOf(
+                        pcmFile.sampleCount,
+                        chunkStartSample + chunkSamples,
+                    )
+                    val sampleCount = (chunkEndSample - chunkStartSample).toInt()
+                    if (sampleCount <= 0) break
+                    chunkIndex++
+                    onProgress("正在分析音频分段 $chunkIndex/$totalChunks…")
+                    val samples = reader.readFloatSamples(
+                        startSample = chunkStartSample,
+                        count = sampleCount,
+                    )
+                    val localSegments = try {
+                        diarize(context, samples) { message ->
+                            onProgress("音频分段 $chunkIndex/$totalChunks · $message")
+                        }
+                    } finally {
+                        samples.fill(0f)
+                    }
+                    ownerJob?.ensureActive()
+
+                    val offsetMs = chunkStartSample * 1_000L / rate
+                    val absoluteSegments = ArrayList<SpeakerChunkIdentityPolicy.Segment>(localSegments.size)
+                    localSegments.forEach { segment ->
+                        val localStartMs = (segment.startSec * 1_000f).toLong().coerceAtLeast(0L)
+                        val localEndMs = (segment.endSec * 1_000f).toLong().coerceAtLeast(localStartMs)
+                        val absoluteStart = offsetMs + localStartMs
+                        val absoluteEnd = offsetMs + localEndMs
+                        if (segment.speaker >= 0 && absoluteEnd > absoluteStart) {
+                            absoluteSegments += SpeakerChunkIdentityPolicy.Segment(
+                                speakerId = segment.speaker,
+                                startMs = absoluteStart,
+                                endMs = absoluteEnd,
+                                confidence = segment.confidence,
+                            )
+                        }
+                    }
+
+                    if (chunkIndex == 1L) {
+                        val normalized = SpeakerChunkIdentityPolicy.normalizeFirstWindow(absoluteSegments)
+                        merged.addAll(normalized.segments)
+                        nextSpeakerId = normalized.nextSpeakerId
+                    } else {
+                        val overlapStartMs = chunkStartSample * 1_000L / rate
+                        val overlapEndMs = previousChunkEndSample * 1_000L / rate
+                        val reconciled = SpeakerChunkIdentityPolicy.mergeWindow(
+                            previous = merged,
+                            current = absoluteSegments,
+                            overlapStartMs = overlapStartMs,
+                            overlapEndMs = overlapEndMs,
+                            nextSpeakerId = nextSpeakerId,
+                        )
+                        merged.addAll(reconciled.segments)
+                        nextSpeakerId = reconciled.nextSpeakerId
+                    }
+
+                    previousChunkEndSample = chunkEndSample
+                    if (chunkEndSample >= pcmFile.sampleCount) break
+                    chunkStartSample = (chunkEndSample - overlapSamples)
+                        .coerceAtLeast(chunkStartSample + 1L)
+                }
+            }
+        }
+
+        return merged.map { segment ->
+            Segment(
+                startSec = segment.startMs / 1_000f,
+                endSec = segment.endMs / 1_000f,
+                speaker = segment.speakerId,
+                confidence = segment.confidence,
+            )
         }
     }
 
