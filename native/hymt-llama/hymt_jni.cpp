@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <exception>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -38,6 +40,14 @@ void close_locked() {
 
 jstring to_java_string(JNIEnv * env, const std::string & value) {
     return env->NewStringUTF(value.c_str());
+}
+
+jstring throw_illegal_state(JNIEnv * env, const std::string & message) {
+    jclass exception_class = env->FindClass("java/lang/IllegalStateException");
+    if (exception_class != nullptr) {
+        env->ThrowNew(exception_class, message.c_str());
+    }
+    return nullptr;
 }
 
 std::string from_java_string(JNIEnv * env, jstring value) {
@@ -176,7 +186,7 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
     std::lock_guard<std::mutex> guard(g_mutex);
     try {
         if (g_model == nullptr || g_context == nullptr || g_vocab == nullptr) {
-            return to_java_string(env, "HY-MT1.5 模型尚未加载。");
+            return throw_illegal_state(env, "HY-MT1.5 模型尚未加载。");
         }
         const std::string raw = from_java_string(env, user_prompt);
         if (raw.empty()) return to_java_string(env, "");
@@ -188,14 +198,14 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
         const int32_t limit = std::clamp(static_cast<int>(max_tokens), 32, 768);
         const uint32_t context_limit = llama_n_ctx(g_context);
         if (tokens.size() + static_cast<size_t>(limit) + 8U > context_limit) {
-            return to_java_string(env, "字幕内容过长，超过 HY-MT1.5 当前上下文长度。");
+            return throw_illegal_state(env, "字幕内容过长，超过 HY-MT1.5 当前上下文长度。");
         }
 
         llama_batch batch = llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
         if (batch.token == nullptr || batch.pos == nullptr || batch.n_seq_id == nullptr ||
             batch.seq_id == nullptr || batch.logits == nullptr) {
             llama_batch_free(batch);
-            return to_java_string(env, "无法为 HY-MT1.5 分配输入缓冲区。");
+            return throw_illegal_state(env, "无法为 HY-MT1.5 分配输入缓冲区。");
         }
         batch.n_tokens = static_cast<int32_t>(tokens.size());
         for (int32_t i = 0; i < batch.n_tokens; ++i) {
@@ -211,13 +221,13 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
             if (g_cancelled.load(std::memory_order_relaxed)) {
                 return to_java_string(env, "__HYMT_CANCELLED__");
             }
-            return to_java_string(env, "HY-MT1.5 输入编码失败，推理已停止。");
+            return throw_illegal_state(env, "HY-MT1.5 输入编码失败，推理已停止。");
         }
 
         auto sampler_params = llama_sampler_chain_default_params();
         llama_sampler * sampler = llama_sampler_chain_init(sampler_params);
         if (sampler == nullptr) {
-            return to_java_string(env, "HY-MT1.5 采样器初始化失败。");
+            return throw_illegal_state(env, "HY-MT1.5 采样器初始化失败。");
         }
         llama_sampler_chain_add(sampler, llama_sampler_init_top_k(20));
         llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.6f, 1));
@@ -243,15 +253,15 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
                 if (g_cancelled.load(std::memory_order_relaxed)) {
                     return to_java_string(env, "__HYMT_CANCELLED__");
                 }
-                return to_java_string(env, "HY-MT1.5 生成译文时解码失败。");
+                return throw_illegal_state(env, "HY-MT1.5 生成译文时解码失败。");
             }
         }
         llama_sampler_free(sampler);
         return to_java_string(env, output);
     } catch (const std::exception & error) {
-        return to_java_string(env, std::string("HY-MT1.5 推理失败：") + error.what());
+        return throw_illegal_state(env, std::string("HY-MT1.5 推理失败：") + error.what());
     } catch (...) {
-        return to_java_string(env, "HY-MT1.5 推理失败：未知原生异常。");
+        return throw_illegal_state(env, "HY-MT1.5 推理失败：未知原生异常。");
     }
 }
 
