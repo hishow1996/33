@@ -212,7 +212,8 @@ object HyMtModelManager {
         val supportsArm64 = android.os.Build.SUPPORTED_ABIS.any {
             it.equals("arm64-v8a", ignoreCase = true)
         }
-        val canDownloadBeforeRuntimeUpdate = supportsArm64 && !nativeLibrary.isFile
+        val libraryLoadable = withContext(Dispatchers.IO) { HyMtNative.isLibraryLoadable(app) }
+        val canDownloadBeforeRuntimeUpdate = supportsArm64 && !libraryLoadable
         if (!canDownloadBeforeRuntimeUpdate) {
             try {
                 withContext(Dispatchers.IO) { HyMtNative.ensureLibraryLoaded(app) }
@@ -259,6 +260,9 @@ object HyMtModelManager {
                 diagnosticContext = mapOf(
                     "需要的原生库" to "lib/arm64-v8a/libhymt.so",
                     "原生库实际路径" to nativeLibrary.absolutePath,
+                    "System.loadLibrary 可加载" to HyMtNative.isLibraryLoadable(app).toString(),
+                    "nativeLibraryDir" to app.applicationInfo.nativeLibraryDir,
+                    "splitSourceDirs" to (app.applicationInfo.splitSourceDirs?.joinToString(",") ?: "无"),
                     "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
                     "模型文件" to model.name,
                 ),
@@ -412,7 +416,8 @@ object HyMtModelManager {
             AppLogStore.info(app, "LocalTranslationModel", "HY-MT1.5 模型下载已暂停，已保留断点")
             throw cancelled
         } catch (error: Exception) {
-            val nativeLibraryMissing = supportsArm64 && !nativeLibrary.isFile
+            val nativeLibraryMissing = supportsArm64 &&
+                !withContext(Dispatchers.IO) { HyMtNative.isLibraryLoadable(app) }
             val completeModel = hasGgufHeader(model)
             val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
             mutableState.value = mutableState.value.copy(
@@ -443,6 +448,9 @@ object HyMtModelManager {
                     "模型文件大小" to model.length().toString(),
                     "原生运行库存在" to nativeLibrary.isFile.toString(),
                     "原生运行库路径" to nativeLibrary.absolutePath,
+                    "System.loadLibrary 可加载" to HyMtNative.isLibraryLoadable(app).toString(),
+                    "nativeLibraryDir" to app.applicationInfo.nativeLibraryDir,
+                    "splitSourceDirs" to (app.applicationInfo.splitSourceDirs?.joinToString(",") ?: "无"),
                     "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
                     "是否保留断点" to hasPartialDownload(app).toString(),
                 ),
@@ -493,6 +501,9 @@ object HyMtModelManager {
 
 internal object HyMtNative {
     @Volatile private var libraryLoaded = false
+
+    fun isLibraryLoadable(context: Context): Boolean =
+        runCatching { ensureLibraryLoaded(context) }.isSuccess
 
     @Synchronized
     fun ensureLibraryLoaded(context: Context) {
