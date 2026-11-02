@@ -99,6 +99,25 @@ internal object DevicePerformancePolicy {
         return (base-(if(isPlaying&&dubbingEnabled)1 else 0)-asrReductions(s)).coerceAtLeast(1)
     }
 
+    /**
+     * Speaker diarization (pyannote segmentation + speaker embedding) is a long, purely
+     * CPU-bound offline job. Running it on one thread left most cores of an eight-core phone idle.
+     * It follows the ASR budget: same tiers, same reductions (power saving, heat, severe memory
+     * pressure), and one fewer lane while a video is playing so playback and dubbing stay smooth.
+     */
+    fun recommendedSpeakerThreads(
+        s: DevicePerformanceSnapshot,
+        playbackActive: Boolean = false,
+    ): Int {
+        val cores=s.processorCount.coerceAtLeast(1)
+        val base=when(tier(s)){
+            DevicePerformanceTier.LOW->1
+            DevicePerformanceTier.BALANCED->if(hasMidRangeAsrHeadroom(s)) 3 else 2
+            DevicePerformanceTier.HIGH->4
+        }.coerceAtMost(cores)
+        return (base-(if(playbackActive)1 else 0)-asrReductions(s)).coerceAtLeast(1)
+    }
+
     fun recommendedTtsThreads(
         s: DevicePerformanceSnapshot,
         playbackActive: Boolean = false,

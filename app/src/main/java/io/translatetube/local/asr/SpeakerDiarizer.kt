@@ -8,6 +8,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import io.translatetube.local.performance.DevicePerformanceManager
+import io.translatetube.local.performance.DevicePerformancePolicy
 import io.translatetube.local.player.SpeakerChunkIdentityPolicy
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -185,8 +187,21 @@ object SpeakerDiarizer {
         return ModelFiles(segmentation, embedding)
     }
 
+    /**
+     * CPU threads for each of the two ONNX models. Both were hard-coded to 1, which left most
+     * cores of an eight-core phone idle during a job that runs for minutes. Falls back to the old
+     * single thread if the device snapshot cannot be read.
+     */
+    private fun speakerThreads(context: Context): Int = runCatching {
+        DevicePerformancePolicy.recommendedSpeakerThreads(
+            DevicePerformanceManager.snapshot(context),
+            playbackActive = DevicePerformanceManager.isPlaybackLoadActive(),
+        )
+    }.getOrDefault(1).coerceIn(1, 4)
+
     private fun createNativeSession(
         models: ModelFiles,
+        numThreads: Int,
         checkActive: () -> Unit,
     ): NativeDiarizerSession {
         try {
@@ -203,9 +218,9 @@ object SpeakerDiarizer {
             val pyannote = pyannoteClass.constructors.first { it.parameterCount == 2 }
                 .newInstance(models.segmentation.absolutePath, 0.1f)
             val segmentationConfig = segmentationClass.constructors.first { it.parameterCount == 4 }
-                .newInstance(pyannote, 1, false, "cpu")
+                .newInstance(pyannote, numThreads, false, "cpu")
             val embeddingConfig = embeddingClass.constructors.first { it.parameterCount == 4 }
-                .newInstance(models.embedding.absolutePath, 1, false, "cpu")
+                .newInstance(models.embedding.absolutePath, numThreads, false, "cpu")
             val clustering = clusteringClass.constructors.firstOrNull { it.parameterCount == 3 }
                 ?.newInstance(-1, 0.5f, true)
                 ?: clusteringClass.constructors.first { it.parameterCount == 2 }
@@ -293,7 +308,7 @@ object SpeakerDiarizer {
             require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
             val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
             onProgress("正在初始化人物识别模型…")
-            val session = createNativeSession(models, checkActive)
+            val session = createNativeSession(models, speakerThreads(context), checkActive)
             try {
                 onProgress("识别人物说话片段…")
                 processWithNativeSession(session, samples, checkActive)
@@ -345,7 +360,12 @@ object SpeakerDiarizer {
         withContext(Dispatchers.IO) {
             val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
             onProgress("正在初始化人物识别模型…")
-            val session = createNativeSession(models, checkActive)
+            val numThreads = speakerThreads(context)
+            val playbackLoadActive = DevicePerformanceManager.isPlaybackLoadActive()
+            val initStartedNs = System.nanoTime()
+            val session = createNativeSession(models, numThreads, checkActive)
+            val initMs = (System.nanoTime() - initStartedNs) / 1_000_000L
+            val inferenceStartedNs = System.nanoTime()
             try {
                 val merged = ArrayList<SpeakerChunkIdentityPolicy.Segment>()
                 var previousWindowSegments = emptyList<SpeakerChunkIdentityPolicy.Segment>()
@@ -421,6 +441,27 @@ object SpeakerDiarizer {
                 }
 
                 checkActive()
+                val inferenceMs = (System.nanoTime() - inferenceStartedNs) / 1_000_000L
+                val audioSec = pcmFile.sampleCount.toDouble() / pcmFile.sampleRate.toDouble()
+                // Timing breakdown so a slow run shows whether model loading or inference dominates.
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.info(
+                        context,
+                        "SpeakerDiarizer",
+                        "人物识别推理耗时统计",
+                        diagnosticContext = mapOf(
+                            "推理线程数（每个模型）" to numThreads.toString(),
+                            "视频播放负载是否活跃" to playbackLoadActive.toString(),
+                            "音频时长（秒）" to audioSec.toInt().toString(),
+                            "音频分段数" to totalChunks.toString(),
+                            "模型初始化 ms" to initMs.toString(),
+                            "分段推理总 ms" to inferenceMs.toString(),
+                            "推理耗时÷音频时长" to
+                                String.format(java.util.Locale.US, "%.2f", inferenceMs / 1000.0 / audioSec.coerceAtLeast(1.0)),
+                            "识别出的说话片段数" to merged.size.toString(),
+                        ),
+                    )
+                }
                 merged.map { segment ->
                     Segment(
                         startSec = segment.startMs / 1_000f,

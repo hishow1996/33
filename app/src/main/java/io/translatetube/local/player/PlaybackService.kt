@@ -13068,6 +13068,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     emptyList()
                 } else {
                     val speakerDecodeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    val speakerDecodeStartedNs = System.nanoTime()
                     val pcmFile = withContext(Dispatchers.IO) {
                         val sourceFile: File?
                         val sourceUri: Uri?
@@ -13118,9 +13119,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             releaseActiveAsrAudio(leasedPath)
                         }
                     }
+                    val speakerDecodeMs = (System.nanoTime() - speakerDecodeStartedNs) / 1_000_000L
                     try {
                         ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
-                        io.translatetube.local.asr.SpeakerDiarizer.diarizePcmFile(
+                        val speakerDiarizeStartedNs = System.nanoTime()
+                        val diarizedSegments = io.translatetube.local.asr.SpeakerDiarizer.diarizePcmFile(
                             this@PlaybackService,
                             pcmFile,
                         ) { message ->
@@ -13139,6 +13142,20 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 ) else state
                             }
                         }
+                        val speakerDiarizeMs = (System.nanoTime() - speakerDiarizeStartedNs) / 1_000_000L
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "人物识别阶段耗时统计",
+                            diagnosticContext = mapOf(
+                                "视频来源" to diagnosticMediaSourceType(ui.value),
+                                "音频时长（秒）" to (pcmFile.sampleCount / pcmFile.sampleRate).toString(),
+                                "获取并解码音频 ms" to speakerDecodeMs.toString(),
+                                "模型准备与分段推理 ms" to speakerDiarizeMs.toString(),
+                                "识别出的说话片段数" to diarizedSegments.size.toString(),
+                            ),
+                        )
+                        diarizedSegments
                     } finally {
                         pcmFile.file.delete()
                     }

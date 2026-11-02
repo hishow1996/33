@@ -54,6 +54,31 @@ class DevicePerformancePolicyTest {
         // Four-core 6 GB phones stay at two.
         assertEquals(2,DevicePerformancePolicy.recommendedAsrThreads(s(ram=ram,cores=4),"whisper",false,false))
     }
+    @Test fun speakerDiarizationUsesMoreThanOneThreadOnCapablePhones(){
+        // Honor 10 class: 8 cores, ~5.6 GiB reported RAM.
+        val ram=5L*gib+600L*mib
+        val honor=s(ram=ram,cores=8)
+        assertEquals(3,DevicePerformancePolicy.recommendedSpeakerThreads(honor))
+        // A playing video keeps one lane for rendering/dubbing.
+        assertEquals(2,DevicePerformancePolicy.recommendedSpeakerThreads(honor,playbackActive=true))
+        // Four-core 6 GB phones and mid-range 8-core phones with less RAM stay at two.
+        assertEquals(2,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=ram,cores=4)))
+        assertEquals(2,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=4L*gib,cores=8)))
+        // High-end phones may use four; low-end phones stay single threaded.
+        assertEquals(4,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=12L*gib,heap=512)))
+        assertEquals(1,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=2L*gib,heap=192,cores=4)))
+    }
+    @Test fun speakerDiarizationBacksOffWhenHotSavingPowerOrOutOfMemory(){
+        val ram=5L*gib+600L*mib
+        assertEquals(2,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=ram,cores=8,power=true)))
+        assertEquals(2,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=ram,cores=8,thermal=2)))
+        assertEquals(2,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=ram,avail=300L*mib,cores=8)))
+        // Moderate memory pressure is common on 6 GB phones and must not reduce the budget.
+        assertEquals(3,DevicePerformancePolicy.recommendedSpeakerThreads(s(ram=ram,avail=600L*mib,cores=8)))
+        // Never below one thread, even with every reduction at once.
+        assertEquals(1,DevicePerformancePolicy.recommendedSpeakerThreads(
+            s(ram=ram,avail=300L*mib,cores=8,power=true,thermal=3),playbackActive=true))
+    }
     @Test fun moderateMemoryPressureNoLongerDropsAsrThreads(){
         val d=s(ram=5L*gib+600L*mib,avail=600L*mib,cores=8)
         assertTrue(DevicePerformancePolicy.hasModerateMemoryPressure(d))
