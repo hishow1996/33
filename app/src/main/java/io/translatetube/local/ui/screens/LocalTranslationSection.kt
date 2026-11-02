@@ -684,67 +684,78 @@ internal fun LocalTranslationSection(
                                     },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                 ) { Text("暂停", maxLines = 1) }
-                            } else if (hyMtState.status == HyMtStatus.READY) {
-                                if (activeId == EngineFactory.ID_LOCAL_HYMT) {
-                                    Text(
-                                        "使用中",
-                                        modifier = Modifier.padding(horizontal = 8.dp),
-                                        color = Color(0xFF3569D4),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        maxLines = 1,
-                                    )
-                                } else {
-                                    TextButton(
-                                        onClick = {
-                                            scope.launch {
-                                                try {
-                                                    withContext(Dispatchers.IO) {
-                                                        HyMtModelManager.delete(context)
-                                                    }
-                                                } catch (error: Exception) {
-                                                    AppLogStore.error(
-                                                        context,
-                                                        "LocalTranslationModel",
-                                                        "删除 HY-MT1.5 模型失败",
-                                                        error,
-                                                    )
-                                                }
-                                            }
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                    ) { Text("删除", maxLines = 1) }
-                                }
+                            } else if (
+                                hyMtState.status == HyMtStatus.READY &&
+                                activeId == EngineFactory.ID_LOCAL_HYMT
+                            ) {
+                                Text(
+                                    "使用中",
+                                    modifier = Modifier.padding(horizontal = 8.dp),
+                                    color = Color(0xFF3569D4),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
                             } else {
-                                TextButton(
-                                    onClick = {
-                                        hyMtJob = launchTrackedModelDownload(
-                                            taskId = "hy-mt-2bit",
-                                            title = if (hyMtState.hasCompleteFiles) {
-                                                "正在重新验证 HY-MT1.5 2-bit 模型"
-                                            } else {
-                                                "正在下载 HY-MT1.5 2-bit 模型"
-                                            },
-                                        ) {
-                                            try {
-                                                HyMtModelManager.download(context)
-                                            } catch (cancelled: CancellationException) {
-                                                throw cancelled
-                                            } catch (_: Throwable) {
-                                                // Exact error remains in model state and diagnostics.
-                                            }
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                                 ) {
-                                    Text(
-                                        when {
-                                            hyMtState.hasCompleteFiles -> "重新验证"
-                                            hyMtState.status == HyMtStatus.PAUSED -> "继续下载"
-                                            hyMtState.status == HyMtStatus.FAILED -> "重试"
-                                            else -> "下载"
-                                        },
-                                        maxLines = 1,
-                                    )
+                                    if (hyMtState.status != HyMtStatus.READY) {
+                                        TextButton(
+                                            onClick = {
+                                                hyMtJob = launchTrackedModelDownload(
+                                                    taskId = "hy-mt-2bit",
+                                                    title = if (hyMtState.hasCompleteFiles) {
+                                                        "正在重新验证 HY-MT1.5 2-bit 模型"
+                                                    } else {
+                                                        "正在下载 HY-MT1.5 2-bit 模型"
+                                                    },
+                                                ) {
+                                                    try {
+                                                        HyMtModelManager.download(context)
+                                                    } catch (cancelled: CancellationException) {
+                                                        throw cancelled
+                                                    } catch (_: Throwable) {
+                                                        // Exact error remains in model state and diagnostics.
+                                                    }
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        ) {
+                                            Text(
+                                                when {
+                                                    hyMtState.hasCompleteFiles -> "重新验证"
+                                                    hyMtState.status == HyMtStatus.PAUSED -> "继续下载"
+                                                    hyMtState.status == HyMtStatus.FAILED -> "重试"
+                                                    else -> "下载"
+                                                },
+                                                maxLines = 1,
+                                            )
+                                        }
+                                    }
+                                    if (hyMtState.hasCompleteFiles &&
+                                        activeId != EngineFactory.ID_LOCAL_HYMT
+                                    ) {
+                                        TextButton(
+                                            onClick = {
+                                                scope.launch {
+                                                    try {
+                                                        withContext(Dispatchers.IO) {
+                                                            HyMtModelManager.delete(context)
+                                                        }
+                                                    } catch (error: Exception) {
+                                                        AppLogStore.error(
+                                                            context,
+                                                            "LocalTranslationModel",
+                                                            "删除 HY-MT1.5 模型失败",
+                                                            error,
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        ) { Text("删除", maxLines = 1) }
+                                    }
                                 }
                             }
                         }
