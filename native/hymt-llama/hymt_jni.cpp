@@ -223,6 +223,15 @@ std::vector<llama_token> tokenize_prompt(const std::string & prompt) {
         throw std::runtime_error("HY-MT1.5 tokenizer could not encode the prompt.");
     }
     tokens.resize(static_cast<size_t>(written));
+
+    // llama.cpp's Hunyuan-Dense built-in chat template adds the USER and
+    // ASSISTANT markers but intentionally omits BOS. HY-MT1.5 V1 requires
+    // the explicit BOS token before the user marker.
+    const llama_token bos = llama_vocab_bos(g_vocab);
+    if (bos < 0) {
+        throw std::runtime_error("HY-MT1.5 GGUF 未提供有效 BOS token。");
+    }
+    tokens.insert(tokens.begin(), bos);
     return tokens;
 }
 
