@@ -75,6 +75,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -3258,6 +3260,127 @@ private fun ProcessingStageCards(
 
 }
 
+
+private data class TranslationHelixRungGeometry(
+    val x: Float,
+    val start: Offset,
+    val end: Offset,
+)
+
+private data class TranslationHelixCrossingGeometry(
+    val strandAIsFront: Boolean,
+    val frontPath: Path,
+    val backPath: Path,
+)
+
+private data class TranslationHelixGeometry(
+    val strandA: Path,
+    val strandB: Path,
+    val rungs: List<TranslationHelixRungGeometry>,
+    val crossings: List<TranslationHelixCrossingGeometry>,
+)
+
+/** Build size-dependent helix geometry once per layout size, not on every animation frame. */
+private fun buildTranslationHelixGeometry(
+    width: Float,
+    height: Float,
+    density: Float,
+): TranslationHelixGeometry {
+    val centerY = height / 2f
+    val amplitude = height * 0.29f
+    val basePhase = -kotlin.math.PI.toFloat() / 2f
+    val totalPhase = 8f * kotlin.math.PI.toFloat()
+
+    fun phaseAt(x: Float): Float {
+        val t = (x / width).coerceIn(0f, 1f)
+        return basePhase + totalPhase * t
+    }
+
+    fun strandY(x: Float, upperSign: Float): Float =
+        centerY + upperSign * amplitude * kotlin.math.sin(phaseAt(x))
+
+    val sampleCount = (width / (1.5f * density)).toInt().coerceAtLeast(160)
+    val strandA = Path()
+    val strandB = Path()
+    for (index in 0..sampleCount) {
+        val x = width * index.toFloat() / sampleCount
+        val yA = strandY(x, -1f)
+        val yB = strandY(x, 1f)
+        if (index == 0) {
+            strandA.moveTo(x, yA)
+            strandB.moveTo(x, yB)
+        } else {
+            strandA.lineTo(x, yA)
+            strandB.lineTo(x, yB)
+        }
+    }
+
+    val crossingXs = ArrayList<Float>(8)
+    repeat(8) { crossingIndex ->
+        val targetPhase = kotlin.math.PI.toFloat() * crossingIndex
+        var low = 0f
+        var high = width
+        repeat(20) {
+            val middle = (low + high) / 2f
+            if (phaseAt(middle) < targetPhase) {
+                low = middle
+            } else {
+                high = middle
+            }
+        }
+        crossingXs.add((low + high) / 2f)
+    }
+
+    val rungGeometry = ArrayList<TranslationHelixRungGeometry>(14)
+    for (index in 0 until (crossingXs.size - 1).coerceAtLeast(0)) {
+        val left = crossingXs[index]
+        val right = crossingXs[index + 1]
+        // The two rungs stay symmetric at 25% and 75% of each helix loop.
+        listOf(0.25f, 0.75f).forEach { offset ->
+            val x = left + (right - left) * offset
+            rungGeometry.add(
+                TranslationHelixRungGeometry(
+                    x = x,
+                    start = Offset(x, strandY(x, -1f)),
+                    end = Offset(x, strandY(x, 1f)),
+                ),
+            )
+        }
+    }
+
+    fun crossoverSegment(crossingX: Float, strandSign: Float): Path {
+        val segment = Path()
+        val halfSpan = 3.2f * density
+        val startX = (crossingX - halfSpan).coerceAtLeast(0f)
+        val endX = (crossingX + halfSpan).coerceAtMost(width)
+        val samples = 10
+        for (sample in 0..samples) {
+            val x = startX + (endX - startX) * sample / samples.toFloat()
+            val y = strandY(x, strandSign)
+            if (sample == 0) segment.moveTo(x, y) else segment.lineTo(x, y)
+        }
+        return segment
+    }
+
+    val crossingGeometry = crossingXs.mapIndexed { index, x ->
+        val strandAIsFront = index % 2 == 0
+        val frontSign = if (strandAIsFront) -1f else 1f
+        val backSign = -frontSign
+        TranslationHelixCrossingGeometry(
+            strandAIsFront = strandAIsFront,
+            frontPath = crossoverSegment(x, frontSign),
+            backPath = crossoverSegment(x, backSign),
+        )
+    }
+
+    return TranslationHelixGeometry(
+        strandA = strandA,
+        strandB = strandB,
+        rungs = rungGeometry,
+        crossings = crossingGeometry,
+    )
+}
+
 @Composable
 private fun StageProgressVisual(
     stageIndex: Int,
@@ -3270,6 +3393,19 @@ private fun StageProgressVisual(
     isSkipped: Boolean,
     sourceSubtitlesReady: Boolean,
 ) {
+    var translationCanvasSize by remember(stageIndex) { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current.density
+    val translationGeometry = remember(stageIndex, translationCanvasSize, density) {
+        if (stageIndex == 3 && translationCanvasSize.width > 0 && translationCanvasSize.height > 0) {
+            buildTranslationHelixGeometry(
+                width = translationCanvasSize.width.toFloat(),
+                height = translationCanvasSize.height.toFloat(),
+                density = density,
+            )
+        } else {
+            null
+        }
+    }
     val transition = rememberInfiniteTransition(label = "stageProgressMotion")
     val pulse by transition.animateFloat(
         initialValue = if (isAnimating) 0.45f else 1f,
@@ -3426,6 +3562,11 @@ private fun StageProgressVisual(
                 1 -> 14.dp
                 else -> 12.dp
             })
+            .onSizeChanged { measuredSize ->
+                if (stageIndex == 3 && translationCanvasSize != measuredSize) {
+                    translationCanvasSize = measuredSize
+                }
+            }
             .graphicsLayer {
                 if (stageIndex == 3) {
                     // Roll the complete translation bar around its own horizontal
@@ -3652,63 +3793,14 @@ private fun StageProgressVisual(
 
             // 4. Translation — four open-ended DNA double-helix cycles.
             3 -> {
-                // All strands and rungs are static relative to one another. The
-                // complete Canvas layer supplies the 360-degree rotation.
+                // Static geometry is cached by measured size; only the flow highlight
+                // is recalculated on animation frames.
+                val geometry = translationGeometry ?: return@Canvas
                 val progressX = size.width * fraction
-                val centerY = size.height / 2f
-                val amplitude = size.height * 0.29f
-                val basePhase = -kotlin.math.PI.toFloat() / 2f
-                val totalPhase = 8f * kotlin.math.PI.toFloat()
-                fun phaseAt(x: Float): Float {
-                    val t = (x / size.width).coerceIn(0f, 1f)
-                    return basePhase + totalPhase * t
-                }
-                fun strandY(x: Float, upperSign: Float): Float {
-                    return centerY + upperSign * amplitude * kotlin.math.sin(phaseAt(x))
-                }
-
-                val sampleCount = (size.width / 1.5.dp.toPx()).toInt().coerceAtLeast(160)
-                val strandA = Path()
-                val strandB = Path()
-                for (index in 0..sampleCount) {
-                    val x = size.width * index.toFloat() / sampleCount
-                    val yA = strandY(x, -1f)
-                    val yB = strandY(x, 1f)
-                    if (index == 0) {
-                        strandA.moveTo(x, yA)
-                        strandB.moveTo(x, yB)
-                    } else {
-                        strandA.lineTo(x, yA)
-                        strandB.lineTo(x, yB)
-                    }
-                }
-
-                // Solve the eight known interior crossovers with bisection.
-                // This keeps rung count and spacing stable while the phase envelope moves them.
-                val crossings = ArrayList<Float>(8)
-                repeat(8) { crossingIndex ->
-                    val targetPhase = kotlin.math.PI.toFloat() * crossingIndex
-                    var low = 0f
-                    var high = size.width
-                    repeat(20) {
-                        val middle = (low + high) / 2f
-                        if (phaseAt(middle) < targetPhase) {
-                            low = middle
-                        } else {
-                            high = middle
-                        }
-                    }
-                    crossings.add((low + high) / 2f)
-                }
-
-                val rungPositions = ArrayList<Float>(14)
-                for (index in 0 until (crossings.size - 1).coerceAtLeast(0)) {
-                    val left = crossings[index]
-                    val right = crossings[index + 1]
-                    // Keep both rungs comfortably inside each helix, away from its crossovers.
-                    rungPositions.add(left + (right - left) * 0.25f)
-                    rungPositions.add(left + (right - left) * 0.75f)
-                }
+                val strandA = geometry.strandA
+                val strandB = geometry.strandB
+                val rungs = geometry.rungs
+                val crossings = geometry.crossings
 
                 val pendingColor = if (isSkipped) Color(0xFFBBC5D2) else Color(0xFFD1DAE5)
                 val blueStrandColor = when {
@@ -3733,11 +3825,11 @@ private fun StageProgressVisual(
 
                 // Draw the complete muted structure first; both strands stay continuous
                 // and the left/right ends remain visibly open.
-                rungPositions.forEach { x ->
+                rungs.forEach { rung ->
                     drawLine(
                         color = pendingColor,
-                        start = Offset(x, strandY(x, -1f)),
-                        end = Offset(x, strandY(x, 1f)),
+                        start = rung.start,
+                        end = rung.end,
                         strokeWidth = rungStroke,
                         cap = StrokeCap.Round,
                     )
@@ -3749,32 +3841,30 @@ private fun StageProgressVisual(
                     pulseRadius: Float,
                     pulseIntensity: Float = 1f,
                 ) {
-                    rungPositions.forEach { x ->
-                        val yA = strandY(x, -1f)
-                        val yB = strandY(x, 1f)
+                    rungs.forEach { rung ->
                         val strength = if (pulseHead != null) {
-                            (1f - kotlin.math.abs(x - pulseHead) / pulseRadius)
+                            (1f - kotlin.math.abs(rung.x - pulseHead) / pulseRadius)
                                 .coerceIn(0f, 1f) * pulseIntensity
                         } else {
                             0f
                         }
                         val gradient = Brush.linearGradient(
                             colors = listOf(blueStrandColor, greenStrandColor),
-                            start = Offset(x, yA),
-                            end = Offset(x, yB),
+                            start = rung.start,
+                            end = rung.end,
                         )
                         drawLine(
                             brush = gradient,
-                            start = Offset(x, yA),
-                            end = Offset(x, yB),
+                            start = rung.start,
+                            end = rung.end,
                             strokeWidth = rungStroke + strength * 1.0.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
                         if (strength > 0.04f) {
                             drawLine(
                                 color = Color.White.copy(alpha = strength * 0.82f),
-                                start = Offset(x, yA),
-                                end = Offset(x, yB),
+                                start = rung.start,
+                                end = rung.end,
                                 strokeWidth = 0.8.dp.toPx() + strength * 0.55.dp.toPx(),
                                 cap = StrokeCap.Round,
                             )
@@ -3795,22 +3885,7 @@ private fun StageProgressVisual(
                     )
                 }
 
-                // At each crossover, mask a short section of the rear strand and
-                // redraw the front strand on top. The underlying paths remain geometrically
-                // continuous; the visual overlap now reads as an actual over/under helix.
-                fun crossoverSegment(crossingX: Float, strandSign: Float): Path {
-                    val segment = Path()
-                    val halfSpan = 3.2.dp.toPx()
-                    val startX = (crossingX - halfSpan).coerceAtLeast(0f)
-                    val endX = (crossingX + halfSpan).coerceAtMost(size.width)
-                    val samples = 10
-                    for (sample in 0..samples) {
-                        val x = startX + (endX - startX) * sample / samples.toFloat()
-                        val y = strandY(x, strandSign)
-                        if (sample == 0) segment.moveTo(x, y) else segment.lineTo(x, y)
-                    }
-                    return segment
-                }
+                // Crossover segment paths are also cached with the static geometry.
 
                 fun drawOverUnderWeave(
                     colorA: Color,
@@ -3819,14 +3894,11 @@ private fun StageProgressVisual(
                     strokeWidth: Float = curveStroke,
                     maskRear: Boolean = true,
                 ) {
-                    crossings.forEachIndexed { crossingIndex, crossingX ->
-                        val strandAIsFront = crossingIndex % 2 == 0
-                        val frontSign = if (strandAIsFront) -1f else 1f
-                        val backSign = -frontSign
-                        val frontColor = if (strandAIsFront) colorA else colorB
-                        val backColor = if (strandAIsFront) colorB else colorA
-                        val backPath = crossoverSegment(crossingX, backSign)
-                        val frontPath = crossoverSegment(crossingX, frontSign)
+                    crossings.forEach { crossing ->
+                        val frontColor = if (crossing.strandAIsFront) colorA else colorB
+                        val backColor = if (crossing.strandAIsFront) colorB else colorA
+                        val backPath = crossing.backPath
+                        val frontPath = crossing.frontPath
 
                         if (maskRear) {
                             // The near-white mask blends into the light processing card.
