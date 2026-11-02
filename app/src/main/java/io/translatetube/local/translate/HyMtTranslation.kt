@@ -398,6 +398,7 @@ internal object HyMtNative {
     external fun nativeTranslate(prompt: String, maxTokens: Int): String?
     external fun nativeClose()
     external fun nativeCancel()
+    external fun nativeResetCancel()
 }
 
 /** Serializes inference and keeps one mapped model alive across adjacent subtitle batches. */
@@ -509,6 +510,7 @@ private object HyMtRuntime {
                 result
             } finally {
                 cancellationHandle?.dispose()
+                runCatching { HyMtNative.nativeResetCancel() }
             }
         }
     }
