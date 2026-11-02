@@ -71,6 +71,24 @@ class ModelTranslationParserTest {
     }
 
     @Test
+    fun stripsCommonEnglishAndChinesePreamblesBeforeMappingRows() {
+        assertEquals(
+            listOf("你好", "再见"),
+            parseModelTranslations("Here are the translations:\n你好\n再见", 2),
+        )
+        assertEquals(
+            listOf("早上好", "晚上好"),
+            parseModelTranslations("当然，以下是字幕翻译：\n早上好\n晚上好", 2),
+        )
+    }
+
+    @Test
+    fun stripsInlineTranslationLabelFromSingleCueResponses() {
+        assertEquals(listOf("你好，世界"), parseModelTranslations("译文：你好，世界", 1))
+        assertEquals(listOf("Hello"), parseModelTranslations("Here is the translation: Hello", 1))
+    }
+
+    @Test
     fun normalizesCaseAndUnderscoreLanguageTags() {
         assertEquals("en", LangMap.mlkit("EN-us"))
         assertEquals("zh", LangMap.mlkit("zh_CN"))

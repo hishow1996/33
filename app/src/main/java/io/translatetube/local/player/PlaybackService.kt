@@ -6403,7 +6403,11 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                     translatedText = row.optString("zh", "").takeIf { it.isNotBlank() },
                                 )
                             }
-                            SubtitleCacheValidationPolicy.restoreTranslationsForSource(parsedLines, rows) {
+                            SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+                                parsedLines,
+                                rows,
+                                sourceLanguage = srcLang,
+                            ) {
                                 cacheLoadJob?.ensureActive()
                             }
                         }.getOrNull()
@@ -10023,12 +10027,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             indices.map { SubtitleParsers.cleanTranslatedText(updatedLines[it].zh).orEmpty() }
                     }
                 }
-                // Retry missing rows once. For Google/ML Kit, keep an isolated still-missing cue
-                // on original audio if this batch or earlier rows already contain usable translations.
+                // Retry missing rows up to twice after the initial request. A failed cue is isolated
+                // so successful rows are retained and only the unresolved rows are requested again.
                 var unresolvedIndices = batchIndices
                 val resolvedBatch = linkedMapOf<Int, String>()
                 var attempt = 0
-                while (unresolvedIndices.isNotEmpty() && attempt < 2) {
+                while (unresolvedIndices.isNotEmpty() && attempt < 3) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     val batch = unresolvedIndices.map { plain[it] }
                     updateUiForSession(key, pipelineGeneration) { state ->
@@ -10039,7 +10043,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             progress = if (attempt == 0) {
                                 "正在请求翻译服务 · 第 ${batchIndex + 1}/${translationBatches.size} 批"
                             } else {
-                                "第 ${batchIndex + 1}/${translationBatches.size} 批译文不完整，正在重试第 ${attempt + 1} 次"
+                                "第 ${batchIndex + 1}/${translationBatches.size} 批译文不完整，正在重试第 ${attempt} 次"
                             },
                         )
                     }
@@ -10137,12 +10141,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices
                     attempt += 1
-                    if (unresolvedIndices.isNotEmpty() && attempt < 2) {
+                    if (unresolvedIndices.isNotEmpty() && attempt < 3) {
                         android.util.Log.w(
                             "PlaybackService",
                             "Retrying incomplete translation response for ${unresolvedIndices.size} subtitle rows",
                         )
-                        kotlinx.coroutines.delay(250L)
+                        kotlinx.coroutines.delay(if (attempt == 1) 350L else 700L)
                     }
                 }
 

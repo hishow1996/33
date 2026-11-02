@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -99,6 +100,28 @@ class SubtitleCacheValidationPolicyTest {
         assertTrue(restoredLines.map { it.zh } == listOf("你好", null, null))
         assertTrue(restoredLines.map { it.text } == source.map { it.text })
         assertTrue(restoredLines.map { it.startMs to it.endMs } == source.map { it.startMs to it.endMs })
+    }
+
+    @Test
+    fun rejectsCachedSourceEchoRowsButKeepsNamesAndValidTranslations() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "Hello"),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "Goodbye"),
+            io.translatetube.local.subs.SubLine(2, 2_000L, 3_000L, "J. K. Rowling"),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "Hello", "Hello"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Goodbye", "再见"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "J. K. Rowling", "J. K. Rowling"),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source,
+            cached,
+            sourceLanguage = "en",
+        ) ?: throw AssertionError("Expected partially valid cache to restore")
+
+        assertEquals(listOf(null, "再见", "J. K. Rowling"), restored.map { it.zh })
     }
 
     @Test

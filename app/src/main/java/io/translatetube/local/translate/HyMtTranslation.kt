@@ -677,13 +677,20 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
             }
             return withContext(Dispatchers.Default) {
                 val taskContext = currentCoroutineContext()
+                var rollingContext = context?.first.orEmpty()
+                    .zip(context?.second.orEmpty())
+                    .filter { it.first.isNotBlank() && it.second.isNotBlank() }
+                    .takeLast(3)
+                    .let { cues ->
+                        if (cues.isEmpty()) null else cues.map { it.first } to cues.map { it.second }
+                    }
                 lines.mapIndexed { index, line ->
                     taskContext.ensureActive()
                     val translated = when {
                         line.isBlank() -> ""
                         simplifiedChineseSource -> line
                         else -> try {
-                            val prompt = HyMtPromptBuilder.build(line, source, context)
+                            val prompt = HyMtPromptBuilder.build(line, source, rollingContext)
                             val maxTokens = (line.length * 2 + 64).coerceIn(96, 512)
                             HyMtRuntime.translate(appContext, prompt, maxTokens)
                         } catch (cancelled: CancellationException) {
@@ -704,6 +711,13 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                             )
                             ""
                         }
+                    }
+                    if (
+                        translated.isNotBlank() &&
+                        !SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(line, translated) &&
+                        !SubtitleTranslationQualityPolicy.isSourceEcho(line, translated, source)
+                    ) {
+                        rollingContext = appendHyMtTranslationContext(rollingContext, line, translated)
                     }
                     if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
                         AppLogStore.info(
@@ -726,6 +740,21 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
     }
 
     override fun close() = Unit
+}
+
+internal fun appendHyMtTranslationContext(
+    context: Pair<List<String>, List<String>>?,
+    sourceText: String,
+    translatedText: String,
+): Pair<List<String>, List<String>>? {
+    if (sourceText.isBlank() || translatedText.isBlank()) return context
+    val recent = context?.first.orEmpty()
+        .zip(context?.second.orEmpty())
+        .filter { it.first.isNotBlank() && it.second.isNotBlank() }
+        .takeLast(2)
+        .toMutableList()
+    recent += sourceText to translatedText
+    return recent.map { it.first } to recent.map { it.second }
 }
 
 private object HyMtPromptBuilder {

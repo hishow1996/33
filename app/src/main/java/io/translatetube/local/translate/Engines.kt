@@ -307,8 +307,19 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
 
 private val JSON = "application/json; charset=utf-8".toMediaType()
 private val translationHeaderRegex = Regex(
-    "(?i)^(here are (the )?translations?:?|translations?:?|translation results?:?|译文如下[:：]?)$",
+    """(?i)^\s*(?:here\s+(?:are|is)\s+(?:(?:the|your)\s+)?translations?|below\s+are\s+(?:the\s+)?translations?|following\s+are\s+(?:the\s+)?translations?|(?:the\s+)?translations?(?:\s+results?)?|以下(?:是|为)?(?:各行|字幕)?(?:翻译|译文)(?:如下)?|当然[,，]?\s*(?:以下|下面)(?:是|为)?(?:字幕)?(?:翻译|译文)(?:如下)?|译文(?:结果)?(?:如下)?|翻译(?:结果)?(?:如下)?)[:：]?\s*$""",
 )
+private val translationPrefixRegex = Regex(
+    """(?is)^\s*(?:here\s+(?:are|is)\s+(?:(?:the|your)\s+)?translations?|below\s+are\s+(?:the\s+)?translations?|following\s+are\s+(?:the\s+)?translations?|(?:the\s+)?translations?(?:\s+results?)?|the\s+translation\s+is|以下(?:是|为)?(?:各行|字幕)?(?:翻译|译文)(?:如下)?|当然[,，]?\s*(?:以下|下面)(?:是|为)?(?:字幕)?(?:翻译|译文)(?:如下)?|译文(?:结果)?(?:如下)?|翻译(?:结果)?(?:如下)?)\s*[:：]\s*(?:\r?\n\s*)?""",
+)
+
+private fun stripTranslationPrefix(value: String): String {
+    val withoutHeaderLines = value.lines()
+        .dropWhile { it.isBlank() || translationHeaderRegex.matches(it.trim()) }
+        .joinToString("\n")
+        .trim()
+    return translationPrefixRegex.replaceFirst(withoutHeaderLines, "").trim()
+}
 
 /**
  * Be tolerant of common model formatting variations while preserving subtitle row alignment.
@@ -391,7 +402,11 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
 
     // Fall back to positional output only when each input row has exactly one output row.
     val plainLines = normalized.lines()
-        .map { it.trim().removePrefix("- ").removePrefix("* ").trim().removeSurrounding("**").trim() }
+        .map {
+            val cleaned = it.trim().removePrefix("- ").removePrefix("* ").trim()
+                .removeSurrounding("**").trim()
+            stripTranslationPrefix(cleaned)
+        }
         .filter { it.isNotBlank() }
         // The response can contain many rows; share this pattern instead of compiling it per row.
         .filterNot { translationHeaderRegex.matches(it) }
@@ -399,9 +414,7 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
 
     // Single-row probes occasionally return a sentence without any index or wrapper.
     if (size == 1) {
-        val single = normalized
-            .replace(Regex("(?i)^(here is (the )?translation:?|translation:?|译文[:：]?)\\s*"), "")
-            .trim()
+        val single = stripTranslationPrefix(normalized)
         if (single.isNotBlank()) return listOf(single)
     }
 

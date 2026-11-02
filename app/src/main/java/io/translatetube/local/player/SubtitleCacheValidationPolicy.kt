@@ -20,10 +20,14 @@ internal object SubtitleCacheValidationPolicy {
      * A cached translation made only of punctuation (for example "。") for a cue that contains
      * real words is a failed translation. Treat it as missing so only that row is retried.
      */
-    private fun usableCachedTranslation(sourceText: String, cached: String?): String? =
-        SubtitleParsers.cleanTranslatedText(cached)?.takeUnless {
-            SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(sourceText, it)
-        }
+    private fun usableCachedTranslation(
+        sourceText: String,
+        cached: String?,
+        sourceLanguage: String,
+    ): String? = SubtitleParsers.cleanTranslatedText(cached)?.takeUnless {
+        SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(sourceText, it) ||
+            SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, it, sourceLanguage)
+    }
 
     /**
      * Restore an imported translation cache only when every cached cue still maps to the exact
@@ -33,6 +37,7 @@ internal object SubtitleCacheValidationPolicy {
     fun restoreTranslationsForSource(
         sourceLines: List<SubLine>,
         cachedRows: List<CachedTranslationRow>,
+        sourceLanguage: String = "auto",
         checkActive: () -> Unit = {},
     ): List<SubLine>? {
         checkActive()
@@ -60,7 +65,7 @@ internal object SubtitleCacheValidationPolicy {
                 source.text != cached.sourceText
             ) return null
             previousStart = cached.startMs
-            if (usableCachedTranslation(source.text, cached.translatedText) != null) {
+            if (usableCachedTranslation(source.text, cached.translatedText, sourceLanguage) != null) {
                 hasRecoverableTranslation = true
             }
         }
@@ -71,7 +76,7 @@ internal object SubtitleCacheValidationPolicy {
             if ((index and 0xff) == 0) checkActive()
             val source = sourceLines[index]
             restored += source.copy(
-                zh = usableCachedTranslation(source.text, cachedRows[index].translatedText)
+                zh = usableCachedTranslation(source.text, cachedRows[index].translatedText, sourceLanguage)
             )
         }
         checkActive()
