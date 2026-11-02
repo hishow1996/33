@@ -213,7 +213,8 @@ fun PlayerScreen(
         PlaybackService.instance?.isSpeakerTaskActive == true
     val isSpeakerRecognitionVisible = speakerRecognition.isActive ||
         speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED ||
-        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED
+        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED ||
+        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED
 
     // 错误时允许用户显式重试同一个视频；不监听 phase，避免失败后自动重试循环。
     var retryNonce by remember { mutableStateOf(0) }
@@ -952,15 +953,15 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 isSpeakerBusy && speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.APPLYING -> "正在应用人物分配…"
                                 isSpeakerBusy && isSpeakerRecognitionVisible -> "正在识别人物…"
                                 isSpeakerBusy -> "正在更新人物音色…"
-                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> "重新区分人物"
-                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> "重新区分人物"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> "重试区分人物"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> "重试区分人物"
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> "重新区分人物"
                                 else -> "区分人物"
                             },
                             enabled = state.lines.isNotEmpty() && !isSpeakerBusy &&
                                 state.phase in setOf(Phase.READY, Phase.SYNTHESIZING),
                             onClick = {
-                                advancedMenuExpanded = false
+                                // Keep the tools menu open so recognition progress stays visible here.
                                 PlaybackService.instance?.autoAssignSpeakers(
                                     forceRecognition = speakerRecognition.phase in setOf(
                                         io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED,
@@ -971,8 +972,13 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             },
                         )
                         if (isSpeakerRecognitionVisible) {
+                            Divider(
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                color = OutlineSoft,
+                                thickness = 1.dp,
+                            )
                             Column(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Text(
@@ -981,7 +987,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                         speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
                                     ) Color(0xFFB64A55) else SubText,
                                     style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 3,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 if (speakerRecognition.isActive) {
@@ -992,12 +998,12 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                         val progressPercent = speakerRecognition.progressPercent
                                         if (progressPercent != null) {
                                             LinearProgressIndicator(
-                                                progress = { progressPercent / 100f },
-                                                modifier = Modifier.weight(1f),
+                                                progress = { progressPercent.coerceIn(0, 100) / 100f },
+                                                modifier = Modifier.weight(1f).height(3.dp),
                                             )
                                         } else {
                                             LinearProgressIndicator(
-                                                modifier = Modifier.weight(1f),
+                                                modifier = Modifier.weight(1f).height(3.dp),
                                             )
                                         }
                                         if (
@@ -1006,17 +1012,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                         ) {
                                             TextButton(
                                                 onClick = { PlaybackService.instance?.cancelSpeakerRecognition() },
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                             ) { Text("取消") }
                                         }
                                     }
-                                } else {
-                                    TextButton(
-                                        onClick = {
-                                            PlaybackService.instance?.autoAssignSpeakers(forceRecognition = true)
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                    ) { Text("重新区分") }
                                 }
                             }
                         }
@@ -1138,55 +1137,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     }
                 }
             }
-            }
-
-            if (speakerRecognition.isActive && state.key == requestKey) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                    color = Color(0xFFEAF2FC),
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Face,
-                                contentDescription = null,
-                                tint = BrandBright,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.width(7.dp))
-                            Text(
-                                speakerRecognition.message.ifBlank { "正在区分人物…" },
-                                color = OnBg,
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        val recognitionPercent = speakerRecognition.progressPercent
-                        if (recognitionPercent != null) {
-                            LinearProgressIndicator(
-                                progress = { recognitionPercent.coerceIn(0, 100) / 100f },
-                                modifier = Modifier.fillMaxWidth().height(3.dp),
-                            )
-                        } else {
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth().height(3.dp),
-                            )
-                        }
-                    }
-                }
             }
 
             // ===== 视频画面（常驻容器，浮窗时 tv 被摘走；竖屏视频自适应比例） =====
