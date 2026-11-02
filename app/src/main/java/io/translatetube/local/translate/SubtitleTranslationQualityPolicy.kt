@@ -58,6 +58,7 @@ internal object SubtitleTranslationQualityPolicy {
                 Character.UnicodeScript.HIRAGANA,
                 Character.UnicodeScript.KATAKANA -> kana++
                 Character.UnicodeScript.HANGUL -> hangul++
+                else -> Unit
             }
         }
         if (lettersOrDigits == 0) return false
