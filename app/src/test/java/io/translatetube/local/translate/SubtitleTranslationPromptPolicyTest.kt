@@ -1,12 +1,13 @@
 package io.translatetube.local.translate
 
+import java.util.Locale
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SubtitleTranslationPromptPolicyTest {
     @Test
     fun preservesMeaningChangingDetailsAndNumericInformation() {
-        val instructions = SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES.lowercase()
+        val instructions = SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES.lowercase(Locale.ROOT)
 
         assertTrue(instructions.contains("preserve negation and polarity"))
         assertTrue(instructions.contains("uncertainty"))
