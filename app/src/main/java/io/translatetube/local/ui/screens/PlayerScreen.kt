@@ -3578,15 +3578,17 @@ private fun StageProgressVisual(
                     val rolling = translationAnimationActive || isPaused
                     val angleRadians = if (rolling) translationWholeRotation.value else 0f
                     rotationX = angleRadians * (180f / kotlin.math.PI.toFloat())
-                    // A small front/back brightness difference gives the flip depth
-                    // without darkening the text or changing any measured progress.
+                    // Keep front/back shading subtle to avoid a brightness flicker
+                    // around the edge-on pose while preserving a little 3D depth.
                     alpha = if (rolling) {
                         val facing = (kotlin.math.cos(angleRadians) + 1f) * 0.5f
-                        (0.92f + 0.08f * facing).coerceIn(0.92f, 1f)
+                        (0.96f + 0.04f * facing).coerceIn(0.96f, 1f)
                     } else {
                         1f
                     }
-                    cameraDistance = 32f * density
+                    // A longer camera distance reduces perspective distortion as
+                    // the 16dp strip rolls through 90 and 270 degrees.
+                    cameraDistance = 96f * density
                     // BlendMode.Clear below must erase only this progress visual,
                     // never pixels belonging to the parent card or other UI.
                     compositingStrategy = CompositingStrategy.Offscreen
@@ -3915,24 +3917,36 @@ private fun StageProgressVisual(
                         val frontPath = crossing.frontPath
 
                         if (maskRear) {
-                            // Clear only the rear strand segment inside this isolated Canvas
-                            // layer. The card's real background remains visible underneath.
+                            // Feather the rear strand's edges first. DstOut partially
+                            // fades the pixels in an isolated layer, avoiding a hard cut.
+                            drawPath(
+                                backPath,
+                                color = Color.Black.copy(alpha = 0.38f),
+                                style = Stroke(
+                                    width = strokeWidth + 4.5.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                ),
+                                blendMode = BlendMode.DstOut,
+                            )
+                            // Clear the center of the rear strand so the front strand
+                            // reads clearly as passing over it.
                             drawPath(
                                 backPath,
                                 color = Color.Transparent,
                                 style = Stroke(
-                                    width = strokeWidth + 1.5.dp.toPx(),
+                                    width = strokeWidth + 1.0.dp.toPx(),
                                     cap = StrokeCap.Round,
                                     join = StrokeJoin.Round,
                                 ),
                                 blendMode = BlendMode.Clear,
                             )
-                            // A faint rear trace keeps the hidden strand visually continuous.
+                            // Restore a very faint rear trace to keep the helix continuous.
                             drawPath(
                                 backPath,
-                                color = backColor.copy(alpha = alpha * 0.28f),
+                                color = backColor.copy(alpha = alpha * 0.20f),
                                 style = Stroke(
-                                    width = (strokeWidth * 0.72f).coerceAtLeast(1.dp.toPx()),
+                                    width = (strokeWidth * 0.68f).coerceAtLeast(1.dp.toPx()),
                                     cap = StrokeCap.Round,
                                     join = StrokeJoin.Round,
                                 ),
@@ -4020,7 +4034,7 @@ private fun StageProgressVisual(
                                     colorB = greenStrandColor,
                                     alpha = 0.78f * effectiveFlowIntensity,
                                     strokeWidth = 3.1.dp.toPx(),
-                                    maskRear = false,
+                                    maskRear = true,
                                 )
                             }
                         }
@@ -4054,7 +4068,7 @@ private fun StageProgressVisual(
                                 colorB = greenStrandColor,
                                 alpha = 0.8f * effectiveFlowIntensity,
                                 strokeWidth = 3.1.dp.toPx(),
-                                maskRear = false,
+                                maskRear = true,
                             )
                         }
                     }
