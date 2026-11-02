@@ -674,7 +674,11 @@ internal fun LocalTranslationSection(
                                     color = when (hyMtState.status) {
                                         HyMtStatus.READY, HyMtStatus.DOWNLOADING, HyMtStatus.VERIFYING ->
                                             Color(0xFF3569D4)
-                                        HyMtStatus.FAILED -> Color(0xFFB42318)
+                                        HyMtStatus.FAILED -> if (
+                                            hyMtState.hasCompleteFiles && !hyMtState.runtimeAvailable
+                                        ) {
+                                            Color(0xFF64748B)
+                                        } else Color(0xFFB42318)
                                         else -> Color(0xFF64748B)
                                     },
                                     style = MaterialTheme.typography.labelSmall,
