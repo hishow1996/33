@@ -91,8 +91,8 @@ object HyMtModelManager {
     private const val DOWNLOAD_SPACE_RESERVE_BYTES = 32L * 1024L * 1024L
     internal const val MODEL_REVISION = "4b99bde"
     internal const val RUNTIME_SOURCE_REVISION = "2af64dd00a6689a7bfaf69b4768a944d0ec6bade"
-    internal const val NATIVE_ADAPTER_REVISION = "jni-20261102-r3"
-    private const val VALIDATION_SCHEMA = 2
+    internal const val NATIVE_ADAPTER_REVISION = "jni-20261102-r4"
+    private const val VALIDATION_SCHEMA = 3
     private const val MODEL_NAME = "Hy-MT1.5-1.8B-2bit.gguf"
     private const val MODEL_URL =
         "https://huggingface.co/tencent/Hy-MT1.5-1.8B-2bit-GGUF/resolve/4b99bde/Hy-MT1.5-1.8B-2bit.gguf"
