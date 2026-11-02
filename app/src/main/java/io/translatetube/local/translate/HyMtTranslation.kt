@@ -42,7 +42,7 @@ data class HyMtDownloadState(
 /** Official HY-MT1.5 source languages used by the Tencent model card. */
 object HyMtLanguagePolicy {
     val languages: List<Pair<String, String>> = listOf(
-        "en" to "英语", "fr" to "法语", "pt" to "葡萄牙语", "es" to "西班牙语",
+        "zh" to "中文", "en" to "英语", "fr" to "法语", "pt" to "葡萄牙语", "es" to "西班牙语",
         "ja" to "日语", "tr" to "土耳其语", "ru" to "俄语", "ar" to "阿拉伯语",
         "ko" to "韩语", "th" to "泰语", "it" to "意大利语", "de" to "德语",
         "vi" to "越南语", "ms" to "马来语", "id" to "印尼语", "tl" to "菲律宾语",
@@ -211,6 +211,7 @@ object HyMtModelManager {
                     downloadedBytes = part.length(),
                     totalBytes = DISPLAY_BYTES,
                 )
+                val downloadContext = currentCoroutineContext()
                 val result = ResumableModelArchiveDownloader.download(
                     client = client,
                     url = MODEL_URL,
@@ -226,7 +227,7 @@ object HyMtModelManager {
                             totalBytes = effectiveTotal,
                         )
                     },
-                    checkActive = { currentCoroutineContext().ensureActive() },
+                    checkActive = { downloadContext.ensureActive() },
                 )
                 if (result.downloadedBytes !in 500_000_000L..MAX_BYTES ||
                     !hasGgufHeader(part)
@@ -405,6 +406,7 @@ private object HyMtRuntime {
         loadedIdentity = requestedIdentity
     }
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     suspend fun translate(
         context: Context,
         prompt: String,
@@ -427,6 +429,9 @@ private object HyMtRuntime {
                     .orEmpty()
                 ownerJob?.ensureActive()
                 if (result == "__HYMT_CANCELLED__") throw CancellationException("HY-MT1.5 推理已取消")
+                if (result.startsWith("HY-MT1.5") || result.startsWith("字幕内容过长") ||
+                    result.startsWith("无法为 HY-MT1.5")
+                ) throw IllegalStateException(result)
                 if (result.isBlank()) throw IllegalStateException("HY-MT1.5 未返回可用译文")
                 result
             } finally {
