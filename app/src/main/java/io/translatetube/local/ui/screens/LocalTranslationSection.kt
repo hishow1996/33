@@ -695,6 +695,14 @@ internal fun LocalTranslationSection(
                                     style = MaterialTheme.typography.labelMedium,
                                     maxLines = 1,
                                 )
+                            } else if (!hyMtState.runtimeAvailable) {
+                                Text(
+                                    "更新应用后可用",
+                                    modifier = Modifier.padding(horizontal = 8.dp),
+                                    color = Color(0xFFB42318),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
                             } else {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
