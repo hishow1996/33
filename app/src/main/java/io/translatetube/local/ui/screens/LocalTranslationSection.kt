@@ -667,10 +667,12 @@ internal fun LocalTranslationSection(
                                             "模型文件已下载，等待运行时验证"
                                         hyMtState.status == HyMtStatus.PAUSED ->
                                             "下载已暂停"
+                                        hyMtState.status == HyMtStatus.FAILED &&
+                                            hyMtState.runtimeError.isNotBlank() &&
+                                            hyMtState.hasCompleteFiles ->
+                                            "模型文件已下载，等待运行时验证"
                                         hyMtState.status == HyMtStatus.FAILED ->
-                                            if (hyMtState.runtimeError.isNotBlank()) {
-                                                "下载或验证失败"
-                                            } else hyMtState.error.ifBlank { "下载或验证失败" }
+                                            hyMtState.error.ifBlank { "下载或验证失败" }
                                         else -> "未下载"
                                     },
                                     color = when {
@@ -679,7 +681,8 @@ internal fun LocalTranslationSection(
                                             hyMtState.status == HyMtStatus.VERIFYING ->
                                             Color(0xFF3569D4)
                                         hyMtState.status == HyMtStatus.FAILED &&
-                                            hyMtState.runtimeError.isBlank() ->
+                                            !(hyMtState.runtimeError.isNotBlank() &&
+                                                hyMtState.hasCompleteFiles) ->
                                             Color(0xFFB42318)
                                         else -> Color(0xFF64748B)
                                     },
