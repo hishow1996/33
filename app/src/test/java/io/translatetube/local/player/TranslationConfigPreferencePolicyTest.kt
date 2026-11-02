@@ -48,6 +48,18 @@ class TranslationConfigPreferencePolicyTest {
                 EngineFactory.ID_LOCAL_MLKIT,
             ),
         )
+        assertTrue(
+            TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                "hymt_source_language",
+                EngineFactory.ID_LOCAL_HYMT,
+            ),
+        )
+        assertFalse(
+            TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                "hymt_source_language",
+                EngineFactory.ID_LOCAL_SMALL100,
+            ),
+        )
     }
 
     @Test
@@ -70,6 +82,7 @@ class TranslationConfigPreferencePolicyTest {
             EngineFactory.ID_LOCAL_OPUS,
             EngineFactory.ID_LOCAL_SMALL100,
             EngineFactory.ID_LOCAL_SINGLE_PAIR,
+            EngineFactory.ID_LOCAL_HYMT,
         )
         builtInIds.forEach { activeId ->
             assertFalse(
