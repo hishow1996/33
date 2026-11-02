@@ -91,7 +91,8 @@ object HyMtModelManager {
     private const val DOWNLOAD_SPACE_RESERVE_BYTES = 32L * 1024L * 1024L
     internal const val MODEL_REVISION = "4b99bde"
     internal const val RUNTIME_SOURCE_REVISION = "2af64dd00a6689a7bfaf69b4768a944d0ec6bade"
-    private const val VALIDATION_SCHEMA = 1
+    internal const val NATIVE_ADAPTER_REVISION = "jni-20261102-r3"
+    private const val VALIDATION_SCHEMA = 2
     private const val MODEL_NAME = "Hy-MT1.5-1.8B-2bit.gguf"
     private const val MODEL_URL =
         "https://huggingface.co/tencent/Hy-MT1.5-1.8B-2bit-GGUF/resolve/4b99bde/Hy-MT1.5-1.8B-2bit.gguf"
@@ -116,7 +117,9 @@ object HyMtModelManager {
     private fun signature(context: Context): String {
         val model = modelFile(context)
         return buildString {
-            append(MODEL_REVISION).append(":Q2_0C:runtime-").append(VALIDATION_SCHEMA)
+            append(MODEL_REVISION).append(":Q2_0C:")
+                .append(RUNTIME_SOURCE_REVISION).append(":")
+                .append(NATIVE_ADAPTER_REVISION).append(":validation-").append(VALIDATION_SCHEMA)
             append(':').append(model.length()).append(':').append(model.lastModified())
         }
     }
@@ -461,7 +464,8 @@ private object HyMtRuntime {
     private fun identity(context: Context): String {
         val model = HyMtModelManager.modelFile(context)
         return HyMtModelManager.MODEL_REVISION + ":" + HyMtModelManager.RUNTIME_SOURCE_REVISION + ":" +
-            model.absolutePath + ":" + model.length() + ":" + model.lastModified()
+            HyMtModelManager.NATIVE_ADAPTER_REVISION + ":" + model.absolutePath + ":" +
+            model.length() + ":" + model.lastModified()
     }
 
     private fun ensureMemoryAvailable(context: Context) {
