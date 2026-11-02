@@ -85,6 +85,7 @@ object HyMtLanguagePolicy {
 object HyMtModelManager {
     const val DISPLAY_BYTES = 601_000_000L
     private const val MAX_BYTES = 650_000_000L
+    private const val DOWNLOAD_SPACE_RESERVE_BYTES = 32L * 1024L * 1024L
     private const val MODEL_REVISION = "4b99bde"
     private const val VALIDATION_SCHEMA = 1
     private const val MODEL_NAME = "Hy-MT1.5-1.8B-2bit.gguf"
@@ -115,6 +116,9 @@ object HyMtModelManager {
             append(':').append(model.length()).append(':').append(model.lastModified())
         }
     }
+
+    private fun formatLocalModelSizeForError(bytes: Long): String =
+        String.format(Locale.ROOT, "%.0f MB", bytes / (1024.0 * 1024.0))
 
     private fun hasGgufHeader(file: File): Boolean {
         if (!file.isFile || file.length() !in 500_000_000L..MAX_BYTES) return false
@@ -178,6 +182,16 @@ object HyMtModelManager {
         val model = modelFile(app)
         if (!directory.isDirectory && !directory.mkdirs()) {
             throw IOException("无法创建 HY-MT1.5 模型目录")
+        }
+        if (!isReady(app) && !hasGgufHeader(model)) {
+            val requiredSpace = DISPLAY_BYTES + DOWNLOAD_SPACE_RESERVE_BYTES
+            if (directory.usableSpace < requiredSpace) {
+                throw IOException(
+                    "存储空间不足：HY-MT1.5 模型需要约 " +
+                        formatLocalModelSizeForError(requiredSpace) +
+                        " 可用空间，请清理空间后重试。"
+                )
+            }
         }
         if (isReady(app)) {
             mutableState.value = HyMtDownloadState(
