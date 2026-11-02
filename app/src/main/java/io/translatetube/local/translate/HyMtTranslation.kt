@@ -256,7 +256,7 @@ object HyMtModelManager {
             AppLogStore.warning(
                 app,
                 "LocalTranslationModel",
-                "当前 APK 缺少 HY-MT1.5 ARM64 运行库，允许先下载模型文件；安装含运行库的新版应用后再验证",
+                "HY-MT1.5 推理运行库暂不可用，允许先下载模型",
                 diagnosticContext = mapOf(
                     "需要的原生库" to "lib/arm64-v8a/libhymt.so",
                     "原生库实际路径" to nativeLibrary.absolutePath,
@@ -436,7 +436,7 @@ object HyMtModelManager {
                 app,
                 "LocalTranslationModel",
                 if (nativeLibraryMissing && completeModel) {
-                    "HY-MT1.5 模型文件下载完成，但当前 APK 缺少 ARM64 推理运行库，已保留模型等待新版应用验证"
+                    "HY-MT1.5 模型已下载，等待推理运行库更新"
                 } else {
                     "HY-MT1.5 2-bit 模型下载或验证失败"
                 },
