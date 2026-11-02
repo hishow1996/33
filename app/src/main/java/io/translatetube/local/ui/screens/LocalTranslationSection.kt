@@ -547,7 +547,6 @@ internal fun LocalTranslationSection(
             LocalEngineCard(
                 logo = R.drawable.hunyuan_symbol,
                 name = "HY-MT1.5 1.8B · 2-bit",
-                logoInset = 0.dp,
                 selected = activeId == EngineFactory.ID_LOCAL_HYMT,
                 onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_HYMT, "HY-MT1.5 2-bit") },
                 onManage = { detail = "hymt" },
