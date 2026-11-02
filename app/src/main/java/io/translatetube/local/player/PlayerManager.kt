@@ -61,6 +61,14 @@ class PlayerManager(private val ctx: Context) {
                 .setEnableFloatOutput(enableFloatOutput)
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .setAudioProcessors(arrayOf(dubbingProcessor))
+                .setAudioTrackBufferSizeProvider(
+                    androidx.media3.exoplayer.audio.DefaultAudioTrackBufferSizeProvider.Builder()
+                        .setMinPcmBufferDurationUs(120_000)
+                        // 缩短 AudioTrack 缓冲，减少暂停后的尾音；如出现爆音/断续，把上限调大到 400_000
+                        .setMaxPcmBufferDurationUs(250_000)
+                        .setPcmBufferMultiplicationFactor(2)
+                        .build()
+                )
                 .build()
             object : androidx.media3.exoplayer.audio.ForwardingAudioSink(delegate) {
                 private var currentInputBuffer: ByteBuffer? = null
