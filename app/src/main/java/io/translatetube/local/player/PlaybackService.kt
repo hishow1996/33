@@ -6407,6 +6407,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                 parsedLines,
                                 rows,
                                 sourceLanguage = srcLang,
+                                targetLanguage = "zh-CN",
                             ) {
                                 cacheLoadJob?.ensureActive()
                             }
@@ -10137,6 +10138,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         sourceTexts = unresolvedIndices.associateWith { plain[it] },
                         sourceLanguage = src,
                         sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
+                        targetLanguage = tgt,
                     )
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices

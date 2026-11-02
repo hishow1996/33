@@ -19,17 +19,32 @@ internal data class TranslationBatchResult(
             sourceLanguage: String = "auto",
             /** Google/ML Kit may validly leave a name or untranslatable cue unchanged. */
             sourceEchoAsUntranslatedFallback: Boolean = false,
+            targetLanguage: String = "zh",
         ): TranslationBatchResult {
+            // Positional output is safe only when every requested cue has exactly one result.
+            // A short/long response has no reliable row mapping, so retry the complete set.
+            if (rawTranslations.size != indices.size) {
+                return TranslationBatchResult(
+                    emptyMap(),
+                    indices.asSequence().filter { it >= 0 }.distinct().toList(),
+                )
+            }
             val translated = linkedMapOf<Int, String>()
             val missing = linkedSetOf<Int>()
             indices.forEachIndexed { position, sourceIndex ->
                 if (sourceIndex < 0) return@forEachIndexed
                 val value = SubtitleParsers.cleanTranslatedText(rawTranslations.getOrNull(position))
+                val sourceText = sourceTexts[sourceIndex]
                 val sourceEcho = value?.let {
-                    SubtitleTranslationQualityPolicy.isSourceEcho(sourceTexts[sourceIndex], it, sourceLanguage)
+                    SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, it, sourceLanguage)
+                } == true
+                val targetMismatch = value?.let {
+                    SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                        sourceText, it, sourceLanguage, targetLanguage,
+                    )
                 } == true
                 when {
-                    value.isNullOrBlank() -> {
+                    value.isNullOrBlank() || targetMismatch -> {
                         // Empty output and status text still need another attempt.
                         if (sourceIndex !in translated) missing += sourceIndex
                     }

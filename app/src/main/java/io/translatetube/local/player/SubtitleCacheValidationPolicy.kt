@@ -24,9 +24,13 @@ internal object SubtitleCacheValidationPolicy {
         sourceText: String,
         cached: String?,
         sourceLanguage: String,
+        targetLanguage: String,
     ): String? = SubtitleParsers.cleanTranslatedText(cached)?.takeUnless {
         SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(sourceText, it) ||
-            SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, it, sourceLanguage)
+            SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, it, sourceLanguage) ||
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                sourceText, it, sourceLanguage, targetLanguage,
+            )
     }
 
     /**
@@ -38,6 +42,7 @@ internal object SubtitleCacheValidationPolicy {
         sourceLines: List<SubLine>,
         cachedRows: List<CachedTranslationRow>,
         sourceLanguage: String = "auto",
+        targetLanguage: String = "zh",
         checkActive: () -> Unit = {},
     ): List<SubLine>? {
         checkActive()
@@ -65,7 +70,10 @@ internal object SubtitleCacheValidationPolicy {
                 source.text != cached.sourceText
             ) return null
             previousStart = cached.startMs
-            if (usableCachedTranslation(source.text, cached.translatedText, sourceLanguage) != null) {
+            if (usableCachedTranslation(
+                    source.text, cached.translatedText, sourceLanguage, targetLanguage,
+                ) != null
+            ) {
                 hasRecoverableTranslation = true
             }
         }
@@ -76,7 +84,9 @@ internal object SubtitleCacheValidationPolicy {
             if ((index and 0xff) == 0) checkActive()
             val source = sourceLines[index]
             restored += source.copy(
-                zh = usableCachedTranslation(source.text, cachedRows[index].translatedText, sourceLanguage)
+                zh = usableCachedTranslation(
+                    source.text, cachedRows[index].translatedText, sourceLanguage, targetLanguage,
+                )
             )
         }
         checkActive()

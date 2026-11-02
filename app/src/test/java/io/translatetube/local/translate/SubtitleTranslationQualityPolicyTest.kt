@@ -13,6 +13,70 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun rejectsResponsesThatRemainInTheSourceLanguageInsteadOfChinese() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should leave now.",
+                "I believe we need to go now.",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "こんにちは、元気ですか。",
+                "こんにちは、元気ですか。",
+                "ja",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "안녕하세요, 만나서 반가워요.",
+                "안녕하세요, 만나서 반가워요.",
+                "ko",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun acceptsChineseOutputAndLegitimateUntranslatedNamesAndNumbers() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Hello there.",
+                "你好。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "J. K. Rowling",
+                "J. K. Rowling",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "2026",
+                "2026",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "你好",
+                "你好",
+                "zh-Hans",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun doesNotMarkChineseSourceCaptionsAsMissingTranslations() {
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("正在翻译", "正在翻译", "zh-Hans"))
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("你好", "你好", "cmn"))

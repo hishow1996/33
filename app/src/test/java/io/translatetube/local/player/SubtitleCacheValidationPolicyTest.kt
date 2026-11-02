@@ -125,6 +125,29 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun treatsCachedSourceLanguageParaphrasesAsMissingForChineseTarget() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "I think so."),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "Hello"),
+            io.translatetube.local.subs.SubLine(2, 2_000L, 3_000L, "NASA"),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "I think so.", "I believe so."),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Hello", "你好"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "NASA", "NASA"),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source,
+            cached,
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected partially valid cache to restore")
+
+        assertEquals(listOf(null, "你好", "NASA"), restored.map { it.zh })
+    }
+
+    @Test
     fun cancellationIsCheckedWhileRestoringLargeImportedCaches() {
         val source = (0 until 700).map { index ->
             io.translatetube.local.subs.SubLine(index, index * 1_000L, (index + 1) * 1_000L, "row $index")

@@ -30,6 +30,41 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     /**
+     * Detect a likely wrong-language response for Chinese subtitle output.
+     * Names, abbreviations, URLs, numbers and symbol-only cues may legitimately have no Han text.
+     * Japanese kana or Korean Hangul dominating a result is rejected even when a few Han
+     * characters happen to be present.
+     */
+    fun isTargetLanguageMismatch(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): Boolean {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
+        if (!SourceLanguagePolicy.isChinese(targetLanguage)) return false
+        if (SourceLanguagePolicy.isChinese(sourceLanguage) || isNonTranslatableCue(sourceText)) return false
+        if (isPunctuationOnlyTranslation(sourceText, translatedText)) return true
+
+        var han = 0
+        var kana = 0
+        var hangul = 0
+        var lettersOrDigits = 0
+        translatedText.forEach { char ->
+            if (char.isLetterOrDigit()) lettersOrDigits++
+            when (Character.UnicodeScript.of(char.code)) {
+                Character.UnicodeScript.HAN -> han++
+                Character.UnicodeScript.HIRAGANA,
+                Character.UnicodeScript.KATAKANA -> kana++
+                Character.UnicodeScript.HANGUL -> hangul++
+            }
+        }
+        if (lettersOrDigits == 0) return false
+        if (han == 0) return true
+        return (kana >= 2 && kana > han) || (hangul >= 2 && hangul > han)
+    }
+
+    /**
      * True when the source contains letters/digits but the translation has none, e.g. "。" or "…".
      * Source cues that are themselves symbol-only (music notes, "...") are not affected.
      */

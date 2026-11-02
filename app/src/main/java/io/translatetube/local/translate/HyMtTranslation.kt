@@ -715,7 +715,10 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                     if (
                         translated.isNotBlank() &&
                         !SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(line, translated) &&
-                        !SubtitleTranslationQualityPolicy.isSourceEcho(line, translated, source)
+                        !SubtitleTranslationQualityPolicy.isSourceEcho(line, translated, source) &&
+                        !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                            line, translated, source, "zh-CN",
+                        )
                     ) {
                         rollingContext = appendHyMtTranslationContext(rollingContext, line, translated)
                     }

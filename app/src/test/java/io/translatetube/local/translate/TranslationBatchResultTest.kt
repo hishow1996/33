@@ -31,14 +31,43 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun treatsShortModelResponsesAsMissingRowsRatherThanShiftingAlignment() {
+    fun rejectsShortResponsesWithoutGuessingWhichSubtitleRowsTheyBelongTo() {
         val result = TranslationBatchResult.from(
             listOf(10, 12, 20),
-            listOf("第十行译文"),
+            listOf("无法确认对应哪一行的译文"),
         )
 
-        assertEquals(mapOf(10 to "第十行译文"), result.translations)
-        assertEquals(listOf(12, 20), result.missingIndices)
+        assertTrue(result.translations.isEmpty())
+        assertEquals(listOf(10, 12, 20), result.missingIndices)
+    }
+
+    @Test
+    fun rejectsLongResponsesWithoutGuessingWhichSubtitleRowsTheyBelongTo() {
+        val result = TranslationBatchResult.from(
+            listOf(10, 12),
+            listOf("第一行", "第二行", "多余的一行"),
+        )
+
+        assertTrue(result.translations.isEmpty())
+        assertEquals(listOf(10, 12), result.missingIndices)
+    }
+
+    @Test
+    fun rejectsEnglishParaphrasesForChineseSubtitleOutput() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(0, 1, 2),
+            rawTranslations = listOf("I think so.", "你好", "J. K. Rowling"),
+            sourceTexts = mapOf(
+                0 to "I guess so.",
+                1 to "Hello",
+                2 to "J. K. Rowling",
+            ),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+
+        assertEquals(mapOf(1 to "你好", 2 to "J. K. Rowling"), result.translations)
+        assertEquals(listOf(0), result.missingIndices)
     }
 
     @Test

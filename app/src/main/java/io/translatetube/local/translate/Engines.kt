@@ -1351,7 +1351,10 @@ class OpenAiCompatEngine(
                 lines = batch,
                 context = context,
                 isAcceptableTranslation = { original, candidate ->
-                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang)
+                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang) &&
+                        !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                            original, candidate, srcLang, tgtLang,
+                        )
                 },
                 retrySingle = { source, cueContext ->
                     translateBatch(
@@ -1504,7 +1507,10 @@ class GeminiEngine(
                 lines = batch,
                 context = context,
                 isAcceptableTranslation = { original, candidate ->
-                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang)
+                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang) &&
+                        !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                            original, candidate, srcLang, tgtLang,
+                        )
                 },
                 retrySingle = { source, cueContext ->
                     translateBatch(
