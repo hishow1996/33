@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
@@ -697,18 +699,55 @@ internal fun LocalTranslationSection(
                                     style = MaterialTheme.typography.labelMedium,
                                     maxLines = 1,
                                 )
-                            } else if (!hyMtState.runtimeAvailable) {
+                            } else if (
+                                !hyMtState.runtimeAvailable &&
+                                hyMtState.error.contains("当前设备不支持 ARM64")
+                            ) {
                                 Text(
-                                    when {
-                                        hyMtState.error.contains("当前设备不支持 ARM64") -> "设备不支持"
-                                        hyMtState.error.contains("未包含 HY-MT1.5 ARM64") -> "更新应用"
-                                        else -> "运行库异常"
-                                    },
+                                    "设备不支持",
                                     modifier = Modifier.padding(horizontal = 8.dp),
                                     color = Color(0xFFB42318),
                                     style = MaterialTheme.typography.labelMedium,
                                     maxLines = 1,
                                 )
+                            } else if (
+                                !hyMtState.runtimeAvailable &&
+                                hyMtState.error.contains("未包含 HY-MT1.5 ARM64") &&
+                                !hyMtState.hasCompleteFiles
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        hyMtJob = launchTrackedModelDownload(
+                                            taskId = "hy-mt-2bit",
+                                            title = "正在下载 HY-MT1.5 2-bit 模型",
+                                        ) {
+                                            try {
+                                                HyMtModelManager.download(context)
+                                            } catch (cancelled: CancellationException) {
+                                                throw cancelled
+                                            } catch (_: Exception) {
+                                                // Exact error remains in model state and diagnostics.
+                                            }
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("下载模型", maxLines = 1) }
+                            } else if (!hyMtState.runtimeAvailable) {
+                                TextButton(
+                                    onClick = {
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(
+                                                    Intent.ACTION_VIEW,
+                                                    Uri.parse("https://github.com/hishow1996/33/actions/workflows/build-apk.yml"),
+                                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                            )
+                                        }.onFailure {
+                                            Toast.makeText(context, "无法打开应用更新页面", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("更新应用", maxLines = 1) }
                             } else {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
