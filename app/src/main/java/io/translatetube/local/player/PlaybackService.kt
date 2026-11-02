@@ -13001,7 +13001,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                     SpeakerRecognitionCacheIdentity.create(
                         sessionKey = sessionKey,
-                        sourceAudioIdentity = audioIdentity,
+                        sourceAudioIdentity = "$audioIdentity|source-lang:${sessionSourceLang.trim().lowercase()}",
                         cues = originalLines.asSequence().map { line ->
                             SpeakerRecognitionCacheIdentity.Cue(
                                 startMs = line.startMs,
@@ -13053,14 +13053,22 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
                         error = null,
-                        speakerRecognition = SpeakerRecognitionUiState(
-                            phase = SpeakerRecognitionPhase.PREPARING,
-                            message = "准备人物识别…",
-                        ),
-                        progress = if (selectedTts == "system") {
-                            "人物识别 · 检查手机可用的中文音色…"
+                        speakerRecognition = if (reuseSavedSpeakerTimeline) {
+                            SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.APPLYING,
+                                message = "复用已保存的人物识别结果…",
+                                personCount = cachedPersonCount,
+                            )
                         } else {
-                            "人物识别 · 准备音频分段…"
+                            SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.PREPARING,
+                                message = "准备人物识别…",
+                            )
+                        },
+                        progress = when {
+                            reuseSavedSpeakerTimeline -> "人物识别 · 复用已保存结果…"
+                            selectedTts == "system" -> "人物识别 · 检查手机可用的中文音色…"
+                            else -> "人物识别 · 准备音频分段…"
                         },
                         // Keep the successful player session READY while this secondary operation
                         // analyzes speakers. Its progress text drives the busy UI; READY remains
