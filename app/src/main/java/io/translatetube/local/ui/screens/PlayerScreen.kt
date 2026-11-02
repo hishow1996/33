@@ -4227,13 +4227,11 @@ private fun CompactProcessingStageDetails(
                 value("当前状态")?.let { CompactStageMetadataLine(it) }
             }
             1 -> {
-                value("当前任务")?.let {
-                    CompactStageMetadataLine(
-                        item = it,
-                        valueColor = Color(0xFF3268F5),
-                        valueFontWeight = FontWeight.SemiBold,
-                    )
-                }
+                CompactStageMetadataRow(
+                    first = value("当前任务"),
+                    firstValueColor = Color(0xFF3268F5),
+                    firstValueFontWeight = FontWeight.SemiBold,
+                )
                 CompactStageMetadataRow(value("视频分辨率"), value("音轨来源"))
                 CompactStageMetadataRow(value("音频格式"), value("采样率"))
                 CompactStageMetadataRow(value("音频时长"), value("声道"))
@@ -4255,6 +4253,8 @@ private fun CompactProcessingStageDetails(
 private fun CompactStageMetadataRow(
     first: Pair<String, String>?,
     second: Pair<String, String>? = null,
+    firstValueColor: Color = Color(0xFF3D4E65),
+    firstValueFontWeight: FontWeight = FontWeight.Medium,
 ) {
     val items = listOfNotNull(first, second)
     if (items.isEmpty()) return
@@ -4264,7 +4264,7 @@ private fun CompactStageMetadataRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        items.forEach { (label, value) ->
+        items.forEachIndexed { itemIndex, (label, value) ->
             Row(
                 modifier = Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -4283,11 +4283,11 @@ private fun CompactStageMetadataRow(
                 Text(
                     value,
                     modifier = Modifier.weight(1f),
-                    color = Color(0xFF3D4E65),
+                    color = if (itemIndex == 0) firstValueColor else Color(0xFF3D4E65),
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = 10.sp,
                         lineHeight = 13.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = if (itemIndex == 0) firstValueFontWeight else FontWeight.Medium,
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
