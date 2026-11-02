@@ -700,7 +700,11 @@ internal fun LocalTranslationSection(
                                 )
                             } else if (!hyMtState.runtimeAvailable) {
                                 Text(
-                                    "更新应用后可用",
+                                    when {
+                                        hyMtState.error.contains("当前设备不支持 ARM64") -> "设备不支持"
+                                        hyMtState.error.contains("未包含 HY-MT1.5 ARM64") -> "更新应用"
+                                        else -> "运行库异常"
+                                    },
                                     modifier = Modifier.padding(horizontal = 8.dp),
                                     color = Color(0xFFB42318),
                                     style = MaterialTheme.typography.labelMedium,
