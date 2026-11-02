@@ -16,8 +16,8 @@ class TranslationContextPromptTest {
 
         assertTrue(prompt.contains("chronological order as JSON"))
         assertTrue(prompt.contains("one aligned pair"))
-        assertTrue(prompt.contains("\\"source\\":\\"We will meet Sam tomorrow.\\""))
-        assertTrue(prompt.contains("\\"translation\\":\\"我们明天和萨姆见面。\\""))
+        assertTrue(prompt.contains("\"source\":\"We will meet Sam tomorrow.\""))
+        assertTrue(prompt.contains("\"translation\":\"我们明天和萨姆见面。\""))
         assertTrue(prompt.contains("current source text is authoritative"))
         assertTrue(prompt.contains("Do not infer a speaker's identity"))
         assertTrue(prompt.contains("Translate only the current numbered subtitle cues below."))
@@ -38,8 +38,10 @@ class TranslationContextPromptTest {
             "0|How are you?",
         ) ?: throw AssertionError("Expected complete context pairs")
 
-        assertTrue(prompt.contains("Hello there => 你好"))
-        assertTrue(prompt.contains("Thank you => 谢谢"))
+        assertTrue(prompt.contains("\"source\":\"Hello there\""))
+        assertTrue(prompt.contains("\"translation\":\"你好\""))
+        assertTrue(prompt.contains("\"source\":\"Thank you\""))
+        assertTrue(prompt.contains("\"translation\":\"谢谢\""))
         assertFalse(prompt.contains("Unresolved cue"))
         assertTrue(prompt.contains("0|How are you?"))
     }
@@ -53,11 +55,11 @@ class TranslationContextPromptTest {
             ),
         )
     }
-    
+
     @Test
     fun multilineAndDelimiterTextRemainsInsideItsAlignedJsonPair() {
-        val source = "He said \\"go\\".\\nActually, wait => stop."
-        val translation = "他说“走”。\\n不，等等。"
+        val source = "He said \"go\".\nActually, wait => stop."
+        val translation = "他说“走”。\n不，等等。"
         val prompt = buildContextUserPrompt(
             listOf(source) to listOf(translation),
             "0|Continue.",
@@ -79,5 +81,4 @@ class TranslationContextPromptTest {
         assertTrue(instructions.contains("每行只翻译自己的内容"))
         assertTrue(instructions.contains("不重复前后行"))
     }
-
 }
