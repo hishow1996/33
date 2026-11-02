@@ -27,7 +27,6 @@ import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.MlKitModelCoordinator
 import io.translatetube.local.translate.LocalTranslationEnginePolicy
-import io.translatetube.local.translate.HyMtDownloadState
 import io.translatetube.local.translate.HyMtLanguagePolicy
 import io.translatetube.local.translate.HyMtModelManager
 import io.translatetube.local.translate.HyMtStatus
@@ -601,19 +600,6 @@ internal fun LocalTranslationSection(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    MlKitSourceLanguageControl(
-                        manualSelected = sourceLanguageSelection != "auto",
-                        onModeSelected = { manual ->
-                            if (manual) {
-                                val next = sourceLanguageSelection.takeIf {
-                                    it != "auto" && HyMtLanguagePolicy.supportsSource(it)
-                                } ?: "en"
-                                setSourceLanguage(next)
-                            } else {
-                                setSourceLanguage("auto")
-                            }
-                        },
-                    )
                     SourceLanguageMenu(
                         selected = sourceLanguageSelection,
                         languages = hyMtPairs,
