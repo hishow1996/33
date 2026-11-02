@@ -7,6 +7,14 @@ import org.junit.Test
 
 class AppLogTitleResolverTest {
     @Test
+    fun hyMtRuntimeFailuresUseTheStandardFeatureAndOutcomeTitle() {
+        assertEquals(
+            "HY-MT1.5 运行库：检查失败",
+            AppLogTitleResolver.title("HyMtRuntime", "检查失败 | IllegalStateException: native library missing"),
+        )
+    }
+
+    @Test
     fun dubbingTitlesNameTheSpecificOperationWithoutRepeatingTheModule() {
         assertEquals(
             "配音缓存：PCM 预检完成",
