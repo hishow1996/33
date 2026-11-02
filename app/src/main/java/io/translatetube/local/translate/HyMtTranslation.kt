@@ -79,6 +79,9 @@ object HyMtLanguagePolicy {
         return languages.firstOrNull { it.first.equals(code, ignoreCase = true) }?.second
             ?: LangMap.display(languageTag)
     }
+
+    fun requiresTranslation(sourceLanguage: String): Boolean =
+        canonicalCode(sourceLanguage) != "zh"
 }
 
 /** A pinned GGUF model plus the Q2_0C llama.cpp runtime used to execute it. */
@@ -601,7 +604,7 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                 "模型格式" to "GGUF / Q2_0C",
             ),
         )
-        val simplifiedChineseSource = HyMtLanguagePolicy.canonicalCode(source) == "zh"
+        val simplifiedChineseSource = !HyMtLanguagePolicy.requiresTranslation(source)
         HyMtRuntime.acquireLease()
         try {
             if (!simplifiedChineseSource && lines.any { it.isNotBlank() }) {
