@@ -212,7 +212,8 @@ object VideoProcessingFlowPolicy {
     fun shouldKeepProcessingForeground(
         phase: Phase,
         dubbingPreparationIncomplete: Boolean,
-    ): Boolean = when (phase) {
+        secondaryPlayerTaskInProgress: Boolean = false,
+    ): Boolean = secondaryPlayerTaskInProgress || when (phase) {
         Phase.PARSING,
         Phase.DOWNLOADING_AUDIO,
         Phase.TRANSCRIBING,

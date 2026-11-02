@@ -929,6 +929,7 @@ class PlaybackService : MediaSessionService() {
         const val CH_MAIN = "playback"
         const val ACTION_TOGGLE_PROCESSING_PAUSE = "io.translatetube.local.action.TOGGLE_PROCESSING_PAUSE"
         const val ACTION_CANCEL_PROCESSING = "io.translatetube.local.action.CANCEL_PROCESSING"
+        const val ACTION_CANCEL_SPEAKER_RECOGNITION = "io.translatetube.local.action.CANCEL_SPEAKER_RECOGNITION"
         const val EXTRA_PROCESSING_SESSION_KEY = "io.translatetube.local.extra.PROCESSING_SESSION_KEY"
 
         /** True when history has a candidate saved result; PlaybackService still verifies it before reuse. */
@@ -2019,6 +2020,11 @@ class PlaybackService : MediaSessionService() {
             }
             ACTION_CANCEL_PROCESSING -> {
                 cancelProcessing()
+                updateProcessingNotification(ui.value)
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL_SPEAKER_RECOGNITION -> {
+                cancelSpeakerRecognition()
                 updateProcessingNotification(ui.value)
                 return START_NOT_STICKY
             }
@@ -3338,11 +3344,13 @@ class PlaybackService : MediaSessionService() {
      * Pausing or finishing processing releases the lock to avoid unnecessary battery use.
      */
     private fun syncProcessingWakeLock(state: PlayerUiState) {
+        val speakerRecognitionActive = state.speakerRecognition.isActive
         val hasActiveWork = isProcessingPhase(state.phase) ||
-            (state.phase == Phase.READY && isDubbingPreparationIncomplete(state))
+            (state.phase == Phase.READY && isDubbingPreparationIncomplete(state)) ||
+            speakerRecognitionActive
         val shouldHold = !processingNotificationShuttingDown &&
             hasActiveWork &&
-            !state.isProcessingPaused
+            (speakerRecognitionActive || !state.isProcessingPaused)
         synchronized(processingWakeLockLock) {
             val existing = processingWakeLock
             if (!shouldHold) {
@@ -3369,8 +3377,8 @@ class PlaybackService : MediaSessionService() {
      * notification path remains the primary updater; this watchdog is a recovery path for
      * devices/Media3 transitions that temporarily demote the service or drop its CPU lock.
      *
-     * It covers parsing, audio extraction, local/cloud transcription, translation and dubbing
-     * through the same phase policy. It never invents progress: it republishes the latest state.
+     * It covers parsing, audio extraction, local/cloud transcription, translation, dubbing and
+     * user-triggered speaker recognition. It never invents progress: it republishes the latest state.
      */
     private fun startBackgroundProcessingGuard() {
         if (backgroundProcessingGuardJob?.isActive == true) return
@@ -3383,12 +3391,13 @@ class PlaybackService : MediaSessionService() {
                 if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
                         observed.phase,
                         isDubbingPreparationIncomplete(observed),
+                        secondaryPlayerTaskInProgress = observed.speakerRecognition.isActive,
                     )
                 ) continue
 
-                // WakeLock operations are synchronized and safe to call off the main thread.
-                // Paused work intentionally keeps its notification but does not hold the CPU awake.
-                if (!observed.isProcessingPaused) syncProcessingWakeLock(observed)
+                // Speaker recognition is independent from pipeline pause and keeps the CPU awake
+                // while the display is off; ordinary paused pipeline work still releases the lock.
+                syncProcessingWakeLock(observed)
 
                 // Foreground-service promotion and notification updates are serialized on main,
                 // alongside Media3's notification callbacks.
@@ -3398,6 +3407,7 @@ class PlaybackService : MediaSessionService() {
                     if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
                             current.phase,
                             isDubbingPreparationIncomplete(current),
+                            secondaryPlayerTaskInProgress = current.speakerRecognition.isActive,
                         )
                     ) return@post
 
@@ -3499,6 +3509,7 @@ class PlaybackService : MediaSessionService() {
         if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
                 state.phase,
                 isDubbingPreparationIncomplete(state),
+                secondaryPlayerTaskInProgress = state.speakerRecognition.isActive,
             )
         ) return
         if (!processingForegroundActive) return
@@ -3525,7 +3536,8 @@ class PlaybackService : MediaSessionService() {
         syncProcessingWakeLock(state)
         if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
         val preparationIncomplete = isDubbingPreparationIncomplete(state)
-        val shouldShowProcessingNotification = when (state.phase) {
+        val speakerRecognitionActive = state.speakerRecognition.isActive
+        val shouldShowProcessingNotification = speakerRecognitionActive || when (state.phase) {
             Phase.IDLE -> false
             Phase.READY -> state.waitingForTranscriptionEngine || state.waitingForDubbingEngine ||
                 preparationIncomplete || state.dubbingHasErrors
@@ -3553,7 +3565,10 @@ class PlaybackService : MediaSessionService() {
             lastProcessingNotificationAuditSignature = null
             return
         }
-        val (title, detail) = when (state.phase) {
+        val (title, detail) = if (speakerRecognitionActive) {
+            "正在区分人物" to state.speakerRecognition.message
+                .ifBlank { state.progress.removePrefix("人物识别 · ").ifBlank { "正在分析音频" } }
+        } else when (state.phase) {
             Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
             Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
             Phase.TRANSCRIBING -> "正在转写原文字幕" to state.progress.ifBlank { "正在生成与视频时间轴对齐的原文字幕" }
@@ -3600,7 +3615,12 @@ class PlaybackService : MediaSessionService() {
         // Only publish determinate progress when it comes from a measurable source:
         // downloaded bytes, completed ASR segments, translated lines, or prepared TTS lines.
         // Do not use Android's indeterminate notification animation as a fake progress display.
-        val measuredPercent: Int? = when (state.phase) {
+        val measuredPercent: Int? = if (speakerRecognitionActive) {
+            state.speakerRecognition.progressPercent
+                ?: percentFromProgress(state.progress)
+                ?: ratioPercentFromProgress(state.speakerRecognition.message)
+                ?: ratioPercentFromProgress(state.progress)
+        } else when (state.phase) {
             Phase.DOWNLOADING_AUDIO -> percentFromProgress(state.progress)
                 ?: ratioPercentFromProgress(state.progress)
             Phase.TRANSCRIBING -> ratioPercentFromProgress(state.progress)
@@ -3621,21 +3641,32 @@ class PlaybackService : MediaSessionService() {
             measuredPercent != null &&
             !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detail)
         ) "$detail · $measuredPercent%" else detail
-        val ongoing = state.isPlaying || preparationIncomplete ||
+        val ongoing = state.isPlaying || preparationIncomplete || speakerRecognitionActive ||
             state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
         val hasProcessingActions = isProcessingPhase(state.phase)
+        val canCancelSpeakerRecognition = speakerRecognitionActive &&
+            speakerJob?.isActive == true &&
+            state.speakerRecognition.phase != SpeakerRecognitionPhase.CANCELLING
         val notificationFingerprint = listOf(
             state.phase.name,
             state.key,
             title,
             displayDetail,
             measuredPercent?.toString().orEmpty(),
+            state.speakerRecognition.phase.name,
+            speakerRecognitionActive.toString(),
             state.isProcessingPaused.toString(),
             ongoing.toString(),
             hasProcessingActions.toString(),
+            canCancelSpeakerRecognition.toString(),
         ).joinToString("\\u001f")
         if (notificationFingerprint == lastProcessingNotificationFingerprint) {
-            if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(state.phase, preparationIncomplete)) {
+            if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                    state.phase,
+                    preparationIncomplete,
+                    secondaryPlayerTaskInProgress = speakerRecognitionActive,
+                )
+            ) {
                 releaseProcessingForegroundIfSafe(state)
             } else if (preparationIncomplete && latestProcessingNotification != null && !processingForegroundActive) {
                 promoteProcessingForeground(
@@ -3649,8 +3680,8 @@ class PlaybackService : MediaSessionService() {
 
         val notification = NotificationCompat.Builder(this, CH_MAIN)
             .setSmallIcon(R.drawable.ic_stat_brand)
-            .setContentTitle(if (state.isProcessingPaused) "已暂停 · $title" else title)
-            .setContentText(if (state.isProcessingPaused) "已暂停 · $displayDetail" else displayDetail)
+            .setContentTitle(if (state.isProcessingPaused && !speakerRecognitionActive) "已暂停 · $title" else title)
+            .setContentText(if (state.isProcessingPaused && !speakerRecognitionActive) "已暂停 · $displayDetail" else displayDetail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(displayDetail))
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOngoing(ongoing)
@@ -3691,10 +3722,24 @@ class PlaybackService : MediaSessionService() {
                     }
                     addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
                 }
-                // Always replace or clear the previous stage's progress state.
-                // Only measurable work receives a percentage; other phases show no stale bar.
+                if (canCancelSpeakerRecognition) {
+                    val cancelSpeakerIntent = Intent(this@PlaybackService, PlaybackService::class.java)
+                        .setAction(ACTION_CANCEL_SPEAKER_RECOGNITION)
+                        .setData(Uri.parse("translate-tube://speaker/cancel/" + Uri.encode(state.key)))
+                        .putExtra(EXTRA_PROCESSING_SESSION_KEY, state.key)
+                    val cancelSpeakerPending = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@PlaybackService, 1005, cancelSpeakerIntent, processingPendingFlags)
+                    } else {
+                        PendingIntent.getService(this@PlaybackService, 1005, cancelSpeakerIntent, processingPendingFlags)
+                    }
+                    addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消区分", cancelSpeakerPending)
+                }
+                // Recognition shows a determinate bar only for measured percentages/counters.
+                // During model initialization or speaker assignment, use an indeterminate bar instead.
                 if (measuredPercent != null) {
                     setProgress(100, measuredPercent.coerceIn(0, 100), false)
+                } else if (speakerRecognitionActive) {
+                    setProgress(0, 0, true)
                 } else {
                     setProgress(0, 0, false)
                 }
@@ -3702,11 +3747,17 @@ class PlaybackService : MediaSessionService() {
             .build()
         rememberNotificationAudit(
             "BEFORE processing notice id=" + PROCESSING_NOTIFICATION_ID + " phase=" + state.phase.name +
-                " actions=" + (if (hasProcessingActions) 2 else 0) +
+                " actions=" + ((if (hasProcessingActions) 2 else 0) + (if (canCancelSpeakerRecognition) 1 else 0)) +
                 " determinateProgress=" + (measuredPercent != null) +
+                " speakerRecognition=" + speakerRecognitionActive +
                 " session=" + safeDiagnosticSessionFingerprint(state.key),
         )
-        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(state.phase, preparationIncomplete)) {
+        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                state.phase,
+                preparationIncomplete,
+                secondaryPlayerTaskInProgress = speakerRecognitionActive,
+            )
+        ) {
             latestProcessingNotification = notification
             promoteProcessingForeground(notification, state, "处理进度通知更新")
         } else {
@@ -3899,6 +3950,7 @@ class PlaybackService : MediaSessionService() {
         if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
                 currentProcessingState.phase,
                 isDubbingPreparationIncomplete(currentProcessingState),
+                secondaryPlayerTaskInProgress = currentProcessingState.speakerRecognition.isActive,
             )
         ) {
             val processingNotice = latestProcessingNotification
@@ -14429,12 +14481,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             Phase.SYNTHESIZING,
         )
         val isDubbingPreparing = isDubbingPreparationIncomplete(ui.value)
-        if (isProcessing || isDubbingPreparing) {
-            // READY starts video playback after the first speech cues are warmed, while the rest
-            // of the subtitles may still be synthesizing. Do not let recents removal kill that work.
+        val isSpeakerRecognitionActive = ui.value.speakerRecognition.isActive && speakerJob?.isActive == true
+        if (isProcessing || isDubbingPreparing || isSpeakerRecognitionActive) {
+            // Keep service-owned recognition alive when the Activity task is dismissed from recents.
             android.util.Log.i(
                 "PlaybackService",
-                "Keeping background task alive after task removal: phase=$phase, dubbingPreparing=$isDubbingPreparing",
+                "Keeping background task alive after task removal: phase=$phase, dubbingPreparing=$isDubbingPreparing, speakerRecognition=$isSpeakerRecognitionActive",
             )
             return
         }

@@ -629,6 +629,31 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun foregroundProtectionAlsoCoversBackgroundSpeakerRecognition() {
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                phase = Phase.READY,
+                dubbingPreparationIncomplete = false,
+                secondaryPlayerTaskInProgress = true,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                phase = Phase.SYNTHESIZING,
+                dubbingPreparationIncomplete = false,
+                secondaryPlayerTaskInProgress = true,
+            ),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                phase = Phase.READY,
+                dubbingPreparationIncomplete = false,
+                secondaryPlayerTaskInProgress = false,
+            ),
+        )
+    }
+
+    @Test
     fun foregroundProtectionCoversEveryActiveProcessingStage() {
         listOf(
             Phase.PARSING,
