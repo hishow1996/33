@@ -635,7 +635,7 @@ object HyMtModelManager {
                 } else {
                     "HY-MT1.5 2-bit 模型下载或验证失败"
                 },
-                runtimeErrorAfterFailure ?: error,
+                error,
                 diagnosticContext = mapOf(
                     "模型版本" to MODEL_REVISION,
                     "模型格式" to "GGUF / Q2_0C",
@@ -644,6 +644,12 @@ object HyMtModelManager {
                     "原生运行库存在于 nativeLibraryDir" to nativeLibrary.isFile.toString(),
                     "原生运行库路径" to nativeLibrary.absolutePath,
                     "运行库检查结果" to runtimeMessageAfterFailure.ifBlank { "System.loadLibrary 可加载" },
+                    "运行库异常链" to runtimeErrorAfterFailure?.let { failure ->
+                        throwableChain(failure).joinToString(" <- ") { cause ->
+                            cause.javaClass.name +
+                                cause.message?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+                        }
+                    }.orEmpty().ifBlank { "无" },
                     "Linker 错误信息" to runtimeErrorAfterFailure?.let { throwableChain(it) }
                         ?.firstOrNull { it is UnsatisfiedLinkError }
                         ?.message.orEmpty()
