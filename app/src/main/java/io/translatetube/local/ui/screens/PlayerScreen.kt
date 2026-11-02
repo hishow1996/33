@@ -3283,30 +3283,64 @@ private data class TranslationHelixGeometry(
     val crossings: List<TranslationHelixCrossingGeometry>,
 )
 
-/** Build size-dependent helix geometry once per layout size, not on every animation frame. */
-private fun buildTranslationHelixGeometry(
+/** Size-dependent values and sample positions reused while the helix rotates. */
+private data class TranslationHelixTemplate(
+    val width: Float,
+    val height: Float,
+    val centerY: Float,
+    val amplitude: Float,
+    val basePhase: Float,
+    val totalPhase: Float,
+    val density: Float,
+    val sampleXs: FloatArray,
+)
+
+private fun buildTranslationHelixTemplate(
     width: Float,
     height: Float,
     density: Float,
-): TranslationHelixGeometry {
-    val centerY = height / 2f
-    val amplitude = height * 0.29f
-    val basePhase = -kotlin.math.PI.toFloat() / 2f
-    val totalPhase = 8f * kotlin.math.PI.toFloat()
-
-    fun phaseAt(x: Float): Float {
-        val t = (x / width).coerceIn(0f, 1f)
-        return basePhase + totalPhase * t
+): TranslationHelixTemplate {
+    val sampleCount = (width / (1.5f * density)).toInt().coerceAtLeast(160)
+    val sampleXs = FloatArray(sampleCount + 1) { index ->
+        width * index.toFloat() / sampleCount
     }
+    return TranslationHelixTemplate(
+        width = width,
+        height = height,
+        centerY = height / 2f,
+        amplitude = height * 0.29f,
+        basePhase = -kotlin.math.PI.toFloat() / 2f,
+        totalPhase = 8f * kotlin.math.PI.toFloat(),
+        density = density,
+        sampleXs = sampleXs,
+    )
+}
+
+/**
+ * Project a real axial helix rotation into the horizontal progress lane.
+ * Advancing the phase rotates the helix around its long horizontal axis while
+ * keeping its projected height constant, instead of turning a flat 2D card edge-on.
+ */
+private fun buildTranslationHelixGeometry(
+    template: TranslationHelixTemplate,
+    rotationPhase: Float,
+): TranslationHelixGeometry {
+    val width = template.width
+    val centerY = template.centerY
+    val amplitude = template.amplitude
+    val basePhase = template.basePhase
+    val totalPhase = template.totalPhase
+    val density = template.density
+
+    fun phaseAt(x: Float): Float =
+        basePhase + totalPhase * (x / width).coerceIn(0f, 1f) + rotationPhase
 
     fun strandY(x: Float, upperSign: Float): Float =
         centerY + upperSign * amplitude * kotlin.math.sin(phaseAt(x))
 
-    val sampleCount = (width / (1.5f * density)).toInt().coerceAtLeast(160)
     val strandA = Path()
     val strandB = Path()
-    for (index in 0..sampleCount) {
-        val x = width * index.toFloat() / sampleCount
+    template.sampleXs.forEachIndexed { index, x ->
         val yA = strandY(x, -1f)
         val yB = strandY(x, 1f)
         if (index == 0) {
@@ -3318,27 +3352,33 @@ private fun buildTranslationHelixGeometry(
         }
     }
 
-    val crossingXs = ArrayList<Float>(8)
-    repeat(8) { crossingIndex ->
-        val targetPhase = kotlin.math.PI.toFloat() * crossingIndex
-        var low = 0f
-        var high = width
-        repeat(20) {
-            val middle = (low + high) / 2f
-            if (phaseAt(middle) < targetPhase) {
-                low = middle
-            } else {
-                high = middle
-            }
-        }
-        crossingXs.add((low + high) / 2f)
+    // Solve crossover x coordinates directly from the linear helix phase.
+    // Crossovers may enter/leave the viewport during a full axial turn.
+    val firstCrossingNumber = kotlin.math.ceil(
+        (phaseAt(0f) / kotlin.math.PI.toFloat()).toDouble(),
+    ).toInt()
+    val lastCrossingNumber = kotlin.math.floor(
+        (phaseAt(width) / kotlin.math.PI.toFloat()).toDouble(),
+    ).toInt()
+    val crossingNumbers = if (firstCrossingNumber <= lastCrossingNumber) {
+        firstCrossingNumber..lastCrossingNumber
+    } else {
+        IntRange.EMPTY
+    }
+    val crossingXs = crossingNumbers.map { crossingNumber ->
+        (
+            (crossingNumber * kotlin.math.PI.toFloat() - basePhase - rotationPhase) /
+                totalPhase * width
+            ).coerceIn(0f, width)
     }
 
-    val rungGeometry = ArrayList<TranslationHelixRungGeometry>(14)
+    val rungGeometry = ArrayList<TranslationHelixRungGeometry>(
+        ((crossingXs.size - 1).coerceAtLeast(0)) * 2,
+    )
     for (index in 0 until (crossingXs.size - 1).coerceAtLeast(0)) {
         val left = crossingXs[index]
         val right = crossingXs[index + 1]
-        // The two rungs stay symmetric at 25% and 75% of each helix loop.
+        // Keep each pair of rungs symmetric at 25% and 75% of the visible helix loop.
         listOf(0.25f, 0.75f).forEach { offset ->
             val x = left + (right - left) * offset
             rungGeometry.add(
@@ -3365,8 +3405,9 @@ private fun buildTranslationHelixGeometry(
         return segment
     }
 
-    val crossingGeometry = crossingXs.mapIndexed { index, x ->
-        val strandAIsFront = index % 2 == 0
+    val crossingGeometry = crossingNumbers.zip(crossingXs).map { (crossingNumber, x) ->
+        // The strand in front alternates with each successive half-turn of the helix.
+        val strandAIsFront = crossingNumber % 2 == 0
         val frontSign = if (strandAIsFront) -1f else 1f
         val backSign = -frontSign
         TranslationHelixCrossingGeometry(
@@ -3399,9 +3440,9 @@ private fun StageProgressVisual(
 ) {
     var translationCanvasSize by remember(stageIndex) { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current.density
-    val translationGeometry = remember(stageIndex, translationCanvasSize, density) {
+    val translationHelixTemplate = remember(stageIndex, translationCanvasSize, density) {
         if (stageIndex == 3 && translationCanvasSize.width > 0 && translationCanvasSize.height > 0) {
-            buildTranslationHelixGeometry(
+            buildTranslationHelixTemplate(
                 width = translationCanvasSize.width.toFloat(),
                 height = translationCanvasSize.height.toFloat(),
                 density = density,
@@ -3490,8 +3531,8 @@ private fun StageProgressVisual(
         }
     }
 
-    // Rotate the complete translation progress visual as one layer. The pose is
-    // retained on pause and resumes from the same angle; terminal states stay still.
+    // Rotate the double helix around its horizontal longitudinal axis by advancing
+    // the helix phase. The projected wave height stays constant throughout a full turn.
     val translationAnimationActive = stageIndex == 3 && isAnimating &&
         !isPaused && !isFailed && !isCompleted && !isSkipped
     val translationWholeRotation = remember(stageIndex) {
@@ -3573,28 +3614,9 @@ private fun StageProgressVisual(
             }
             .graphicsLayer {
                 if (stageIndex == 3) {
-                    // Roll the complete translation bar around its own horizontal
-                    // centerline. Keep the layer bounds and 16dp layout height unchanged.
-                    val rolling = translationAnimationActive || isPaused
-                    val angleRadians = if (rolling) translationWholeRotation.value else 0f
-                    rotationX = angleRadians * (180f / kotlin.math.PI.toFloat())
-                    // Keep front/back shading subtle to avoid a brightness flicker
-                    // around the edge-on pose while preserving a little 3D depth.
-                    alpha = if (rolling) {
-                        val facing = (kotlin.math.cos(angleRadians) + 1f) * 0.5f
-                        (0.96f + 0.04f * facing).coerceIn(0.96f, 1f)
-                    } else {
-                        1f
-                    }
-                    // A longer camera distance reduces perspective distortion as
-                    // the 16dp strip rolls through 90 and 270 degrees.
-                    cameraDistance = 96f * density
-                    // BlendMode.Clear below must erase only this progress visual,
+                    // BlendMode.Clear must erase only this progress visual,
                     // never pixels belonging to the parent card or other UI.
                     compositingStrategy = CompositingStrategy.Offscreen
-                } else {
-                    rotationX = 0f
-                    alpha = 1f
                 }
             },
     ) {
@@ -3809,9 +3831,13 @@ private fun StageProgressVisual(
 
             // 4. Translation — four open-ended DNA double-helix cycles.
             3 -> {
-                // Static geometry is cached by measured size; only the flow highlight
-                // is recalculated on animation frames.
-                val geometry = translationGeometry ?: return@Canvas
+                // Reuse size-dependent samples, but project the helix at its current
+                // axial rotation phase on each animation frame.
+                val template = translationHelixTemplate ?: return@Canvas
+                val geometry = buildTranslationHelixGeometry(
+                    template = template,
+                    rotationPhase = translationWholeRotation.value,
+                )
                 val progressX = size.width * fraction
                 val strandA = geometry.strandA
                 val strandB = geometry.strandB
