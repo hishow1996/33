@@ -5625,7 +5625,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     if (state.isPlaying) PlaybackService.instance?.pausePlayback()
                     else PlaybackService.instance?.playPlayback()
                 },
-                modifier = Modifier.size(56.dp),
+                modifier = Modifier.size(48.dp),
             ) {
                 Icon(
                     imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
