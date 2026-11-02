@@ -392,7 +392,9 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
                 return to_java_string(env, "__HYMT_CANCELLED__");
             }
             const llama_token token = llama_sampler_sample(sampler, g_context, -1);
-            if (llama_vocab_is_eog(g_vocab, token)) {
+            // HY-MT1.5 V1 normally ends with token 120020. Some quantized
+            // checkpoints can emit the legacy raw EOS (120001) instead.
+            if (llama_vocab_is_eog(g_vocab, token) || token == 120001) {
                 reached_end_token = true;
                 break;
             }
