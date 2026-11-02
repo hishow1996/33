@@ -5,6 +5,7 @@ import java.util.Locale
 
 /** Shared validation for live translation batches and restored subtitle caches. */
 internal object SubtitleTranslationQualityPolicy {
+    private val wordSeparatorRegex = Regex("""[^\p{L}\p{N}]+""")
     private val urlPattern = Regex("""^(?:https?://|www\.)\S+$""", RegexOption.IGNORE_CASE)
     private val emailPattern = Regex(
         """^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$""",
@@ -61,7 +62,45 @@ internal object SubtitleTranslationQualityPolicy {
         }
         if (lettersOrDigits == 0) return false
         if (han == 0) return true
-        return (kana >= 2 && kana > han) || (hangul >= 2 && hangul > han)
+        if ((kana >= 2 && kana > han) || (hangul >= 2 && hangul > han)) return true
+        return hasDominantForeignText(sourceText, translatedText, han)
+    }
+
+    /**
+     * Reject a Chinese-prefixed response that leaves most of the sentence in another language.
+     * Proper names, acronyms, model names and brands that are also present in the source are
+     * excluded, so ordinary Chinese subtitles can retain terms such as Google Gemini or iPhone.
+     */
+    private fun hasDominantForeignText(
+        sourceText: String,
+        translatedText: String,
+        hanCount: Int,
+    ): Boolean {
+        val sourceTokens = sourceText.split(wordSeparatorRegex).filter { it.isNotBlank() }.toSet()
+        var foreignLetters = 0
+        translatedText.split(wordSeparatorRegex).forEach { token ->
+            val letters = token.filter { it.isLetter() }
+            if (letters.isEmpty() || isLikelyRetainedTerm(token, letters, sourceTokens)) {
+                return@forEach
+            }
+            foreignLetters += letters.count {
+                Character.UnicodeScript.of(it.code) != Character.UnicodeScript.HAN
+            }
+        }
+        // A real Chinese sentence may contain a long product/person name. Only reject when at
+        // least ten non-Han letters remain and Chinese characters account for less than 20%.
+        return foreignLetters >= 10 && hanCount * 4 < foreignLetters
+    }
+
+    private fun isLikelyRetainedTerm(
+        token: String,
+        letters: String,
+        sourceTokens: Set<String>,
+    ): Boolean {
+        if (token.any { it.isDigit() }) return true
+        if (letters.length >= 2 && letters.all { it.isUpperCase() }) return true
+        if (letters.drop(1).any { it.isUpperCase() }) return true
+        return letters.length >= 2 && letters.first().isUpperCase() && token in sourceTokens
     }
 
     /**

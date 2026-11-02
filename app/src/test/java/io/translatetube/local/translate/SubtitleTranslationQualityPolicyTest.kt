@@ -77,6 +77,46 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun rejectsChinesePrefacesThatLeaveMostOfTheSentenceInEnglish() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should leave now.",
+                "当然，I think we should leave now.",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "We should probably wait a little longer.",
+                "好的，我们 should probably wait a little longer.",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun acceptsChineseOutputThatRetainsSourceProperNamesAndModelNames() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Google Gemini is useful, and Spider-Man is popular.",
+                "Google Gemini 很实用，Spider-Man 也很受欢迎。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The new iPhone model is available.",
+                "新款 iPhone 已经上市。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun doesNotMarkChineseSourceCaptionsAsMissingTranslations() {
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("正在翻译", "正在翻译", "zh-Hans"))
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("你好", "你好", "cmn"))
