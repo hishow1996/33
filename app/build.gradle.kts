@@ -42,9 +42,13 @@ val releaseSigningReady = !releaseStorePath.isNullOrBlank() &&
 val opusMtCt2JniLibs = layout.buildDirectory.dir("generated/opusmtct2/jniLibs")
 val opusMtCt2NativeLibrary = layout.buildDirectory.file("generated/opusmtct2/jniLibs/arm64-v8a/libopusmtct2.so")
 val opusMtCt2SourceDir = rootProject.file("native/opusmt-ct2")
+val hyMtLlamaJniLibs = layout.buildDirectory.dir("generated/hymt/jniLibs")
+val hyMtLlamaNativeLibrary = layout.buildDirectory.file("generated/hymt/jniLibs/arm64-v8a/libhymt.so")
+val hyMtLlamaSourceDir = rootProject.file("native/hymt-llama")
 
 android {
     sourceSets.getByName("main").jniLibs.srcDir(opusMtCt2JniLibs)
+    sourceSets.getByName("main").jniLibs.srcDir(hyMtLlamaJniLibs)
     namespace = "io.translatetube.local"
     compileSdk = 34
 
@@ -167,7 +171,64 @@ val verifyOpusMtCt2Native by tasks.registering {
         )
     }
 }
-tasks.named("preBuild").configure { dependsOn(verifyOpusMtCt2Native) }
+val buildHyMtLlama by tasks.registering(Exec::class) {
+    inputs.files(fileTree(hyMtLlamaSourceDir))
+    outputs.file(hyMtLlamaNativeLibrary)
+    doFirst {
+        val androidHome = System.getenv("ANDROID_HOME").orEmpty()
+        val configuredNdk = System.getenv("ANDROID_NDK")
+            ?: System.getenv("ANDROID_NDK_HOME")
+            ?: File(androidHome, "ndk/29.0.14206865").absolutePath
+        environment("ANDROID_NDK", configuredNdk)
+        environment("HYMT_LLAMA_OUT", hyMtLlamaJniLibs.get().asFile.absolutePath)
+        environment("HYMT_LLAMA_CACHE", File(System.getProperty("user.home"), ".cache/hymt-llama").absolutePath)
+        environment(
+            "PATH",
+            System.getenv("PATH").orEmpty() + File.pathSeparator +
+                File(androidHome, "cmake/3.31.6/bin").absolutePath,
+        )
+    }
+    commandLine("bash", File(hyMtLlamaSourceDir, "build.sh").absolutePath)
+}
+val verifyHyMtLlamaNative by tasks.registering {
+    dependsOn(buildHyMtLlama)
+    doLast {
+        val nativeLibrary = hyMtLlamaNativeLibrary.get().asFile
+        if (!nativeLibrary.isFile || nativeLibrary.length() < 1_000_000L) {
+            throw GradleException(
+                "The required arm64-v8a HY-MT1.5 Q2_0C runtime was not produced: " +
+                    nativeLibrary.absolutePath +
+                    ". Install Android NDK r29 and CMake 3.31.6; refusing to package an APK " +
+                    "that can download the 2-bit model but cannot run it."
+            )
+        }
+        val elfHeader = nativeLibrary.inputStream().use { it.readNBytes(20) }
+        val validElf64LittleEndian = elfHeader.size == 20 &&
+            elfHeader[0] == 0x7f.toByte() &&
+            elfHeader[1] == 'E'.code.toByte() &&
+            elfHeader[2] == 'L'.code.toByte() &&
+            elfHeader[3] == 'F'.code.toByte() &&
+            elfHeader[4] == 2.toByte() &&
+            elfHeader[5] == 1.toByte()
+        val machine = if (elfHeader.size >= 20) {
+            (elfHeader[18].toInt() and 0xff) or ((elfHeader[19].toInt() and 0xff) shl 8)
+        } else {
+            -1
+        }
+        if (!validElf64LittleEndian || machine != 183) {
+            throw GradleException(
+                "Invalid HY-MT1.5 native runtime: expected a 64-bit little-endian AArch64 ELF " +
+                    "(e_machine=183), but the generated file is not ARM64: " + nativeLibrary.absolutePath
+            )
+        }
+        logger.lifecycle(
+            "Verified HY-MT1.5 Q2_0C ARM64 JNI runtime: ${nativeLibrary.length()} bytes."
+        )
+    }
+}
+tasks.named("preBuild").configure {
+    dependsOn(verifyOpusMtCt2Native, verifyHyMtLlamaNative)
+}
 
 val sherpaAarFile = file("libs/sherpa-onnx-static.aar")
 val sherpaStaticAarExpectedBytes = 38_691_998L
