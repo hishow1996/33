@@ -12990,17 +12990,77 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             var detectedSpeakerCount = 0
             try {
                 ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                val recognitionCacheIdentity = withContext(Dispatchers.IO) {
+                    val audioIdentity = speakerRecognitionSourceAudioIdentity(
+                        sessionKey = sessionKey,
+                        videoId = sessionVideoId,
+                        localUri = sessionLocalUri,
+                        remoteMediaUrl = sessionRemoteMediaUrl,
+                        remoteMediaReferrer = sessionRemoteMediaReferrer,
+                        remoteMediaCookie = sessionRemoteMediaCookie,
+                    )
+                    SpeakerRecognitionCacheIdentity.create(
+                        sessionKey = sessionKey,
+                        sourceAudioIdentity = audioIdentity,
+                        cues = originalLines.asSequence().map { line ->
+                            SpeakerRecognitionCacheIdentity.Cue(
+                                startMs = line.startMs,
+                                endMs = line.endMs,
+                                text = line.text,
+                            )
+                        },
+                        modelVersion = io.translatetube.local.asr.SpeakerDiarizer.MODEL_VERSION,
+                    )
+                }
+                val cachedAssignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
+                val cachedPersonIds = HashSet<Int>()
+                var cachedAssignedCueCount = 0
+                originalLines.forEach { line ->
+                    val personId = cachedAssignmentSnapshot.lineSpeakers[
+                        SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                    ]
+                    if (personId != null && personId in 0..999) {
+                        cachedPersonIds += personId
+                        cachedAssignedCueCount++
+                    }
+                }
+                val cachedPersonCount = cachedPersonIds.size
+                val savedRecognitionIdentity = getSharedPreferences(
+                    "speaker_recognition_cache_v1",
+                    MODE_PRIVATE,
+                ).getString(speakerRecognitionCachePrefsKey(sessionKey), null)
+                val reuseSavedSpeakerTimeline = !forceRecognition &&
+                    SpeakerRecognitionCachePolicy.canReuse(
+                        savedIdentity = savedRecognitionIdentity,
+                        requestedIdentity = recognitionCacheIdentity,
+                        totalCueCount = originalLines.size,
+                        assignedCueCount = cachedAssignedCueCount,
+                        personCount = cachedPersonCount,
+                    )
+                if (reuseSavedSpeakerTimeline) {
+                    detectedSpeakerCount = cachedPersonCount
+                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                        if (state.key == sessionKey) state.copy(
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.APPLYING,
+                                message = "复用已保存的人物识别结果…",
+                                personCount = cachedPersonCount,
+                            ),
+                            progress = "人物识别 · 复用已保存结果…",
+                        ) else state
+                    }
+                }
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
                         error = null,
                         speakerRecognition = SpeakerRecognitionUiState(
                             phase = SpeakerRecognitionPhase.PREPARING,
-                            message = "准备人物识别音频…",
+                            message = "准备人物识别…",
                         ),
                         progress = if (selectedTts == "system") {
                             "人物识别 · 检查手机可用的中文音色…"
                         } else {
-                            "人物识别 · 准备人物识别音频（为荣耀 10 限制为前 3 分钟）…"
+                            "人物识别 · 准备音频分段…"
                         },
                         // Keep the successful player session READY while this secondary operation
                         // analyzes speakers. Its progress text drives the busy UI; READY remains
@@ -13012,7 +13072,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         progress = if (selectedTts == "system") {
                             "人物识别 · 检查手机可用的中文音色…"
                         } else {
-                            "人物识别 · 初始化所选配音引擎…"
+                            if (reuseSavedSpeakerTimeline) "人物识别 · 复用已保存结果…" else "人物识别 · 初始化所选配音引擎…"
                         },
                     )
                 }
@@ -13022,100 +13082,105 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 pendingTts = preflightEngine
                 val systemChineseVoiceCount =
                     (preflightEngine as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
-                // Identify people independently from the selected engine's tone capacity.
-                // Piper and single-voice System TTS still benefit from a saved person timeline;
-                // their cues simply keep the engine's default voice until a capable engine is selected.
-                val speakerDecodeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-                val pcm = withContext(Dispatchers.IO) {
-                    val sourceFile: File?
-                    val sourceUri: Uri?
-                    if (sessionVideoId != null) {
-                        val id = sessionVideoId
-                        val audio = obtainAsrAudioFile(
-                            id, sessionKey, "人物识别 · 复用已下载音频，正在分析人物声音…",
-                            pipelineGeneration = pipelineGeneration,
-                            dubbingMutationGeneration = mutationGeneration,
-                        )
-                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                            if (state.key == sessionKey) {
-                                state.copy(progress = "人物识别 · 解码音频，准备分析人物声音…")
-                            } else state
+                // A valid cached person timeline skips audio decoding and native inference.
+                val segments = if (reuseSavedSpeakerTimeline) {
+                    emptyList()
+                } else {
+                    val speakerDecodeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    val pcmFile = withContext(Dispatchers.IO) {
+                        val sourceFile: File?
+                        val sourceUri: Uri?
+                        if (sessionVideoId != null) {
+                            sourceFile = obtainAsrAudioFile(
+                                sessionVideoId,
+                                sessionKey,
+                                "人物识别 · 复用已下载音频，正在准备分析…",
+                                pipelineGeneration = pipelineGeneration,
+                                dubbingMutationGeneration = mutationGeneration,
+                            )
+                            sourceUri = null
+                        } else if (sessionRemoteMediaUrl != null) {
+                            sourceFile = obtainRemoteMediaAsrFile(
+                                sessionRemoteMediaUrl,
+                                sessionRemoteMediaReferrer,
+                                sessionRemoteMediaCookie,
+                                sessionKey,
+                                "人物识别 · 复用网页视频音频，正在准备分析…",
+                                pipelineGeneration = pipelineGeneration,
+                                dubbingMutationGeneration = mutationGeneration,
+                            )
+                            sourceUri = null
+                        } else {
+                            sourceFile = null
+                            sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
                         }
-                        sourceFile = audio
-                        sourceUri = null
-                    } else if (sessionRemoteMediaUrl != null) {
-                        // Web media uses the same bounded direct/HLS audio cache as ASR so
-                        // speaker analysis never falls back to a missing local URI or redownloads.
-                        val audio = obtainRemoteMediaAsrFile(
-                            sessionRemoteMediaUrl,
-                            sessionRemoteMediaReferrer,
-                            sessionRemoteMediaCookie,
-                            sessionKey,
-                            "人物识别 · 复用网页视频音频，正在分析人物声音…",
-                            pipelineGeneration = pipelineGeneration,
-                            dubbingMutationGeneration = mutationGeneration,
-                        )
-                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                            if (state.key == sessionKey) {
-                                state.copy(progress = "人物识别 · 解码网页音频，准备分析人物声音…")
-                            } else state
+                        val leasedPath = sourceFile?.absolutePath
+                        try {
+                            AudioExtract.decodeTo16kMonoFile(
+                                this@PlaybackService,
+                                sourceUri,
+                                sourceFile,
+                                checkActive = { speakerDecodeJob?.ensureActive() },
+                                onProgressPercent = { percent ->
+                                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                                        if (state.key == sessionKey) state.copy(
+                                            progress = "人物识别 · 解码音频 $percent%",
+                                            speakerRecognition = state.speakerRecognition.copy(
+                                                phase = SpeakerRecognitionPhase.PREPARING,
+                                                message = "正在准备完整音频…",
+                                            ),
+                                        ) else state
+                                    }
+                                },
+                            )
+                        } finally {
+                            releaseActiveAsrAudio(leasedPath)
                         }
-                        sourceFile = audio
-                        sourceUri = null
-                    } else {
-                        sourceFile = null
-                        sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
                     }
-                    val leasedPath = sourceFile?.absolutePath
                     try {
-                        AudioExtract.decodeTo16kMono(
+                        ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                        io.translatetube.local.asr.SpeakerDiarizer.diarizePcmFile(
                             this@PlaybackService,
-                            sourceUri,
-                            sourceFile,
-                            maxDurationMs = 3 * 60 * 1000L,
-                            checkActive = { speakerDecodeJob?.ensureActive() },
-                        )
-                    } finally {
-                        releaseActiveAsrAudio(leasedPath)
-                    }
-                }
-                val segments = try {
-                    SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                            if (state.key == sessionKey) state.copy(
-                                progress = "人物识别 · $message",
-                                speakerRecognition = SpeakerRecognitionUiState(
-                                    phase = if (message.contains("下载")) {
-                                        SpeakerRecognitionPhase.DOWNLOADING_MODELS
-                                    } else {
-                                        SpeakerRecognitionPhase.ANALYZING
-                                    },
-                                    message = message,
-                                    progressPercent = speakerDownloadProgressPercent(message),
-                                ),
-                                transcriptionProgressPercent = null,
-                                transcriptionCompletedSegments = 0,
-                                transcriptionTotalSegments = 0,
-                            ) else state
+                            pcmFile,
+                        ) { message ->
+                            updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                                if (state.key == sessionKey) state.copy(
+                                    progress = "人物识别 · $message",
+                                    speakerRecognition = SpeakerRecognitionUiState(
+                                        phase = if (message.contains("下载")) {
+                                            SpeakerRecognitionPhase.DOWNLOADING_MODELS
+                                        } else {
+                                            SpeakerRecognitionPhase.ANALYZING
+                                        },
+                                        message = message,
+                                        progressPercent = speakerDownloadProgressPercent(message),
+                                    ),
+                                ) else state
+                            }
                         }
+                    } finally {
+                        pcmFile.file.delete()
                     }
-                } finally {
-                    // Release the decoded 16 kHz analysis buffer before voice assignment and TTS setup.
-                    pcm.samples.fill(0f)
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
-                if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
-                val assignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
+                if (!reuseSavedSpeakerTimeline && segments.isEmpty()) {
+                    throw IllegalStateException("没有识别到可区分的说话人")
+                }
+                val assignmentSnapshot = cachedAssignmentSnapshot
                 val speakerVoiceAssignments = assignmentSnapshot.speakerVoices.toMutableMap()
                 val lineVoiceAssignments = assignmentSnapshot.lineVoices.toMutableMap()
                 val linePersonAssignments = assignmentSnapshot.lineSpeakers.toMutableMap()
                 // sherpa-onnx cluster labels are arbitrary identifiers, not persistent person IDs.
                 // Normalize them by first appearance so a fresh diarization run cannot swap voices
                 // merely because the model numbered the same people differently.
-                val speakerObservations = SpeakerAssignmentPolicy.observationsFromSegments(segments)
+                val speakerObservations = if (reuseSavedSpeakerTimeline) {
+                    emptyList()
+                } else {
+                    SpeakerAssignmentPolicy.observationsFromSegments(segments)
+                }
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                     if (state.key == sessionKey) state.copy(
                         speakerRecognition = SpeakerRecognitionUiState(
@@ -13125,37 +13190,48 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         ),
                     ) else state
                 }
-                val cueAnchors = originalLines.mapNotNull { line ->
-                    val previousPersonId = assignmentSnapshot.lineSpeakers[
-                        SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
-                    ] ?: return@mapNotNull null
-                    SpeakerAssignmentPolicy.CueAnchor(
-                        startMs = line.startMs,
-                        endMs = line.endMs,
-                        previousPersonId = previousPersonId,
+                val cueAnchors = if (reuseSavedSpeakerTimeline) {
+                    emptyList()
+                } else {
+                    originalLines.mapNotNull { line ->
+                        val previousPersonId = assignmentSnapshot.lineSpeakers[
+                            SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                        ] ?: return@mapNotNull null
+                        SpeakerAssignmentPolicy.CueAnchor(
+                            startMs = line.startMs,
+                            endMs = line.endMs,
+                            previousPersonId = previousPersonId,
+                        )
+                    }
+                }
+                val canonicalSpeakerIds = if (reuseSavedSpeakerTimeline) {
+                    emptyMap()
+                } else {
+                    SpeakerAssignmentPolicy.stableSpeakerIds(
+                        observations = speakerObservations,
+                        cueAnchors = cueAnchors,
                     )
                 }
-                val canonicalSpeakerIds = SpeakerAssignmentPolicy.stableSpeakerIds(
-                    observations = speakerObservations,
-                    cueAnchors = cueAnchors,
-                )
-                detectedSpeakerCount = canonicalSpeakerIds.size
+                if (!reuseSavedSpeakerTimeline) detectedSpeakerCount = canonicalSpeakerIds.size
                 val updated = originalLines.map { line ->
-                    val cueDurationMs = if (line.startMs >= 0L && line.endMs > line.startMs) {
-                        line.endMs - line.startMs
+                    val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                    val speaker = if (reuseSavedSpeakerTimeline) {
+                        assignmentSnapshot.lineSpeakers[keyForLine] ?: -1
                     } else {
-                        0L
+                        val cueDurationMs = if (line.startMs >= 0L && line.endMs > line.startMs) {
+                            line.endMs - line.startMs
+                        } else {
+                            0L
+                        }
+                        val minimumOverlapMs = SpeakerAssignmentPolicy.minimumOverlapMsForCue(cueDurationMs)
+                        val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
+                            observations = speakerObservations,
+                            cueStartMs = line.startMs,
+                            cueEndMs = line.endMs,
+                            minimumOverlapMs = minimumOverlapMs,
+                        )
+                        canonicalSpeakerIds[detectedSpeaker] ?: -1
                     }
-                    val minimumOverlapMs = SpeakerAssignmentPolicy.minimumOverlapMsForCue(cueDurationMs)
-                    val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
-                        observations = speakerObservations,
-                        cueStartMs = line.startMs,
-                        cueEndMs = line.endMs,
-                        minimumOverlapMs = minimumOverlapMs,
-                    )
-                    val speaker = canonicalSpeakerIds[detectedSpeaker] ?: -1
-                    // Assign each diarized person a stable voice for this video. Manual cue
-                    // choices take precedence over the automatic speaker mapping.
                     val suggestedVoice = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
                         .voiceForCanonicalSpeaker(
                             engineId = selectedTts,
@@ -13163,7 +13239,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             systemChineseVoiceCount = systemChineseVoiceCount,
                             preferredKokoroVoice = preferredVoice,
                         )
-                    val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
                     val voice = assignmentSnapshot.lineOverrides[keyForLine] ?: if (speaker in 0..999) {
                         speakerVoiceAssignments.getOrPut(speaker) { suggestedVoice }
                     } else {
@@ -13187,6 +13262,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     selectedTts,
                 )
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val mappedCurrentCueCount = originalLines.count { line ->
+                    SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs) in linePersonAssignments
+                }
+                if (detectedSpeakerCount > 0 && mappedCurrentCueCount > 0) {
+                    getSharedPreferences("speaker_recognition_cache_v1", MODE_PRIVATE)
+                        .edit()
+                        .putString(speakerRecognitionCachePrefsKey(sessionKey), recognitionCacheIdentity)
+                        .apply()
+                }
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
@@ -13280,7 +13364,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     if (state.key == sessionKey) {
                         state.copy(
                             phase = Phase.READY,
-                            progress = "人物区分完成：已识别 ${segments.map { speaker -> speaker.speaker }.distinct().size} 位说话人",
+                            progress = "人物区分完成：已识别 $detectedSpeakerCount 位人物",
                             speakerRecognition = SpeakerRecognitionUiState(
                                 phase = SpeakerRecognitionPhase.SUCCEEDED,
                                 message = "识别完成 · ${detectedSpeakerCount} 位人物",
@@ -13308,7 +13392,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             } catch (e: Exception) {
                 io.translatetube.local.util.AppLogStore.error(
                     this@PlaybackService, "SpeakerDiarization",
-                    "自动区分人物失败，未能完成字幕人物与配音引擎重新装配",
+                    "手动区分人物失败，未能完成字幕人物与配音引擎重新装配",
                     e,
                     diagnosticContext = mapOf(
                         "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
