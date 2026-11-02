@@ -71,8 +71,19 @@ cmake -S "$HERE" -B "$BUILD" -G Ninja \
 
 cmake --build "$BUILD" --target hymt --parallel 2
 
-BIN=$(find "$NDK/toolchains/llvm/prebuilt" -path '*/bin/llvm-strip' -type f | head -n 1)
-[[ -n "$BIN" ]] || { echo "Android NDK llvm-strip is missing." >&2; exit 1; }
+# llvm-strip can be a symlink (for example, to llvm-objcopy) in NDK packages.
+# Match the executable path instead of requiring a regular file with find -type f.
+BIN=""
+for candidate in "$NDK"/toolchains/llvm/prebuilt/*/bin/llvm-strip; do
+    if [[ -x "$candidate" ]]; then
+        BIN="$candidate"
+        break
+    fi
+done
+[[ -n "$BIN" ]] || {
+    echo "Android NDK llvm-strip is missing or not executable under $NDK/toolchains/llvm/prebuilt." >&2
+    exit 1
+}
 DEST="$OUT/arm64-v8a"
 mkdir -p "$DEST"
 "$BIN" --strip-unneeded -o "$DEST/libhymt.so" "$BUILD/libhymt.so"
