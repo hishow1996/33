@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.translatetube.local.R
@@ -546,6 +547,7 @@ internal fun LocalTranslationSection(
             LocalEngineCard(
                 logo = R.drawable.hunyuan_symbol,
                 name = "HY-MT1.5 1.8B · 2-bit",
+                logoInset = 0.dp,
                 selected = activeId == EngineFactory.ID_LOCAL_HYMT,
                 onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_HYMT, "HY-MT1.5 2-bit") },
                 onManage = { detail = "hymt" },
@@ -1661,6 +1663,7 @@ private fun SourceLanguageMenu(
 private fun LocalEngineCard(
     logo: Int,
     name: String,
+    logoInset: Dp = 2.dp,
     selected: Boolean,
     onSelect: () -> Unit,
     onManage: () -> Unit,
@@ -1681,7 +1684,7 @@ private fun LocalEngineCard(
         AsyncImage(
             model = logo,
             contentDescription = "$name 官方图形标识",
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(48.dp).padding(logoInset),
             contentScale = ContentScale.Fit,
             alignment = Alignment.Center,
         )
