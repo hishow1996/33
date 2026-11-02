@@ -5611,20 +5611,28 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-    // All loading and playback errors are rendered from PlaybackService.playbackHint.
-    // Suppress the central fallback affordance while the actionable hint is visible.
-    if (!state.isPlaying && !state.isBuffering && playbackHint == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-            Surface(
-                // This control is only shown while isPlaying=false and the player is not loading; issue an explicit play
-                // rather than toggling based on playWhenReady during buffering.
-                onClick = { PlaybackService.instance?.playPlayback() },
-                shape = CircleShape,
-                color = Color.White,
+    // A single transparent playback control is centered over the video.
+    // Keep Play visible while paused; show Pause only while the control overlay is visible.
+    val showCenterPlaybackControl = !state.isBuffering && playbackHint == null &&
+        (!state.isPlaying || controlsVisible)
+    if (showCenterPlaybackControl) {
+        Box(
+            Modifier.fillMaxSize(),
+            contentAlignment = androidx.compose.ui.Alignment.Center,
+        ) {
+            IconButton(
+                onClick = {
+                    if (state.isPlaying) PlaybackService.instance?.pausePlayback()
+                    else PlaybackService.instance?.playPlayback()
+                },
+                modifier = Modifier.size(56.dp),
             ) {
-                Box(Modifier.size(54.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "播放", tint = Color(0xFF172033), modifier = Modifier.size(32.dp))
-                }
+                Icon(
+                    imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (state.isPlaying) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(44.dp),
+                )
             }
         }
     }
@@ -5707,17 +5715,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             Modifier.fillMaxWidth(),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            IconButton(
-                onClick = { if (state.isPlaying) PlaybackService.instance?.pausePlayback() else PlaybackService.instance?.playPlayback() },
-                modifier = Modifier.size(36.dp),
-            ) {
-                Icon(
-                    imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (state.isPlaying) "暂停" else "播放",
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
             Spacer(Modifier.weight(1f))
             Box {
                 IconButton(onClick = { speedExpanded = true }, modifier = Modifier.size(36.dp)) {
