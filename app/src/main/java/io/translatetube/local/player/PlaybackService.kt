@@ -6829,10 +6829,6 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
-        // Optional local speaker diarization runs alongside translation and is joined before TTS
-        // so speaker/voice assignments are ready when dubbing synthesis starts. Model downloads
-        // and native inference must never delay publishing a completed transcript to translation.
-        var deferredSpeakerRecognitionJob: Job? = null
         // Keep local PCM protected from concurrent pruning while the current ASR pass reads it.
         var leasedLocalPcmCachePath: String? = null
         var transientCloudUploadAudio: File? = null
@@ -7756,8 +7752,6 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val asrLines: List<Triple<Long, Long, String>>
                 val detectedAsrLang: String
                 val asrTimelineDurationMs: Long
-                // Reuse the exact PCM already decoded for local ASR; speaker analysis must not decode or download the source again.
-                var speakerAnalysisPcmFile: io.translatetube.local.asr.AudioExtract.PcmFile? = null
                 val directCloudPreparation: Triple<io.translatetube.local.asr.CloudTranscription.EncodedAudioInput, Long, File?>? =
                     if (asrProvider == "elevenlabs" || asrProvider == "cartesia") {
                         updateUiForSession(key, pipelineGeneration) {
@@ -8040,7 +8034,6 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 transientPcmFile = pcmFile.takeUnless { pcm ->
                     leasedLocalPcmCachePath != null && pcm.file.absolutePath == leasedLocalPcmCachePath
                 }
-                speakerAnalysisPcmFile = pcmFile
                 decodedPcmHolder.set(null)
                 // Keep HLS parts when decoding fails so the next attempt can reuse downloaded
                 // segments. Once MediaExtractor has accepted the merged file, discard the copies.
@@ -8579,7 +8572,6 @@ updateUiForSession(key, pipelineGeneration) {
                 if (asrProvider != "local") {
                     transientPcmFile?.file?.delete()
                     transientPcmFile = null
-                    speakerAnalysisPcmFile = null
                 }
                 }
                 // Only disposable local temporary files may be removed before the transcript checkpoint.
@@ -8631,68 +8623,9 @@ updateUiForSession(key, pipelineGeneration) {
                     } else state
                 }
                 lines = transcribedLines
-                if (asrProvider == "local") {
-                    speakerAnalysisPcmFile?.let { analysisPcmFile ->
-                        val ownsTransientPcm =
-                            transientPcmFile?.file?.absolutePath == analysisPcmFile.file.absolutePath
-                        // Speaker diarization is optional and may download models or run native CPU
-                        // inference. Do not keep the ASR stage open for it: begin translation now,
-                        // then join this task immediately before applying speaker IDs for TTS.
-                        deferredSpeakerRecognitionJob = scope.launch(Dispatchers.IO) {
-                            try {
-                                assignSpeakersFromLocalTranscript(
-                                    key = key,
-                                    lines = transcribedLines,
-                                    pcmFile = analysisPcmFile,
-                                    pipelineGeneration = pipelineGeneration,
-                                    analysisIdentity = sourceSubtitleCacheKey,
-                                )
-                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                throw cancelled
-                            } catch (error: OutOfMemoryError) {
-                                System.gc()
-                                updateUiForSession(key, pipelineGeneration) { state ->
-                                    if (state.key == key) state.copy(
-                                        speakerRecognition = SpeakerRecognitionUiState(
-                                            phase = SpeakerRecognitionPhase.FAILED,
-                                            message = "设备内存不足，已跳过人物识别",
-                                            error = error.message ?: "OutOfMemoryError",
-                                        ),
-                                    ) else state
-                                }
-                                android.util.Log.e(
-                                    "PlaybackService",
-                                    "Background speaker diarization skipped because of memory pressure",
-                                    error,
-                                )
-                            } catch (error: Throwable) {
-                                if (error is VirtualMachineError || error is ThreadDeath) throw error
-                                updateUiForSession(key, pipelineGeneration) { state ->
-                                    if (state.key == key) state.copy(
-                                        speakerRecognition = SpeakerRecognitionUiState(
-                                            phase = SpeakerRecognitionPhase.FAILED,
-                                            message = "人物识别失败",
-                                            error = error.message ?: error.javaClass.simpleName,
-                                        ),
-                                    ) else state
-                                }
-                                android.util.Log.e(
-                                    "PlaybackService",
-                                    "Background speaker diarization failed; translation continues",
-                                    error,
-                                )
-                            } finally {
-                                if (ownsTransientPcm) analysisPcmFile.file.delete()
-                            }
-                        }
-                        if (ownsTransientPcm) transientPcmFile = null
-                    }
-                }
-                // The background diarizer owns a temporary PCM file when it needs one. A leased
-                // reusable PCM remains protected by the outer pipeline until the diarizer is joined.
+                // The decoded ASR PCM is no longer needed after the transcript has been produced.
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
-                speakerAnalysisPcmFile = null
                 sourceTranscriptProducedInThisRun = true
                 srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
                     .resolveTranscriptionLanguageFromCues(
@@ -9072,35 +9005,6 @@ updateUiForSession(key, pipelineGeneration) {
                     baseLines
                 }
                 ensureCurrentSession(key, pipelineGeneration)
-                if (CachedSpeakerAnalysisEligibilityPolicy.shouldAnalyzeCachedTranscript(
-                        asrProvider = asrProvider,
-                        sourceCacheKey = sourceCachedKey,
-                        expectedSourceCacheKey = sourceSubtitleCacheKey,
-                        hasValidatedSourceCache = sourceCached != null && restoredSourceLines != null,
-                        hasImportedSource = !sourceImportedLines.isNullOrEmpty(),
-                        transcriptProducedInThisRun = sourceTranscriptProducedInThisRun,
-                    )
-                ) {
-                    restoreSpeakersFromCachedLocalAsrTranscript(
-                        key = key,
-                        lines = calibratedLines,
-                        analysisIdentity = sourceSubtitleCacheKey,
-                        videoId = videoId,
-                        localUri = localUri,
-                        remoteMediaUrl = remoteMediaUrl,
-                        remoteMediaReferrer = remoteMediaReferrer,
-                        remoteMediaCookie = remoteMediaCookie,
-                        cacheKeyBase = cacheKeyBase,
-                        pipelineGeneration = pipelineGeneration,
-                    )
-                    ensureCurrentSession(key, pipelineGeneration)
-                }
-                deferredSpeakerRecognitionJob?.let { speakerJob ->
-                    speakerJob.join()
-                    if (deferredSpeakerRecognitionJob === speakerJob) {
-                        deferredSpeakerRecognitionJob = null
-                    }
-                }
                 val finalLines = applySavedLineOverrides(calibratedLines, key)
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
@@ -9768,14 +9672,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
         } finally {
-            deferredSpeakerRecognitionJob?.let { speakerJob ->
-                // A translation/TTS failure must not leave diarization reading a PCM file after
-                // the pipeline releases its cache lease or temporary-file ownership.
-                speakerJob.cancel()
-                withContext(kotlinx.coroutines.NonCancellable) {
-                    speakerJob.join()
-                }
-            }
             leasedLocalPcmCachePath?.let(::releaseLocalAsrPcmFile)
             transientPcmFile?.file?.delete()
             transientCloudUploadAudio?.delete()
