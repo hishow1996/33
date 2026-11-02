@@ -23,7 +23,6 @@ internal object SpeakerChunkIdentityPolicy {
 
     private data class SpeakerWindowStats(
         var durationMs: Long = 0L,
-        var firstStartMs: Long = Long.MAX_VALUE,
     )
 
     private data class Candidate(
@@ -167,7 +166,6 @@ internal object SpeakerChunkIdentityPolicy {
             if (end <= start) return@forEach
             val stats = result.getOrPut(segment.speakerId) { SpeakerWindowStats() }
             stats.durationMs = saturatingAdd(stats.durationMs, end - start)
-            stats.firstStartMs = minOf(stats.firstStartMs, start)
         }
         return result
     }
@@ -182,15 +180,6 @@ internal object SpeakerChunkIdentityPolicy {
         val end = minOf(first.endMs, second.endMs, clipEndMs)
         return (end - start).coerceAtLeast(0L)
     }
-
-    private fun compareCandidate(first: Candidate, second: Candidate): Int =
-        compareValuesBy(
-            first,
-            second,
-            { -it.score },
-            { -it.overlapMs },
-            { it.previousId },
-        )
 
     private fun saturatingAdd(first: Long, second: Long): Long =
         if (first > Long.MAX_VALUE - second) Long.MAX_VALUE else first + second
