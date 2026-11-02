@@ -556,6 +556,7 @@ data class SelectedWebMediaMetadata(
     val audioCodecLabel: String = "",
     val audioChannelCount: Int = 0,
     val audioSampleRateHz: Int = 0,
+    val mediaDurationMs: Long = 0L,
     val audioSourceType: String = "",
     val videoResolution: String = "",
 )
@@ -568,7 +569,6 @@ data class PlayerUiState(
     val audioTrackLanguage: String = "",
     val audioTrackMimeType: String = "",
     val audioTrackCodecLabel: String = "",
-    val audioMetadataProbeInProgress: Boolean = false,
     val audioTrackDurationMs: Long = 0L,
     val audioTrackChannelCount: Int = 0,
     val audioTrackSampleRateHz: Int = 0,
@@ -4748,16 +4748,22 @@ class PlaybackService : MediaSessionService() {
             audioTrackLanguage = effectiveResumeState?.audioTrackLanguage.orEmpty(),
             audioTrackMimeType = effectiveResumeState?.audioTrackMimeType.orEmpty(),
             audioTrackCodecLabel = effectiveResumeState?.audioTrackCodecLabel
+                ?.takeIf { it.isNotBlank() }
                 ?: selectedWebMediaMetadata?.audioCodecLabel.orEmpty(),
-            audioMetadataProbeInProgress = false,
-            audioTrackDurationMs = effectiveResumeState?.audioTrackDurationMs ?: 0L,
+            audioTrackDurationMs = effectiveResumeState?.audioTrackDurationMs
+                ?.takeIf { it > 0L }
+                ?: (selectedWebMediaMetadata?.mediaDurationMs ?: 0L),
             audioTrackChannelCount = effectiveResumeState?.audioTrackChannelCount
+                ?.takeIf { it > 0 }
                 ?: (selectedWebMediaMetadata?.audioChannelCount ?: 0),
             audioTrackSampleRateHz = effectiveResumeState?.audioTrackSampleRateHz
+                ?.takeIf { it > 0 }
                 ?: (selectedWebMediaMetadata?.audioSampleRateHz ?: 0),
             audioTrackSourceType = effectiveResumeState?.audioTrackSourceType
+                ?.takeIf { it.isNotBlank() }
                 ?: selectedWebMediaMetadata?.audioSourceType.orEmpty(),
             videoResolution = effectiveResumeState?.videoResolution
+                ?.takeIf { it.isNotBlank() }
                 ?: selectedWebMediaMetadata?.videoResolution.orEmpty(),
             availableSubtitleTracks = effectiveResumeState?.availableSubtitleTracks ?: emptyList(),
             subtitleTrackStatus = effectiveResumeState?.subtitleTrackStatus.orEmpty(),
@@ -7624,18 +7630,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         audioTrackLanguage = it.audioTrackLanguage,
                         audioTrackMimeType = it.audioTrackMimeType,
                         audioTrackCodecLabel = it.audioTrackCodecLabel,
-                        audioMetadataProbeInProgress = false,
                         audioTrackDurationMs = it.audioTrackDurationMs,
                         audioTrackChannelCount = it.audioTrackChannelCount,
                         audioTrackSampleRateHz = it.audioTrackSampleRateHz,
-                        audioTrackSourceType = it.audioTrackSourceType.ifBlank {
-                            when {
-                                videoId != null -> "独立音轨"
-                                remoteMediaUrl != null -> "未知"
-                                localUri != null -> "本地音轨"
-                                else -> "未知"
-                            }
-                        },
+                        audioTrackSourceType = it.audioTrackSourceType,
                         transcriptionEngineName = transcriptionEngineDisplayName,
                         transcriptionProgressPercent = null,
                     )
@@ -7664,57 +7662,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
                     ?.absolutePath
-                updateUiForSession(key, pipelineGeneration) {
-                    it.copy(audioMetadataProbeInProgress = true)
-                }
-                val audioProbe = try {
-                    when (audioFile) {
-                        is File -> withContext(Dispatchers.IO) { AudioExtract.probeMediaFile(audioFile) }
-                        is android.net.Uri -> withContext(Dispatchers.IO) {
-                            AudioExtract.probeMediaUri(this@PlaybackService, audioFile)
-                        }
-                        else -> null
-                    }
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                } catch (probeFailure: Exception) {
-                    android.util.Log.i("PlaybackService", "Selected audio track metadata is unavailable", probeFailure)
-                    null
-                } finally {
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(audioMetadataProbeInProgress = false)
-                    }
-                }
-                if (audioProbe != null) {
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(
-                            audioTrackLanguage = audioProbe.selectedAudioLanguage
-                                ?.takeIf { value -> value.isNotBlank() } ?: it.audioTrackLanguage,
-                            audioTrackMimeType = audioProbe.selectedAudioMimeType
-                                ?.takeIf { value -> value.isNotBlank() } ?: it.audioTrackMimeType,
-                            audioTrackCodecLabel = it.audioTrackCodecLabel.ifBlank {
-                                audioProbe.selectedAudioMimeType.orEmpty()
-                            },
-                            audioTrackDurationMs = audioProbe.durationMs.takeIf { value -> value > 0L }
-                                ?: it.audioTrackDurationMs,
-                            audioTrackChannelCount = audioProbe.selectedAudioChannelCount
-                                ?.takeIf { value -> value > 0 } ?: it.audioTrackChannelCount,
-                            audioTrackSampleRateHz = audioProbe.selectedAudioSampleRateHz
-                                ?.takeIf { value -> value > 0 } ?: it.audioTrackSampleRateHz,
-                            audioTrackSourceType = when {
-                                it.progress.contains("音画混合流") -> "音画混合流"
-                                it.progress.contains("独立音轨") -> "独立音轨"
-                                it.progress.contains("复用网页视频音频缓存") -> "缓存音轨"
-                                it.audioTrackSourceType.isNotBlank() -> it.audioTrackSourceType
-                                videoId != null -> "独立音轨"
-                                remoteMediaUrl != null -> "网页媒体音轨"
-                                localUri != null -> "本地音轨"
-                                else -> "未知"
-                            },
-                        )
-                    }
-                }
-                if (missingLocalModel || missingCloudKey) {
+                // Reuse the selected source-card metadata; do not run a second display probe
+                // after extraction. Missing source-card fields intentionally remain absent.
                     val hint = when (asrProvider) {
                         "local" -> {
                             val modelName = io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)

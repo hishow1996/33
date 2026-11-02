@@ -258,6 +258,10 @@ private fun WebCandidateAudioHint.toSelectedWebMediaMetadata(): SelectedWebMedia
         audioCodecLabel = info?.audioCodec.orEmpty(),
         audioChannelCount = info?.audioChannels ?: 0,
         audioSampleRateHz = info?.audioSampleRate ?: 0,
+        mediaDurationMs = info?.durationSeconds
+            ?.takeIf { it.isFinite() && it > 0.0 }
+            ?.let { (it * 1_000.0).toLong() }
+            ?: 0L,
         audioSourceType = sourceType,
         videoResolution = resolution,
     )

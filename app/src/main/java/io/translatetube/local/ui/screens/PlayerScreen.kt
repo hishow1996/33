@@ -2740,44 +2740,38 @@ private fun ProcessingStageCards(
                                     else -> "等待提取音频"
                                 }
                                 add("当前任务" to audioTask)
-                                val metadataPending = if (state.audioMetadataProbeInProgress) "检测中" else "未知"
-                                val liveAudioSource = when {
-                                    progressText.contains("音画混合流") -> "音画混合流"
-                                    progressText.contains("独立音轨") -> "独立音轨"
-                                    else -> state.audioTrackSourceType.trim().ifBlank { "未知" }
-                                }
-                                add("视频分辨率" to state.videoResolution.trim().ifBlank {
-                                    state.selectedQuality.trim().ifBlank { "未知" }
-                                })
-                                add("音轨来源" to liveAudioSource)
+                                state.videoResolution.trim().takeIf { it.isNotBlank() }
+                                    ?.let { add("视频分辨率" to it) }
+                                state.audioTrackSourceType.trim().takeIf { it.isNotBlank() }
+                                    ?.let { add("音轨来源" to it) }
                                 val sourceCodecLabel = state.audioTrackCodecLabel
                                     .takeIf { it.isNotBlank() && '/' !in it }
                                 val audioFormatLabel = sourceCodecLabel
                                     ?: processingAudioFormatLabel(
                                         state.audioTrackMimeType.ifBlank { state.audioTrackCodecLabel }
                                     )
-                                add("音频格式" to audioFormatLabel.orEmpty().ifBlank { metadataPending })
+                                audioFormatLabel?.takeIf { it.isNotBlank() }
+                                    ?.let { add("音频格式" to it) }
                                 val sampleRateHz = state.audioTrackSampleRateHz
-                                val sampleRateKHz = sampleRateHz / 1000f
-                                add(
-                                    "采样率" to when {
-                                        sampleRateHz <= 0 -> metadataPending
-                                        sampleRateHz % 1_000 == 0 -> "${sampleRateHz / 1_000} kHz"
-                                        else -> "${sampleRateKHz} kHz"
-                                    },
-                                )
-                                add("音频时长" to if (state.audioTrackDurationMs > 0L) {
-                                    formatFloatingTime(state.audioTrackDurationMs)
-                                } else metadataPending)
-                                add(
-                                    "声道" to when {
-                                        state.audioTrackChannelCount == 1 -> "单声道"
-                                        state.audioTrackChannelCount == 2 -> "立体声"
-                                        state.audioTrackChannelCount > 2 ->
-                                            state.audioTrackChannelCount.toString() + " 声道"
-                                        else -> metadataPending
-                                    },
-                                )
+                                if (sampleRateHz > 0) {
+                                    val sampleRateLabel = if (sampleRateHz % 1_000 == 0) {
+                                        "${sampleRateHz / 1_000} kHz"
+                                    } else {
+                                        "${sampleRateHz / 1000f} kHz"
+                                    }
+                                    add("采样率" to sampleRateLabel)
+                                }
+                                if (state.audioTrackDurationMs > 0L) {
+                                    add("时长" to formatFloatingTime(state.audioTrackDurationMs))
+                                }
+                                when {
+                                    state.audioTrackChannelCount == 1 ->
+                                        add("声道" to "单声道")
+                                    state.audioTrackChannelCount == 2 ->
+                                        add("声道" to "立体声")
+                                    state.audioTrackChannelCount > 2 ->
+                                        add("声道" to "${state.audioTrackChannelCount} 声道")
+                                }
                             }
                             2 -> {
                                 add("转写引擎" to transcriptionEngineSummary)
