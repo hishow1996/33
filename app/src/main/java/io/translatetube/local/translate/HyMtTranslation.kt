@@ -366,14 +366,27 @@ object HyMtModelManager {
     }
 
     suspend fun delete(context: Context) = lock.withLock {
-        HyMtRuntime.deleteModelFiles {
-            withContext(Dispatchers.IO) {
-                val directory = modelDirectory(context)
-                if (directory.exists() && !directory.deleteRecursively()) {
-                    throw IOException("无法完整删除 HY-MT1.5 模型目录")
+        try {
+            HyMtRuntime.deleteModelFiles {
+                withContext(Dispatchers.IO) {
+                    val directory = modelDirectory(context)
+                    if (directory.exists() && !directory.deleteRecursively()) {
+                        throw IOException("无法完整删除 HY-MT1.5 模型目录")
+                    }
+                    mutableState.value = HyMtDownloadState(status = HyMtStatus.NOT_DOWNLOADED)
                 }
-                mutableState.value = HyMtDownloadState(status = HyMtStatus.NOT_DOWNLOADED)
             }
+        } catch (error: Exception) {
+            val model = modelFile(context)
+            val complete = hasGgufHeader(model)
+            mutableState.value = HyMtDownloadState(
+                status = HyMtStatus.FAILED,
+                progress = if (complete) 100 else 0,
+                downloadedBytes = model.takeIf { it.isFile }?.length() ?: 0L,
+                totalBytes = if (complete) model.length() else DISPLAY_BYTES,
+                error = error.message?.takeIf { it.isNotBlank() } ?: "删除 HY-MT1.5 模型失败",
+            )
+            throw error
         }
     }
 }
@@ -520,33 +533,51 @@ private object HyMtRuntime {
         }
     }
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     suspend fun validate(context: Context) = inferenceMutex.withLock {
         withContext(Dispatchers.IO) {
-            ensureMemoryAvailable(context)
-            HyMtNative.ensureLibraryLoaded()
-            val model = HyMtModelManager.modelFile(context)
-            if (!model.isFile) throw IOException("HY-MT1.5 GGUF 模型文件不存在")
-            val error = HyMtNative.nativeOpen(
-                model.absolutePath,
-                LocalTranslationRuntimePolicy.inferenceThreads(context),
-                CONTEXT_TOKENS,
-            )
-            if (!error.isNullOrBlank()) throw IllegalStateException(error)
-            loadedIdentity = identity(context)
+            val ownerJob = currentCoroutineContext()[Job]
+            val cancellationHandle = ownerJob?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is CancellationException) runCatching {
+                    HyMtNative.nativeCancel()
+                }
+            }
             try {
+                ensureMemoryAvailable(context)
+                HyMtNative.ensureLibraryLoaded()
+                val model = HyMtModelManager.modelFile(context)
+                if (!model.isFile) throw IOException("HY-MT1.5 GGUF 模型文件不存在")
+                ownerJob?.ensureActive()
+                val error = HyMtNative.nativeOpen(
+                    model.absolutePath,
+                    LocalTranslationRuntimePolicy.inferenceThreads(context),
+                    CONTEXT_TOKENS,
+                )
+                if (!error.isNullOrBlank()) throw IllegalStateException(error)
+                loadedIdentity = identity(context)
+                ownerJob?.ensureActive()
                 val result = HyMtNative.nativeTranslate(
                     "将以下文本翻译为中文，注意只需要输出翻译后的结果，不要额外解释：\n\nHello",
                     96,
                 ).orEmpty().trim()
+                ownerJob?.ensureActive()
+                if (result == "__HYMT_CANCELLED__") {
+                    throw CancellationException("HY-MT1.5 本地试译验证已取消")
+                }
                 if (result.isBlank() || result.equals("Hello", ignoreCase = true) ||
                     result.none { it in '\u4e00'..'\u9fff' }
                 ) {
                     throw IllegalStateException("HY-MT1.5 模型试译未返回有效中文结果")
                 }
             } finally {
+                cancellationHandle?.dispose()
+                runCatching { HyMtNative.nativeResetCancel() }
                 val closeNow = synchronized(runtimeLock) { leases == 0 }
                 if (closeNow) {
-                    HyMtNative.nativeClose()
+                    runCatching { HyMtNative.nativeClose() }
                     loadedIdentity = null
                 }
             }
