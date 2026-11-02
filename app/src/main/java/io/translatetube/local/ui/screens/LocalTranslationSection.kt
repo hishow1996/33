@@ -660,25 +660,15 @@ internal fun LocalTranslationSection(
                                         HyMtStatus.DOWNLOADING -> "下载中 ${hyMtState.progress}%"
                                         HyMtStatus.VERIFYING -> "正在加载并验证模型"
                                         HyMtStatus.PAUSED -> if (hyMtState.hasCompleteFiles) {
-                                            if (hyMtState.runtimeAvailable) {
-                                                "模型文件已下载，等待运行时验证"
-                                            } else "模型已下载，等待推理运行库可用"
+                                            "模型文件已下载，等待运行时验证"
                                         } else "下载已暂停"
-                                        HyMtStatus.FAILED -> if (
-                                            hyMtState.hasCompleteFiles && !hyMtState.runtimeAvailable
-                                        ) {
-                                            "模型已下载，等待推理运行库可用"
-                                        } else hyMtState.error.ifBlank { "下载或验证失败" }
+                                        HyMtStatus.FAILED -> hyMtState.error.ifBlank { "下载或验证失败" }
                                         else -> "未下载"
                                     },
                                     color = when (hyMtState.status) {
                                         HyMtStatus.READY, HyMtStatus.DOWNLOADING, HyMtStatus.VERIFYING ->
                                             Color(0xFF3569D4)
-                                        HyMtStatus.FAILED -> if (
-                                            hyMtState.hasCompleteFiles && !hyMtState.runtimeAvailable
-                                        ) {
-                                            Color(0xFF64748B)
-                                        } else Color(0xFFB42318)
+                                        HyMtStatus.FAILED -> Color(0xFFB42318)
                                         else -> Color(0xFF64748B)
                                     },
                                     style = MaterialTheme.typography.labelSmall,
@@ -718,6 +708,30 @@ internal fun LocalTranslationSection(
                                     style = MaterialTheme.typography.labelMedium,
                                     maxLines = 1,
                                 )
+                            } else if (
+                                !hyMtState.runtimeAvailable &&
+                                hyMtState.error.contains("未包含 HY-MT1.5 ARM64") &&
+                                !hyMtState.hasCompleteFiles
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        hyMtJob = launchTrackedModelDownload(
+                                            taskId = "hy-mt-2bit",
+                                            title = "正在下载 HY-MT1.5 2-bit 模型",
+                                        ) {
+                                            try {
+                                                HyMtModelManager.download(context)
+                                            } catch (cancelled: CancellationException) {
+                                                throw cancelled
+                                            } catch (_: Exception) {
+                                                // Exact error remains in model state and diagnostics.
+                                            }
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("下载模型", maxLines = 1) }
+                            } else if (!hyMtState.runtimeAvailable) {
+                                // Keep the previous empty action area; do not offer an app-update action.
                             } else {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
