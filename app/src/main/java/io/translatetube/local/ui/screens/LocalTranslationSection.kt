@@ -27,6 +27,10 @@ import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.MlKitModelCoordinator
 import io.translatetube.local.translate.LocalTranslationEnginePolicy
+import io.translatetube.local.translate.HyMtDownloadState
+import io.translatetube.local.translate.HyMtLanguagePolicy
+import io.translatetube.local.translate.HyMtModelManager
+import io.translatetube.local.translate.HyMtStatus
 import io.translatetube.local.translate.OpusMtModelManager
 import io.translatetube.local.translate.OpusMtAdditionalModelManager
 import io.translatetube.local.translate.OpusMtStatus
@@ -157,6 +161,8 @@ internal fun LocalTranslationSection(
     val opusExtraStates by OpusMtAdditionalModelManager.states.collectAsState()
     var small100Job by remember { mutableStateOf<Job?>(null) }
     val small100State by Small100ModelManager.state.collectAsState()
+    var hyMtJob by remember { mutableStateOf<Job?>(null) }
+    val hyMtState by HyMtModelManager.state.collectAsState()
     val pairs = remember {
         listOf(
             LocalTranslationPair("南非荷兰语 → 中文", "af"),
@@ -223,6 +229,9 @@ internal fun LocalTranslationSection(
     val smallPairs = remember {
         Small100LanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
     }
+    val hyMtPairs = remember {
+        HyMtLanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
+    }
     suspend fun refreshMlKit() {
         val statuses = withContext(Dispatchers.IO) {
             val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
@@ -242,6 +251,13 @@ internal fun LocalTranslationSection(
     }
 
     LaunchedEffect(detail) {
+        if (detail == "hymt") {
+            val preferredSource = sourceLanguagePrefs.getString("hymt_source_language", "auto")
+                ?.takeIf { it == "auto" || HyMtLanguagePolicy.supportsSource(it) }
+                ?: "auto"
+            sourceLanguageSelection = preferredSource
+            sourceLanguagePrefs.edit().putString("translation_source_language", preferredSource).apply()
+        }
         if (detail == "small100") {
             val preferredSource = sourceLanguagePrefs.getString("small100_source_language", "auto")
                 ?.takeIf { it == "auto" || Small100LanguagePolicy.supportsSource(it) }
@@ -330,6 +346,22 @@ internal fun LocalTranslationSection(
                 )
             }
         }
+
+        if (detail == "hymt" || detail.isBlank()) {
+            try {
+                HyMtModelManager.refresh(context)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AppLogStore.error(
+                    context,
+                    "LocalTranslationModel",
+                    "读取 HY-MT1.5 模型状态失败",
+                    error,
+                    diagnosticContext = mapOf("操作" to "读取 GGUF 模型文件和验证状态"),
+                )
+            }
+        }
     }
 
     val opusSourceCompatible = sourceLanguageSelection == "auto" ||
@@ -340,6 +372,9 @@ internal fun LocalTranslationSection(
         sourceLanguagePrefs.edit().putString("translation_source_language", language).apply()
         if (detail == "small100") {
             sourceLanguagePrefs.edit().putString("small100_source_language", language).apply()
+        }
+        if (detail == "hymt") {
+            sourceLanguagePrefs.edit().putString("hymt_source_language", language).apply()
         }
         if (detail == "mlkit" && language != "auto" && pairs.any { it.source == language }) {
             mlkitManualSourceLanguage = language
@@ -450,6 +485,13 @@ internal fun LocalTranslationSection(
     }
 
     fun selectLocalEngine(id: Long, name: String) {
+        if (id == EngineFactory.ID_LOCAL_HYMT) {
+            val preferredSource = sourceLanguagePrefs.getString("hymt_source_language", "auto")
+                ?.takeIf { it == "auto" || HyMtLanguagePolicy.supportsSource(it) }
+                ?: "auto"
+            sourceLanguageSelection = preferredSource
+            sourceLanguagePrefs.edit().putString("translation_source_language", preferredSource).apply()
+        }
         if (id == EngineFactory.ID_LOCAL_SMALL100) {
             val preferredSource = sourceLanguagePrefs.getString("small100_source_language", "auto")
                 ?.takeIf { it == "auto" || Small100LanguagePolicy.supportsSource(it) }
@@ -482,6 +524,10 @@ internal fun LocalTranslationSection(
                 pairs.none { it.source == sourceLanguageSelection } ->
                 "ML Kit 不支持当前手动选择的源语言。请进入管理页选择受支持的语言，或改用其他本地模型。"
             sourceLanguageSelection != "auto" &&
+                id == EngineFactory.ID_LOCAL_HYMT &&
+                !HyMtLanguagePolicy.supportsSource(sourceLanguageSelection) ->
+                "HY-MT1.5 不支持当前源语言，请选择支持的语言或开启自动识别。"
+            sourceLanguageSelection != "auto" &&
                 id == EngineFactory.ID_LOCAL_SMALL100 &&
                 !Small100LanguagePolicy.supportsSource(sourceLanguageSelection) ->
                 "SMaLL-100 不支持当前手动选择的源语言。请进入管理页选择受支持的语言，或改用其他本地模型。"
@@ -498,11 +544,18 @@ internal fun LocalTranslationSection(
     ) {
         if (detail.isBlank()) {
             LocalEngineCard(
-                logo = R.drawable.mlkit_logo,
-                name = "ML Kit",
-                selected = activeId == EngineFactory.ID_LOCAL_MLKIT,
-                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_MLKIT, "ML Kit") },
-                onManage = { detail = "mlkit" },
+                logo = R.drawable.hunyuan_logo,
+                name = "HY-MT1.5 1.8B · 2-bit",
+                selected = activeId == EngineFactory.ID_LOCAL_HYMT,
+                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_HYMT, "HY-MT1.5 2-bit") },
+                onManage = { detail = "hymt" },
+            )
+            LocalEngineCard(
+                logo = R.drawable.small100_logo,
+                name = "SMaLL-100",
+                selected = activeId == EngineFactory.ID_LOCAL_SMALL100,
+                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_SMALL100, "SMaLL-100") },
+                onManage = { detail = "small100" },
             )
             LocalEngineCard(
                 logo = R.drawable.opus_mt_logo,
@@ -512,11 +565,11 @@ internal fun LocalTranslationSection(
                 onManage = { detail = "opus" },
             )
             LocalEngineCard(
-                logo = R.drawable.small100_logo,
-                name = "SMaLL-100",
-                selected = activeId == EngineFactory.ID_LOCAL_SMALL100,
-                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_SMALL100, "SMaLL-100") },
-                onManage = { detail = "small100" },
+                logo = R.drawable.mlkit_logo,
+                name = "ML Kit",
+                selected = activeId == EngineFactory.ID_LOCAL_MLKIT,
+                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_MLKIT, "ML Kit") },
+                onManage = { detail = "mlkit" },
             )
         } else {
             Row(
@@ -530,6 +583,7 @@ internal fun LocalTranslationSection(
                 Spacer(Modifier.width(6.dp))
                 Text(
                     when (detail) {
+                        "hymt" -> "HY-MT1.5 1.8B · 2-bit"
                         "mlkit" -> "ML Kit"
                         "opus" -> "OPUS-MT"
                         "singlePair" -> "单语言对翻译模型"
@@ -539,7 +593,195 @@ internal fun LocalTranslationSection(
                     color = Color(0xFF172033),
                 )
             }
-            if (detail == "mlkit") {
+            if (detail == "hymt") {
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color.White)
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    MlKitSourceLanguageControl(
+                        manualSelected = sourceLanguageSelection != "auto",
+                        onModeSelected = { manual ->
+                            if (manual) {
+                                val next = sourceLanguageSelection.takeIf {
+                                    it != "auto" && HyMtLanguagePolicy.supportsSource(it)
+                                } ?: "en"
+                                setSourceLanguage(next)
+                            } else {
+                                setSourceLanguage("auto")
+                            }
+                        },
+                    )
+                    SourceLanguageMenu(
+                        selected = sourceLanguageSelection,
+                        languages = hyMtPairs,
+                        expanded = sourceLanguageMenuExpanded,
+                        onExpandedChange = { sourceLanguageMenuExpanded = it },
+                        onSelected = { setSourceLanguage(it) },
+                    )
+                    val compatibleSource = sourceLanguageSelection == "auto" ||
+                        HyMtLanguagePolicy.supportsSource(sourceLanguageSelection)
+                    if (!compatibleSource) {
+                        Text(
+                            "当前选择的源语言不受 HY-MT1.5 支持。",
+                            color = Color(0xFFB42318),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFFF8FAFC))
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        "HY-MT1.5 1.8B · 2-bit",
+                                        modifier = Modifier.weight(1f),
+                                        color = Color(0xFF172033),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        formatLocalModelSizeDetail(HyMtModelManager.DISPLAY_BYTES),
+                                        color = Color(0xFF64748B),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                    )
+                                }
+                                Text(
+                                    when (hyMtState.status) {
+                                        HyMtStatus.READY -> "已下载并通过本地试译验证"
+                                        HyMtStatus.DOWNLOADING -> "下载中 ${hyMtState.progress}%"
+                                        HyMtStatus.VERIFYING -> "正在加载并验证模型"
+                                        HyMtStatus.PAUSED -> if (hyMtState.hasCompleteFiles) {
+                                            "模型文件已下载，等待运行时验证"
+                                        } else "下载已暂停"
+                                        HyMtStatus.FAILED -> hyMtState.error.ifBlank { "下载或验证失败" }
+                                        else -> "未下载"
+                                    },
+                                    color = when (hyMtState.status) {
+                                        HyMtStatus.READY, HyMtStatus.DOWNLOADING, HyMtStatus.VERIFYING ->
+                                            Color(0xFF3569D4)
+                                        HyMtStatus.FAILED -> Color(0xFFB42318)
+                                        else -> Color(0xFF64748B)
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 2,
+                                )
+                            }
+                            if (hyMtJob?.isActive == true ||
+                                hyMtState.status == HyMtStatus.DOWNLOADING ||
+                                hyMtState.status == HyMtStatus.VERIFYING
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        ModelDownloadForegroundService.cancelExternalTask("hy-mt-2bit")
+                                        hyMtJob = null
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("暂停", maxLines = 1) }
+                            } else if (hyMtState.status == HyMtStatus.READY) {
+                                if (activeId == EngineFactory.ID_LOCAL_HYMT) {
+                                    Text(
+                                        "使用中",
+                                        modifier = Modifier.padding(horizontal = 8.dp),
+                                        color = Color(0xFF3569D4),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                    )
+                                } else {
+                                    TextButton(
+                                        onClick = {
+                                            scope.launch {
+                                                try {
+                                                    withContext(Dispatchers.IO) {
+                                                        HyMtModelManager.delete(context)
+                                                    }
+                                                } catch (error: Exception) {
+                                                    AppLogStore.error(
+                                                        context,
+                                                        "LocalTranslationModel",
+                                                        "删除 HY-MT1.5 模型失败",
+                                                        error,
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    ) { Text("删除", maxLines = 1) }
+                                }
+                            } else {
+                                TextButton(
+                                    onClick = {
+                                        hyMtJob = launchTrackedModelDownload(
+                                            taskId = "hy-mt-2bit",
+                                            title = if (hyMtState.hasCompleteFiles) {
+                                                "正在重新验证 HY-MT1.5 2-bit 模型"
+                                            } else {
+                                                "正在下载 HY-MT1.5 2-bit 模型"
+                                            },
+                                        ) {
+                                            try {
+                                                HyMtModelManager.download(context)
+                                            } catch (cancelled: CancellationException) {
+                                                throw cancelled
+                                            } catch (_: Throwable) {
+                                                // Exact error remains in model state and diagnostics.
+                                            }
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) {
+                                    Text(
+                                        when {
+                                            hyMtState.hasCompleteFiles -> "重新验证"
+                                            hyMtState.status == HyMtStatus.PAUSED -> "继续下载"
+                                            hyMtState.status == HyMtStatus.FAILED -> "重试"
+                                            else -> "下载"
+                                        },
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                        if (hyMtState.status == HyMtStatus.DOWNLOADING ||
+                            hyMtState.status == HyMtStatus.VERIFYING ||
+                            (hyMtState.hasCompleteFiles && hyMtState.status != HyMtStatus.READY)
+                        ) {
+                            LinearProgressIndicator(
+                                progress = (hyMtState.progress / 100f).coerceIn(0f, 1f),
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF3569D4),
+                            )
+                            Text(
+                                hyMtState.progress.toString() + "% · " +
+                                    formatLocalModelBytes(hyMtState.downloadedBytes) + " / " +
+                                    formatLocalModelBytes(hyMtState.totalBytes),
+                                color = Color(0xFF64748B),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
+            } else if (detail == "mlkit") {
                 Column(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
