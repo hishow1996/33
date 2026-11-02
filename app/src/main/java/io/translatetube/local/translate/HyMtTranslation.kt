@@ -164,30 +164,8 @@ object HyMtModelManager {
             val completeModel = hasGgufHeader(model)
             val modelBytes = model.takeIf { completeModel }?.length() ?: 0L
             val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
-            val nativeLibrary = File(
-                context.applicationInfo.nativeLibraryDir,
-                System.mapLibraryName("hymt"),
-            )
-            val supportsArm64 = android.os.Build.SUPPORTED_ABIS.any {
-                it.equals("arm64-v8a", ignoreCase = true)
-            }
             val runtimeError = runCatching { HyMtNative.ensureLibraryLoaded(context) }.exceptionOrNull()
-            val runtimeMissingButDownloadable = supportsArm64 && !nativeLibrary.isFile
             mutableState.value = when {
-                runtimeError != null && runtimeMissingButDownloadable -> HyMtDownloadState(
-                    status = if (completeModel || partialBytes > 0L) HyMtStatus.PAUSED
-                        else HyMtStatus.NOT_DOWNLOADED,
-                    progress = if (modelBytes > 0L) 100
-                        else (partialBytes * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
-                    downloadedBytes = if (modelBytes > 0L) modelBytes else partialBytes,
-                    totalBytes = if (modelBytes > 0L) modelBytes else DISPLAY_BYTES,
-                    error = if (completeModel) {
-                        "模型文件已下载，更新应用后即可验证"
-                    } else {
-                        "运行库待更新，可先下载模型"
-                    },
-                    runtimeAvailable = false,
-                )
                 runtimeError != null -> HyMtDownloadState(
                     status = HyMtStatus.FAILED,
                     progress = if (modelBytes > 0L) 100
@@ -195,7 +173,7 @@ object HyMtModelManager {
                     downloadedBytes = if (modelBytes > 0L) modelBytes else partialBytes,
                     totalBytes = if (modelBytes > 0L) modelBytes else DISPLAY_BYTES,
                     error = runtimeError.message?.takeIf { it.isNotBlank() }
-                        ?: "HY-MT1.5 ARM64 推理库不可用，请检查应用安装包。",
+                        ?: "HY-MT1.5 ARM64 推理库不可用，请更新应用。",
                     runtimeAvailable = false,
                 )
                 isReady(context) -> HyMtDownloadState(
