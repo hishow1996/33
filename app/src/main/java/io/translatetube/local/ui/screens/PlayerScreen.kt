@@ -4184,6 +4184,8 @@ private fun CompactProcessingStageDetails(
                     CompactStageMetadataLine(
                         item = it,
                         modifier = Modifier.padding(start = 37.dp),
+                        valueColor = Color(0xFF3268F5),
+                        valueFontWeight = FontWeight.SemiBold,
                     )
                 }
                 CompactStageMetadataRow(value("视频分辨率"), value("音轨来源"))
@@ -4254,6 +4256,8 @@ private fun CompactStageMetadataRow(
 private fun CompactStageMetadataLine(
     item: Pair<String, String>,
     modifier: Modifier = Modifier,
+    valueColor: Color = Color(0xFF3D4E65),
+    valueFontWeight: FontWeight = FontWeight.Medium,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -4272,11 +4276,11 @@ private fun CompactStageMetadataLine(
         Text(
             item.second,
             modifier = Modifier.weight(1f),
-            color = Color(0xFF3D4E65),
+            color = valueColor,
             style = MaterialTheme.typography.bodySmall.copy(
                 fontSize = 10.sp,
                 lineHeight = 13.sp,
-                fontWeight = FontWeight.Medium,
+                fontWeight = valueFontWeight,
             ),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
