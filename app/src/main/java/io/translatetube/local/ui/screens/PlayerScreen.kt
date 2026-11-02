@@ -3360,10 +3360,10 @@ private fun buildTranslationHelixGeometry(
     val lastCrossingNumber = kotlin.math.floor(
         (phaseAt(width) / kotlin.math.PI.toFloat()).toDouble(),
     ).toInt()
-    val crossingNumbers = if (firstCrossingNumber <= lastCrossingNumber) {
-        firstCrossingNumber..lastCrossingNumber
+    val crossingNumbers: List<Int> = if (firstCrossingNumber <= lastCrossingNumber) {
+        (firstCrossingNumber..lastCrossingNumber).toList()
     } else {
-        IntRange.EMPTY
+        emptyList()
     }
     val crossingXs = crossingNumbers.map { crossingNumber ->
         (
