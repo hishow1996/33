@@ -158,80 +158,57 @@ std::string from_java_string(JNIEnv * env, jstring value) {
     return result;
 }
 
-std::string format_chat_prompt(const std::string & user_text) {
-    const char * chat_template = llama_model_chat_template(g_model, nullptr);
-    if (chat_template == nullptr || chat_template[0] == '\0') {
-        throw std::runtime_error("HY-MT1.5 GGUF 文件未包含可用的 chat template。");
-    }
-    if (user_text.size() > (static_cast<size_t>(std::numeric_limits<int32_t>::max()) - 4096U) / 8U) {
+std::vector<llama_token> tokenize_text_piece(
+    const std::string & text,
+    bool parse_special
+) {
+    if (text.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
         throw std::runtime_error("HY-MT1.5 输入文本过长。");
     }
-
-    llama_chat_message message = {"user", user_text.c_str()};
-    int32_t capacity = static_cast<int32_t>(user_text.size() * 8U + 4096U);
-    std::vector<char> buffer(static_cast<size_t>(capacity));
-    int32_t written = llama_chat_apply_template(
-        chat_template, &message, 1, false, buffer.data(), capacity
-    );
-    if (written < 0) {
-        throw std::runtime_error("当前 llama.cpp 无法解析 HY-MT1.5 GGUF 的 chat template。");
-    }
-    if (written >= capacity) {
-        if (written == std::numeric_limits<int32_t>::max()) {
-            throw std::runtime_error("HY-MT1.5 chat template 输出长度超出上限。");
-        }
-        capacity = written + 1;
-        buffer.resize(static_cast<size_t>(capacity));
-        written = llama_chat_apply_template(
-            chat_template, &message, 1, false, buffer.data(), capacity
-        );
-        if (written < 0 || written >= capacity) {
-            throw std::runtime_error("HY-MT1.5 chat template 格式化失败。");
-        }
-    }
-    if (written <= 0) throw std::runtime_error("HY-MT1.5 chat template 输出为空。");
-    return std::string(buffer.data(), static_cast<size_t>(written));
-}
-
-std::vector<llama_token> tokenize_prompt(const std::string & prompt) {
+    const int32_t text_length = static_cast<int32_t>(text.size());
     const int32_t needed = llama_tokenize(
-        g_vocab,
-        prompt.data(),
-        static_cast<int32_t>(prompt.size()),
-        nullptr,
-        0,
-        false,
-        true
+        g_vocab, text.data(), text_length, nullptr, 0, false, parse_special
     );
-    if (needed == INT32_MIN || needed == 0) {
-        throw std::runtime_error("HY-MT1.5 tokenizer could not measure the prompt.");
+    if (needed == INT32_MIN) {
+        throw std::runtime_error("HY-MT1.5 tokenizer 输入长度超出上限。");
     }
+    if (needed == 0) return {};
     const int32_t count = needed < 0 ? -needed : needed;
-    if (count <= 0) throw std::runtime_error("HY-MT1.5 prompt is empty after tokenization.");
+    if (count <= 0) throw std::runtime_error("HY-MT1.5 tokenizer 返回了无效长度。");
 
     std::vector<llama_token> tokens(static_cast<size_t>(count));
     const int32_t written = llama_tokenize(
-        g_vocab,
-        prompt.data(),
-        static_cast<int32_t>(prompt.size()),
-        tokens.data(),
-        count,
-        false,
-        true
+        g_vocab, text.data(), text_length, tokens.data(), count, false, parse_special
     );
-    if (written < 0) {
-        throw std::runtime_error("HY-MT1.5 tokenizer could not encode the prompt.");
+    if (written < 0 || written > count) {
+        throw std::runtime_error("HY-MT1.5 tokenizer 无法完成文本编码。");
     }
     tokens.resize(static_cast<size_t>(written));
+    return tokens;
+}
 
-    // llama.cpp's Hunyuan-Dense built-in chat template adds the USER and
-    // ASSISTANT markers but intentionally omits BOS. HY-MT1.5 V1 requires
-    // the explicit BOS token before the user marker.
+std::vector<llama_token> tokenize_prompt(const std::string & user_text) {
+    // HY-MT1.5 V1 uses: BOS + USER marker + plain user text + ASSISTANT marker.
+    // Tokenize control markers separately so subtitle text containing literal
+    // marker spellings cannot inject a new chat role or terminate the prompt.
     const llama_token bos = llama_vocab_bos(g_vocab);
     if (bos < 0) {
         throw std::runtime_error("HY-MT1.5 GGUF 未提供有效 BOS token。");
     }
-    tokens.insert(tokens.begin(), bos);
+
+    const auto user_marker = tokenize_text_piece("<｜hy_User｜>", true);
+    const auto assistant_marker = tokenize_text_piece("<｜hy_Assistant｜>", true);
+    if (user_marker.size() != 1U || assistant_marker.size() != 1U) {
+        throw std::runtime_error("HY-MT1.5 GGUF 缺少 V1 对话控制 token。");
+    }
+
+    const auto content_tokens = tokenize_text_piece(user_text, false);
+    std::vector<llama_token> tokens;
+    tokens.reserve(1U + user_marker.size() + content_tokens.size() + assistant_marker.size());
+    tokens.push_back(bos);
+    tokens.insert(tokens.end(), user_marker.begin(), user_marker.end());
+    tokens.insert(tokens.end(), content_tokens.begin(), content_tokens.end());
+    tokens.insert(tokens.end(), assistant_marker.begin(), assistant_marker.end());
     return tokens;
 }
 
@@ -332,8 +309,7 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
             return to_java_string(env, "__HYMT_CANCELLED__");
         }
         llama_memory_clear(llama_get_memory(g_context), true);
-        const std::string prompt = format_chat_prompt(raw);
-        auto tokens = tokenize_prompt(prompt);
+        auto tokens = tokenize_prompt(raw);
         const int32_t limit = std::clamp(static_cast<int>(max_tokens), 32, 768);
         const uint32_t context_limit = llama_n_ctx(g_context);
         if (tokens.size() + static_cast<size_t>(limit) + 8U > context_limit) {
