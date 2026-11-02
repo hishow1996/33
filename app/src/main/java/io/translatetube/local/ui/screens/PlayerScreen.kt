@@ -951,10 +951,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 isSpeakerBusy && speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.APPLYING -> "正在应用人物分配…"
                                 isSpeakerBusy && isSpeakerRecognitionVisible -> "正在识别人物…"
                                 isSpeakerBusy -> "正在更新人物音色…"
-                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> "重新识别人物"
-                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> "重新识别人物"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> "重新区分人物"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> "重新区分人物"
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> "重新区分人物"
-                                else -> "识别并区分人物"
+                                else -> "区分人物"
                             },
                             enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
                             onClick = {
@@ -1008,7 +1008,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                             PlaybackService.instance?.autoAssignSpeakers()
                                         },
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                    ) { Text("重新识别") }
+                                    ) { Text("重新区分") }
                                 }
                             }
                         }
@@ -5871,14 +5871,6 @@ private fun ControlBar(
                 label = "仅听",
                 selected = state.audioOnly,
                 onClick = { svc?.toggleAudioOnly() },
-            )
-            PlayerToolTile(
-                modifier = Modifier.weight(1f),
-                icon = Icons.Filled.Face,
-                label = if (isSpeakerBusy) "识别中" else "人物",
-                selected = false,
-                enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
-                onClick = { svc?.autoAssignSpeakers() },
             )
             PlayerToolTile(
                 modifier = Modifier.weight(1f),
