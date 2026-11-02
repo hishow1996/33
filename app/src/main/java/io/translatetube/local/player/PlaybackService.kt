@@ -6705,7 +6705,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             EngineFactory.ID_LOCAL_SMALL100 -> "small100-multilingual-onnx"
             EngineFactory.ID_LOCAL_HYMT ->
                 "hymt-1.8b-2bit-q2_0c-model-${io.translatetube.local.translate.HyMtModelManager.MODEL_REVISION}" +
-                    "-runtime-${io.translatetube.local.translate.HyMtModelManager.RUNTIME_SOURCE_REVISION}"
+                    "-runtime-${io.translatetube.local.translate.HyMtModelManager.RUNTIME_SOURCE_REVISION}" +
+                    "-adapter-${io.translatetube.local.translate.HyMtModelManager.NATIVE_ADAPTER_REVISION}"
             else -> when {
                 EngineFactory.isLocalTranslationEngine(activeId) -> "local-model-$activeId"
                 active != null -> "api-profile"
