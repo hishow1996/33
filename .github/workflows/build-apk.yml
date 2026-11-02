@@ -345,3 +345,4 @@ jobs:
 # Explicit user-requested APK build trigger (2026-11-02 08:37 +08:00; latest main 0fa529c9).
 
 # HY-MT1.5 integration update is source-only; no Gradle build was requested for this change.
+# User-requested APK build trigger for latest main source (2026-11-02 21:40 +08:00).
