@@ -766,19 +766,24 @@ internal fun LocalTranslationSection(
                                         maxLines = 1,
                                     )
                                 }
-                            } else if (!hyMtState.runtimeAvailable) {
-                                // Keep the previous empty action area; do not offer an app-update action.
+                            } else if (
+                                !hyMtState.runtimeAvailable &&
+                                (
+                                    hyMtState.hasCompleteFiles ||
+                                        android.os.Build.SUPPORTED_ABIS.none {
+                                            it.equals("arm64-v8a", ignoreCase = true)
+                                        }
+                                )
+                            ) {
+                                // Complete models wait for runtime recovery; unsupported ABIs cannot use this runtime.
                             } else {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                                 ) {
-                                    // A complete model cannot be revalidated until its runtime is
-                                    // available. Incomplete downloads remain resumable/retryable.
-                                    if (
-                                        hyMtState.status != HyMtStatus.READY &&
-                                        !(hyMtState.hasCompleteFiles && !hyMtState.runtimeAvailable)
-                                    ) {
+                                    // Incomplete downloads remain resumable/retryable while the
+                                    // ARM64 runtime is unavailable; complete models wait for recovery.
+                                    if (hyMtState.status != HyMtStatus.READY) {
                                         TextButton(
                                             onClick = {
                                                 hyMtJob = launchTrackedModelDownload(
