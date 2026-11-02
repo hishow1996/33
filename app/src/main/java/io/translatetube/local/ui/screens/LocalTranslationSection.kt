@@ -710,14 +710,17 @@ internal fun LocalTranslationSection(
                                 )
                             } else if (
                                 !hyMtState.runtimeAvailable &&
-                                hyMtState.error.contains("未包含 HY-MT1.5 ARM64") &&
                                 !hyMtState.hasCompleteFiles
                             ) {
                                 TextButton(
                                     onClick = {
                                         hyMtJob = launchTrackedModelDownload(
                                             taskId = "hy-mt-2bit",
-                                            title = "正在下载 HY-MT1.5 2-bit 模型",
+                                            title = when (hyMtState.status) {
+                                                HyMtStatus.FAILED -> "正在重试 HY-MT1.5 2-bit 模型下载"
+                                                HyMtStatus.PAUSED -> "正在继续下载 HY-MT1.5 2-bit 模型"
+                                                else -> "正在下载 HY-MT1.5 2-bit 模型"
+                                            },
                                         ) {
                                             try {
                                                 HyMtModelManager.download(context)
@@ -729,7 +732,16 @@ internal fun LocalTranslationSection(
                                         }
                                     },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                ) { Text("下载模型", maxLines = 1) }
+                                ) {
+                                    Text(
+                                        when (hyMtState.status) {
+                                            HyMtStatus.FAILED -> "重试"
+                                            HyMtStatus.PAUSED -> "继续下载"
+                                            else -> "下载"
+                                        },
+                                        maxLines = 1,
+                                    )
+                                }
                             } else if (!hyMtState.runtimeAvailable) {
                                 // Keep the previous empty action area; do not offer an app-update action.
                             } else {
