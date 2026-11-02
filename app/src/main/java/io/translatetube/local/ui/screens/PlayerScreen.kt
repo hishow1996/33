@@ -3917,6 +3917,7 @@ private fun StageProgressVisual(
                     cap = StrokeCap.Round,
                     join = StrokeJoin.Round,
                 )
+                val rungGradientColors = listOf(blueStrandColor, greenStrandColor)
 
                 // Draw the complete muted structure first; both strands stay continuous
                 // and the left/right ends remain visibly open.
@@ -3946,7 +3947,7 @@ private fun StageProgressVisual(
                             0f
                         }
                         val gradient = Brush.linearGradient(
-                            colors = listOf(blueStrandColor, greenStrandColor),
+                            colors = rungGradientColors,
                             start = rung.start,
                             end = rung.end,
                         )
@@ -3991,6 +3992,28 @@ private fun StageProgressVisual(
                     strokeWidth: Float = curveStroke,
                     maskRear: Boolean = true,
                 ) {
+                    // Stroke styles are shared by all crossover points in this pass.
+                    val featherStyle = Stroke(
+                        width = strokeWidth + 4.5.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    )
+                    val clearStyle = Stroke(
+                        width = strokeWidth + 1.0.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    )
+                    val rearTraceStyle = Stroke(
+                        width = (strokeWidth * 0.68f).coerceAtLeast(1.dp.toPx()),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    )
+                    val frontStyle = Stroke(
+                        width = strokeWidth + 0.2.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    )
+                    val featherColor = Color.Black.copy(alpha = 0.38f)
                     for (crossingIndex in 0 until crossingCount) {
                         val crossing = crossings[crossingIndex]
                         val frontColor = if (crossing.strandAIsFront) colorA else colorB
@@ -4003,12 +4026,8 @@ private fun StageProgressVisual(
                             // fades the pixels in an isolated layer, avoiding a hard cut.
                             drawPath(
                                 backPath,
-                                color = Color.Black.copy(alpha = 0.38f),
-                                style = Stroke(
-                                    width = strokeWidth + 4.5.dp.toPx(),
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round,
-                                ),
+                                color = featherColor,
+                                style = featherStyle,
                                 blendMode = BlendMode.DstOut,
                             )
                             // Clear the center of the rear strand so the front strand
@@ -4016,32 +4035,20 @@ private fun StageProgressVisual(
                             drawPath(
                                 backPath,
                                 color = Color.Transparent,
-                                style = Stroke(
-                                    width = strokeWidth + 1.0.dp.toPx(),
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round,
-                                ),
+                                style = clearStyle,
                                 blendMode = BlendMode.Clear,
                             )
                             // Restore a very faint rear trace to keep the helix continuous.
                             drawPath(
                                 backPath,
                                 color = backColor.copy(alpha = alpha * 0.20f),
-                                style = Stroke(
-                                    width = (strokeWidth * 0.68f).coerceAtLeast(1.dp.toPx()),
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round,
-                                ),
+                                style = rearTraceStyle,
                             )
                         }
                         drawPath(
                             frontPath,
                             color = frontColor.copy(alpha = alpha),
-                            style = Stroke(
-                                width = strokeWidth + 0.2.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round,
-                            ),
+                            style = frontStyle,
                         )
                     }
                 }
