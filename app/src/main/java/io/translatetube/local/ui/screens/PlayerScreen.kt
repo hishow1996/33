@@ -785,6 +785,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             dubbingPreparationIncomplete = dubbingPreparationIncomplete,
             playbackHasStarted = playbackHasStarted,
             playbackRecoveryInProgress = playbackRecoveryInProgress,
+            secondaryPlayerTaskInProgress = isSpeakerBusy && state.key == requestKey,
         )
     }
 
@@ -1137,6 +1138,55 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     }
                 }
             }
+            }
+
+            if (speakerRecognition.isActive && state.key == requestKey) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    color = Color(0xFFEAF2FC),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Face,
+                                contentDescription = null,
+                                tint = BrandBright,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                speakerRecognition.message.ifBlank { "正在区分人物…" },
+                                color = OnBg,
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        val recognitionPercent = speakerRecognition.progressPercent
+                        if (recognitionPercent != null) {
+                            LinearProgressIndicator(
+                                progress = { recognitionPercent.coerceIn(0, 100) / 100f },
+                                modifier = Modifier.fillMaxWidth().height(3.dp),
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().height(3.dp),
+                            )
+                        }
+                    }
+                }
             }
 
             // ===== 视频画面（常驻容器，浮窗时 tv 被摘走；竖屏视频自适应比例） =====

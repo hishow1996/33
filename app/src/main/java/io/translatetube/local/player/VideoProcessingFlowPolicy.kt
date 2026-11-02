@@ -244,6 +244,7 @@ object VideoProcessingFlowPolicy {
         dubbingPreparationIncomplete: Boolean = false,
         playbackHasStarted: Boolean = false,
         playbackRecoveryInProgress: Boolean = false,
+        secondaryPlayerTaskInProgress: Boolean = false,
     ): Boolean {
         // Remember that the player has already been shown after the first cue started. A seek
         // can invalidate a YouTube signed URL, so the service refreshes the stream and temporarily
@@ -261,6 +262,14 @@ object VideoProcessingFlowPolicy {
         }
         if (phase == Phase.ERROR || waitingForTranscriptionEngine || waitingForDubbingEngine) {
             return true
+        }
+        if (
+            secondaryPlayerTaskInProgress &&
+            phase in setOf(Phase.SYNTHESIZING, Phase.READY)
+        ) {
+            // User-triggered speaker analysis/reassignment is secondary work. Do not send a
+            // previously opened player back to the five-stage page merely because playback is paused.
+            return false
         }
         if (
             progressiveTtsPlayback &&

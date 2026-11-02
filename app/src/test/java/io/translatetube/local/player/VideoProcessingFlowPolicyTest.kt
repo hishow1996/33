@@ -359,6 +359,33 @@ class VideoProcessingFlowPolicyTest {
             ),
         )
 
+        // A user-triggered background speaker task must not eject an already-open player,
+        // even when playback is paused and the task switches the phase back to SYNTHESIZING.
+        listOf(Phase.READY, Phase.SYNTHESIZING).forEach { phase ->
+            assertFalse(
+                VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                    phase = phase,
+                    playerIsPlaying = false,
+                    progressiveTtsPlayback = false,
+                    dubbingPreparationIncomplete = true,
+                    secondaryPlayerTaskInProgress = true,
+                ),
+            )
+        }
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.SYNTHESIZING,
+                secondaryPlayerTaskInProgress = true,
+                waitingForDubbingEngine = true,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.ERROR,
+                secondaryPlayerTaskInProgress = true,
+            ),
+        )
+
         // Once subtitles have played, a seek/network rebuffer must not reopen the processing page.
         assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
