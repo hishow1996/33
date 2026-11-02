@@ -1389,7 +1389,7 @@ class OpenAiCompatEngine(
             throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
         }
         val src = LangMap.display(srcLang)
-        val tgt = LangMap.display(tgtLang)
+        val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
         val sys = buildString {
             append("You are a professional subtitle translator. These numbered lines are consecutive subtitle cues from one video. ")
@@ -1548,7 +1548,7 @@ class GeminiEngine(
             throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
         }
         val src = LangMap.display(srcLang)
-        val tgt = LangMap.display(tgtLang)
+        val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
         val sys = buildString {
             append("Translate each numbered subtitle line from $src to $tgt. ")

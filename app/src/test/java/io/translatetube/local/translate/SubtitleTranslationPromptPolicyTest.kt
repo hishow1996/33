@@ -13,6 +13,17 @@ class SubtitleTranslationPromptPolicyTest {
         assertTrue(instructions.contains("dates, times, quantities, units, currencies"))
         assertTrue(instructions.contains("established target-language rendering"))
         assertTrue(instructions.contains("idioms, slang, humor and sarcasm"))
+        assertTrue(instructions.contains("Simplified Chinese for zh/zh-CN/zh-Hans"))
+        assertTrue(instructions.contains("Traditional Chinese only for zh-Hant/zh-TW/zh-HK"))
+    }
+
+    @Test
+    fun selectsSimplifiedOrTraditionalChineseFromTheTargetTag() {
+        assertTrue(SubtitleTranslationPromptPolicy.targetLanguageLabel("zh").contains("Simplified"))
+        assertTrue(SubtitleTranslationPromptPolicy.targetLanguageLabel("zh-CN").contains("Simplified"))
+        assertTrue(SubtitleTranslationPromptPolicy.targetLanguageLabel("zh-Hans").contains("Simplified"))
+        assertTrue(SubtitleTranslationPromptPolicy.targetLanguageLabel("zh-Hant").contains("Traditional"))
+        assertTrue(SubtitleTranslationPromptPolicy.targetLanguageLabel("zh-TW").contains("Traditional"))
     }
 
     @Test
@@ -24,5 +35,6 @@ class SubtitleTranslationPromptPolicyTest {
         assertTrue(instructions.contains("存在通行中文译名时使用通行译名"))
         assertTrue(instructions.contains("日期、时间、数量、单位、货币、百分比"))
         assertTrue(instructions.contains("习语、俚语、幽默和反讽"))
+        assertTrue(instructions.contains("全片统一使用简体字"))
     }
 }
