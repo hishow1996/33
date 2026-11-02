@@ -627,15 +627,17 @@ object HyMtModelManager {
                 runtimeAvailable = runtimeMessageAfterFailure.isBlank(),
                 runtimeError = runtimeMessageAfterFailure,
             )
+            val runtimeFailureOnCompleteModel =
+                runtimeUnavailableAfterFailure && completeModel
             AppLogStore.error(
                 app,
-                "LocalTranslationModel",
-                if (runtimeUnavailableAfterFailure && completeModel) {
-                    "HY-MT1.5 模型已下载，推理运行库暂不可用"
+                if (runtimeFailureOnCompleteModel) "HyMtRuntime" else "LocalTranslationModel",
+                if (runtimeFailureOnCompleteModel) {
+                    "检查失败"
                 } else {
                     "HY-MT1.5 2-bit 模型下载或验证失败"
                 },
-                error,
+                if (runtimeFailureOnCompleteModel) runtimeErrorAfterFailure ?: error else error,
                 diagnosticContext = mapOf(
                     "模型版本" to MODEL_REVISION,
                     "模型格式" to "GGUF / Q2_0C",
