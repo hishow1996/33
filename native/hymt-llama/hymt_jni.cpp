@@ -331,27 +331,35 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
             return throw_illegal_state(env, "字幕内容过长，超过 HY-MT1.5 当前上下文长度。");
         }
 
-        llama_batch batch = llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
-        if (batch.token == nullptr || batch.pos == nullptr || batch.n_seq_id == nullptr ||
-            batch.seq_id == nullptr || batch.logits == nullptr) {
-            llama_batch_free(batch);
-            return throw_illegal_state(env, "无法为 HY-MT1.5 分配输入缓冲区。");
-        }
-        batch.n_tokens = static_cast<int32_t>(tokens.size());
-        for (int32_t i = 0; i < batch.n_tokens; ++i) {
-            batch.token[i] = tokens[static_cast<size_t>(i)];
-            batch.pos[i] = i;
-            batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = 0;
-            batch.logits[i] = (i == batch.n_tokens - 1) ? 1 : 0;
-        }
-        const int32_t decode_result = llama_decode(g_context, batch);
-        llama_batch_free(batch);
-        if (decode_result != 0) {
+        constexpr size_t kPrefillBatchTokens = 512U;
+        for (size_t offset = 0; offset < tokens.size(); offset += kPrefillBatchTokens) {
             if (g_cancelled.load(std::memory_order_relaxed)) {
                 return to_java_string(env, "__HYMT_CANCELLED__");
             }
-            return throw_illegal_state(env, "HY-MT1.5 输入编码失败，推理已停止。");
+            const size_t chunk_size = std::min(kPrefillBatchTokens, tokens.size() - offset);
+            llama_batch batch = llama_batch_init(static_cast<int32_t>(chunk_size), 0, 1);
+            if (batch.token == nullptr || batch.pos == nullptr || batch.n_seq_id == nullptr ||
+                batch.seq_id == nullptr || batch.logits == nullptr) {
+                llama_batch_free(batch);
+                return throw_illegal_state(env, "无法为 HY-MT1.5 分配输入缓冲区。");
+            }
+            batch.n_tokens = static_cast<int32_t>(chunk_size);
+            for (int32_t i = 0; i < batch.n_tokens; ++i) {
+                const size_t token_index = offset + static_cast<size_t>(i);
+                batch.token[i] = tokens[token_index];
+                batch.pos[i] = static_cast<llama_pos>(token_index);
+                batch.n_seq_id[i] = 1;
+                batch.seq_id[i][0] = 0;
+                batch.logits[i] = token_index + 1U == tokens.size() ? 1 : 0;
+            }
+            const int32_t decode_result = llama_decode(g_context, batch);
+            llama_batch_free(batch);
+            if (decode_result != 0) {
+                if (g_cancelled.load(std::memory_order_relaxed)) {
+                    return to_java_string(env, "__HYMT_CANCELLED__");
+                }
+                return throw_illegal_state(env, "HY-MT1.5 输入编码失败，推理已停止。");
+            }
         }
 
         auto sampler_params = llama_sampler_chain_default_params();
