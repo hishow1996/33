@@ -3370,7 +3370,7 @@ private fun StageProgressVisual(
                 translationFlowPhase.animateTo(
                     targetValue = 1f,
                     animationSpec = tween(
-                        durationMillis = (1250f * remaining).roundToInt().coerceAtLeast(1),
+                        durationMillis = (1800f * remaining).roundToInt().coerceAtLeast(1),
                         easing = androidx.compose.animation.core.LinearEasing,
                     ),
                 )
@@ -3744,12 +3744,17 @@ private fun StageProgressVisual(
                 }
                 drawPath(strandA, color = pendingColor, style = curveStyle)
                 drawPath(strandB, color = pendingColor, style = curveStyle)
-                fun drawActiveRungs(pulseHead: Float?, pulseRadius: Float) {
+                fun drawActiveRungs(
+                    pulseHead: Float?,
+                    pulseRadius: Float,
+                    pulseIntensity: Float = 1f,
+                ) {
                     rungPositions.forEach { x ->
                         val yA = strandY(x, -1f)
                         val yB = strandY(x, 1f)
                         val strength = if (pulseHead != null) {
-                            (1f - kotlin.math.abs(x - pulseHead) / pulseRadius).coerceIn(0f, 1f)
+                            (1f - kotlin.math.abs(x - pulseHead) / pulseRadius)
+                                .coerceIn(0f, 1f) * pulseIntensity
                         } else {
                             0f
                         }
@@ -3871,12 +3876,23 @@ private fun StageProgressVisual(
                     isIndeterminate -> scanPosition * size.width
                     else -> translationFlowPhase.value * progressX
                 }
+                // Fade the travelling glow at both loop endpoints. This makes the
+                // reset from the right edge to the left edge visually unobtrusive.
+                val flowIntensity = when {
+                    !motionEnabled -> 0f
+                    isIndeterminate ->
+                        kotlin.math.sin(kotlin.math.PI.toFloat() * scanPosition).coerceIn(0f, 1f)
+                    else ->
+                        kotlin.math.sin(kotlin.math.PI.toFloat() * translationFlowPhase.value)
+                            .coerceIn(0f, 1f)
+                }
 
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = progressX.coerceIn(0f, size.width)) {
                         drawActiveRungs(
                             pulseHead = flowHead,
                             pulseRadius = pulseRadius,
+                            pulseIntensity = flowIntensity,
                         )
                         drawActiveCurves()
                         drawOverUnderWeave(
@@ -3892,13 +3908,13 @@ private fun StageProgressVisual(
                                 right = (flowHead + pulseRadius * 0.35f).coerceAtMost(progressX),
                             ) {
                                 drawActiveCurves(
-                                    alpha = 0.62f,
+                                    alpha = 0.62f * flowIntensity,
                                     strokeWidth = 3.1.dp.toPx(),
                                 )
                                 drawOverUnderWeave(
                                     colorA = blueStrandColor,
                                     colorB = greenStrandColor,
-                                    alpha = 0.78f,
+                                    alpha = 0.78f * flowIntensity,
                                     strokeWidth = 3.1.dp.toPx(),
                                     maskRear = false,
                                 )
@@ -3911,6 +3927,7 @@ private fun StageProgressVisual(
                     drawActiveRungs(
                         pulseHead = flowHead,
                         pulseRadius = pulseRadius,
+                        pulseIntensity = flowIntensity,
                     )
                     drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
                     drawOverUnderWeave(
@@ -3925,13 +3942,13 @@ private fun StageProgressVisual(
                             right = (flowHead + pulseRadius * 0.35f).coerceAtMost(size.width),
                         ) {
                             drawActiveCurves(
-                                alpha = 0.68f,
+                                alpha = 0.68f * flowIntensity,
                                 strokeWidth = 3.1.dp.toPx(),
                             )
                             drawOverUnderWeave(
                                 colorA = blueStrandColor,
                                 colorB = greenStrandColor,
-                                alpha = 0.8f,
+                                alpha = 0.8f * flowIntensity,
                                 strokeWidth = 3.1.dp.toPx(),
                                 maskRear = false,
                             )
