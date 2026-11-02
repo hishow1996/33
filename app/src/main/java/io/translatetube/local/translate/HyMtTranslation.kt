@@ -208,43 +208,61 @@ object HyMtModelManager {
         val directory = modelDirectory(app)
         val model = modelFile(app)
         val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
-        try {
-            withContext(Dispatchers.IO) { HyMtNative.ensureLibraryLoaded(app) }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            val modelBytes = model.takeIf { hasGgufHeader(it) }?.length() ?: 0L
-            val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
-            val downloadedBytes = if (modelBytes > 0L) modelBytes else partialBytes
-            val totalBytes = if (modelBytes > 0L) modelBytes else DISPLAY_BYTES
-            val nativeLibrary = File(app.applicationInfo.nativeLibraryDir, System.mapLibraryName("hymt"))
-            mutableState.value = HyMtDownloadState(
-                status = HyMtStatus.FAILED,
-                progress = if (modelBytes > 0L) 100
-                    else (partialBytes * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
-                downloadedBytes = downloadedBytes,
-                totalBytes = totalBytes,
-                error = error.message?.takeIf { it.isNotBlank() }
-                    ?: "HY-MT1.5 ARM64 推理库不可用，请更新应用。",
-                runtimeAvailable = false,
-            )
-            AppLogStore.error(
+        val nativeLibrary = File(app.applicationInfo.nativeLibraryDir, System.mapLibraryName("hymt"))
+        val supportsArm64 = android.os.Build.SUPPORTED_ABIS.any {
+            it.equals("arm64-v8a", ignoreCase = true)
+        }
+        val canDownloadBeforeRuntimeUpdate = supportsArm64 && !nativeLibrary.isFile
+        if (!canDownloadBeforeRuntimeUpdate) {
+            try {
+                withContext(Dispatchers.IO) { HyMtNative.ensureLibraryLoaded(app) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val modelBytes = model.takeIf { hasGgufHeader(it) }?.length() ?: 0L
+                val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
+                val downloadedBytes = if (modelBytes > 0L) modelBytes else partialBytes
+                val totalBytes = if (modelBytes > 0L) modelBytes else DISPLAY_BYTES
+                mutableState.value = HyMtDownloadState(
+                    status = HyMtStatus.FAILED,
+                    progress = if (modelBytes > 0L) 100
+                        else (partialBytes * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99),
+                    downloadedBytes = downloadedBytes,
+                    totalBytes = totalBytes,
+                    error = error.message?.takeIf { it.isNotBlank() }
+                        ?: "HY-MT1.5 ARM64 推理库不可用，请更新应用。",
+                    runtimeAvailable = false,
+                )
+                AppLogStore.error(
+                    app,
+                    "LocalTranslationModel",
+                    "HY-MT1.5 推理运行库检查失败，已停止模型下载",
+                    error,
+                    diagnosticContext = mapOf(
+                        "需要的原生库" to "lib/arm64-v8a/libhymt.so",
+                        "原生库实际路径" to nativeLibrary.absolutePath,
+                        "原生库文件存在" to nativeLibrary.isFile.toString(),
+                        "原生库文件字节数" to nativeLibrary.takeIf { it.isFile }?.length()?.toString().orEmpty(),
+                        "模型文件已下载" to (modelBytes > 0L).toString(),
+                        "模型文件字节数" to modelBytes.toString(),
+                        "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
+                        "链接器错误" to (error.cause?.message ?: error.message.orEmpty()),
+                    ),
+                )
+                throw error
+            }
+        } else {
+            AppLogStore.warning(
                 app,
                 "LocalTranslationModel",
-                "HY-MT1.5 ARM64 推理库不可用，已阻止模型下载或安装",
-                error,
+                "当前 APK 缺少 HY-MT1.5 ARM64 运行库，允许先下载模型文件；安装含运行库的新版应用后再验证",
                 diagnosticContext = mapOf(
                     "需要的原生库" to "lib/arm64-v8a/libhymt.so",
                     "原生库实际路径" to nativeLibrary.absolutePath,
-                    "原生库文件存在" to nativeLibrary.isFile.toString(),
-                    "原生库文件字节数" to nativeLibrary.takeIf { it.isFile }?.length()?.toString().orEmpty(),
-                    "模型文件已下载" to (modelBytes > 0L).toString(),
-                    "模型文件字节数" to modelBytes.toString(),
                     "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
-                    "链接器错误" to (error.cause?.message ?: error.message.orEmpty()),
+                    "模型文件" to model.name,
                 ),
             )
-            throw error
         }
         if (!directory.isDirectory && !directory.mkdirs()) {
             val error = "无法创建 HY-MT1.5 模型目录"
@@ -394,19 +412,38 @@ object HyMtModelManager {
             AppLogStore.info(app, "LocalTranslationModel", "HY-MT1.5 模型下载已暂停，已保留断点")
             throw cancelled
         } catch (error: Exception) {
+            val nativeLibraryMissing = supportsArm64 && !nativeLibrary.isFile
+            val completeModel = hasGgufHeader(model)
+            val partialBytes = part.takeIf { it.isFile }?.length() ?: 0L
             mutableState.value = mutableState.value.copy(
                 status = HyMtStatus.FAILED,
-                error = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName,
+                progress = if (completeModel) 100 else mutableState.value.progress,
+                downloadedBytes = if (completeModel) model.length() else partialBytes,
+                totalBytes = if (completeModel) model.length() else DISPLAY_BYTES,
+                error = when {
+                    nativeLibraryMissing && completeModel ->
+                        "模型已下载；当前应用缺少 HY-MT1.5 ARM64 推理库，请更新应用后重新验证。"
+                    else -> error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
+                },
+                runtimeAvailable = !nativeLibraryMissing,
             )
             AppLogStore.error(
                 app,
                 "LocalTranslationModel",
-                "HY-MT1.5 2-bit 模型下载或验证失败",
+                if (nativeLibraryMissing && completeModel) {
+                    "HY-MT1.5 模型文件下载完成，但当前 APK 缺少 ARM64 推理运行库，已保留模型等待新版应用验证"
+                } else {
+                    "HY-MT1.5 2-bit 模型下载或验证失败"
+                },
                 error,
                 diagnosticContext = mapOf(
                     "模型版本" to MODEL_REVISION,
                     "模型格式" to "GGUF / Q2_0C",
                     "模型文件存在" to model.isFile.toString(),
+                    "模型文件大小" to model.length().toString(),
+                    "原生运行库存在" to nativeLibrary.isFile.toString(),
+                    "原生运行库路径" to nativeLibrary.absolutePath,
+                    "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
                     "是否保留断点" to hasPartialDownload(app).toString(),
                 ),
             )
