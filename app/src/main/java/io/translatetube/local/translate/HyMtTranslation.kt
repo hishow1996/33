@@ -775,13 +775,14 @@ private object HyMtPromptBuilder {
         } else {
             HyMtLanguagePolicy.display(sourceLanguage)
         }
+        val fidelityGuidelines = SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES
         if (previous.isEmpty()) {
-            return "将以下${sourceLabel}字幕台词翻译为简体中文。保持原意、语气和人物称呼；字幕可能是被切开的半句话，请结合当前文本理解，但只翻译当前这一条。不要删减、概括或扩写，只输出译文，不要解释：\n\n$sourceText"
+            return "$fidelityGuidelines\n将以下${sourceLabel}字幕台词翻译为简体中文。保持人物称呼；字幕可能是被切开的半句话，请结合当前文本理解，但只翻译当前这一条。不要删减、概括或扩写，只输出译文，不要解释：\n\n$sourceText"
         }
         val contextText = previous.joinToString("\n") { (source, target) ->
             "原文：$source\n译文：$target"
         }
-        return "以下是前面字幕的原文和已确认译文，仅供理解上下文及统一人物称呼、专有名词和术语；优先沿用已确认的译法，不要翻译或重复上文：\n$contextText\n\n将下面的${sourceLabel}字幕翻译为简体中文。当前字幕可能是半句话，请结合上文理解，保持人称、指代和语气连贯；只翻译当前这一条，不要删减、概括、扩写或额外解释：\n$sourceText"
+        return "$fidelityGuidelines\n以下是前面字幕的原文和已确认译文，仅供理解上下文及统一人物称呼、专有名词和术语；优先沿用已确认的译法，不要翻译或重复上文：\n$contextText\n\n将下面的${sourceLabel}字幕翻译为简体中文。当前字幕可能是半句话，请结合上文理解，保持人称、指代和语气连贯；只翻译当前这一条，不要删减、概括、扩写或额外解释：\n$sourceText"
 
     }
 }

@@ -1406,6 +1406,7 @@ class OpenAiCompatEngine(
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
+            append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
             append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
         }
         val user = buildContextUserPrompt(context, numbered)
@@ -1561,6 +1562,7 @@ class GeminiEngine(
             append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("Render the same person, place or recurring term identically every time it appears. ")
+            append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
         }
         val user = buildContextUserPrompt(context, numbered)
