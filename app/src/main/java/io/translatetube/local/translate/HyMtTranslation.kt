@@ -89,8 +89,8 @@ object HyMtModelManager {
     const val DISPLAY_BYTES = 601_000_000L
     private const val MAX_BYTES = 650_000_000L
     private const val DOWNLOAD_SPACE_RESERVE_BYTES = 32L * 1024L * 1024L
-    internal const val RUNTIME_REVISION = "4b99bde"
-    private const val MODEL_REVISION = RUNTIME_REVISION
+    internal const val MODEL_REVISION = "4b99bde"
+    internal const val RUNTIME_SOURCE_REVISION = "2af64dd00a6689a7bfaf69b4768a944d0ec6bade"
     private const val VALIDATION_SCHEMA = 1
     private const val MODEL_NAME = "Hy-MT1.5-1.8B-2bit.gguf"
     private const val MODEL_URL =
@@ -441,8 +441,8 @@ private object HyMtRuntime {
 
     private fun identity(context: Context): String {
         val model = HyMtModelManager.modelFile(context)
-        return HyMtModelManager.RUNTIME_REVISION + ":" + model.absolutePath + ":" +
-            model.length() + ":" + model.lastModified()
+        return HyMtModelManager.MODEL_REVISION + ":" + HyMtModelManager.RUNTIME_SOURCE_REVISION + ":" +
+            model.absolutePath + ":" + model.length() + ":" + model.lastModified()
     }
 
     private fun ensureMemoryAvailable(context: Context) {
