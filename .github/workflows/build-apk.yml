@@ -75,6 +75,7 @@ name: Build Android APK
 # Re-run JVM tests after aligning legacy timing assertions with the 1.35x natural-rate limit.
 on:
   # Build only when explicitly requested by a uniquely named trigger commit, or manual dispatch.
+  # Ordinary source commits supersede an accidental or stale APK run but never pass the build job gate.
   push:
     branches:
       - main
