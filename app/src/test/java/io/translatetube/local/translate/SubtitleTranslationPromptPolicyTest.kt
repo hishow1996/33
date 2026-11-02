@@ -13,8 +13,8 @@ class SubtitleTranslationPromptPolicyTest {
         assertTrue(instructions.contains("dates, times, quantities, units, currencies"))
         assertTrue(instructions.contains("established target-language rendering"))
         assertTrue(instructions.contains("idioms, slang, humor and sarcasm"))
-        assertTrue(instructions.contains("Simplified Chinese for zh/zh-CN/zh-Hans"))
-        assertTrue(instructions.contains("Traditional Chinese only for zh-Hant/zh-TW/zh-HK"))
+        assertTrue(instructions.contains("simplified chinese for zh/zh-cn/zh-hans"))
+        assertTrue(instructions.contains("traditional chinese only for zh-hant/zh-tw/zh-hk"))
     }
 
     @Test
