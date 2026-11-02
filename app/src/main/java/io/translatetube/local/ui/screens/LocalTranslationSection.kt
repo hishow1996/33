@@ -665,13 +665,12 @@ internal fun LocalTranslationSection(
                                         hyMtState.status == HyMtStatus.PAUSED &&
                                             hyMtState.hasCompleteFiles ->
                                             "模型文件已下载，等待运行时验证"
-                                        !hyMtState.runtimeAvailable &&
-                                            hyMtState.error.isNotBlank() ->
-                                            hyMtState.error
                                         hyMtState.status == HyMtStatus.PAUSED ->
                                             "下载已暂停"
                                         hyMtState.status == HyMtStatus.FAILED ->
-                                            hyMtState.error.ifBlank { "下载或验证失败" }
+                                            if (hyMtState.runtimeError.isNotBlank()) {
+                                                "下载或验证失败"
+                                            } else hyMtState.error.ifBlank { "下载或验证失败" }
                                         else -> "未下载"
                                     },
                                     color = when {
@@ -679,14 +678,23 @@ internal fun LocalTranslationSection(
                                             hyMtState.status == HyMtStatus.DOWNLOADING ||
                                             hyMtState.status == HyMtStatus.VERIFYING ->
                                             Color(0xFF3569D4)
-                                        hyMtState.status == HyMtStatus.FAILED ||
-                                            (!hyMtState.runtimeAvailable && !hyMtState.hasCompleteFiles) ->
+                                        hyMtState.status == HyMtStatus.FAILED &&
+                                            hyMtState.runtimeError.isBlank() ->
                                             Color(0xFFB42318)
                                         else -> Color(0xFF64748B)
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     maxLines = 2,
                                 )
+                                if (hyMtState.runtimeError.isNotBlank()) {
+                                    Text(
+                                        hyMtState.runtimeError,
+                                        color = Color(0xFFB42318),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 3,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                             if (hyMtJob?.isActive == true ||
                                 hyMtState.status == HyMtStatus.DOWNLOADING ||
