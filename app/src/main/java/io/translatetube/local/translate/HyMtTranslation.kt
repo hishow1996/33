@@ -525,7 +525,9 @@ private object HyMtRuntime {
                     "将以下文本翻译为中文，注意只需要输出翻译后的结果，不要额外解释：\n\nHello",
                     96,
                 ).orEmpty().trim()
-                if (result.isBlank() || result.equals("Hello", ignoreCase = true)) {
+                if (result.isBlank() || result.equals("Hello", ignoreCase = true) ||
+                    result.none { it in '\u4e00'..'\u9fff' }
+                ) {
                     throw IllegalStateException("HY-MT1.5 模型试译未返回有效中文结果")
                 }
             } finally {
@@ -599,19 +601,14 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                 "模型格式" to "GGUF / Q2_0C",
             ),
         )
-        val leaseLock = Any()
-        var leased = false
-        synchronized(leaseLock) {
-            if (!leased) {
-                HyMtRuntime.acquireLease()
-                leased = true
-            }
-        }
+        val simplifiedChineseSource = HyMtLanguagePolicy.canonicalCode(source) == "zh"
+        HyMtRuntime.acquireLease()
         try {
-            HyMtRuntime.prepare(appContext)
+            if (!simplifiedChineseSource && lines.any { it.isNotBlank() }) {
+                HyMtRuntime.prepare(appContext)
+            }
             return withContext(Dispatchers.Default) {
                 val taskContext = currentCoroutineContext()
-                val simplifiedChineseSource = HyMtLanguagePolicy.canonicalCode(source) == "zh"
                 lines.mapIndexed { index, line ->
                     taskContext.ensureActive()
                     val translated = when {
@@ -656,12 +653,7 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                 }
             }
         } finally {
-            synchronized(leaseLock) {
-                if (leased) {
-                    leased = false
-                    HyMtRuntime.releaseLease()
-                }
-            }
+            HyMtRuntime.releaseLease()
         }
     }
 
