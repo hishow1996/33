@@ -961,8 +961,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             onClick = {
                                 advancedMenuExpanded = false
                                 PlaybackService.instance?.autoAssignSpeakers(
-                                    forceRecognition = speakerRecognition.phase ==
+                                    forceRecognition = speakerRecognition.phase in setOf(
                                         io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED,
+                                        io.translatetube.local.player.SpeakerRecognitionPhase.FAILED,
+                                        io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED,
+                                    ),
                                 )
                             },
                         )
@@ -1009,7 +1012,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 } else {
                                     TextButton(
                                         onClick = {
-                                            PlaybackService.instance?.autoAssignSpeakers()
+                                            PlaybackService.instance?.autoAssignSpeakers(forceRecognition = true)
                                         },
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                     ) { Text("重新区分") }
