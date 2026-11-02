@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <exception>
 #include <mutex>
+#include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -37,8 +39,105 @@ void close_locked() {
     g_model_path.clear();
 }
 
+void append_utf8(std::string & output, uint32_t codepoint) {
+    if (codepoint <= 0x7fU) {
+        output.push_back(static_cast<char>(codepoint));
+    } else if (codepoint <= 0x7ffU) {
+        output.push_back(static_cast<char>(0xc0U | (codepoint >> 6U)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else if (codepoint <= 0xffffU) {
+        output.push_back(static_cast<char>(0xe0U | (codepoint >> 12U)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else {
+        output.push_back(static_cast<char>(0xf0U | (codepoint >> 18U)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    }
+}
+
+std::u16string decode_utf8_to_utf16(const std::string & input) {
+    std::u16string output;
+    output.reserve(input.size());
+    size_t i = 0;
+    while (i < input.size()) {
+        const uint8_t first = static_cast<uint8_t>(input[i]);
+        uint32_t codepoint = 0xfffdU;
+        size_t count = 1;
+        if (first <= 0x7fU) {
+            codepoint = first;
+        } else if (first >= 0xc2U && first <= 0xdfU && i + 1 < input.size()) {
+            const uint8_t b1 = static_cast<uint8_t>(input[i + 1]);
+            if ((b1 & 0xc0U) == 0x80U) {
+                codepoint = ((first & 0x1fU) << 6U) | (b1 & 0x3fU);
+                count = 2;
+            }
+        } else if (first >= 0xe0U && first <= 0xefU && i + 2 < input.size()) {
+            const uint8_t b1 = static_cast<uint8_t>(input[i + 1]);
+            const uint8_t b2 = static_cast<uint8_t>(input[i + 2]);
+            if ((b1 & 0xc0U) == 0x80U && (b2 & 0xc0U) == 0x80U &&
+                !(first == 0xe0U && b1 < 0xa0U) &&
+                !(first == 0xedU && b1 >= 0xa0U)) {
+                codepoint = ((first & 0x0fU) << 12U) |
+                    ((b1 & 0x3fU) << 6U) | (b2 & 0x3fU);
+                count = 3;
+            }
+        } else if (first >= 0xf0U && first <= 0xf4U && i + 3 < input.size()) {
+            const uint8_t b1 = static_cast<uint8_t>(input[i + 1]);
+            const uint8_t b2 = static_cast<uint8_t>(input[i + 2]);
+            const uint8_t b3 = static_cast<uint8_t>(input[i + 3]);
+            if ((b1 & 0xc0U) == 0x80U && (b2 & 0xc0U) == 0x80U &&
+                (b3 & 0xc0U) == 0x80U &&
+                !(first == 0xf0U && b1 < 0x90U) &&
+                !(first == 0xf4U && b1 > 0x8fU)) {
+                codepoint = ((first & 0x07U) << 18U) |
+                    ((b1 & 0x3fU) << 12U) |
+                    ((b2 & 0x3fU) << 6U) | (b3 & 0x3fU);
+                count = 4;
+            }
+        }
+
+        if (codepoint <= 0xffffU) {
+            output.push_back(static_cast<char16_t>(codepoint));
+        } else {
+            codepoint -= 0x10000U;
+            output.push_back(static_cast<char16_t>(0xd800U + (codepoint >> 10U)));
+            output.push_back(static_cast<char16_t>(0xdc00U + (codepoint & 0x3ffU)));
+        }
+        i += count;
+    }
+    return output;
+}
+
+std::string encode_utf16_to_utf8(const jchar * input, jsize length) {
+    std::string output;
+    output.reserve(static_cast<size_t>(length) * 3U);
+    for (jsize i = 0; i < length; ++i) {
+        uint32_t codepoint = input[i];
+        if (codepoint >= 0xd800U && codepoint <= 0xdbffU) {
+            if (i + 1 < length && input[i + 1] >= 0xdc00U && input[i + 1] <= 0xdfffU) {
+                codepoint = 0x10000U +
+                    ((codepoint - 0xd800U) << 10U) +
+                    (static_cast<uint32_t>(input[++i]) - 0xdc00U);
+            } else {
+                codepoint = 0xfffdU;
+            }
+        } else if (codepoint >= 0xdc00U && codepoint <= 0xdfffU) {
+            codepoint = 0xfffdU;
+        }
+        append_utf8(output, codepoint);
+    }
+    return output;
+}
+
 jstring to_java_string(JNIEnv * env, const std::string & value) {
-    return env->NewStringUTF(value.c_str());
+    const std::u16string utf16 = decode_utf8_to_utf16(value);
+    if (utf16.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) return nullptr;
+    return env->NewString(
+        reinterpret_cast<const jchar *>(utf16.data()),
+        static_cast<jsize>(utf16.size())
+    );
 }
 
 jstring throw_illegal_state(JNIEnv * env, const std::string & message) {
@@ -51,17 +150,47 @@ jstring throw_illegal_state(JNIEnv * env, const std::string & message) {
 
 std::string from_java_string(JNIEnv * env, jstring value) {
     if (value == nullptr) return {};
-    const char * chars = env->GetStringUTFChars(value, nullptr);
+    const jsize length = env->GetStringLength(value);
+    const jchar * chars = env->GetStringChars(value, nullptr);
     if (chars == nullptr) return {};
-    std::string result(chars);
-    env->ReleaseStringUTFChars(value, chars);
+    std::string result = encode_utf16_to_utf8(chars, length);
+    env->ReleaseStringChars(value, chars);
     return result;
 }
 
-std::string wrap_hunyuan_chat(const std::string & prompt) {
-    // This mirrors Tencent's published chat_template.jinja for a single user message
-    // and starts generation at the assistant role marker.
-    return "<｜hy_begin▁of▁sentence｜><｜hy_User｜>" + prompt + "<｜hy_Assistant｜>";
+std::string format_chat_prompt(const std::string & user_text) {
+    const char * chat_template = llama_model_chat_template(g_model, nullptr);
+    if (chat_template == nullptr || chat_template[0] == '\0') {
+        throw std::runtime_error("HY-MT1.5 GGUF 文件未包含可用的 chat template。");
+    }
+    if (user_text.size() > (static_cast<size_t>(std::numeric_limits<int32_t>::max()) - 4096U) / 8U) {
+        throw std::runtime_error("HY-MT1.5 输入文本过长。");
+    }
+
+    llama_chat_message message = {"user", user_text.c_str()};
+    int32_t capacity = static_cast<int32_t>(user_text.size() * 8U + 4096U);
+    std::vector<char> buffer(static_cast<size_t>(capacity));
+    int32_t written = llama_chat_apply_template(
+        chat_template, &message, 1, false, buffer.data(), capacity
+    );
+    if (written < 0) {
+        throw std::runtime_error("当前 llama.cpp 无法解析 HY-MT1.5 GGUF 的 chat template。");
+    }
+    if (written >= capacity) {
+        if (written == std::numeric_limits<int32_t>::max()) {
+            throw std::runtime_error("HY-MT1.5 chat template 输出长度超出上限。");
+        }
+        capacity = written + 1;
+        buffer.resize(static_cast<size_t>(capacity));
+        written = llama_chat_apply_template(
+            chat_template, &message, 1, false, buffer.data(), capacity
+        );
+        if (written < 0 || written >= capacity) {
+            throw std::runtime_error("HY-MT1.5 chat template 格式化失败。");
+        }
+    }
+    if (written <= 0) throw std::runtime_error("HY-MT1.5 chat template 输出为空。");
+    return std::string(buffer.data(), static_cast<size_t>(written));
 }
 
 std::vector<llama_token> tokenize_prompt(const std::string & prompt) {
@@ -190,9 +319,11 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
         const std::string raw = from_java_string(env, user_prompt);
         if (raw.empty()) return to_java_string(env, "");
 
-        g_cancelled.store(false, std::memory_order_relaxed);
+        if (g_cancelled.load(std::memory_order_relaxed)) {
+            return to_java_string(env, "__HYMT_CANCELLED__");
+        }
         llama_memory_clear(llama_get_memory(g_context), true);
-        const std::string prompt = wrap_hunyuan_chat(raw);
+        const std::string prompt = format_chat_prompt(raw);
         auto tokens = tokenize_prompt(prompt);
         const int32_t limit = std::clamp(static_cast<int>(max_tokens), 32, 768);
         const uint32_t context_limit = llama_n_ctx(g_context);
@@ -223,22 +354,31 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
             return throw_illegal_state(env, "HY-MT1.5 输入编码失败，推理已停止。");
         }
 
-        // Deterministic decoding is preferable for translation: repeated runs
-        // should not randomly change subtitle wording.
-        llama_sampler * sampler = llama_sampler_init_greedy();
+        auto sampler_params = llama_sampler_chain_default_params();
+        llama_sampler * sampler = llama_sampler_chain_init(sampler_params);
         if (sampler == nullptr) {
             return throw_illegal_state(env, "HY-MT1.5 采样器初始化失败。");
         }
+        // Match Tencent's published HY-MT1.5 decoding recommendations.
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(20));
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.6f, 1));
+        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, 1.05f, 0.0f, 0.0f));
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
+        llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
 
         std::string output;
         output.reserve(raw.size() * 3U);
+        bool reached_end_token = false;
         for (int step = 0; step < limit; ++step) {
             if (g_cancelled.load(std::memory_order_relaxed)) {
                 llama_sampler_free(sampler);
                 return to_java_string(env, "__HYMT_CANCELLED__");
             }
             const llama_token token = llama_sampler_sample(sampler, g_context, -1);
-            if (llama_vocab_is_eog(g_vocab, token)) break;
+            if (llama_vocab_is_eog(g_vocab, token)) {
+                reached_end_token = true;
+                break;
+            }
             output += token_piece(token);
             llama_sampler_accept(sampler, token);
             llama_batch next = llama_batch_get_one(const_cast<llama_token *>(&token), 1);
@@ -252,12 +392,20 @@ Java_io_translatetube_local_translate_HyMtNative_nativeTranslate(
             }
         }
         llama_sampler_free(sampler);
+        if (!reached_end_token) {
+            return throw_illegal_state(env, "HY-MT1.5 译文达到生成长度上限，未完整结束。");
+        }
         return to_java_string(env, output);
     } catch (const std::exception & error) {
         return throw_illegal_state(env, std::string("HY-MT1.5 推理失败：") + error.what());
     } catch (...) {
         return throw_illegal_state(env, "HY-MT1.5 推理失败：未知原生异常。");
     }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_translatetube_local_translate_HyMtNative_nativeResetCancel(JNIEnv *, jobject) {
+    g_cancelled.store(false, std::memory_order_relaxed);
 }
 
 extern "C" JNIEXPORT void JNICALL
