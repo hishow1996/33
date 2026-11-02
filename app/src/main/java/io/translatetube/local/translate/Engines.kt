@@ -1803,19 +1803,22 @@ object EngineFactory {
     const val ID_LOCAL_OPUS = -21L
     const val ID_LOCAL_SMALL100 = -22L
     const val ID_LOCAL_SINGLE_PAIR = -23L
+    const val ID_LOCAL_HYMT = -24L
 
     /** All downloaded/on-device translation models are first-class translation engines. */
     fun isLocalTranslationEngine(activeId: Long): Boolean =
         activeId == ID_LOCAL_MLKIT ||
             activeId == ID_LOCAL_OPUS ||
             activeId == ID_LOCAL_SMALL100 ||
-            activeId == ID_LOCAL_SINGLE_PAIR
+            activeId == ID_LOCAL_SINGLE_PAIR ||
+            activeId == ID_LOCAL_HYMT
 
     fun localTranslationEngineName(activeId: Long): String? = when (activeId) {
         ID_LOCAL_MLKIT -> "ML Kit"
         ID_LOCAL_OPUS -> "OPUS-MT"
         ID_LOCAL_SMALL100 -> "SMaLL-100"
         ID_LOCAL_SINGLE_PAIR -> "单语言对翻译模型"
+        ID_LOCAL_HYMT -> "HY-MT1.5 2-bit"
         else -> null
     }
 
@@ -1827,6 +1830,7 @@ object EngineFactory {
             ID_LOCAL_OPUS -> OpusMtEngine(context)
             ID_LOCAL_SMALL100 -> Small100Engine(context)
             ID_LOCAL_SINGLE_PAIR -> SinglePairTranslationEngine(context)
+            ID_LOCAL_HYMT -> HyMtEngine(context)
             ID_MICROSOFT -> MicrosoftWebEngine()
             ID_BAIDU -> BaiduWebEngine()
             ID_DEEPL -> DeepLWebEngine()
