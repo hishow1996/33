@@ -156,32 +156,85 @@ object HyMtModelManager {
         return part.isFile && part.length() > 0L || model.isFile && model.length() > 0L
     }
 
-    private fun runtimeUnavailableMessage(context: Context, error: Throwable): String {
-        val app = context.applicationContext
-        val nativeLibrary = File(
-            app.applicationInfo.nativeLibraryDir,
-            System.mapLibraryName("hymt"),
+    private fun throwableChain(error: Throwable): List<Throwable> {
+        val seen = java.util.Collections.newSetFromMap(
+            java.util.IdentityHashMap<Throwable, Boolean>(),
         )
-        val linkError = generateSequence(error) { it.cause }
-            .firstOrNull { it is UnsatisfiedLinkError }
-        val detail = linkError?.message?.takeIf { it.isNotBlank() }
-            ?: error.message?.takeIf { it.isNotBlank() }.orEmpty()
-        val missingDependency = Regex("""library ["']([^"']+)["'] not found""")
-            .find(detail)
+        val chain = mutableListOf<Throwable>()
+        var current: Throwable? = error
+        while (current != null && seen.add(current) && chain.size < 12) {
+            chain += current
+            current = current.cause
+        }
+        return chain
+    }
+
+    private fun missingNativeLibraryName(linkerMessage: String): String? =
+        Regex("""(?i)library ["']([^"']+\\.so)["'] not found""")
+            .find(linkerMessage)
             ?.groupValues
             ?.getOrNull(1)
 
+    private fun runtimeUnavailableMessage(context: Context, error: Throwable): String {
+        val app = context.applicationContext
+        val supportedAbis = android.os.Build.SUPPORTED_ABIS
+        if (supportedAbis.none { it.equals("arm64-v8a", ignoreCase = true) }) {
+            return "设备不支持 ARM64，无法运行 HY-MT1.5（当前 ABI：${supportedAbis.joinToString(", ")}）"
+        }
+
+        val chain = throwableChain(error)
+        val linkerMessage = chain.firstOrNull { it is UnsatisfiedLinkError }
+            ?.message
+            ?.takeIf { it.isNotBlank() }
+            .orEmpty()
+        val detail = linkerMessage.ifBlank {
+            chain.asReversed().firstNotNullOfOrNull { it.message?.takeIf(String::isNotBlank) }.orEmpty()
+        }
+        val missingLibrary = missingNativeLibraryName(detail)
+        val missingSymbol = Regex("""(?i)cannot locate symbol ["']([^"']+)["'] referenced by ["']([^"']+)["']""")
+            .find(detail)
+        val normalized = detail.lowercase(java.util.Locale.ROOT)
+
         return when {
-            missingDependency != null ->
-                "缺少 HY-MT1.5 ARM64 推理运行库依赖：$missingDependency"
-            !nativeLibrary.isFile ->
-                "缺少 HY-MT1.5 ARM64 推理运行库：libhymt.so"
+            missingLibrary.equals("libhymt.so", ignoreCase = true) ->
+                "缺少 HY-MT1.5 ARM64 主推理运行库：libhymt.so"
+            missingLibrary != null ->
+                "缺少 HY-MT1.5 ARM64 推理依赖库：$missingLibrary"
+            missingSymbol != null ->
+                "HY-MT1.5 ARM64 运行库缺少符号 ${missingSymbol.groupValues[1]}（来源：${missingSymbol.groupValues[2]}）"
+            normalized.contains("wrong elf class") ||
+                normalized.contains("is 32-bit instead of 64-bit") ||
+                normalized.contains("unexpected e_machine") ->
+                "HY-MT1.5 ARM64 推理运行库 ABI 不兼容"
+            normalized.contains("jni_onload") ->
+                "HY-MT1.5 ARM64 推理运行库 JNI 初始化失败"
             else -> {
-                val reason = detail.replace('\n', ' ').replace('\r', ' ').take(120)
+                val reason = detail.replace('\n', ' ').replace('\r', ' ').take(160)
                 "HY-MT1.5 ARM64 推理运行库 libhymt.so 加载失败" +
-                    if (reason.isNotBlank()) "：$reason" else ""
+                    if (reason.isNotBlank()) "：$reason" else "；系统未提供更具体的 Linker 原因"
             }
         }
+    }
+
+    private fun nativeLibraryInventory(context: Context): String {
+        val directory = File(context.applicationContext.applicationInfo.nativeLibraryDir)
+        return directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".so", ignoreCase = true) }
+            ?.sortedBy { it.name }
+            ?.take(80)
+            ?.joinToString("、") { file -> "${file.name} (${file.length()} bytes)" }
+            ?.ifBlank { "目录存在但没有可见的 .so 文件" }
+            ?: "目录不可读取或不存在"
+    }
+
+    private fun describeApkSources(context: Context): String {
+        val app = context.applicationContext
+        val sources = listOfNotNull(app.applicationInfo.sourceDir) +
+            app.applicationInfo.splitSourceDirs.orEmpty()
+        return sources.joinToString("；") { path ->
+            val file = File(path)
+            "${file.name}: exists=${file.isFile}, bytes=${file.takeIf { it.isFile }?.length() ?: 0L}"
+        }.ifBlank { "系统未提供 APK 路径" }
     }
 
     suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
@@ -207,23 +260,27 @@ object HyMtModelManager {
             // A missing or unloadable native runtime is recorded as a warning immediately
             // when the management page refreshes, before any model download/validation is attempted.
             if (runtimeError != null) {
+                val errorChain = throwableChain(runtimeError)
+                val linkerMessage = errorChain.firstOrNull { it is UnsatisfiedLinkError }
+                    ?.message
+                    ?.takeIf { it.isNotBlank() }
+                    .orEmpty()
+                val missingDependency = missingNativeLibraryName(linkerMessage).orEmpty()
+                val rootCause = errorChain.lastOrNull() ?: runtimeError
+                val chainSummary = errorChain.joinToString(" <- ") { cause ->
+                    cause.javaClass.name + cause.message?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+                }
+                val nativeInventory = nativeLibraryInventory(app)
+                val apkSources = describeApkSources(app)
                 val diagnosticKey = listOf(
-                    runtimeError.javaClass.name,
-                    runtimeError.message.orEmpty(),
-                    runtimeError.cause?.javaClass?.name.orEmpty(),
-                    runtimeError.cause?.message.orEmpty(),
+                    chainSummary,
+                    linkerMessage,
+                    android.os.Build.SUPPORTED_ABIS.joinToString(","),
                     nativeLibrary.absolutePath,
-                    app.applicationInfo.splitSourceDirs?.joinToString(",").orEmpty(),
+                    nativeInventory,
+                    apkSources,
                 ).joinToString("|")
                 if (lastRuntimeCheckLogKey != diagnosticKey) {
-                    val linkerError = runtimeError.cause as? UnsatisfiedLinkError
-                    val linkerMessage = linkerError?.message.orEmpty()
-                    val missingDependency = Regex("""library ["']([^"']+)["'] not found""")
-                        .find(linkerMessage)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        .orEmpty()
-                    val rootCause = runtimeError.cause ?: runtimeError
                     AppLogStore.warning(
                         app,
                         "HyMtRuntime",
@@ -233,6 +290,7 @@ object HyMtModelManager {
                             "检查时机" to "打开 HY-MT1.5 模型管理页面时自动检查",
                             "运行库检查结论" to runtimeErrorMessage,
                             "System.loadLibrary 可加载" to "false",
+                            "异常链" to chainSummary,
                             "异常类型" to runtimeError.javaClass.name,
                             "异常信息" to runtimeError.message.orEmpty(),
                             "根因类型" to rootCause.javaClass.name,
@@ -241,10 +299,11 @@ object HyMtModelManager {
                             "缺失的依赖库" to missingDependency.ifBlank { "未能从 Linker 错误中提取" },
                             "目标运行库" to "lib/arm64-v8a/libhymt.so",
                             "nativeLibraryDir" to app.applicationInfo.nativeLibraryDir,
+                            "nativeLibraryDir 中的 SO 文件" to nativeInventory,
+                            "APK 安装源文件" to apkSources,
                             "splitSourceDirs" to (app.applicationInfo.splitSourceDirs?.joinToString(",") ?: "无"),
-                            "sourceDir" to app.applicationInfo.sourceDir.orEmpty(),
                             "原生库实际路径" to nativeLibrary.absolutePath,
-                            "原生库文件存在" to nativeLibrary.isFile.toString(),
+                            "原生库文件存在于 nativeLibraryDir" to nativeLibrary.isFile.toString(),
                             "原生库文件字节数" to (nativeLibrary.takeIf { it.isFile }?.length()?.toString() ?: "0"),
                             "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
                             "模型文件存在" to model.isFile.toString(),
@@ -552,6 +611,7 @@ object HyMtModelManager {
                     runCatching { HyMtNative.ensureLibraryLoaded(app) }.exceptionOrNull()
                 }
             } else null
+            val nativeLibraryMissing = runtimeErrorAfterFailure != null
             val runtimeMessageAfterFailure = runtimeErrorAfterFailure?.let {
                 runtimeUnavailableMessage(app, it)
             }.orEmpty()
@@ -576,15 +636,20 @@ object HyMtModelManager {
                 } else {
                     "HY-MT1.5 2-bit 模型下载或验证失败"
                 },
-                error,
+                runtimeErrorAfterFailure ?: error,
                 diagnosticContext = mapOf(
                     "模型版本" to MODEL_REVISION,
                     "模型格式" to "GGUF / Q2_0C",
                     "模型文件存在" to model.isFile.toString(),
                     "模型文件大小" to model.length().toString(),
-                    "原生运行库存在" to nativeLibrary.isFile.toString(),
+                    "原生运行库存在于 nativeLibraryDir" to nativeLibrary.isFile.toString(),
                     "原生运行库路径" to nativeLibrary.absolutePath,
-                    "System.loadLibrary 可加载" to HyMtNative.isLibraryLoadable(app).toString(),
+                    "运行库检查结果" to runtimeMessageAfterFailure.ifBlank { "System.loadLibrary 可加载" },
+                    "Linker 错误信息" to runtimeErrorAfterFailure?.let { throwableChain(it) }
+                        ?.firstOrNull { it is UnsatisfiedLinkError }
+                        ?.message.orEmpty()
+                        .ifBlank { "无" },
+                    "System.loadLibrary 可加载" to (!nativeLibraryMissing).toString(),
                     "nativeLibraryDir" to app.applicationInfo.nativeLibraryDir,
                     "splitSourceDirs" to (app.applicationInfo.splitSourceDirs?.joinToString(",") ?: "无"),
                     "设备 ABI" to android.os.Build.SUPPORTED_ABIS.joinToString(","),
@@ -652,21 +717,14 @@ internal object HyMtNative {
             )
         }
 
-        val nativeLibrary = File(
-            context.applicationContext.applicationInfo.nativeLibraryDir,
-            System.mapLibraryName("hymt"),
-        )
         try {
             // JNI_OnLoad registers and validates every native method before this returns.
             System.loadLibrary("hymt")
             libraryLoaded = true
         } catch (error: UnsatisfiedLinkError) {
-            val message = if (nativeLibrary.isFile) {
-                "HY-MT1.5 ARM64 推理运行库 libhymt.so 加载失败。"
-            } else {
-                "缺少 HY-MT1.5 ARM64 推理运行库：libhymt.so"
-            }
-            throw IllegalStateException(message, error)
+            // The Linker error is authoritative. Do not infer a missing library from
+            // nativeLibraryDir because APK splits may expose libraries through split sources.
+            throw IllegalStateException("System.loadLibrary(\"hymt\") 加载失败。", error)
         }
     }
 
