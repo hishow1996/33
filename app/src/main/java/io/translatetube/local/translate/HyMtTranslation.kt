@@ -177,7 +177,7 @@ object HyMtModelManager {
             !nativeLibrary.isFile ->
                 "缺少 HY-MT1.5 ARM64 推理运行库：libhymt.so"
             else -> {
-                val reason = detail.replace('\\n', ' ').take(120)
+                val reason = detail.replace('\n', ' ').replace('\r', ' ').take(120)
                 "HY-MT1.5 ARM64 推理运行库 libhymt.so 加载失败" +
                     if (reason.isNotBlank()) "：$reason" else ""
             }
