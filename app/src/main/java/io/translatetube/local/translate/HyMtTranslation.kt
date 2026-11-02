@@ -181,16 +181,42 @@ object HyMtModelManager {
         val directory = modelDirectory(app)
         val model = modelFile(app)
         if (!directory.isDirectory && !directory.mkdirs()) {
-            throw IOException("无法创建 HY-MT1.5 模型目录")
+            val error = "无法创建 HY-MT1.5 模型目录"
+            mutableState.value = HyMtDownloadState(status = HyMtStatus.FAILED, error = error)
+            throw IOException(error)
         }
+        val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
         if (!isReady(app) && !hasGgufHeader(model)) {
-            val requiredSpace = DISPLAY_BYTES + DOWNLOAD_SPACE_RESERVE_BYTES
+            val remainingBytes = if (part.isFile) {
+                (DISPLAY_BYTES - part.length()).coerceAtLeast(0L)
+            } else {
+                DISPLAY_BYTES
+            }
+            val requiredSpace = remainingBytes + DOWNLOAD_SPACE_RESERVE_BYTES
             if (directory.usableSpace < requiredSpace) {
-                throw IOException(
-                    "存储空间不足：HY-MT1.5 模型需要约 " +
-                        formatLocalModelSizeForError(requiredSpace) +
-                        " 可用空间，请清理空间后重试。"
+                val error = "存储空间不足：还需要约 " +
+                    formatLocalModelSizeForError(requiredSpace) +
+                    " 可用空间，请清理空间后继续。"
+                mutableState.value = HyMtDownloadState(
+                    status = HyMtStatus.FAILED,
+                    progress = if (part.isFile) {
+                        (part.length() * 100L / DISPLAY_BYTES).toInt().coerceIn(0, 99)
+                    } else 0,
+                    downloadedBytes = part.takeIf { it.isFile }?.length() ?: 0L,
+                    totalBytes = DISPLAY_BYTES,
+                    error = error,
                 )
+                AppLogStore.warning(
+                    app,
+                    "LocalTranslationModel",
+                    "HY-MT1.5 下载因存储空间不足而停止",
+                    diagnosticContext = mapOf(
+                        "需要的可用空间字节" to requiredSpace.toString(),
+                        "当前可用空间字节" to directory.usableSpace.toString(),
+                        "已下载字节" to (part.takeIf { it.isFile }?.length() ?: 0L).toString(),
+                    ),
+                )
+                throw IOException(error)
             }
         }
         if (isReady(app)) {
@@ -213,7 +239,6 @@ object HyMtModelManager {
                 )
                 validateAndMark(app)
             } else {
-                val part = ResumableModelArchiveDownloader.partFileFor(model, MODEL_URL)
                 AppLogStore.info(
                     app,
                     "LocalTranslationModel",
