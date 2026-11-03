@@ -6,6 +6,60 @@ import org.junit.Test
 
 class PendingMediaResumeContextPolicyTest {
     @Test
+    fun reconnectsOnlyToAnActiveOrReadyMatchingSession() {
+        val continuingPhases = listOf(
+            Phase.PARSING,
+            Phase.DOWNLOADING_AUDIO,
+            Phase.TRANSCRIBING,
+            Phase.TRANSLATING,
+            Phase.SYNTHESIZING,
+            Phase.READY,
+        )
+        for (phase in continuingPhases) {
+            assertEquals(
+                true,
+                PendingMediaResumeContextPolicy.shouldReconnectToLiveTask(
+                    livePhase = phase,
+                    liveKey = "remote:https://cdn.example.com/video.m3u8",
+                    requestedTaskKey = "webpage:https://example.com/watch",
+                    savedSourceKey = "webpage:https://example.com/watch",
+                    savedActiveKey = "remote:https://cdn.example.com/video.m3u8",
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun failedOrIdleSessionsAreStartedAgainInsteadOfReattached() {
+        for (phase in listOf(Phase.IDLE, Phase.ERROR)) {
+            assertEquals(
+                false,
+                PendingMediaResumeContextPolicy.shouldReconnectToLiveTask(
+                    livePhase = phase,
+                    liveKey = "remote:https://cdn.example.com/video.m3u8",
+                    requestedTaskKey = "webpage:https://example.com/watch",
+                    savedSourceKey = "webpage:https://example.com/watch",
+                    savedActiveKey = "remote:https://cdn.example.com/video.m3u8",
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun doesNotReconnectToAnUnrelatedLiveSession() {
+        assertEquals(
+            false,
+            PendingMediaResumeContextPolicy.shouldReconnectToLiveTask(
+                livePhase = Phase.TRANSLATING,
+                liveKey = "youtube:abcdefghijk",
+                requestedTaskKey = "webpage:https://example.com/watch",
+                savedSourceKey = "webpage:https://example.com/watch",
+                savedActiveKey = "remote:https://cdn.example.com/video.m3u8",
+            ),
+        )
+    }
+
+    @Test
     fun restoresExactPageReferrerForSelectedRemoteMedia() {
         assertEquals(
             "https://example.com/watch/episode-2",
