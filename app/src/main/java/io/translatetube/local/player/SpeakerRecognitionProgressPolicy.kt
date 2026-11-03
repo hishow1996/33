@@ -26,6 +26,53 @@ data class SpeakerRecognitionProgressUpdate(
 )
 
 object SpeakerRecognitionProgressPolicy {
+
+    /** Audio fetched for speaker diarization is secondary player work, not stage-one processing. */
+    fun audioAcquisitionProgress(message: String): SpeakerRecognitionProgressUpdate {
+        val percent = Regex("""(\\d+(?:\\.\\d+)?)%""")
+            .find(message)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toFloatOrNull()
+            ?.toInt()
+            ?.coerceIn(0, 100)
+        return SpeakerRecognitionProgressUpdate(
+            stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+            message = message,
+            progressPercent = percent,
+            progressItem = "音轨",
+        )
+    }
+
+    /** Prevent secondary speaker-audio work from changing the active player's five-stage state. */
+    fun preservePlaybackState(
+        current: PlayerUiState,
+        requested: PlayerUiState,
+        speakerRecognitionOnly: Boolean,
+    ): PlayerUiState {
+        if (!speakerRecognitionOnly || current.key.isBlank() || current.key != requested.key) {
+            return requested
+        }
+        val taskMessage = requested.progress.takeIf {
+            it.isNotBlank() && it != current.progress
+        }
+        val taskProgress = taskMessage?.let(::audioAcquisitionProgress)
+        return requested.copy(
+            phase = current.phase,
+            progress = current.progress,
+            audioProgress = current.audioProgress,
+            transcriptionProgressPercent = current.transcriptionProgressPercent,
+            speakerRecognition = if (taskProgress != null) {
+                current.speakerRecognition.copy(
+                    stage = taskProgress.stage,
+                    message = taskProgress.message,
+                    progressPercent = taskProgress.progressPercent,
+                    progressItem = taskProgress.progressItem,
+                )
+            } else current.speakerRecognition,
+        )
+    }
+
     fun percentForCount(completedCount: Long, totalCount: Long): Int? {
         if (totalCount <= 0L) return null
         val completed = completedCount.coerceIn(0L, totalCount)
