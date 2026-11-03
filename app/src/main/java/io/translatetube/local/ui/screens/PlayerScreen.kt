@@ -6029,13 +6029,11 @@ private fun SubtitleList(
                 val translatedText = remember(line.text, line.zh) {
                     SubtitleParsers.preferredTranslationText(line)?.takeIf { it.isNotBlank() }
                 }
-                // Put Chinese first and the smaller source caption underneath, matching YouTube.
-                // If translation is missing, keep the source caption at the main subtitle size.
-                val showOriginalText = remember(originalText, translatedText) {
+                // Only the currently playing row is bilingual. Other rows stay Chinese-only.
+                val showOriginalText = active &&
                     originalText.isNotBlank() &&
-                        translatedText != null &&
-                        originalText != translatedText
-                }
+                    originalText != translatedText
+                val chineseText = translatedText ?: "中文字幕暂不可用"
 
                 Column(
                     Modifier.fillMaxWidth()
@@ -6046,33 +6044,30 @@ private fun SubtitleList(
                         .clickable(
                             enabled = svc != null && line.startMs >= 0L && line.endMs > line.startMs,
                         ) { svc?.seekAndPlay(line.startMs) }
-                        .padding(horizontal = 10.dp, vertical = if (active) 7.dp else 6.dp)
-                        .graphicsLayer {
-                            scaleX = activeScale
-                            scaleY = activeScale
-                        },
+                        .padding(horizontal = 10.dp, vertical = if (active) 7.dp else 6.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    val mainText = translatedText ?: originalText
-                    if (mainText.isNotBlank()) {
-                        Text(
-                            mainText,
-                            color = if (active) BrandBright else SubText,
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                                fontSize = if (active) 16.sp else 14.sp,
-                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                            ),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
+                    Text(
+                        chineseText,
+                        color = if (active) BrandBright else SubText,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontSize = if (active) 16.sp else 14.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                        ),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().graphicsLayer {
+                            // The playback emphasis belongs to the Chinese line only.
+                            scaleX = activeScale
+                            scaleY = activeScale
+                        },
+                    )
                     if (showOriginalText) {
                         Text(
                             originalText,
-                            color = SubText.copy(alpha = if (active) 0.88f else 0.72f),
+                            color = BrandBright,
                             style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = if (active) 12.sp else 11.sp,
+                                fontSize = 12.sp,
                                 fontWeight = FontWeight.Normal,
                             ),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
