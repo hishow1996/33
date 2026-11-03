@@ -44,6 +44,9 @@ private data class PendingResumeTask(
     /** Original WebView request context; cookies themselves are never persisted. */
     val mediaReferrer: String? = null,
     val mediaUserAgent: String? = null,
+    val lastPhase: Phase? = null,
+    val lastProgress: String? = null,
+    val lastUpdatedAt: Long = 0L,
 )
 
 /** 一次播放请求：YouTube 或 本地视频 */
@@ -88,6 +91,11 @@ class MainActivity : ComponentActivity() {
             generation = generation,
             mediaReferrer = resumePrefs.getString(KEY_MEDIA_REFERRER, null),
             mediaUserAgent = resumePrefs.getString(KEY_MEDIA_USER_AGENT, null),
+            lastPhase = resumePrefs.getString(KEY_LAST_PHASE, null)?.let { raw ->
+                runCatching { Phase.valueOf(raw) }.getOrNull()
+            }?.takeIf { it != Phase.IDLE },
+            lastProgress = resumePrefs.getString(KEY_LAST_PROGRESS, null)?.takeIf { it.isNotBlank() },
+            lastUpdatedAt = resumePrefs.getLong(KEY_LAST_UPDATED_AT, 0L).coerceAtLeast(0L),
         )
     }
 
@@ -100,6 +108,12 @@ class MainActivity : ComponentActivity() {
         else editor.putString(KEY_MEDIA_REFERRER, task.mediaReferrer)
         if (task.mediaUserAgent.isNullOrBlank()) editor.remove(KEY_MEDIA_USER_AGENT)
         else editor.putString(KEY_MEDIA_USER_AGENT, task.mediaUserAgent)
+        if (task.lastPhase == null || task.lastPhase == Phase.IDLE) editor.remove(KEY_LAST_PHASE)
+        else editor.putString(KEY_LAST_PHASE, task.lastPhase.name)
+        if (task.lastProgress.isNullOrBlank()) editor.remove(KEY_LAST_PROGRESS)
+        else editor.putString(KEY_LAST_PROGRESS, task.lastProgress.take(180))
+        if (task.lastUpdatedAt <= 0L) editor.remove(KEY_LAST_UPDATED_AT)
+        else editor.putLong(KEY_LAST_UPDATED_AT, task.lastUpdatedAt)
         editor.commit()
     }
 
@@ -196,6 +210,9 @@ class MainActivity : ComponentActivity() {
             .remove(KEY_ACTIVE)
             .remove(KEY_MEDIA_REFERRER)
             .remove(KEY_MEDIA_USER_AGENT)
+            .remove(KEY_LAST_PHASE)
+            .remove(KEY_LAST_PROGRESS)
+            .remove(KEY_LAST_UPDATED_AT)
             .commit()
         pendingResumeTaskState.value = null
     }
@@ -338,6 +355,13 @@ class MainActivity : ComponentActivity() {
                         return@LaunchedEffect
                     }
                     if (startedPendingGeneration != task.generation) startedPendingGeneration = null
+                    // A completed run may have reached READY while the Activity was already gone.
+                    // Reconcile the durable journal on cold start so the Home card is not stale.
+                    if (task.lastPhase == Phase.READY) {
+                        clearPendingResumeTask(task)
+                        startedPendingGeneration = null
+                        return@LaunchedEffect
+                    }
                     if (playback.key != task.activeKey) return@LaunchedEffect
                     when (playback.phase) {
                         Phase.PARSING,
@@ -469,6 +493,8 @@ class MainActivity : ComponentActivity() {
                                 onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
                                 onHistory = { storageHistoryOnly = true; screen = Screen.STORAGE },
                                 pendingResumeTaskKey = pendingTask?.sourceKey,
+                                pendingResumeTaskPhase = pendingTask?.lastPhase,
+                                pendingResumeTaskProgress = pendingTask?.lastProgress,
                                 onResumeTask = { taskKey ->
                                     val live = PlaybackService.ui.value
                                     val currentRequest = playReq.value
@@ -696,6 +722,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        // Flush the current playhead and latest durable subtitle checkpoint when Android
+        // backgrounds or finishes the Activity. The foreground service remains the task owner.
+        PlaybackService.instance?.let { service ->
+            service.saveProgress()
+            service.persistCurrentProcessingCheckpoint()
+        }
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
@@ -748,6 +784,9 @@ class MainActivity : ComponentActivity() {
         const val KEY_GENERATION = "generation"
         const val KEY_MEDIA_REFERRER = "media_referrer"
         const val KEY_MEDIA_USER_AGENT = "media_user_agent"
+        const val KEY_LAST_PHASE = "last_phase"
+        const val KEY_LAST_PROGRESS = "last_progress"
+        const val KEY_LAST_UPDATED_AT = "last_updated_at"
     }
 }
 

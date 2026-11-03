@@ -63,6 +63,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
@@ -1403,6 +1404,26 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /** Best-effort lifecycle flush; the store rejects phases without a valid subtitle checkpoint. */
+    fun persistCurrentProcessingCheckpoint() {
+        val sessionKey = videoKey
+        val generation = activePipelineGeneration
+        if (sessionKey.isBlank() || generation <= 0L) return
+        scope.launch {
+            runCatching { persistInProgressProcessingCheckpoint(sessionKey, generation) }
+                .onFailure { error ->
+                    if (error !is kotlinx.coroutines.CancellationException) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackCheckpoint",
+                            "应用进入后台时保存处理中间进度失败",
+                            error,
+                        )
+                    }
+                }
+        }
+    }
+
     private fun chooseEngineRestartStage(
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,
@@ -2144,6 +2165,38 @@ class PlaybackService : MediaSessionService() {
         requestedVideoSurface?.get()?.let(::attachSurface)
     }
 
+    /** Keep a durable record of the last phase even if Android later kills the process. */
+    private fun startPendingResumeJournal() {
+        scope.launch {
+            var lastKey = ""
+            var lastPhase: Phase? = null
+            var lastProgress = ""
+            var lastWriteAtMs = 0L
+            ui.collect { state ->
+                if (state.key.isBlank() || state.phase == Phase.IDLE) return@collect
+                val phaseChanged = state.key != lastKey || state.phase != lastPhase
+                val progress = state.progress.ifBlank { state.error.orEmpty() }.trim().take(180)
+                val progressChanged = progress != lastProgress
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (!phaseChanged && (!progressChanged || now - lastWriteAtMs < 2_000L)) {
+                    return@collect
+                }
+                lastKey = state.key
+                lastPhase = state.phase
+                lastProgress = progress
+                lastWriteAtMs = now
+                withContext(Dispatchers.IO) {
+                    PendingProcessingResumeStore.record(
+                        context = this@PlaybackService,
+                        sessionKey = state.key,
+                        phase = state.phase,
+                        progress = progress,
+                    )
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         val audioPrefs = getSharedPreferences("settings", MODE_PRIVATE)
@@ -2166,6 +2219,7 @@ class PlaybackService : MediaSessionService() {
         // The extractor itself is initialized lazily by the first metadata request.
         NewPipeRepo.setLogContext(applicationContext)
         registerProcessingEnginePreferenceWatcher()
+        startPendingResumeJournal()
         // 先尽早建立前台通知，再初始化播放器；任何初始化异常都转成页面错误，
         // 避免点击“观看”后因 Service onCreate 抛异常而直接杀掉整个进程。
         try {
@@ -14884,6 +14938,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         )
         val isDubbingPreparing = isDubbingPreparationIncomplete(ui.value)
         val isSpeakerRecognitionActive = ui.value.speakerRecognition.isActive && speakerJob?.isActive == true
+        saveProgress()
+        if (isProcessing) persistCurrentProcessingCheckpoint()
         if (isProcessing || isDubbingPreparing || isSpeakerRecognitionActive) {
             // Keep service-owned recognition alive when the Activity task is dismissed from recents.
             android.util.Log.i(

@@ -60,6 +60,8 @@ fun HomeScreen(
     onSettings: () -> Unit,
     onHistory: () -> Unit = {},
     pendingResumeTaskKey: String? = null,
+    pendingResumeTaskPhase: Phase? = null,
+    pendingResumeTaskProgress: String? = null,
     onResumeTask: (String) -> Unit = {},
 ) {
     val playback by PlaybackService.ui.collectAsState()
@@ -152,6 +154,16 @@ fun HomeScreen(
         }
         if (resumeTaskKey != null) {
             val hasLiveTask = liveTaskKey != null
+            val savedStageLabel = when (pendingResumeTaskPhase) {
+                Phase.PARSING -> "视频解析"
+                Phase.DOWNLOADING_AUDIO -> "音轨准备"
+                Phase.TRANSCRIBING -> "语音转写"
+                Phase.TRANSLATING -> "字幕翻译"
+                Phase.SYNTHESIZING -> "配音合成"
+                Phase.READY -> "处理完成"
+                Phase.ERROR -> "处理失败"
+                else -> null
+            }
             val taskTitle = if (hasLiveTask) {
                 when (playback.phase) {
                     Phase.ERROR -> "查看处理失败的任务"
@@ -163,11 +175,20 @@ fun HomeScreen(
                     else -> "继续解析视频"
                 }
             } else {
-                when {
-                    resumeTaskKey.startsWith("youtube:") -> "重新解析 YouTube 视频"
-                    resumeTaskKey.startsWith("webpage:") -> "继续解析网页视频"
-                    resumeTaskKey.startsWith("remote:") -> "重新打开上次视频"
-                    else -> "继续上次视频"
+                when (pendingResumeTaskPhase) {
+                    Phase.PARSING -> "继续视频解析"
+                    Phase.DOWNLOADING_AUDIO -> "继续准备视频音轨"
+                    Phase.TRANSCRIBING -> "继续语音转写"
+                    Phase.TRANSLATING -> "继续字幕翻译"
+                    Phase.SYNTHESIZING -> "继续配音合成"
+                    Phase.READY -> "继续观看这个视频"
+                    Phase.ERROR -> "重试上次处理"
+                    else -> when {
+                        resumeTaskKey.startsWith("youtube:") -> "重新解析 YouTube 视频"
+                        resumeTaskKey.startsWith("webpage:") -> "继续解析网页视频"
+                        resumeTaskKey.startsWith("remote:") -> "重新打开上次视频"
+                        else -> "继续上次视频"
+                    }
                 }
             }
             val taskDetail = if (hasLiveTask) {
@@ -179,7 +200,8 @@ fun HomeScreen(
                     }
                 }
             } else {
-                when {
+                pendingResumeTaskProgress?.takeIf { it.isNotBlank() } ?: when {
+                    savedStageLabel != null -> "上次停在$savedStageLabel阶段，继续时复用已保存进度"
                     resumeTaskKey.startsWith("webpage:") -> resumeTaskKey.removePrefix("webpage:")
                     resumeTaskKey.startsWith("youtube:") -> "上次解析因应用退出而中断，点击后重新开始"
                     resumeTaskKey.startsWith("remote:") -> "上次视频处理被中断，点击重新打开"
