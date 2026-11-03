@@ -100,6 +100,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.ViewCompat
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.LineBreak
@@ -193,30 +194,50 @@ fun PlayerScreen(
         if (activity != null && isFullscreen) {
             val previousOrientation = activity.requestedOrientation
             val window = activity.window
-            val insetsController = WindowInsetsControllerCompat(window, window.decorView)
-            WindowCompat.setDecorFitsSystemWindows(window, false)
-            insetsController.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            insetsController.hide(WindowInsetsCompat.Type.systemBars())
-            activity.requestedOrientation =
-                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            val decorView = window.decorView
+            // Keep the exact pre-fullscreen system UI state. Replacing it with a hard-coded
+            // decorFits=true state can leave edge-to-edge/layout flags behind after rotation.
+            val previousSystemUiVisibility = decorView.systemUiVisibility
+            val insetsController = WindowInsetsControllerCompat(window, decorView)
+            val previousSystemBarsBehavior = insetsController.systemBarsBehavior
+
+            fun applyFullscreenWindowMode() {
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                insetsController.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                insetsController.hide(WindowInsetsCompat.Type.systemBars())
+                activity.requestedOrientation =
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+
+            applyFullscreenWindowMode()
             val fullscreenLifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
                 if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                    WindowCompat.setDecorFitsSystemWindows(window, false)
-                    insetsController.systemBarsBehavior =
-                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    insetsController.hide(WindowInsetsCompat.Type.systemBars())
-                    activity.requestedOrientation =
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    applyFullscreenWindowMode()
                 }
             }
             fullscreenLifecycleOwner.lifecycle.addObserver(fullscreenLifecycleObserver)
             onDispose {
                 fullscreenLifecycleOwner.lifecycle.removeObserver(fullscreenLifecycleObserver)
+                // Restore orientation first so the next inset dispatch uses the portrait dimensions.
                 runCatching { activity.requestedOrientation = previousOrientation }
                 runCatching {
-                    insetsController.show(WindowInsetsCompat.Type.systemBars())
                     WindowCompat.setDecorFitsSystemWindows(window, true)
+                    insetsController.systemBarsBehavior = previousSystemBarsBehavior
+                    insetsController.show(WindowInsetsCompat.Type.systemBars())
+                    // Restore the original layout/status-bar flags rather than assuming the
+                    // activity always entered fullscreen with the same decor configuration.
+                    decorView.systemUiVisibility = previousSystemUiVisibility
+                    ViewCompat.requestApplyInsets(decorView)
+                    // A second dispatch after the orientation/layout pass prevents stale
+                    // landscape insets from being reused by the portrait Compose root.
+                    decorView.post {
+                        if (!activity.isFinishing && !activity.isDestroyed) {
+                            ViewCompat.requestApplyInsets(decorView)
+                            val content = decorView.findViewById<android.view.View>(android.R.id.content)
+                            ViewCompat.requestApplyInsets(content)
+                        }
+                    }
                 }
             }
         } else {
