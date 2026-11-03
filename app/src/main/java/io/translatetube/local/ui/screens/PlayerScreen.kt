@@ -5284,7 +5284,6 @@ private fun CurrentSubtitleStrip(
     captionOverride: String? = null,
     fullscreen: Boolean = false,
     fullscreenMaxHeight: androidx.compose.ui.unit.Dp? = null,
-    fullscreenCaptionAdjusting: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -5377,7 +5376,12 @@ private fun CurrentSubtitleStrip(
                 val fullscreenChineseLineHeight = 20.sp
                 val fullscreenOriginalSize = 14.sp
                 val fullscreenOriginalLineHeight = 17.sp
-                val captionMaxLines = if (fullscreen) 3 else 2
+                val captionMaxLines = when {
+                    !fullscreen -> 2
+                    fullscreenMaxHeight != null && fullscreenMaxHeight < 100.dp -> 2
+                    measuredCaptionLines >= 3 -> 3
+                    else -> 2
+                }
                 val captionMaxHeight = fullscreenMaxHeight ?: when {
                     maxHeight < 220.dp -> 82.dp
                     measuredCaptionLines >= 4 -> 104.dp
@@ -6959,8 +6963,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 if (fullscreenCaptionVisible) {
                     val captionLaneMaxHeight = when {
                         maxHeight < 260.dp -> 92.dp
-                        maxHeight < 360.dp -> 112.dp
-                        else -> 128.dp
+                        maxHeight < 360.dp -> 128.dp
+                        else -> 144.dp
                     }
                     val captionLaneMaxWidth = (maxWidth * 0.62f)
                         .coerceAtMost((maxWidth - 8.dp).coerceAtLeast(1.dp))
@@ -7055,7 +7059,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             captionOverride = captionOverride,
                             fullscreen = true,
                             fullscreenMaxHeight = captionLaneMaxHeight,
-                            fullscreenCaptionAdjusting = fullscreenCaptionAdjusting,
                             modifier = Modifier,
                         )
                         AnimatedVisibility(
