@@ -60,6 +60,7 @@ internal data class PlaybackHintInput(
 
 internal object PlaybackHintPolicy {
     const val MIN_HINT_DURATION_MS = 1_500L
+    const val MIN_LOADING_HINT_DELAY_MS = 350L
     private const val MAX_DETAIL_CHARS = 140
 
     fun hintFor(input: PlaybackHintInput): PlaybackHint? {
@@ -155,7 +156,7 @@ internal object PlaybackHintPolicy {
                 showSpinner = true,
                 priority = 55,
             )
-            input.isBuffering -> PlaybackHint(
+            input.isBuffering && input.bufferingDurationMs >= MIN_LOADING_HINT_DELAY_MS -> PlaybackHint(
                 key = "loading",
                 message = "视频加载中…",
                 showSpinner = true,

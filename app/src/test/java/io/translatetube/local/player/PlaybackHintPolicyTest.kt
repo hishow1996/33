@@ -15,8 +15,25 @@ class PlaybackHintPolicyTest {
     }
 
     @Test
+    fun briefBufferingDoesNotFlashALoadingHint() {
+        assertNull(
+            hint(
+                PlaybackHintInput(
+                    isBuffering = true,
+                    bufferingDurationMs = PlaybackHintPolicy.MIN_LOADING_HINT_DELAY_MS - 1L,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun loadingAndSlowBufferingUseDifferentMessages() {
-        val loading = hint(PlaybackHintInput(isBuffering = true))!!
+        val loading = hint(
+            PlaybackHintInput(
+                isBuffering = true,
+                bufferingDurationMs = PlaybackHintPolicy.MIN_LOADING_HINT_DELAY_MS,
+            ),
+        )!!
         assertEquals("视频加载中…", loading.message)
         assertTrue(loading.showSpinner)
 

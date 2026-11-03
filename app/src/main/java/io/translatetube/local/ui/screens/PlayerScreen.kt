@@ -1552,14 +1552,31 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     // Keep loading/recovery text out of the left and right control columns.
                     // On narrow or short video windows, move it to the top where the controls
                     // do not occupy the same horizontal band.
-                    BoxWithConstraints(Modifier.fillMaxSize()) {
-                        val centeredHintWidth = (maxWidth - 224.dp).coerceAtLeast(0.dp)
-                        val placeHintAtTop = centeredHintWidth < 180.dp || maxHeight < 220.dp
-                        val hintWidth = if (placeHintAtTop) {
-                            (maxWidth - 24.dp).coerceAtLeast(0.dp)
-                        } else {
-                            centeredHintWidth
+                    BoxWithConstraints(
+                        Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout),
+                    ) {
+                        // Mirror VideoOverlayControls' real touch-target sizing so the hint stays
+                        // between both control columns on phones, tablets and floating windows.
+                        val controlEdgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
+                        val availableControlHeight = (maxHeight - 40.dp).coerceAtLeast(0.dp)
+                        val preferredControlSize = when {
+                            maxHeight < 100.dp -> 28.dp
+                            maxHeight < 140.dp -> 32.dp
+                            maxHeight < 180.dp -> 40.dp
+                            maxHeight < 240.dp -> 44.dp
+                            else -> 48.dp
                         }
+                        val availableItemSize = ((availableControlHeight - 8.dp) / 2f).coerceAtLeast(24.dp)
+                        val controlTargetSize = preferredControlSize.coerceAtMost(availableItemSize)
+                        val leftControlReservation = controlEdgePadding + controlTargetSize + 36.dp
+                        val rightControlReservation = controlEdgePadding + controlTargetSize
+                        val hintSideGap = 12.dp
+                        val safeHintWidth = (
+                            maxWidth - leftControlReservation - rightControlReservation -
+                                hintSideGap - hintSideGap
+                            ).coerceAtLeast(0.dp)
+                        val placeHintAtTop = safeHintWidth < 172.dp || maxHeight < 220.dp
+                        val hintWidth = safeHintWidth.coerceAtMost(440.dp)
                         PlaybackHintOverlay(
                             hint = hint,
                             modifier = Modifier
@@ -1567,7 +1584,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 .width(hintWidth)
                                 .then(
                                     if (placeHintAtTop) Modifier.padding(top = 12.dp)
-                                    else Modifier.padding(bottom = 58.dp),
+                                    else Modifier.padding(bottom = 64.dp),
                                 ),
                             onAction = { action ->
                                 when (action) {
@@ -6574,7 +6591,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             },
     )
 
-    val showCenterPlaybackControl = !state.isBuffering && playbackHint == null &&
+    // Keep transport controls steady during a brief buffer; a persistent loading hint
+    // replaces the center control only after the buffering delay has elapsed.
+    val showCenterPlaybackControl = playbackHint == null &&
         (!state.isPlaying || controlsVisible)
     AnimatedVisibility(
         visible = showCenterPlaybackControl,
