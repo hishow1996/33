@@ -97,7 +97,6 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
@@ -216,13 +215,6 @@ fun PlayerScreen(
             val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
             val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
             val previousSystemUiVisibility = decorView.systemUiVisibility
-            // setDecorFitsSystemWindows changes only these legacy layout bits on Android 9.
-            // Preserve this subset instead of writing the full systemUiVisibility mask back.
-            val layoutInsetFlagsMask =
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            val previousLayoutInsetFlags = previousSystemUiVisibility and layoutInsetFlagsMask
             val previousRootInsets = ViewCompat.getRootWindowInsets(decorView)
             val wasStatusBarVisible = previousRootInsets?.isVisible(
                 WindowInsetsCompat.Type.statusBars()
@@ -243,7 +235,10 @@ fun PlayerScreen(
             }
 
             fun applyFullscreenWindowMode() {
-                WindowCompat.setDecorFitsSystemWindows(window, false)
+                // The Activity stays edge-to-edge for its whole lifetime (set once in MainActivity).
+                // Fullscreen only hides the bars and rotates; it never flips decorFitsSystemWindows,
+                // otherwise Compose keeps a stale status-bar inset after exit and the whole app
+                // ends up with a duplicated blank strip at the top.
                 insetsController.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 insetsController.hide(WindowInsetsCompat.Type.systemBars())
@@ -311,20 +306,12 @@ fun PlayerScreen(
                 pendingInsetRecoveryListeners += decorView to insetRecoveryListener
                 decorView.addOnLayoutChangeListener(insetRecoveryListener)
 
-                // Restore only the window properties changed by fullscreen. Do not write back the
-                // entire systemUiVisibility bitmask: it overlaps with decorFits flags and can
-                // undo WindowCompat's portrait insets configuration.
+                // Restore only the window properties changed by fullscreen (bar visibility,
+                // behavior, appearance, orientation). decorFitsSystemWindows is never touched.
                 runCatching {
                     insetsController.systemBarsBehavior = previousSystemBarsBehavior
                     insetsController.isAppearanceLightStatusBars = previousLightStatusBars
                     insetsController.isAppearanceLightNavigationBars = previousLightNavigationBars
-                    WindowCompat.setDecorFitsSystemWindows(window, true)
-                    if (android.os.Build.VERSION.SDK_INT < 30) {
-                        val currentSystemUiVisibility = decorView.systemUiVisibility
-                        decorView.systemUiVisibility =
-                            (currentSystemUiVisibility and layoutInsetFlagsMask.inv()) or
-                                previousLayoutInsetFlags
-                    }
                     if (wasStatusBarVisible) {
                         insetsController.show(WindowInsetsCompat.Type.statusBars())
                     } else {

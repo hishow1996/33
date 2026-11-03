@@ -17,6 +17,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import io.translatetube.local.ui.screens.*
 import io.translatetube.local.ui.theme.BgDark
 import io.translatetube.local.ui.theme.TranslateTubeTheme
@@ -232,6 +234,12 @@ class MainActivity : ComponentActivity() {
                 editor.putString("tts_engine", "edge")
             }
         }.apply()
+        // Edge-to-edge for the whole Activity lifetime. Compose is then the single owner of
+        // system-bar insets (see systemBarsPadding on the root Box below). The player's
+        // fullscreen mode only hides/shows the bars and must never toggle this flag again:
+        // flipping it back and forth left Compose with a stale status-bar inset after leaving
+        // fullscreen, which showed up as an extra blank strip at the top of every page.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         handleIntent(intent)
         if (pendingResumeTaskState.value == null) {
             pendingResumeTaskState.value = loadPendingResumeTask()
@@ -387,8 +395,12 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // 全局大屏适配：内容限宽居中（平板/折叠屏不拉伸变形）
+                // systemBarsPadding here gives every screen (including the WebView page) the same
+                // status/navigation-bar offset the decor view used to provide. Screens that add
+                // their own systemBarsPadding are not padded twice: Compose consumes insets that an
+                // ancestor already applied.
                 Box(
-                    Modifier.fillMaxSize().background(BgDark),
+                    Modifier.fillMaxSize().background(BgDark).systemBarsPadding(),
                     contentAlignment = Alignment.TopCenter,
                 ) {
                     Box(
