@@ -6238,23 +6238,24 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         requireUnconsumed = false,
                         pass = PointerEventPass.Initial,
                     )
-                    val shortLandscapeControls = isFullscreen &&
-                        size.width.toFloat() > size.height.toFloat() * 1.15f &&
+                    // Match the compact right-control placement threshold used by the
+                    // layout below, so the gesture exclusion always covers the visible button row.
+                    val compactTopRightControls = isFullscreen &&
                         size.height < with(this) { 280.dp.toPx() }
                     val seekbarSafeBottom = with(this) {
                         if (isFullscreen) 108.dp.toPx() else 44.dp.toPx()
                     }
                     val rightControlSafeEdge = if (controlsVisible) {
                         with(this) {
-                            if (shortLandscapeControls) 164.dp.toPx() else 64.dp.toPx()
+                            if (compactTopRightControls) 164.dp.toPx() else 64.dp.toPx()
                         }
                     } else 0f
-                    val rightControlSafeTop = if (shortLandscapeControls && controlsVisible) {
+                    val rightControlSafeTop = if (compactTopRightControls && controlsVisible) {
                         with(this) { 104.dp.toPx() }
                     } else 0f
                     val startsInsideRightControls = controlsVisible &&
                         down.position.x > size.width - rightControlSafeEdge &&
-                        (!shortLandscapeControls || down.position.y < rightControlSafeTop)
+                        (!compactTopRightControls || down.position.y < rightControlSafeTop)
                     if (
                         down.position.x < size.width * 0.62f ||
                         startsInsideRightControls ||
