@@ -3099,9 +3099,20 @@ class PlaybackService : MediaSessionService() {
         // A prepared player renders its first frame even while paused, so a bound video view that
         // never gets one is a black screen whether or not playback intent was ever applied. Waiting
         // for playWhenReady here missed the case where play silently never took effect.
-        val videoViewBound = boundVideoSurface?.get() != null
+        val surfaceView = requestedVideoSurface?.get()
+        val surfaceReady = surfaceView?.let { view ->
+            view.isAttachedToWindow && view.isAvailable && view.width > 0 && view.height > 0
+        } == true
+        if (videoUiVisible && surfaceReady && boundVideoSurface?.get() !== surfaceView) {
+            // A visible, ready TextureView that is not connected to this service's player is a
+            // binding problem, not a decoder failure. Repair the binding before starting the
+            // first-frame timeout so it cannot force an unnecessary player/service rebuild.
+            surfaceView?.let(::attachSurface)
+        }
+        val videoViewBound = surfaceView != null && boundVideoSurface?.get() === surfaceView
         val noFirstFrameTimedOut = if (
-            videoUiVisible && (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
+            videoUiVisible && surfaceReady && videoViewBound &&
+                (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
         ) {
             if (noFrameWaitSessionKey != state.key || noFrameWaitStartedAtMs <= 0L) {
                 noFrameWaitSessionKey = state.key
@@ -3192,8 +3203,10 @@ class PlaybackService : MediaSessionService() {
             "当前处理阶段" to state.phase.name,
             "播放页面是否可见" to videoUiVisible.toString(),
             "画面控件是否存在" to (surfaceView != null).toString(),
+            "画面控件是否附着" to (surfaceView?.isAttachedToWindow?.toString() ?: "无画面控件"),
             "画面控件是否可用" to (surfaceView?.isAvailable?.toString() ?: "无画面控件"),
-            "画面是否已绑定播放器" to (boundVideoSurface?.get() != null).toString(),
+            "画面控件尺寸" to (surfaceView?.let { "${it.width}x${it.height}" } ?: "无画面控件"),
+            "画面是否已绑定播放器" to (boundVideoSurface?.get() === surfaceView && surfaceView != null).toString(),
             "自动处理阶段" to firstFrameEscalationStage.toString(),
             "此前是否已自动重建" to PlayerRebuildCoordinator.wasRebuilt(state.key).toString(),
         )
