@@ -5348,8 +5348,8 @@ private fun CurrentSubtitleStrip(
                     else textMeasurer.measure(
                         text = translated,
                         style = androidx.compose.ui.text.TextStyle(
-                            fontSize = 14.sp,
-                            lineHeight = 17.sp,
+                            fontSize = 17.sp,
+                            lineHeight = 20.sp,
                             fontWeight = FontWeight.Medium,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         ),
@@ -5362,8 +5362,8 @@ private fun CurrentSubtitleStrip(
                     else textMeasurer.measure(
                         text = source,
                         style = androidx.compose.ui.text.TextStyle(
-                            fontSize = 12.sp,
-                            lineHeight = 14.sp,
+                            fontSize = 14.sp,
+                            lineHeight = 17.sp,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         ),
                         constraints = Constraints(maxWidth = captionContentWidthPx),
@@ -5416,7 +5416,9 @@ private fun CurrentSubtitleStrip(
                             if (fullscreen) alpha = captionAlpha
                         },
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
+                    verticalArrangement = if (fullscreen) {
+                        Arrangement.spacedBy(2.dp, Alignment.CenterVertically)
+                    } else Arrangement.Center,
                 ) {
                     if (translated.isNotBlank()) {
                         Text(
