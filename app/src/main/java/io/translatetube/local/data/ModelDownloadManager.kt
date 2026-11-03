@@ -1556,9 +1556,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val rootPath = staging.canonicalFile.path + File.separator
         val maxExtractedBytes = 1024L * 1024 * 1024
         var extractedBytes = 0L
+        var processedBytes = 0L
         val archiveTotalBytes = pkg.length().coerceAtLeast(1L)
         val progressStep = (archiveTotalBytes / 100L).coerceAtLeast(1L * 1024L * 1024L)
         var nextProgressAt = progressStep
+        val processedProgressStep = 1L * 1024L * 1024L
+        var nextProcessedProgressAt = processedProgressStep
 
         // Reuse a large extraction buffer for the whole archive; BZip2 reads bits in small
         // increments, so buffering the underlying file avoids excessive low-level disk reads.
@@ -1571,6 +1574,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 BufferedInputStream(FileInputStream(pkg), 256 * 1024),
             )
             TarArchiveInputStream(BZip2CompressorInputStream(archiveInput)).use { tar ->
+                fun publishProgress(force: Boolean = false) {
+                    val compressedBytesRead = archiveInput.bytesRead.coerceAtMost(archiveTotalBytes)
+                    if (force ||
+                        compressedBytesRead >= nextProgressAt ||
+                        processedBytes >= nextProcessedProgressAt
+                    ) {
+                        onProgress?.invoke(processedBytes, compressedBytesRead, archiveTotalBytes)
+                        while (nextProgressAt <= compressedBytesRead) {
+                            nextProgressAt += progressStep
+                        }
+                        while (nextProcessedProgressAt <= processedBytes) {
+                            nextProcessedProgressAt += processedProgressStep
+                        }
+                    }
+                }
                 while (true) {
                     checkActive()
                     val entry = tar.nextTarEntry ?: break
@@ -1591,11 +1609,6 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         if (!entry.isDirectory) throw java.io.IOException("模型压缩包根路径不是目录")
                         continue
                     }
-                    // The official SenseVoice archive also ships test WAVs. Install only the
-                    // recognizer model and vocabulary, not the example audio that is never used.
-                    if (destDir.name == "sensevoice" &&
-                        relative != "model.int8.onnx" && relative != "tokens.txt"
-                    ) continue
                     val output = File(staging, relative).canonicalFile
                     if (!output.path.startsWith(rootPath)) {
                         throw java.io.IOException("模型压缩包路径越界")
@@ -1613,41 +1626,59 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     if (!seenRegularFiles.add(relative)) {
                         throw java.io.IOException("模型压缩包重复包含同一路径的文件：$relative")
                     }
-                    // Subtract the already-bounded total instead of adding an untrusted tar
-                    // entry size, which could overflow Long before the limit comparison.
-                    if (entry.size > maxExtractedBytes - extractedBytes) {
+                    // Count all expanded archive data, including files intentionally omitted
+                    // from the installed SenseVoice package, to keep progress and size limits real.
+                    if (entry.size > maxExtractedBytes - processedBytes) {
                         throw java.io.IOException("解压后的模型超过大小限制")
                     }
-                    output.parentFile?.let {
-                        if (!it.exists() && !it.mkdirs()) throw java.io.IOException("无法创建模型子目录")
-                    }
-                    BufferedOutputStream(FileOutputStream(output), 256 * 1024).use { out ->
-                        var fileBytes = 0L
+
+                    // SenseVoice archives may contain example WAVs that are not installed.
+                    // Consume those entries in bounded chunks so progress and cancellation
+                    // remain responsive instead of silently skipping a potentially large file.
+                    val shouldInstall = destDir.name != "sensevoice" ||
+                        relative == "model.int8.onnx" || relative == "tokens.txt"
+                    var fileBytes = 0L
+                    if (!shouldInstall) {
                         while (true) {
                             checkActive()
                             val count = io.translatetube.local.util.ProgressSafeInput.read(tar, extractionBuffer)
                             if (count < 0) break
                             fileBytes += count
+                            processedBytes += count
+                            if (processedBytes > maxExtractedBytes || fileBytes > entry.size) {
+                                throw java.io.IOException("解压后的模型超过大小限制")
+                            }
+                            publishProgress()
+                        }
+                        if (fileBytes != entry.size) throw java.io.IOException("模型文件长度校验失败")
+                        publishProgress(force = true)
+                        continue
+                    }
+
+                    output.parentFile?.let {
+                        if (!it.exists() && !it.mkdirs()) throw java.io.IOException("无法创建模型子目录")
+                    }
+                    BufferedOutputStream(FileOutputStream(output), 256 * 1024).use { out ->
+                        while (true) {
+                            checkActive()
+                            val count = io.translatetube.local.util.ProgressSafeInput.read(tar, extractionBuffer)
+                            if (count < 0) break
+                            fileBytes += count
+                            processedBytes += count
                             extractedBytes += count
-                            if (extractedBytes > maxExtractedBytes || fileBytes > entry.size) {
+                            if (processedBytes > maxExtractedBytes || fileBytes > entry.size) {
                                 throw java.io.IOException("解压后的模型超过大小限制")
                             }
                             out.write(extractionBuffer, 0, count)
-                            if (archiveInput.bytesRead >= nextProgressAt) {
-                                onProgress?.invoke(
-                                    extractedBytes,
-                                    archiveInput.bytesRead.coerceAtMost(archiveTotalBytes),
-                                    archiveTotalBytes,
-                                )
-                                nextProgressAt = (archiveInput.bytesRead / progressStep + 1L) * progressStep
-                            }
+                            publishProgress()
                         }
                         if (fileBytes != entry.size) throw java.io.IOException("模型文件长度校验失败")
                     }
+                    publishProgress(force = true)
                 }
             }
             onProgress?.invoke(
-                extractedBytes,
+                processedBytes,
                 archiveInput.bytesRead.coerceAtMost(archiveTotalBytes),
                 archiveTotalBytes,
             )
