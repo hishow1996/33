@@ -62,7 +62,7 @@ internal object InProgressProcessingCheckpointStore {
             state.lines.size > MAX_LINES ||
             state.sourceLang.isBlank() ||
             state.manualTranslationWaiting ||
-            state.phase !in setOf(Phase.TRANSLATING, Phase.SYNTHESIZING) ||
+            !InProgressProcessingCheckpointPhasePolicy.canPersist(state.phase) ||
             state.lines.any { it.startMs < 0L || it.endMs <= it.startMs || it.text.isBlank() } ||
             state.lines.zipWithNext().any { (previous, current) ->
                 current.startMs < previous.startMs

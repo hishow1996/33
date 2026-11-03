@@ -1431,6 +1431,8 @@ class PlaybackService : MediaSessionService() {
             ensureCurrentSession(sessionKey, pipelineGeneration)
             val state = ui.value
             if (state.key != sessionKey || state.lines.isEmpty()) return@withLock
+            if (!InProgressProcessingCheckpointPhasePolicy.canPersist(state.phase)) return@withLock
+
             val identityKey = activeProcessingCheckpointIdentityKey
             val fingerprints = processingEngineDomainFingerprints
             if (identityKey.isBlank() ||
@@ -1439,8 +1441,36 @@ class PlaybackService : MediaSessionService() {
                 fingerprints.dubbing.isBlank()
             ) return@withLock
 
-            // AtomicFile protects against torn files, while this generation/identity check and the
-            // mutex prevent an older canceled run from winning a race against a newer checkpoint.
+            // READY only means the startup buffer can play. Keep a recovery checkpoint while
+            // later cues are still being synthesized, but remove it after the entire queue is
+            // prepared. The same mutex also serializes this deletion against pending writes.
+            val readyResultIsComplete =
+                state.phase == Phase.READY &&
+                    !state.waitingForTranscriptionEngine &&
+                    !state.waitingForDubbingEngine &&
+                    !state.dubbingHasErrors &&
+                    state.lines.none { needsSubtitleTranslation(it, state.sourceLang) } &&
+                    isDubbingQueueFullyPreparedForCheckpoint(state)
+            if (readyResultIsComplete) {
+                withContext(Dispatchers.IO) {
+                    if (
+                        videoKey == sessionKey &&
+                        activePipelineGeneration == pipelineGeneration &&
+                        activeProcessingCheckpointIdentityKey == identityKey
+                    ) {
+                        InProgressProcessingCheckpointStore.delete(
+                            this@PlaybackService,
+                            sessionKey,
+                            identityKey,
+                        )
+                    }
+                }
+                return@withLock
+            }
+
+            // AtomicFile protects against torn files, while this generation/identity check and
+            // the shared mutex prevent an older canceled run from winning a race against a newer
+            // checkpoint or recreating one after the completed-session cleanup.
             val saved = withContext(Dispatchers.IO) {
                 if (
                     videoKey != sessionKey ||
@@ -1487,6 +1517,8 @@ class PlaybackService : MediaSessionService() {
                         },
                         "当前阶段" to state.phase.name,
                         "字幕行数" to state.lines.size.toString(),
+                        "已准备配音行数" to state.preparedCount.toString(),
+                        "配音总行数" to state.totalLines.toString(),
                         "检查点大小限制 MB" to "24",
                         "失败处理代数" to pipelineGeneration.toString(),
                     ),
@@ -1495,7 +1527,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** Best-effort lifecycle flush; the store rejects phases without a valid subtitle checkpoint. */
+    /** Best-effort lifecycle flush; unrelated phases and completed READY sessions are no-ops. */
     fun persistCurrentProcessingCheckpoint() {
         val sessionKey = videoKey
         val generation = activePipelineGeneration
@@ -2701,32 +2733,34 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
         pipelineGeneration: Long,
     ) {
-        val state = ui.value
-        if (
-            state.key != sessionKey ||
-            activePipelineGeneration != pipelineGeneration ||
-            activeProcessingCheckpointIdentityKey.isBlank() ||
-            state.phase != Phase.READY ||
-            state.waitingForTranscriptionEngine ||
-            state.waitingForDubbingEngine ||
-            state.dubbingHasErrors ||
-            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) } ||
-            !isDubbingQueueFullyPreparedForCheckpoint(state)
-        ) return
-
-        val identityKey = activeProcessingCheckpointIdentityKey
-        withContext(Dispatchers.IO) {
-            // A new open/configuration restart may begin while the file operation is queued.
+        inProgressCheckpointWriteMutex.withLock {
+            val state = ui.value
             if (
-                videoKey == sessionKey &&
-                activePipelineGeneration == pipelineGeneration &&
-                activeProcessingCheckpointIdentityKey == identityKey
-            ) {
-                InProgressProcessingCheckpointStore.delete(
-                    this@PlaybackService,
-                    sessionKey,
-                    identityKey,
-                )
+                state.key != sessionKey ||
+                activePipelineGeneration != pipelineGeneration ||
+                activeProcessingCheckpointIdentityKey.isBlank() ||
+                state.phase != Phase.READY ||
+                state.waitingForTranscriptionEngine ||
+                state.waitingForDubbingEngine ||
+                state.dubbingHasErrors ||
+                state.lines.any { needsSubtitleTranslation(it, state.sourceLang) } ||
+                !isDubbingQueueFullyPreparedForCheckpoint(state)
+            ) return@withLock
+
+            val identityKey = activeProcessingCheckpointIdentityKey
+            withContext(Dispatchers.IO) {
+                // A new open/configuration restart may begin while the file operation is queued.
+                if (
+                    videoKey == sessionKey &&
+                    activePipelineGeneration == pipelineGeneration &&
+                    activeProcessingCheckpointIdentityKey == identityKey
+                ) {
+                    InProgressProcessingCheckpointStore.delete(
+                        this@PlaybackService,
+                        sessionKey,
+                        identityKey,
+                    )
+                }
             }
         }
     }
