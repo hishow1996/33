@@ -1339,6 +1339,8 @@ class PlaybackService : MediaSessionService() {
                         fingerprints = fingerprints,
                         requireFreshDubbing =
                             forceFreshDubbingPipelineGeneration == pipelineGeneration,
+                        requireFreshTranslation =
+                            forceFreshTranslationPipelineGeneration == pipelineGeneration,
                     )
                 }
             }
@@ -4418,7 +4420,7 @@ class PlaybackService : MediaSessionService() {
                     return@launch
                 }
                 val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
-                val checkpointRestartStage = checkpoint?.let { saved ->
+                val fingerprintRestartStage = checkpoint?.let { saved ->
                     chooseEngineRestartStage(
                         previous = saved.fingerprints,
                         current = currentDomains,
@@ -4426,6 +4428,11 @@ class PlaybackService : MediaSessionService() {
                         ignoreTranscription = false,
                     )
                 }
+                val checkpointRestartStage = EngineRestartStagePolicy.checkpointRestartStage(
+                    fingerprintStage = fingerprintRestartStage,
+                    requireFreshTranslation = checkpoint?.requireFreshTranslation == true,
+                    requireFreshDubbing = checkpoint?.requireFreshDubbing == true,
+                )
                 val checkpointState = when (checkpointRestartStage) {
                     // A changed ASR configuration invalidates the transcript, but the normal
                     // audio cache still avoids downloading/extracting the webpage track again.
@@ -4492,9 +4499,8 @@ class PlaybackService : MediaSessionService() {
                         requestToken = requestToken,
                         reuseMountedMediaForRestart = reuseMountedMediaForRestart,
                         restoreReadySnapshot = restoreReadySnapshot,
-                        // A changed transcription/translation/TTS fingerprint means this is
-                        // a new output run. Carry the fresh-synthesis requirement across process
-                        // death and checkpoint restoration instead of reviving old dubbing PCM.
+                        // Persisted stage flags survive process death even when the checkpoint
+                        // fingerprint baseline already reflects the newly selected downstream engine.
                         forceRegenerateDubbing = forceRegenerateDubbing ||
                             checkpointRestartStage != null ||
                             checkpoint?.requireFreshDubbing == true,
