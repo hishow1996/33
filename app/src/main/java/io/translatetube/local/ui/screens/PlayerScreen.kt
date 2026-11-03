@@ -12,7 +12,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -675,8 +674,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
     }
 
-    // 系统返回键：存进度回主页，而不是退出应用
-    androidx.activity.compose.BackHandler {
+    // 全屏时由上方的专用 BackHandler 负责退出全屏；普通返回只在非全屏状态启用。
+    androidx.activity.compose.BackHandler(enabled = !isFullscreen) {
         exitFloating()
         PlaybackService.instance?.saveProgress()
         onBack()
@@ -1303,14 +1302,18 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     )
                 }
                 if (isFullscreen && subtitlesVisible && state.key == requestKey) {
-                    CurrentSubtitleStrip(
-                        state = state,
-                        fullscreen = true,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .windowInsetsPadding(WindowInsets.displayCutout)
-                            .padding(bottom = 112.dp),
-                    )
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val subtitleBottomClearance = (maxHeight * 0.30f)
+                            .coerceIn(112.dp, 136.dp)
+                        CurrentSubtitleStrip(
+                            state = state,
+                            fullscreen = true,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .windowInsetsPadding(WindowInsets.displayCutout)
+                                .padding(bottom = subtitleBottomClearance),
+                        )
+                    }
                 }
                 // A compatible history item opens this player immediately. While its media session
                 // is being restored, show a compact loading veil instead of the five-stage pipeline
@@ -5155,7 +5158,35 @@ private fun CurrentSubtitleStrip(
     val distinctOriginalText = originalText.takeIf {
         it.isNotBlank() && !it.trim().equals(chineseText.trim(), ignoreCase = true)
     }.orEmpty()
-    if (chineseText.isNotBlank() || distinctOriginalText.isNotBlank()) {
+    val caption = chineseText to distinctOriginalText
+    val captionHasContent = caption.first.isNotBlank() || caption.second.isNotBlank()
+    var displayedCaption by remember(state.key, fullscreen) {
+        mutableStateOf(caption)
+    }
+    var captionVisible by remember(state.key, fullscreen) {
+        mutableStateOf(captionHasContent)
+    }
+    LaunchedEffect(caption, fullscreen) {
+        if (fullscreen && caption != displayedCaption) {
+            val previousHasContent =
+                displayedCaption.first.isNotBlank() || displayedCaption.second.isNotBlank()
+            if (previousHasContent) {
+                captionVisible = false
+                delay(110)
+            }
+            displayedCaption = caption
+            captionVisible = captionHasContent
+        }
+    }
+    val captionAlpha by animateFloatAsState(
+        targetValue = if (!fullscreen || captionVisible) 1f else 0f,
+        animationSpec = if (captionVisible) tween(120) else tween(100),
+        label = "fullscreen-caption-sequential-alpha",
+    )
+    val renderedCaption = if (fullscreen) displayedCaption else caption
+    val renderedCaptionHasContent =
+        renderedCaption.first.isNotBlank() || renderedCaption.second.isNotBlank()
+    if (renderedCaptionHasContent || (fullscreen && captionHasContent)) {
         BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
             val horizontalInset = if (fullscreen) {
                 (maxWidth * 0.11f).coerceIn(48.dp, 88.dp)
@@ -5211,28 +5242,16 @@ private fun CurrentSubtitleStrip(
                     }
                 }
             }
-            val caption = chineseText to distinctOriginalText
-            if (fullscreen) {
-                Crossfade(
-                    targetState = caption,
-                    animationSpec = tween(140, easing = FastOutSlowInEasing),
-                    label = "fullscreen-subtitle-crossfade",
-                ) { targetCaption ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = horizontalInset),
-                    ) {
-                        captionContent(targetCaption)
-                    }
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = horizontalInset),
-                ) {
-                    captionContent(caption)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = horizontalInset)
+                    .graphicsLayer {
+                        alpha = if (fullscreen) captionAlpha else 1f
+                    },
+            ) {
+                if (renderedCaptionHasContent) {
+                    captionContent(renderedCaption)
                 }
             }
         }
@@ -6136,7 +6155,16 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.displayCutout)
-            .pointerInput(state.key, audioManager, maxMusicVolume, isFullscreen) {
+            .pointerInput(
+                state.key,
+                audioManager,
+                maxMusicVolume,
+                isFullscreen,
+                qualityExpanded,
+                speedExpanded,
+                volumeExpanded,
+                scrubbing,
+            ) {
                 awaitEachGesture {
                     val down = awaitFirstDown(
                         requireUnconsumed = false,
@@ -6153,7 +6181,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         (isFullscreen && down.position.x > size.width - rightControlSafeEdge) ||
                         down.position.y > size.height - seekbarSafeBottom ||
                         audioManager == null ||
-                        maxMusicVolume <= 0
+                        maxMusicVolume <= 0 ||
+                        qualityExpanded ||
+                        speedExpanded ||
+                        volumeExpanded ||
+                        scrubbing
                     ) {
                         return@awaitEachGesture
                     }
@@ -6228,6 +6260,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         }
                     } finally {
                         if (claimedVolumeGesture) {
+                            // Restart the auto-hide timer after a real volume gesture.
+                            recordInteraction()
                             // No timeout or fade: the indicator disappears as soon as the finger lifts.
                             volumeGestureActive = false
                         }
