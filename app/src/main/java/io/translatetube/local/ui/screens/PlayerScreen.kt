@@ -186,8 +186,9 @@ fun PlayerScreen(
         currentContext as? android.app.Activity
     }
     var isFullscreen by remember { mutableStateOf(false) }
+    val fullscreenLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
 
-    DisposableEffect(activity, isFullscreen) {
+    DisposableEffect(activity, isFullscreen, fullscreenLifecycleOwner) {
         if (activity != null && isFullscreen) {
             val previousOrientation = activity.requestedOrientation
             val window = activity.window
@@ -208,9 +209,9 @@ fun PlayerScreen(
                         android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 }
             }
-            activity.lifecycle.addObserver(fullscreenLifecycleObserver)
+            fullscreenLifecycleOwner.lifecycle.addObserver(fullscreenLifecycleObserver)
             onDispose {
-                activity.lifecycle.removeObserver(fullscreenLifecycleObserver)
+                fullscreenLifecycleOwner.lifecycle.removeObserver(fullscreenLifecycleObserver)
                 runCatching { activity.requestedOrientation = previousOrientation }
                 runCatching {
                     insetsController.show(WindowInsetsCompat.Type.systemBars())
