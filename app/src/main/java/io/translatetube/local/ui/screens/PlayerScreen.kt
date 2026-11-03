@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -5642,6 +5643,56 @@ private fun PlaybackHintOverlay(
 }
 
 @Composable
+private fun PlaybackOverlayIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    touchSize: androidx.compose.ui.unit.Dp,
+    iconSize: androidx.compose.ui.unit.Dp,
+    tint: Color = Color.White,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.92f else 1f,
+        animationSpec = tween(110, easing = FastOutSlowInEasing),
+        label = "playback-control-scale",
+    )
+    val alpha by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.74f else if (enabled) 1f else 0.58f,
+        animationSpec = tween(110, easing = FastOutSlowInEasing),
+        label = "playback-control-alpha",
+    )
+
+    Box(
+        modifier = Modifier
+            .size(touchSize)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                this.alpha = alpha
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier
+                .size(iconSize)
+                .shadow(2.dp, CircleShape, clip = false),
+        )
+    }
+}
+
+@Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
     playbackHint: PlaybackHint?,
@@ -5649,28 +5700,45 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     onStartFloat: () -> Unit,
     onExitFloat: () -> Unit,
 ) {
-    // Resolve the live service at each interaction; the screen may compose before Service.onCreate completes.
     var pos by remember(state.key) { mutableStateOf(0f) }
     var scrubbing by remember(state.key) { mutableStateOf(false) }
     var qualityExpanded by remember { mutableStateOf(false) }
     var speedExpanded by remember { mutableStateOf(false) }
     var controlsVisible by remember(state.key) { mutableStateOf(true) }
-    var speed by remember(state.key) { mutableStateOf(1.0f) }
+    var speed by remember(state.key) {
+        mutableStateOf(runCatching { PlaybackService.instance?.playbackSpeed() ?: 1.0f }.getOrDefault(1.0f))
+    }
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
 
-    // Hide the outer controls after inactivity. AnimatedVisibility below keeps the exit
-    // transition alive instead of removing the controls immediately.
+    // Pausing always restores and pins the controls. Only active playback auto-hides them.
+    LaunchedEffect(state.key, state.isPlaying) {
+        if (!state.isPlaying) controlsVisible = true
+    }
     LaunchedEffect(state.key, state.isPlaying, controlsVisible, qualityExpanded, speedExpanded, scrubbing) {
-        if (!controlsVisible || qualityExpanded || speedExpanded || scrubbing) return@LaunchedEffect
+        if (!state.isPlaying || !controlsVisible || qualityExpanded || speedExpanded || scrubbing) {
+            return@LaunchedEffect
+        }
         delay(3_000)
-        controlsVisible = false
+        if (state.isPlaying && !qualityExpanded && !speedExpanded && !scrubbing) {
+            controlsVisible = false
+        }
     }
 
-    // Transparent picture tap target remains behind all controls.
+    // Keep the visible multiplier in sync with the actual player parameters.
+    LaunchedEffect(state.key) {
+        while (true) {
+            runCatching { PlaybackService.instance?.playbackSpeed() }.getOrNull()
+                ?.takeIf { it.isFinite() && it > 0f }
+                ?.let { speed = it }
+            delay(500)
+        }
+    }
+
+    // Tapping the picture toggles controls only during playback; pause keeps them visible.
     Box(
         Modifier.fillMaxSize().pointerInput(state.key, state.isPlaying, controlsVisible) {
             detectTapGestures {
-                controlsVisible = if (controlsVisible) false else true
+                controlsVisible = if (!state.isPlaying) true else !controlsVisible
             }
         }
     )
@@ -5686,7 +5754,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-    // The center playback control stays available while paused and fades with the overlay while playing.
     val showCenterPlaybackControl = !state.isBuffering && playbackHint == null &&
         (!state.isPlaying || controlsVisible)
     AnimatedVisibility(
@@ -5695,26 +5762,18 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
         modifier = Modifier.fillMaxSize(),
     ) {
-        Box(
-            Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            IconButton(
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            PlaybackOverlayIconButton(
+                icon = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                contentDescription = if (state.isPlaying) "暂停" else "播放",
+                touchSize = 60.dp,
+                iconSize = 44.dp,
+                enabled = controlsVisible,
                 onClick = {
                     if (state.isPlaying) PlaybackService.instance?.pausePlayback()
                     else PlaybackService.instance?.playPlayback()
                 },
-                modifier = Modifier.size(52.dp),
-            ) {
-                Icon(
-                    imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (state.isPlaying) "暂停" else "播放",
-                    tint = Color.White,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .shadow(2.dp, CircleShape, clip = false),
-                )
-            }
+            )
         }
     }
 
@@ -5725,29 +5784,55 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         modifier = Modifier.fillMaxSize(),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val compactVideo = maxHeight < 180.dp
             val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
-            val controlTargetSize = if (compactVideo) 44.dp else 48.dp
-            val rightControlsGap = if (compactVideo) 18.dp else 40.dp
-            val seekThumbRadiusPx = with(LocalDensity.current) { 6.dp.toPx() }
+            val bottomReserved = when {
+                maxHeight < 120.dp -> 20.dp
+                maxHeight < 180.dp -> 32.dp
+                else -> 40.dp
+            }
+            val controlTargetSize = when {
+                maxHeight < 120.dp -> 36.dp
+                maxHeight < 180.dp -> 40.dp
+                maxHeight < 240.dp -> 44.dp
+                else -> 48.dp
+            }
+            val availableRightHeight = (maxHeight - bottomReserved).coerceAtLeast(72.dp)
+            val rightControlsGap = (availableRightHeight - controlTargetSize - controlTargetSize)
+                .coerceIn(8.dp, 40.dp)
+            val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
+            val seekThumbRadiusPx = with(LocalDensity.current) { seekThumbRadius.toPx() }
+            val durationForUi = (PlaybackService.instance?.duration() ?: 0L)
+                .takeIf { it > 0L } ?: state.durationMs.coerceAtLeast(0L)
 
-            // Speed remains on the left edge, vertically centered, with a full-size touch target.
+            // Current speed is visible without opening the menu; the icon remains transparent.
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .padding(start = edgePadding),
             ) {
-                IconButton(
-                    onClick = { speedExpanded = true },
-                    modifier = Modifier.size(controlTargetSize),
-                ) {
-                    Icon(
-                        Icons.Filled.Speed,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PlaybackOverlayIconButton(
+                        icon = Icons.Filled.Speed,
                         contentDescription = "播放倍速",
-                        tint = Color.White,
-                        modifier = Modifier
-                            .size(24.dp)
-                            .shadow(2.dp, CircleShape, clip = false),
+                        touchSize = controlTargetSize,
+                        iconSize = 24.dp,
+                        tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                        enabled = controlsVisible,
+                        onClick = { speedExpanded = true },
+                    )
+                    Text(
+                        text = "${speed}×",
+                        color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = Color.Black.copy(alpha = 0.85f),
+                                offset = Offset(0f, 1f),
+                                blurRadius = 3f,
+                            ),
+                        ),
+                        modifier = Modifier.padding(end = 8.dp),
                     )
                 }
                 DropdownMenu(
@@ -5758,8 +5843,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         DropdownMenuItem(
                             text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
                             onClick = {
-                                speed = value
                                 PlaybackService.instance?.setSpeed(value)
+                                speed = value
                                 speedExpanded = false
                             },
                         )
@@ -5767,63 +5852,78 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 }
             }
 
-            // Quality is above picture-in-picture. Keep the preferred 40dp gap on normal
-            // video sizes and compact it only when the actual video height needs the space.
-            Column(
+            // Place the right-side pair in the space above the seekbar, not over its touch area.
+            Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = edgePadding),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(rightControlsGap),
+                    .fillMaxHeight()
+                    .padding(end = edgePadding, bottom = bottomReserved),
             ) {
-                Box {
-                    IconButton(
-                        onClick = { qualityExpanded = true },
-                        enabled = state.qualityOptions.isNotEmpty(),
-                        modifier = Modifier.size(controlTargetSize),
-                    ) {
-                        Icon(
-                            Icons.Filled.HighQuality,
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(rightControlsGap),
+                ) {
+                    Box {
+                        PlaybackOverlayIconButton(
+                            icon = Icons.Filled.HighQuality,
                             contentDescription = "选择清晰度",
+                            touchSize = controlTargetSize,
+                            iconSize = 24.dp,
                             tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
-                            modifier = Modifier
-                                .size(24.dp)
-                                .shadow(2.dp, CircleShape, clip = false),
+                            enabled = controlsVisible && state.qualityOptions.isNotEmpty(),
+                            onClick = { qualityExpanded = true },
                         )
-                    }
-                    DropdownMenu(
-                        expanded = qualityExpanded,
-                        onDismissRequest = { qualityExpanded = false },
-                    ) {
-                        state.qualityOptions.forEach { quality ->
-                            DropdownMenuItem(
-                                text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
-                                onClick = {
-                                    qualityExpanded = false
-                                    PlaybackService.instance?.selectQuality(quality)
-                                },
-                            )
+                        DropdownMenu(
+                            expanded = qualityExpanded,
+                            onDismissRequest = { qualityExpanded = false },
+                        ) {
+                            state.qualityOptions.forEach { quality ->
+                                DropdownMenuItem(
+                                    text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
+                                    onClick = {
+                                        qualityExpanded = false
+                                        PlaybackService.instance?.selectQuality(quality)
+                                    },
+                                )
+                            }
                         }
                     }
-                }
 
-                IconButton(
-                    onClick = { if (isFloating) onExitFloat() else onStartFloat() },
-                    modifier = Modifier.size(controlTargetSize),
-                ) {
-                    Icon(
-                        Icons.Filled.PictureInPictureAlt,
+                    PlaybackOverlayIconButton(
+                        icon = Icons.Filled.PictureInPictureAlt,
                         contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
+                        touchSize = controlTargetSize,
+                        iconSize = 24.dp,
                         tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
-                        modifier = Modifier
-                            .size(24.dp)
-                            .shadow(2.dp, CircleShape, clip = false),
+                        enabled = controlsVisible,
+                        onClick = { if (isFloating) onExitFloat() else onStartFloat() },
                     )
                 }
             }
 
-            // The seekbar is the only control along the bottom. Its transparent touch
-            // target is 36dp high while the visible track stays close to the lower edge.
+            AnimatedVisibility(
+                visible = scrubbing,
+                enter = fadeIn(animationSpec = tween(100)),
+                exit = fadeOut(animationSpec = tween(140)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 42.dp),
+            ) {
+                Text(
+                    text = "${formatFloatingTime((pos * durationForUi).toLong())} / ${formatFloatingTime(durationForUi)}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        shadow = androidx.compose.ui.graphics.Shadow(
+                            color = Color.Black.copy(alpha = 0.9f),
+                            offset = Offset(0f, 1f),
+                            blurRadius = 3f,
+                        ),
+                    ),
+                )
+            }
+
+            // Fine resting track; on drag, both the thumb and track grow temporarily.
             Canvas(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -5831,19 +5931,21 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .padding(horizontal = 16.dp)
                     .padding(bottom = 3.dp)
                     .height(36.dp)
-                    .pointerInput(state.key, state.durationMs) {
+                    .pointerInput(controlsVisible, state.key, state.durationMs) {
+                        if (!controlsVisible) return@pointerInput
                         detectTapGestures { offset ->
                             val duration = (PlaybackService.instance?.duration() ?: 0L)
                                 .takeIf { it > 0L } ?: state.durationMs
                             if (duration > 0L && size.width > 0) {
-                                val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
-                                pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
+                                val seekableWidth = (size.width - 2f * 6.dp.toPx()).coerceAtLeast(1f)
+                                pos = ((offset.x - 6.dp.toPx()) / seekableWidth).coerceIn(0f, 1f)
                                 PlaybackService.instance?.seek((pos * duration).toLong())
                                 scrubbing = false
                             }
                         }
                     }
-                    .pointerInput(state.key, state.durationMs) {
+                    .pointerInput(controlsVisible, state.key, state.durationMs) {
+                        if (!controlsVisible) return@pointerInput
                         detectDragGestures(
                             onDragStart = { offset ->
                                 scrubbing = true
@@ -5868,7 +5970,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         }
                     },
             ) {
-                val trackHeight = 2.dp.toPx()
+                val trackHeight = if (scrubbing) 4.dp.toPx() else 2.dp.toPx()
                 val centerY = size.height - 8.dp.toPx()
                 val thumbRadius = seekThumbRadiusPx
                 val trackWidth = (size.width - 2f * thumbRadius).coerceAtLeast(0f)
