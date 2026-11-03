@@ -6882,7 +6882,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
         }
     }
-}
 
 @Composable
 private fun PlaybackMenuItem(
