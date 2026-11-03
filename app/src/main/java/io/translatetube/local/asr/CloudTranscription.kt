@@ -734,7 +734,10 @@ object CloudTranscription {
                 .apply { mkdirs() }
         }
         if (checkpointDirectory != null) {
-            KawaAsrCheckpointStore.cleanupStale(checkpointDirectory)
+            KawaAsrCheckpointStore.cleanupStale(
+                directory = checkpointDirectory,
+                activeIdentity = checkpointIdentity,
+            )
         }
 
         // Do not create every chunk up front: for a long recording that duplicates almost the
