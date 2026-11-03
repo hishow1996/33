@@ -4479,12 +4479,13 @@ class PlaybackService : MediaSessionService() {
         val requestedResumeState = if (localMediaChangedForActiveSession) null else resumeState
         val engineConfigChangedSinceLastSuccess =
             ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
-        val canRestoreStoredResult =
+        val canFindCompletedSnapshotBaseline =
             requestedResumeState == null &&
                 importedLines == null &&
                 key.isNotBlank() &&
-                forceRegenerateFromStage == null &&
-                !engineConfigChangedSinceLastSuccess
+                forceRegenerateFromStage == null
+        val canRestoreStoredResult =
+            canFindCompletedSnapshotBaseline && !engineConfigChangedSinceLastSuccess
         // Restrict persisted restoration to flows that can actually be produced by this source.
         // YouTube may legitimately use either captions or ASR; webpage/local media use their own ASR flow.
         val expectedSnapshotFlows = when {
@@ -4529,7 +4530,7 @@ class PlaybackService : MediaSessionService() {
             }
         } else null
         val fallbackSnapshot = if (
-            canRestoreStoredResult &&
+            canFindCompletedSnapshotBaseline &&
             reusableSnapshot == null &&
             !forceYouTubeSubtitleRefresh
         ) {
