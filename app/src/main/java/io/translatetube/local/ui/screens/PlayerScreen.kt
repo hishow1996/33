@@ -117,6 +117,7 @@ import io.translatetube.local.player.Phase
 import io.translatetube.local.player.ProcessingFlow
 import io.translatetube.local.player.VideoSourceKind
 import io.translatetube.local.player.VideoProcessingFlowPolicy
+import io.translatetube.local.player.SubtitleAutoScrollPolicy
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.subs.SubtitleParsers
@@ -209,6 +210,7 @@ fun PlayerScreen(
     }
     val listState = rememberLazyListState()
     var pauseAutoScrollForUser by remember(listState) { mutableStateOf(false) }
+    var manualBrowseLineAtRelease by remember(listState) { mutableIntStateOf(Int.MIN_VALUE) }
     var subtitlesVisible by remember { mutableStateOf(true) }
     var advancedMenuExpanded by remember { mutableStateOf(false) }
     var showSubtitleDownloadDialog by remember { mutableStateOf(false) }
@@ -1657,6 +1659,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     // by a stale Stop/Cancel event from the first one.
     LaunchedEffect(state.key) {
         pauseAutoScrollForUser = false
+        manualBrowseLineAtRelease = Int.MIN_VALUE
     }
     LaunchedEffect(listState) {
         val activeDrags = mutableSetOf<DragInteraction.Start>()
@@ -1668,9 +1671,14 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     resumeJob?.cancel()
                     pauseAutoScrollForUser = true
                 }
-                is DragInteraction.Stop -> {
-                    activeDrags.remove(interaction.start)
+                is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                    activeDrags.remove(
+                        if (interaction is DragInteraction.Stop) interaction.start else (interaction as DragInteraction.Cancel).start
+                    )
                     if (activeDrags.isEmpty()) {
+                        // Remember the playhead at finger-up, not the playhead after the reading
+                        // grace period. A new cue that arrives during that period must still follow.
+                        manualBrowseLineAtRelease = subtitleActiveLineState.value
                         resumeJob?.cancel()
                         resumeJob = launch {
                             // Give Compose time to start the fling, then wait for it to end.
@@ -1687,63 +1695,58 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         }
                     }
                 }
-                is DragInteraction.Cancel -> {
-                    activeDrags.remove(interaction.start)
-                    if (activeDrags.isEmpty()) {
-                        resumeJob?.cancel()
-                        resumeJob = launch {
-                            delay(100L)
-                            if (listState.isScrollInProgress) {
-                                withTimeoutOrNull(10_000L) {
-                                    snapshotFlow { listState.isScrollInProgress }
-                                        .first { scrolling -> !scrolling }
-                                }
-                            }
-                            delay(1_800L)
-                            if (activeDrags.isEmpty()) pauseAutoScrollForUser = false
-                        }
-                    }
-                }
             }
         }
     }
 
-    // Follow the video timeline, independently of asynchronous dubbing-audio startup.
-    // When manual browsing ends, do not snap back to the same cue: resume on the next cue.
-    val autoScrollTarget = rememberUpdatedState(
-        Triple(subtitleActiveLineState.value, state.lines.size, pauseAutoScrollForUser)
-    )
-    LaunchedEffect(state.key, state.phase, subtitlesVisible) {
+    // Keep timeline observation inside the effect. Reading the State holders through
+    // snapshotFlow avoids subscribing the whole PlayerScreen composition to each line change.
+    LaunchedEffect(state.key, state.phase, subtitlesVisible, listState) {
         if (state.phase != Phase.READY || !subtitlesVisible) return@LaunchedEffect
         var lastObservedLine = Int.MIN_VALUE
         var wasManuallyBrowsing = false
-        snapshotFlow { autoScrollTarget.value }
+        snapshotFlow {
+            Triple(
+                subtitleActiveLineState.value,
+                subtitleLinesState.value.size,
+                pauseAutoScrollForUser,
+            )
+        }
             .distinctUntilChanged()
             .collectLatest { (target, lineCount, pausedByUser) ->
                 if (pausedByUser) {
-                    lastObservedLine = target
                     wasManuallyBrowsing = true
                     return@collectLatest
                 }
-                // Releasing the drag only hands control back. It must not immediately yank
-                // the list away from the subtitle the user has just scrolled to read.
-                if (wasManuallyBrowsing && target == lastObservedLine) {
+                if (wasManuallyBrowsing) {
                     wasManuallyBrowsing = false
-                    return@collectLatest
+                    if (
+                        SubtitleAutoScrollPolicy.shouldSkipImmediateResume(
+                            wasManuallyBrowsing = true,
+                            lastManualLine = manualBrowseLineAtRelease,
+                            currentLine = target,
+                        )
+                    ) {
+                        lastObservedLine = target
+                        return@collectLatest
+                    }
                 }
-                wasManuallyBrowsing = false
                 if (target == lastObservedLine) return@collectLatest
                 lastObservedLine = target
                 if (target !in 0 until lineCount) return@collectLatest
 
-                // Coalesce rapid seeks and very short cues; only the latest target survives.
+                // Coalesce rapid seeks and short cues. collectLatest cancels stale waits/scrolls.
                 delay(100L)
-                val latest = autoScrollTarget.value
-                if (latest.third || latest.first != target || target !in 0 until latest.second) {
+                val latestLine = subtitleActiveLineState.value
+                val latestCount = subtitleLinesState.value.size
+                if (
+                    pauseAutoScrollForUser ||
+                    latestLine != target ||
+                    target !in 0 until latestCount
+                ) {
                     return@collectLatest
                 }
 
-                // Wait for LazyColumn measurement before calculating a target position.
                 val initialInfo = listState.layoutInfo
                 if (initialInfo.viewportSize.height <= 0 || initialInfo.totalItemsCount <= target) {
                     snapshotFlow {
@@ -1751,27 +1754,15 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     }.first { (height, itemCount) -> height > 0 && itemCount > target }
                 }
                 val info = listState.layoutInfo
-                val viewportHeight = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
-                val topGuard = info.viewportStartOffset + (viewportHeight * 0.22f).toInt()
-                val bottomGuard = info.viewportEndOffset - (viewportHeight * 0.22f).toInt()
                 val item = info.visibleItemsInfo.firstOrNull { it.index == target }
-                val itemBottom = item?.let { it.offset + it.size } ?: Int.MIN_VALUE
-                val oversizedCaption = item != null && item.size >= (viewportHeight * 0.82f).toInt()
-
-                // Long captions cannot fit inside the reading band. Keep them in place while
-                // any part is already visible; normal rows stay within a wide central zone.
-                val shouldFollow = when {
-                    item == null -> true
-                    oversizedCaption -> item.offset < info.viewportStartOffset
-                    else -> item.offset < topGuard || itemBottom > bottomGuard
-                }
-                if (shouldFollow) {
-                    val targetOffset = if (oversizedCaption) {
-                        -(viewportHeight * 0.08f).toInt()
-                    } else {
-                        -(viewportHeight * 0.44f).toInt()
-                    }
-                    listState.animateScrollToItem(target, scrollOffset = targetOffset)
+                val decision = SubtitleAutoScrollPolicy.decide(
+                    viewportStartOffset = info.viewportStartOffset,
+                    viewportEndOffset = info.viewportEndOffset,
+                    itemOffset = item?.offset,
+                    itemSize = item?.size,
+                )
+                if (decision.shouldScroll) {
+                    listState.animateScrollToItem(target, scrollOffset = decision.scrollOffset)
                 }
             }
     }
