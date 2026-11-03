@@ -19,6 +19,8 @@ internal object CloudAsrResponseCheckpointStore {
     const val MAX_RESPONSE_BYTES = 16L * 1024L * 1024L
     private const val MAX_FILE_BYTES = MAX_RESPONSE_BYTES + 512L
     const val MAX_AGE_MS = 7L * 24L * 60L * 60L * 1_000L
+    const val MAX_CACHED_FILES = 24
+    const val MAX_CACHED_BYTES = 96L * 1024L * 1024L
     private const val PARTIAL_MAX_AGE_MS = 6L * 60L * 60L * 1_000L
     private val supportedProviders = setOf("elevenlabs", "cartesia")
 
@@ -153,7 +155,16 @@ internal object CloudAsrResponseCheckpointStore {
         }
     }
 
-    fun cleanupStale(directory: File, nowMs: Long = System.currentTimeMillis()): Int {
+    /**
+     * Remove expired responses and keep this cache bounded. Preserve the current request's file
+     * while pruning least-recently-used results, so a retry cannot evict the response it is about
+     * to restore. Other files in the shared directory are never touched.
+     */
+    fun cleanupStale(
+        directory: File,
+        nowMs: Long = System.currentTimeMillis(),
+        keepFile: File? = null,
+    ): Int {
         val files = directory.listFiles() ?: return 0
         var deleted = 0
         for (file in files) {
@@ -165,6 +176,23 @@ internal object CloudAsrResponseCheckpointStore {
             val modified = file.lastModified()
             val ageLimit = if (stageFile || backupFile) PARTIAL_MAX_AGE_MS else MAX_AGE_MS
             if (modified > 0L && nowMs >= modified && nowMs - modified > ageLimit && file.delete()) {
+                deleted++
+            }
+        }
+
+        val results = directory.listFiles { file ->
+            file.isFile && file.name.startsWith("cloud-asr-") && file.name.endsWith(".bin")
+        }?.sortedByDescending { it.lastModified() } ?: return deleted
+        var totalBytes = results.sumOf { it.length().coerceAtLeast(0L) }
+        var remaining = results.size
+        val keepPath = keepFile?.absoluteFile?.path
+        for (file in results.asReversed()) {
+            if (remaining <= MAX_CACHED_FILES && totalBytes <= MAX_CACHED_BYTES) break
+            if (file.absoluteFile.path == keepPath) continue
+            val size = file.length().coerceAtLeast(0L)
+            if (file.delete()) {
+                totalBytes = (totalBytes - size).coerceAtLeast(0L)
+                remaining--
                 deleted++
             }
         }
