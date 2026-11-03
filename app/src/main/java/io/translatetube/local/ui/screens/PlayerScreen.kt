@@ -198,7 +198,19 @@ fun PlayerScreen(
             insetsController.hide(WindowInsetsCompat.Type.systemBars())
             activity.requestedOrientation =
                 android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            val fullscreenLifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                    WindowCompat.setDecorFitsSystemWindows(window, false)
+                    insetsController.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    insetsController.hide(WindowInsetsCompat.Type.systemBars())
+                    activity.requestedOrientation =
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                }
+            }
+            activity.lifecycle.addObserver(fullscreenLifecycleObserver)
             onDispose {
+                activity.lifecycle.removeObserver(fullscreenLifecycleObserver)
                 runCatching { activity.requestedOrientation = previousOrientation }
                 runCatching {
                     insetsController.show(WindowInsetsCompat.Type.systemBars())
@@ -1303,8 +1315,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 }
                 if (isFullscreen && subtitlesVisible && state.key == requestKey) {
                     BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val navigationBarInset = with(LocalDensity.current) {
+                            WindowInsets.navigationBars.getBottom(this).toDp()
+                        }
                         val subtitleBottomClearance = (maxHeight * 0.30f)
-                            .coerceIn(112.dp, 136.dp)
+                            .coerceIn(112.dp, 136.dp) + navigationBarInset
                         CurrentSubtitleStrip(
                             state = state,
                             fullscreen = true,
@@ -5193,13 +5208,33 @@ private fun CurrentSubtitleStrip(
             } else 0.dp
             val captionContent: @Composable (Pair<String, String>) -> Unit = { caption ->
                 val (translated, source) = caption
+                val longestCaptionLength = maxOf(translated.length, source.length)
+                val fullscreenChineseSize = when {
+                    longestCaptionLength > 88 -> 11.sp
+                    longestCaptionLength > 60 -> 12.sp
+                    longestCaptionLength > 34 -> 13.sp
+                    else -> 14.sp
+                }
+                val fullscreenChineseLineHeight = when {
+                    longestCaptionLength > 60 -> 14.sp
+                    longestCaptionLength > 34 -> 16.sp
+                    else -> 17.sp
+                }
+                val fullscreenOriginalSize = when {
+                    longestCaptionLength > 60 -> 10.sp
+                    longestCaptionLength > 34 -> 11.sp
+                    else -> 12.sp
+                }
+                val fullscreenOriginalLineHeight = if (longestCaptionLength > 34) 12.sp else 14.sp
+                val captionMaxLines = if (fullscreen && (maxWidth < 420.dp || longestCaptionLength > 34)) 3 else 2
+                val captionMaxHeight = if (fullscreen && maxHeight < 220.dp) 82.dp else 96.dp
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .then(
                             if (fullscreen) {
                                 Modifier
-                                    .heightIn(min = 46.dp, max = 80.dp)
+                                    .heightIn(min = 42.dp, max = captionMaxHeight)
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(Color.Black.copy(alpha = 0.46f))
                             } else {
@@ -5219,11 +5254,11 @@ private fun CurrentSubtitleStrip(
                         Text(
                             text = translated,
                             color = if (fullscreen) Color.White else BrandBright,
-                            fontSize = if (fullscreen) 14.sp else 15.sp,
-                            lineHeight = if (fullscreen) 17.sp else 18.sp,
+                            fontSize = if (fullscreen) fullscreenChineseSize else 15.sp,
+                            lineHeight = if (fullscreen) fullscreenChineseLineHeight else 18.sp,
                             fontWeight = FontWeight.Medium,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            maxLines = 2,
+                            maxLines = captionMaxLines,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -5232,10 +5267,10 @@ private fun CurrentSubtitleStrip(
                         Text(
                             text = source,
                             color = if (fullscreen) Color(0xFFE1E5EC) else Color(0xFF64748B),
-                            fontSize = 12.sp,
-                            lineHeight = 14.sp,
+                            fontSize = if (fullscreen) fullscreenOriginalSize else 12.sp,
+                            lineHeight = if (fullscreen) fullscreenOriginalLineHeight else 14.sp,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            maxLines = 2,
+                            maxLines = captionMaxLines,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -6304,7 +6339,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         visible = controlsVisible,
         enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
         exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
-        modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout),
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.displayCutout)
+            .windowInsetsPadding(WindowInsets.navigationBars),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
@@ -6678,6 +6716,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .windowInsetsPadding(WindowInsets.displayCutout)
+                .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(bottom = 66.dp),
         ) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -6731,6 +6770,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .windowInsetsPadding(WindowInsets.displayCutout)
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(start = 10.dp, top = 8.dp)
                     .size(44.dp)
                     .clip(CircleShape)
