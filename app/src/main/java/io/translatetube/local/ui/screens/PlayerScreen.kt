@@ -1549,30 +1549,46 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     }
                 }
                 playbackHint?.let { hint ->
-                    PlaybackHintOverlay(
-                        hint = hint,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 58.dp, start = 12.dp, end = 12.dp),
-                        onAction = { action ->
-                            when (action) {
-                                PlaybackHintAction.OPEN_SETTINGS -> onGoSettings()
-                                else -> {
-                                    val activeService = PlaybackService.instance
-                                    if (activeService?.isReady == true) {
-                                        activeService.performPlaybackHintAction(action)
-                                    } else if (action in setOf(
-                                            PlaybackHintAction.RETRY,
-                                            PlaybackHintAction.RELOAD,
-                                            PlaybackHintAction.REPARSE,
-                                        )
-                                    ) {
-                                        retryCurrentTask()
+                    // Keep loading/recovery text out of the left and right control columns.
+                    // On narrow or short video windows, move it to the top where the controls
+                    // do not occupy the same horizontal band.
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val centeredHintWidth = (maxWidth - 224.dp).coerceAtLeast(0.dp)
+                        val placeHintAtTop = centeredHintWidth < 180.dp || maxHeight < 220.dp
+                        val hintWidth = if (placeHintAtTop) {
+                            (maxWidth - 24.dp).coerceAtLeast(0.dp)
+                        } else {
+                            centeredHintWidth
+                        }
+                        PlaybackHintOverlay(
+                            hint = hint,
+                            modifier = Modifier
+                                .align(if (placeHintAtTop) Alignment.TopCenter else Alignment.BottomCenter)
+                                .width(hintWidth)
+                                .then(
+                                    if (placeHintAtTop) Modifier.padding(top = 12.dp)
+                                    else Modifier.padding(bottom = 58.dp),
+                                ),
+                            onAction = { action ->
+                                when (action) {
+                                    PlaybackHintAction.OPEN_SETTINGS -> onGoSettings()
+                                    else -> {
+                                        val activeService = PlaybackService.instance
+                                        if (activeService?.isReady == true) {
+                                            activeService.performPlaybackHintAction(action)
+                                        } else if (action in setOf(
+                                                PlaybackHintAction.RETRY,
+                                                PlaybackHintAction.RELOAD,
+                                                PlaybackHintAction.REPARSE,
+                                            )
+                                        ) {
+                                            retryCurrentTask()
+                                        }
                                     }
                                 }
-                            }
-                        },
-                    )
+                            },
+                        )
+                    }
                 }
             }
 
@@ -6078,7 +6094,7 @@ private fun PlaybackHintOverlay(
     val secondaryActionLabel = hint.secondaryActionLabel
 
     Column(
-        modifier = modifier.fillMaxWidth(0.94f),
+        modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(
