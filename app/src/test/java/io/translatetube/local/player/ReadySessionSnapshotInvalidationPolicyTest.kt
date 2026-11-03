@@ -61,6 +61,35 @@ class ReadySessionSnapshotInvalidationPolicyTest {
     }
 
     @Test
+    fun youtubeSubtitleLanguageChangesAlsoRecheckPreviousAsrFallbackSessions() {
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                ProcessingFlow.AUTO,
+            ),
+        )
+        for (flow in listOf(
+            ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ProcessingFlow.IMPORTED_SUBTITLES,
+            ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+        )) {
+            assertFalse(
+                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(flow),
+            )
+        }
+    }
+
+    @Test
     fun sameCaptionTimelineIsMatchedAcrossTranslationAndTtsResults() {
         assertTrue(
             ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(

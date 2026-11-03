@@ -9,6 +9,10 @@ internal object ReadySessionSnapshotInvalidationPolicy {
     fun isYouTubeCaptionFlow(flow: ProcessingFlow): Boolean =
         flow == ProcessingFlow.YOUTUBE_SUBTITLES || flow == ProcessingFlow.AUTO
 
+    /** Subtitle-language changes must re-run YouTube source discovery, including prior ASR fallbacks. */
+    fun isYouTubeSubtitleSelectionFlow(flow: ProcessingFlow): Boolean =
+        isYouTubeCaptionFlow(flow) || flow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+
     fun sameYouTubeCaptionSource(
         saved: PlayerUiState,
         invalid: PlayerUiState,

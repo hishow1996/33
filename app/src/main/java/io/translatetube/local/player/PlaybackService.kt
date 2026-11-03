@@ -412,16 +412,24 @@ private object ReadyHistorySessionConfigStore {
         snapshotIdentityKey: String = videoKey,
     ): Boolean {
         if (videoKey.isBlank()) return false
-        if (ReadySessionSnapshotStore.findForCurrentConfig(
-                context, videoKey, identityKey = snapshotIdentityKey,
-            ) { ignoreTranscription ->
-                fingerprint(
-                    context,
-                    ignoreTranscription = ignoreTranscription,
-                    videoKey = videoKey,
-                )
-            } != null
-        ) return true
+        val exactSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(
+            context, videoKey, identityKey = snapshotIdentityKey,
+        ) { ignoreTranscription ->
+            fingerprint(
+                context,
+                ignoreTranscription = ignoreTranscription,
+                videoKey = videoKey,
+            )
+        }
+        val savedFlowForModeCheck = savedProcessingFlow(context, videoKey)
+            ?: exactSnapshot?.state?.processingFlow
+        if (
+            isYouTube &&
+            savedFlowForModeCheck != null &&
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(savedFlowForModeCheck) &&
+            hasYouTubeSubtitleModeChanged(context, videoKey)
+        ) return false
+        if (exactSnapshot != null) return true
         // The history row keeps only the media URL, not the page-origin or cookie scope. Without
         // a matching scoped snapshot, settings-only metadata cannot prove this is the same media
         // session, so never advertise an immediate READY restore for a remote URL.
@@ -1221,8 +1229,15 @@ class PlaybackService : MediaSessionService() {
         )
         val previousDomains = ReadyHistorySessionConfigStore.savedFingerprints(this, key)
         val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this)
-        val restartStage = previousDomains?.let { previous ->
-            chooseEngineRestartStage(previous, currentDomains, state, ignoreTranscription)
+        val forceYouTubeSubtitleRefresh =
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key)
+        val restartStage = if (forceYouTubeSubtitleRefresh) {
+            EngineRestartStage.TRANSCRIPTION
+        } else {
+            previousDomains?.let { previous ->
+                chooseEngineRestartStage(previous, currentDomains, state, ignoreTranscription)
+            }
         }
 
         if (restartStage != null && state.lines.isNotEmpty()) {
@@ -1235,9 +1250,10 @@ class PlaybackService : MediaSessionService() {
                 diagnosticContext = mapOf(
                     "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
                     "恢复阶段" to restartStage.name,
-                    "转写配置是否变化" to (previousDomains.transcription != currentDomains.transcription).toString(),
-                    "翻译配置是否变化" to (previousDomains.translation != currentDomains.translation).toString(),
-                    "配音配置是否变化" to (previousDomains.dubbing != currentDomains.dubbing).toString(),
+                    "转写配置是否变化" to (previousDomains?.let { it.transcription != currentDomains.transcription }?.toString() ?: "未知"),
+                    "翻译配置是否变化" to (previousDomains?.let { it.translation != currentDomains.translation }?.toString() ?: "未知"),
+                    "配音配置是否变化" to (previousDomains?.let { it.dubbing != currentDomains.dubbing }?.toString() ?: "未知"),
+                    "YouTube字幕语言设置是否变化" to forceYouTubeSubtitleRefresh.toString(),
                     "已复用字幕行数" to state.lines.size.toString(),
                     "音轨处理策略" to when (restartStage) {
                         EngineRestartStage.TRANSCRIPTION -> "复用已缓存音轨；重新转写、翻译和配音"
@@ -1255,7 +1271,7 @@ class PlaybackService : MediaSessionService() {
                 videoId = videoId,
                 localUri = localUri,
                 importedLines = importedRestartLines,
-                resumeState = restartState,
+                resumeState = if (forceYouTubeSubtitleRefresh) null else restartState,
                 remoteMediaUrl = remoteMediaUrl,
                 remoteMediaTitle = remoteMediaTitle,
                 remoteMediaReferrer = remoteMediaReferrer,
@@ -1265,6 +1281,7 @@ class PlaybackService : MediaSessionService() {
                 reuseMountedMediaForRestart = true,
                 forceRegenerateDubbing = true,
                 forceRegenerateFromStage = restartStage,
+                forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                 reuseMatchingDubbingCache = previousDomains?.let { previous ->
                     EngineRestartStagePolicy.canReuseMatchingDubbingCache(
                         previous,
@@ -1376,10 +1393,10 @@ class PlaybackService : MediaSessionService() {
         state: PlayerUiState,
         ignoreTranscription: Boolean,
     ): EngineRestartStage? {
-        // YouTube caption preference changes affect only sessions that actually consume
-        // downloaded YouTube captions (or legacy AUTO snapshots). ASR transcripts are independent.
+        // A subtitle-language preference change must re-enter YouTube source discovery even when
+        // the previous run fell back to ASR; the new mode may expose a usable caption track.
         if (
-            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(state.processingFlow) &&
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
                 ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)
         ) {
             return EngineRestartStage.TRANSCRIPTION
@@ -1515,7 +1532,10 @@ class PlaybackService : MediaSessionService() {
      * is open must not leave the previous engine's Chinese subtitles on screen.
      */
     private fun shouldRestartForEnginePreferenceChange(state: PlayerUiState): Boolean =
-        isProcessingPhase(state.phase) ||
+        (state.key.isNotBlank() &&
+            state.key == videoKey &&
+            pendingYouTubeSubtitleRefreshKey == state.key) ||
+            isProcessingPhase(state.phase) ||
             (state.phase == Phase.READY && (
                 state.waitingForTranscriptionEngine ||
                     state.waitingForDubbingEngine ||
@@ -1538,7 +1558,7 @@ class PlaybackService : MediaSessionService() {
                 if (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY && videoKey.isNotBlank()) {
                     val usesYouTubeCaptionSource =
                         current.key == videoKey &&
-                            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(current.processingFlow)
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(current.processingFlow)
                     pendingYouTubeSubtitleRefreshKey =
                         if (usesYouTubeCaptionSource &&
                             selectedYouTubeSubtitleMode() != activeProcessingYouTubeSubtitleMode
@@ -1608,7 +1628,7 @@ class PlaybackService : MediaSessionService() {
                             null
                         }
                         val forceYouTubeSubtitleRefresh =
-                            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(state.processingFlow) &&
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
                                 !usesUserImportedSubtitles &&
                                 pendingSubtitleModeRefresh &&
                                 restartVideoIdCandidate != null
@@ -4278,6 +4298,20 @@ class PlaybackService : MediaSessionService() {
                 "Discarded webpage source metadata because its media/session identity did not match the active request",
             )
         }
+        val previousYouTubeProcessingFlow =
+            resumeState?.processingFlow
+                ?: ReadyHistorySessionConfigStore.savedProcessingFlow(this, key)
+                ?: ui.value.takeIf { it.key == key }?.processingFlow
+        val refreshYouTubeSubtitleSource =
+            forceYouTubeSubtitleRefresh ||
+                (videoId != null &&
+                    importedLines.isNullOrEmpty() &&
+                    key.startsWith("youtube:", ignoreCase = true) &&
+                    ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key) &&
+                    previousYouTubeProcessingFlow != null &&
+                    ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                        previousYouTubeProcessingFlow,
+                    ))
         val checkpointLookupToken = if (skipInProgressCheckpointRestore) {
             processingCheckpointRestoreGeneration.get()
         } else {
@@ -4373,7 +4407,7 @@ class PlaybackService : MediaSessionService() {
                             forceRegenerateDubbing = forceRegenerateDubbing,
                             forceRegenerateFromStage = forceRegenerateFromStage,
                             reuseMatchingDubbingCache = reuseMatchingDubbingCache,
-                            forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                            forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
                             precomputedLocalMediaIdentityKey = identity,
                             localIdentityResolutionToken = identityToken,
                             skipInProgressCheckpointRestore = skipInProgressCheckpointRestore,
@@ -4406,7 +4440,7 @@ class PlaybackService : MediaSessionService() {
             resumeState == null &&
             importedLines == null &&
             !restoreReadySnapshot &&
-            !forceYouTubeSubtitleRefresh
+            !refreshYouTubeSubtitleSource
         ) {
             scope.launch {
                 val checkpoint = withContext(Dispatchers.IO) {
@@ -4506,7 +4540,7 @@ class PlaybackService : MediaSessionService() {
                             checkpoint?.requireFreshDubbing == true,
                         forceRegenerateFromStage = checkpointRestartStage ?: forceRegenerateFromStage,
                         reuseMatchingDubbingCache = false,
-                        forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                        forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
                         precomputedLocalMediaIdentityKey = localMediaIdentityKey,
                         localIdentityResolutionToken = localIdentityResolutionToken,
                         skipInProgressCheckpointRestore = true,
@@ -4522,7 +4556,9 @@ class PlaybackService : MediaSessionService() {
                 activeLocalMediaIdentityKey != localMediaIdentityKey
         // Engine-setting restarts may carry a subtitle snapshot from the mounted local file.
         // If the URI now resolves to different metadata, that snapshot belongs to the prior file.
-        val requestedResumeState = if (localMediaChangedForActiveSession) null else resumeState
+        val requestedResumeState = if (
+            localMediaChangedForActiveSession || refreshYouTubeSubtitleSource
+        ) null else resumeState
         val engineConfigChangedSinceLastSuccess =
             ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
         val canFindCompletedSnapshotBaseline =
@@ -4564,7 +4600,7 @@ class PlaybackService : MediaSessionService() {
         // an engine switch; the latest successful output is the baseline for stage selection.
         val reusableSnapshot = if (ReadySessionSnapshotReusePolicy.canReuseExactSnapshot(
             canRestoreStoredResult = canRestoreStoredResult,
-            forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+            forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
         )) {
             ReadySessionSnapshotStore.findForCurrentConfig(
                 this,
@@ -4578,7 +4614,7 @@ class PlaybackService : MediaSessionService() {
         val fallbackSnapshot = if (
             canFindCompletedSnapshotBaseline &&
             reusableSnapshot == null &&
-            !forceYouTubeSubtitleRefresh
+            !refreshYouTubeSubtitleSource
         ) {
             // A successful snapshot from the previous subtitle mode is not a valid fallback:
             // the caller intentionally needs to discover/download the newly preferred caption track.
@@ -4620,7 +4656,12 @@ class PlaybackService : MediaSessionService() {
             )
         } else null
         val fallbackCanBeCompared = fallbackPreviousDomains != null && fallbackCurrentDomains != null
-        val effectiveForceRegenerateFromStage = forceRegenerateFromStage ?: fallbackRestartStage
+        val effectiveForceRegenerateFromStage =
+            if (refreshYouTubeSubtitleSource) {
+                EngineRestartStage.TRANSCRIPTION
+            } else {
+                forceRegenerateFromStage ?: fallbackRestartStage
+            }
         val fallbackResumeState = when {
             fallbackSnapshot == null || !fallbackCanBeCompared -> null
             fallbackRestartStage != null ->
@@ -5026,7 +5067,7 @@ class PlaybackService : MediaSessionService() {
                     forceRegenerateDubbing = pipelineMustRegenerateDubbing,
                     forceRegenerateFromStage = effectiveForceRegenerateFromStage,
                     reuseMatchingDubbingCache = reuseMatchingDubbingCache,
-                    forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                    forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
                 )
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
