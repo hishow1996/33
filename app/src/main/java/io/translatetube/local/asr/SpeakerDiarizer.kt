@@ -443,6 +443,7 @@ object SpeakerDiarizer {
                         }
 
                         previousChunkEndSample = chunkEndSample
+                        onProgress("已分析音频分段 " + chunkIndex + "/" + totalChunks)
                         if (chunkEndSample >= pcmFile.sampleCount) break
                         chunkStartSample = (chunkEndSample - overlapSamples)
                             .coerceAtLeast(chunkStartSample + 1L)

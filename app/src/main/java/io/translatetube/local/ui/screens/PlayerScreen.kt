@@ -949,9 +949,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
                             title = when {
-                                isSpeakerBusy && speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING -> "正在取消人物识别…"
-                                isSpeakerBusy && speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.APPLYING -> "正在应用人物分配…"
-                                isSpeakerBusy && isSpeakerRecognitionVisible -> "正在识别人物…"
+                                isSpeakerBusy && speakerRecognition.isActive -> speakerRecognition.activeLabel
                                 isSpeakerBusy -> "正在更新人物音色…"
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> "重试区分人物"
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> "重试区分人物"
@@ -978,32 +976,50 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 thickness = 1.dp,
                             )
                             Column(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(7.dp),
                             ) {
                                 Text(
-                                    speakerRecognition.error ?: speakerRecognition.message,
-                                    color = if (
-                                        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
-                                    ) Color(0xFFB64A55) else SubText,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 2,
+                                    speakerRecognition.stageTitle,
+                                    color = OnBg,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
+                                val detailMessage = speakerRecognition.error ?: speakerRecognition.message
+                                if (detailMessage.isNotBlank()) {
+                                    Text(
+                                        detailMessage,
+                                        color = if (
+                                            speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
+                                        ) Color(0xFFB64A55) else SubText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                                 if (speakerRecognition.isActive) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
                                         val progressPercent = speakerRecognition.progressPercent
                                         if (progressPercent != null) {
                                             LinearProgressIndicator(
                                                 progress = { progressPercent.coerceIn(0, 100) / 100f },
-                                                modifier = Modifier.weight(1f).height(3.dp),
+                                                modifier = Modifier.weight(1f).height(4.dp),
+                                            )
+                                            Text(
+                                                "${progressPercent.coerceIn(0, 100)}%",
+                                                color = BrandBright,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
                                             )
                                         } else {
                                             LinearProgressIndicator(
-                                                modifier = Modifier.weight(1f).height(3.dp),
+                                                modifier = Modifier.weight(1f).height(4.dp),
                                             )
                                         }
                                         if (

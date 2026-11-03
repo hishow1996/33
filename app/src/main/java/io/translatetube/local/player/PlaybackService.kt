@@ -531,13 +531,6 @@ data class AudioProgressSnapshot(
     }
 }
 
-private fun speakerDownloadProgressPercent(message: String): Int? =
-    Regex("""(\d{1,3})%$""")
-        .find(message)
-        ?.groupValues
-        ?.getOrNull(1)
-        ?.toIntOrNull()
-        ?.coerceIn(0, 100)
 
 enum class SpeakerRecognitionPhase {
     IDLE,
@@ -564,6 +557,34 @@ data class SpeakerRecognitionUiState(
             phase == SpeakerRecognitionPhase.ANALYZING ||
             phase == SpeakerRecognitionPhase.APPLYING ||
             phase == SpeakerRecognitionPhase.CANCELLING
+
+    /** The one stage currently being processed; later stages are intentionally not listed. */
+    val stageTitle: String
+        get() = when (phase) {
+            SpeakerRecognitionPhase.IDLE -> "区分人物"
+            SpeakerRecognitionPhase.PREPARING ->
+                if (message.contains("解码")) "音频解码" else "音频准备"
+            SpeakerRecognitionPhase.DOWNLOADING_MODELS -> "下载人物模型"
+            SpeakerRecognitionPhase.ANALYZING -> "人物声音分析"
+            SpeakerRecognitionPhase.APPLYING ->
+                if (message.contains("更新配音")) "应用人物音色" else "关联字幕与人物"
+            SpeakerRecognitionPhase.CANCELLING -> "取消人物区分"
+            SpeakerRecognitionPhase.SUCCEEDED -> "区分完成"
+            SpeakerRecognitionPhase.FAILED -> "区分失败"
+            SpeakerRecognitionPhase.CANCELLED -> "已取消"
+        }
+
+    val activeLabel: String
+        get() = when (phase) {
+            SpeakerRecognitionPhase.PREPARING ->
+                if (message.contains("解码")) "正在解码音频…" else "正在准备音频…"
+            SpeakerRecognitionPhase.DOWNLOADING_MODELS -> "正在下载人物模型…"
+            SpeakerRecognitionPhase.ANALYZING -> "正在分析人物声音…"
+            SpeakerRecognitionPhase.APPLYING ->
+                if (message.contains("更新配音")) "正在应用人物音色…" else "正在关联字幕与人物…"
+            SpeakerRecognitionPhase.CANCELLING -> "正在取消人物区分…"
+            else -> "区分人物"
+        }
 }
 
 /** Metadata already discovered for the exact webpage candidate selected by the user. */
@@ -3621,7 +3642,7 @@ class PlaybackService : MediaSessionService() {
             return
         }
         val (title, detail) = if (speakerRecognitionActive) {
-            "正在区分人物" to state.speakerRecognition.message
+            "人物区分 · ${state.speakerRecognition.stageTitle}" to state.speakerRecognition.message
                 .ifBlank { state.progress.removePrefix("人物识别 · ").ifBlank { "正在分析音频" } }
         } else when (state.phase) {
             Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
@@ -13519,7 +13540,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                                 progress = "人物识别 · 解码音频 $percent%",
                                                 speakerRecognition = state.speakerRecognition.copy(
                                                     phase = SpeakerRecognitionPhase.PREPARING,
-                                                    message = "正在准备完整音频…",
+                                                    message = "正在解码音频…",
+                                                    progressPercent = percent.coerceIn(0, 100),
                                                 ),
                                             ) else state
                                         }
@@ -13573,7 +13595,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                             SpeakerRecognitionPhase.ANALYZING
                                         },
                                         message = message,
-                                        progressPercent = speakerDownloadProgressPercent(message),
+                                        progressPercent = SpeakerRecognitionProgressPolicy.fromMessage(message),
                                     ),
                                 ) else state
                             }
@@ -13623,7 +13645,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         speakerRecognition = SpeakerRecognitionUiState(
                             phase = SpeakerRecognitionPhase.APPLYING,
                             message = "正在关联人物与字幕…",
-                            progressPercent = null,
+                            progressPercent = 0,
                         ),
                     ) else state
                 }
@@ -13650,7 +13672,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                 }
                 if (!reuseSavedSpeakerTimeline) detectedSpeakerCount = canonicalSpeakerIds.size
-                val updated = originalLines.map { line ->
+                val totalCueCount = originalLines.size
+                val applyProgressStep = (totalCueCount / 40).coerceAtLeast(1)
+                val updated = originalLines.mapIndexed { lineIndex, line ->
                     val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
                     val speaker = if (reuseSavedSpeakerTimeline) {
                         assignmentSnapshot.lineSpeakers[keyForLine] ?: -1
@@ -13687,7 +13711,32 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     } else {
                         linePersonAssignments.remove(keyForLine)
                     }
-                    line.copy(speakerId = voice)
+                    val updatedLine = line.copy(speakerId = voice)
+                    val completedCueCount = lineIndex + 1
+                    if (
+                        completedCueCount == totalCueCount ||
+                        completedCueCount % applyProgressStep == 0
+                    ) {
+                        val percent = SpeakerRecognitionProgressPolicy.percentForCount(
+                            completedCount = completedCueCount,
+                            totalCount = totalCueCount,
+                        ) ?: 100
+                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { current ->
+                            if (
+                                current.key == sessionKey &&
+                                current.speakerRecognition.phase == SpeakerRecognitionPhase.APPLYING
+                            ) {
+                                current.copy(
+                                    speakerRecognition = current.speakerRecognition.copy(
+                                        message = "正在关联人物与字幕…",
+                                        progressPercent = percent,
+                                        personCount = detectedSpeakerCount,
+                                    ),
+                                )
+                            } else current
+                        }
+                    }
+                    updatedLine
                 }
                 saveSpeakerAssignments(
                     assignmentSnapshot.copy(
