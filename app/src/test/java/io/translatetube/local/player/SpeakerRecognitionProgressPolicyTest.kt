@@ -5,6 +5,73 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class SpeakerRecognitionProgressPolicyTest {
+
+    @Test
+    fun audioAcquisitionUsesMeasuredDownloadPercentage() {
+        val update = SpeakerRecognitionProgressPolicy.audioAcquisitionProgress(
+            "YouTube · 独立音轨 · 下载 12 MB / 48 MB · 25%",
+        )
+        assertEquals(SpeakerRecognitionStage.PREPARING_AUDIO, update.stage)
+        assertEquals(25, update.progressPercent)
+        assertEquals("音轨", update.progressItem)
+    }
+
+    @Test
+    fun audioAcquisitionWithoutPercentageRemainsIndeterminate() {
+        val update = SpeakerRecognitionProgressPolicy.audioAcquisitionProgress(
+            "网页媒体流 · 正在提取音轨…",
+        )
+        assertEquals(SpeakerRecognitionStage.PREPARING_AUDIO, update.stage)
+        assertNull(update.progressPercent)
+    }
+
+    @Test
+    fun speakerAudioDownloadCannotReplaceThePlayerProcessingPhase() {
+        val current = PlayerUiState(
+            key = "youtube:video",
+            phase = Phase.READY,
+            progress = "播放中",
+            transcriptionProgressPercent = 60,
+            speakerRecognition = SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.PREPARING,
+                stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                message = "正在准备音频…",
+            ),
+        )
+        val requested = current.copy(
+            phase = Phase.DOWNLOADING_AUDIO,
+            progress = "YouTube · 独立音轨 · 下载 32%",
+            transcriptionProgressPercent = 0,
+        )
+        val result = SpeakerRecognitionProgressPolicy.preservePlaybackState(
+            current = current,
+            requested = requested,
+            speakerRecognitionOnly = true,
+        )
+        assertEquals(Phase.READY, result.phase)
+        assertEquals("播放中", result.progress)
+        assertEquals(60, result.transcriptionProgressPercent)
+        assertEquals("YouTube · 独立音轨 · 下载 32%", result.speakerRecognition.message)
+        assertEquals(32, result.speakerRecognition.progressPercent)
+        assertEquals("音轨", result.speakerRecognition.progressItem)
+    }
+
+    @Test
+    fun normalPipelineDownloadKeepsItsOriginalPhaseAndProgress() {
+        val current = PlayerUiState(key = "youtube:video", phase = Phase.PARSING)
+        val requested = current.copy(
+            phase = Phase.DOWNLOADING_AUDIO,
+            progress = "YouTube · 正在下载 20%",
+        )
+        val result = SpeakerRecognitionProgressPolicy.preservePlaybackState(
+            current = current,
+            requested = requested,
+            speakerRecognitionOnly = false,
+        )
+        assertEquals(Phase.DOWNLOADING_AUDIO, result.phase)
+        assertEquals("YouTube · 正在下载 20%", result.progress)
+    }
+
     @Test
     fun singleChunkUsesIndeterminateProgressWhileRunning() {
         val update = SpeakerRecognitionProgressPolicy.analysisChunkStarted(1L, 1L)
