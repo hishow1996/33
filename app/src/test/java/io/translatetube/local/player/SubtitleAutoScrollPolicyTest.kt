@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -60,10 +61,10 @@ class SubtitleAutoScrollPolicyTest {
 
     @Test
     fun usesShorterCoalescingForShortCaptions() {
-        assertEquals(35L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 200L))
-        assertEquals(55L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 500L))
-        assertEquals(75L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 1_200L))
-        assertEquals(90L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 2_500L))
+        assertEquals(0L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 200L))
+        assertEquals(15L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 500L))
+        assertEquals(30L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 1_200L))
+        assertEquals(45L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 2_500L))
     }
 
     @Test
@@ -85,4 +86,27 @@ class SubtitleAutoScrollPolicyTest {
         assertFalse(decision.shouldScroll)
         assertFalse(decision.isLongCaption)
     }
+    @Test
+    fun shortCuesSnapInsteadOfStartingAnInterruptedScrollAnimation() {
+        assertFalse(SubtitleAutoScrollPolicy.shouldAnimateScroll(10, 11, 500L))
+        assertTrue(SubtitleAutoScrollPolicy.shouldAnimateScroll(10, 11, 1_200L))
+        assertFalse(SubtitleAutoScrollPolicy.shouldAnimateScroll(10, 14, 2_000L))
+        assertFalse(SubtitleAutoScrollPolicy.shouldAnimateScroll(10, 11, 2_000L, forceImmediate = true))
+    }
+
+    @Test
+    fun holdsPreviousHighlightOnlyForBriefCueTail() {
+        val lines = listOf(SubLine(0, 1_000L, 2_000L, "first"))
+        assertEquals(0, SubtitleHighlightPolicy.holdPreviousCueBriefly(lines, 0, 2_100L))
+        assertEquals(0, SubtitleHighlightPolicy.holdPreviousCueBriefly(lines, 0, 2_160L))
+        assertEquals(-1, SubtitleHighlightPolicy.holdPreviousCueBriefly(lines, 0, 2_161L))
+        assertEquals(-1, SubtitleHighlightPolicy.holdPreviousCueBriefly(lines, -1, 2_100L))
+    }
+
+    @Test
+    fun invalidPreviousCueCannotRemainHighlighted() {
+        val lines = listOf(SubLine(0, 1_000L, 2_000L, "first"))
+        assertEquals(-1, SubtitleHighlightPolicy.holdPreviousCueBriefly(lines, 5, 2_050L))
+    }
+
 }

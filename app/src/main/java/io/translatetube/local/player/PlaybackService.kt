@@ -12728,7 +12728,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (activeLine in lines.indices) return activeLine
 
         // 首句宽限期：ASR 给第一句的起点普遍偏晚（视频已开口、时间戳还没到）。
-        // 播放头处于片头空白且第一句在 2.5s 内开始时，直接提前显示第一句。
+        // 仅保留首句启动补偿，不提前预告后续字幕。
         val firstSpoken = highlightFirstSpokenLine
         if (firstSpoken in lines.indices) {
             val first = lines[firstSpoken]
@@ -12736,22 +12736,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (lead in 0L..2_500L) return firstSpoken
         }
 
-        // 短间隙预告：下一句即将开始（≤600ms 且行间隙紧凑）时提前切入，
-        // 消除"上一句话音刚落、屏幕空白半秒、下一句才弹出"的迟滞感。
-        val previousLine = lines.getOrNull(lastLineIdx)
-        if (previousLine != null && lastLineIdx + 1 in lines.indices) {
-            val next = lines[lastLineIdx + 1]
-            val cueGap = next.startMs - previousLine.endMs
-            if (cueGap in 0L..2_000L && next.startMs - positionMs in 0L..600L) {
-                return lastLineIdx + 1
-            }
-        }
-
-        // Small timing gaps between cues should not make the unified caption strip flicker.
-        // Keep the previous cue briefly, until the next cue starts or the gap is substantial.
-        val fallbackPrevious = previousLine ?: return -1
-        val gapAfterPreviousCue = positionMs - fallbackPrevious.endMs
-        return if (gapAfterPreviousCue in 0L..1_200L) lastLineIdx else -1
+        // 相邻字幕结束边界只保留极短缓冲，真实空档超过 160ms 后立即清除高亮。
+        // 下一句只会在 DubbingTimeline.lineAt() 命中其开始时间后切换，不提前显示。
+        return SubtitleHighlightPolicy.holdPreviousCueBriefly(
+            lines = lines,
+            previousLine = lastLineIdx,
+            positionMs = positionMs,
+        )
     }
     /**
      * ExoPlayer invokes some callbacks synchronously from seek()/play() on its application looper.

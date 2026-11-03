@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import kotlin.math.roundToInt
+import io.translatetube.local.subs.SubLine
 
 /**
  * Pure positioning and timing policy for the shared subtitle list.
@@ -14,6 +15,7 @@ internal object SubtitleAutoScrollPolicy {
     private const val LONG_CAPTION_TOP_RATIO = 0.08f
     private const val NORMAL_TARGET_RATIO = 0.44f
     private const val IMMEDIATE_JUMP_LINE_GAP = 4L
+    private const val ANIMATED_SCROLL_MIN_CUE_DURATION_MS = 900L
 
     internal data class Decision(
         val shouldScroll: Boolean,
@@ -65,10 +67,10 @@ internal object SubtitleAutoScrollPolicy {
     fun coalescingDelayMs(startMs: Long, endMs: Long): Long {
         val durationMs = if (endMs > startMs) endMs - startMs else 0L
         return when {
-            durationMs < 350L -> 35L
-            durationMs < 800L -> 55L
-            durationMs < 1_600L -> 75L
-            else -> 90L
+            durationMs < 350L -> 0L
+            durationMs < 800L -> 15L
+            durationMs < 1_600L -> 30L
+            else -> 45L
         }
     }
 
@@ -86,6 +88,22 @@ internal object SubtitleAutoScrollPolicy {
         return gap >= IMMEDIATE_JUMP_LINE_GAP || gap <= -IMMEDIATE_JUMP_LINE_GAP
     }
 
+    /**
+     * Short cues should snap into place instead of starting an animation that the next cue
+     * immediately interrupts. Only adjacent, long-enough cues use smooth scrolling.
+     */
+    fun shouldAnimateScroll(
+        previousLine: Int,
+        currentLine: Int,
+        cueDurationMs: Long,
+        forceImmediate: Boolean = false,
+    ): Boolean {
+        if (forceImmediate || previousLine == Int.MIN_VALUE) return false
+        val gap = currentLine.toLong() - previousLine.toLong()
+        return (gap == 1L || gap == -1L) &&
+            cueDurationMs >= ANIMATED_SCROLL_MIN_CUE_DURATION_MS
+    }
+
     /** Ignore the first emission after manual browsing when playback is still on that same cue. */
     fun shouldSkipImmediateResume(
         wasManuallyBrowsing: Boolean,
@@ -93,3 +111,22 @@ internal object SubtitleAutoScrollPolicy {
         currentLine: Int,
     ): Boolean = wasManuallyBrowsing && currentLine == lastManualLine
 }
+
+/**
+ * Resolves a brief post-cue grace period for subtitle readability without leaving a stale
+ * highlight across real gaps. A newly active timeline cue always takes priority.
+ */
+internal object SubtitleHighlightPolicy {
+    const val POST_CUE_GRACE_MS = 160L
+
+    fun holdPreviousCueBriefly(
+        lines: List<SubLine>,
+        previousLine: Int,
+        positionMs: Long,
+    ): Int {
+        val previous = lines.getOrNull(previousLine) ?: return -1
+        val elapsedAfterCue = positionMs - previous.endMs
+        return if (elapsedAfterCue in 0L..POST_CUE_GRACE_MS) previousLine else -1
+    }
+}
+

@@ -1322,7 +1322,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         val subtitleBottomClearance = (maxHeight * 0.30f)
                             .coerceIn(112.dp, 136.dp) + navigationBarInset
                         CurrentSubtitleStrip(
-                            state = state,
+                            sessionKey = state.key,
+                            currentLine = state.lines.getOrNull(state.currentLine),
+                            captionOverride = state.captionOverride,
                             fullscreen = true,
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -1416,7 +1418,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             }
 
             if (!isFullscreen && state.key == requestKey) {
-                CurrentSubtitleStrip(state = state)
+                CurrentSubtitleStrip(
+                    sessionKey = state.key,
+                    currentLine = state.lines.getOrNull(state.currentLine),
+                    captionOverride = state.captionOverride,
+                )
             }
 
             if (!isFullscreen) {
@@ -1862,6 +1868,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         endMs = targetCaption?.endMs ?: 0L,
                     )
                 }
+                val targetCueDurationMs = targetCaption?.let {
+                    (it.endMs - it.startMs).coerceAtLeast(0L)
+                } ?: 0L
                 if (coalescingDelay > 0L) delay(coalescingDelay)
 
                 val latestLine = subtitleActiveLineState.value
@@ -1891,7 +1900,13 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 )
                 if (decision.shouldScroll) {
                     val jumpImmediately = forceImmediateScroll ||
-                        SubtitleAutoScrollPolicy.shouldJumpImmediately(previousLine, target)
+                        SubtitleAutoScrollPolicy.shouldJumpImmediately(previousLine, target) ||
+                        !SubtitleAutoScrollPolicy.shouldAnimateScroll(
+                            previousLine = previousLine,
+                            currentLine = target,
+                            cueDurationMs = targetCueDurationMs,
+                            forceImmediate = forceImmediateScroll,
+                        )
                     if (jumpImmediately) {
                         listState.scrollToItem(target, scrollOffset = decision.scrollOffset)
                     } else {
@@ -5156,17 +5171,20 @@ private fun AllSubtitlesDialog(
 
 @Composable
 private fun CurrentSubtitleStrip(
-    state: PlayerUiState,
+    sessionKey: String,
+    currentLine: SubLine?,
+    captionOverride: String? = null,
     fullscreen: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    // The strip follows only the cue selected by the playback head.
-    val index = state.currentLine.takeIf { it in state.lines.indices } ?: -1
-    val currentLine = state.lines.getOrNull(index)
     val textMeasurer = rememberTextMeasurer()
-    // The inline strip never shows source text or a fallback error label.
-    val chineseText = remember(currentLine?.text, currentLine?.zh) {
+    // A merged dubbing cue is displayed as the same continuous Chinese phrase the TTS engine speaks.
+    // The normal inline strip remains Chinese-only; fullscreen retains the source-language line.
+    val baseChineseText = remember(currentLine?.text, currentLine?.zh) {
         currentLine?.let { SubtitleParsers.preferredTranslationText(it).orEmpty() }.orEmpty()
+    }
+    val chineseText = remember(baseChineseText, captionOverride) {
+        captionOverride?.trim()?.takeIf { it.isNotEmpty() } ?: baseChineseText
     }
     val originalText = currentLine?.text.orEmpty()
     val distinctOriginalText = if (fullscreen) {
@@ -5176,31 +5194,26 @@ private fun CurrentSubtitleStrip(
     } else ""
     val caption = chineseText to distinctOriginalText
     val captionHasContent = caption.first.isNotBlank() || caption.second.isNotBlank()
-    var displayedCaption by remember(state.key, fullscreen) {
+    var displayedCaption by remember(sessionKey, fullscreen) {
         mutableStateOf(caption)
     }
-    var captionVisible by remember(state.key, fullscreen) {
+    var captionVisible by remember(sessionKey, fullscreen) {
         mutableStateOf(captionHasContent)
     }
     LaunchedEffect(caption, fullscreen) {
-        if (caption != displayedCaption) {
-            captionVisible = false
-            delay(if (fullscreen) 110L else 65L)
-            displayedCaption = caption
-            captionVisible = captionHasContent
-        }
+        // Switch the cue immediately. Fade only the appearance/disappearance; do not hold the old
+        // text for a fixed delay that could cover a short subtitle.
+        displayedCaption = caption
+        captionVisible = captionHasContent
     }
     val captionAlpha by animateFloatAsState(
         targetValue = if (captionVisible) 1f else 0f,
-        animationSpec = if (captionVisible) tween(130) else tween(90),
+        animationSpec = if (captionVisible) tween(120) else tween(80),
         label = if (fullscreen) "fullscreen-caption-alpha" else "inline-caption-alpha",
     )
     val renderedCaption = displayedCaption
     val renderedCaptionHasContent =
         renderedCaption.first.isNotBlank() || renderedCaption.second.isNotBlank()
-
-    // Keep a fixed 50dp slot in normal mode so one-line, two-line and empty cues
-    // never move the three playback buttons or the subtitle list vertically.
     if (!fullscreen || renderedCaptionHasContent || captionHasContent) {
         BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
             val horizontalInset = if (fullscreen) {
@@ -5295,7 +5308,9 @@ private fun CurrentSubtitleStrip(
                             horizontal = if (fullscreen) 10.dp else 12.dp,
                             vertical = if (fullscreen) 4.dp else 3.dp,
                         )
-                        .graphicsLayer { alpha = captionAlpha },
+                        .graphicsLayer {
+                            if (fullscreen) alpha = captionAlpha
+                        },
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
@@ -5309,7 +5324,9 @@ private fun CurrentSubtitleStrip(
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             maxLines = captionMaxLines,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().graphicsLayer {
+                                if (!fullscreen) alpha = captionAlpha
+                            },
                         )
                     }
                     if (source.isNotBlank()) {
@@ -5331,7 +5348,10 @@ private fun CurrentSubtitleStrip(
                     .fillMaxWidth()
                     .padding(horizontal = horizontalInset),
             ) {
-                if (renderedCaptionHasContent) captionContent(renderedCaption)
+                // Normal mode always composes the fixed-height slot, even between subtitle cues.
+                if (!fullscreen || renderedCaptionHasContent) {
+                    captionContent(renderedCaption)
+                }
             }
         }
     }
@@ -5345,32 +5365,38 @@ private fun PlaybackModeSelector(
     onDub: () -> Unit,
     onToggleSubtitles: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-    ) {
-        ModeButton(
-            modifier = Modifier.weight(1f),
-            title = "原声",
-            icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-            selected = state.originalVolume > 0f,
-            onClick = onOriginal,
-        )
-        ModeButton(
-            modifier = Modifier.weight(1f),
-            title = "中文配音",
-            icon = Icons.Filled.Headphones,
-            selected = state.dubbingVolume > 0f,
-            onClick = onDub,
-        )
-        ModeButton(
-            modifier = Modifier.weight(1f),
-            title = "字幕",
-            icon = Icons.Filled.Subtitles,
-            selected = subtitlesVisible,
-            onClick = onToggleSubtitles,
-        )
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 360.dp
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            ModeButton(
+                modifier = Modifier.weight(1f),
+                title = "原声",
+                icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                selected = state.originalVolume > 0f,
+                compact = compact,
+                onClick = onOriginal,
+            )
+            ModeButton(
+                modifier = Modifier.weight(1f),
+                title = "中文配音",
+                icon = Icons.Filled.Headphones,
+                selected = state.dubbingVolume > 0f,
+                compact = compact,
+                onClick = onDub,
+            )
+            ModeButton(
+                modifier = Modifier.weight(1f),
+                title = "字幕",
+                icon = Icons.Filled.Subtitles,
+                selected = subtitlesVisible,
+                compact = compact,
+                onClick = onToggleSubtitles,
+            )
+        }
     }
 }
 
@@ -5380,6 +5406,7 @@ private fun ModeButton(
     title: String,
     icon: ImageVector,
     selected: Boolean,
+    compact: Boolean,
     onClick: () -> Unit,
 ) {
     val selectedColor by animateColorAsState(
@@ -5393,7 +5420,7 @@ private fun ModeButton(
         label = "playbackModeLabelColor",
     )
     Surface(
-        modifier = modifier.height(52.dp),
+        modifier = modifier.height(if (compact) 48.dp else 52.dp),
         onClick = onClick,
         color = selectedColor,
         shape = RoundedCornerShape(18.dp),
@@ -5411,12 +5438,12 @@ private fun ModeButton(
                 imageVector = icon,
                 contentDescription = null,
                 tint = BrandBright,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(if (compact) 18.dp else 20.dp),
             )
             Text(
                 title,
                 color = labelColor,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = if (compact) 12.sp else 14.sp),
                 maxLines = 1,
                 softWrap = false,
             )
@@ -6394,6 +6421,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 maxHeight < 240.dp -> 44.dp
                 else -> 48.dp
             }
+            val leftControlsGap = (maxHeight * 0.07f).coerceIn(5.dp, 16.dp)
             val maxLeftControlSize = (
                 (availableRightHeight - leftControlsGap * 2f).coerceAtLeast(0.dp) / 3f
             ).coerceAtLeast(20.dp)
@@ -7126,12 +7154,12 @@ private fun SubtitleListRow(
     }
     val rowBackground by animateColorAsState(
         targetValue = if (active) Color(0xFFF1F5FC) else Color.Transparent,
-        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        animationSpec = tween(130, easing = FastOutSlowInEasing),
         label = "subtitleRowBackground_${line.index}",
     )
     val textColor by animateColorAsState(
         targetValue = if (active) BrandBright else SubText,
-        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        animationSpec = tween(130, easing = FastOutSlowInEasing),
         label = "subtitleRowTextColor_${line.index}",
     )
 
@@ -7185,7 +7213,7 @@ private fun SubtitleListRow(
 private fun subtitleDisplayText(line: SubLine): String =
     SubtitleParsers.preferredTranslationText(line)
         ?.takeIf { it.isNotBlank() }
-        ?: "中文字幕暂不可用"
+        .orEmpty()
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
