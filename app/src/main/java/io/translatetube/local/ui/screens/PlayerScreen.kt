@@ -2,6 +2,7 @@ package io.translatetube.local.ui.screens
 
 import java.io.OutputStreamWriter
 
+import android.media.AudioManager
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -79,6 +80,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
@@ -135,6 +137,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private enum class SubtitleExportFormat { CHINESE_SRT, BILINGUAL_SRT, BILINGUAL_VTT }
@@ -5753,13 +5756,7 @@ private fun PlaybackOverlayIconButton(
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            tint = tint,
-            modifier = Modifier.size(iconSize).shadow(2.dp, CircleShape, clip = false),
-        )
-    }
-}
-
-@Composable
+            tint @Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
     playbackHint: PlaybackHint?,
@@ -5782,6 +5779,18 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val speed by speedFlow.collectAsState(initial = 1.0f)
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
     val recordInteraction = { interactionVersion += 1 }
+
+    val context = LocalContext.current
+    val audioManager = remember(context) {
+        context.applicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager
+    }
+    val maxMusicVolume = remember(audioManager) {
+        runCatching { audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 0 }
+            .getOrDefault(0)
+            .coerceAtLeast(0)
+    }
+    var volumeGestureActive by remember(state.key) { mutableStateOf(false) }
+    var volumeProgress by remember(state.key) { mutableStateOf(0f) }
 
     // Respect the actual host lifecycle (including the floating-window owner).
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -5893,6 +5902,88 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val displayedProgress = if (scrubbing) pos.coerceIn(0f, 1f) else animatedProgress
     val displayedBufferedProgress = if (scrubbing) bufferedPos else animatedBufferedProgress
 
+    // This parent observes every player-surface touch before child controls. It only
+    // consumes a clearly vertical gesture that begins on the right side; taps and seeks pass through.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(state.key, audioManager, maxMusicVolume) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(
+                        requireUnconsumed = false,
+                        pass = PointerEventPass.Initial,
+                    )
+                    val seekbarSafeBottom = with(this) { 44.dp.toPx() }
+                    val startsOnRight = down.position.x >= size.width * 0.62f
+                    val startsAboveSeekbar = down.position.y <= size.height - seekbarSafeBottom
+                    if (!startsOnRight || !startsAboveSeekbar || audioManager == null || maxMusicVolume <= 0) {
+                        return@awaitEachGesture
+                    }
+
+                    val startX = down.position.x
+                    val startY = down.position.y
+                    val initialVolume = runCatching {
+                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    }.getOrDefault(0).coerceIn(0, maxMusicVolume)
+                    val dragRangePx = (size.height * 0.58f).coerceAtLeast(1f)
+                    var claimedVolumeGesture = false
+                    var lastAppliedVolume = initialVolume
+
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            val deltaX = change.position.x - startX
+                            val deltaY = change.position.y - startY
+
+                            if (!claimedVolumeGesture) {
+                                val movedX = abs(deltaX)
+                                val movedY = abs(deltaY)
+                                if (movedX > viewConfiguration.touchSlop ||
+                                    movedY > viewConfiguration.touchSlop
+                                ) {
+                                    if (movedY > movedX * 1.2f) {
+                                        claimedVolumeGesture = true
+                                        volumeGestureActive = true
+                                        volumeProgress = initialVolume.toFloat() / maxMusicVolume.toFloat()
+                                    } else if (movedX > movedY * 1.2f) {
+                                        break
+                                    }
+                                }
+                            }
+
+                            if (claimedVolumeGesture) {
+                                change.consume()
+                                val nextVolume = (
+                                    initialVolume.toFloat() -
+                                        deltaY / dragRangePx * maxMusicVolume.toFloat()
+                                    ).roundToInt().coerceIn(0, maxMusicVolume)
+                                if (nextVolume != lastAppliedVolume) {
+                                    val applied = runCatching {
+                                        audioManager.setStreamVolume(
+                                            AudioManager.STREAM_MUSIC,
+                                            nextVolume,
+                                            0,
+                                        )
+                                    }.isSuccess
+                                    if (applied) {
+                                        lastAppliedVolume = nextVolume
+                                        volumeProgress = nextVolume.toFloat() / maxMusicVolume.toFloat()
+                                    }
+                                }
+                            }
+
+                            if (!change.pressed) break
+                        }
+                    } finally {
+                        if (claimedVolumeGesture) {
+                            // No fade-out delay: release/cancel removes the indicator on the next frame.
+                            volumeGestureActive = false
+                        }
+                    }
+                }
+            },
+    ) {
     // Tapping the picture toggles controls during playback; pause always keeps them visible.
     Box(
         Modifier.fillMaxSize().pointerInput(state.key, state.isPlaying, controlsVisible) {
@@ -6169,6 +6260,44 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 drawCircle(
                     color = Color(0xFF5890FF),
                     radius = thumbRadius,
+                    center = Offset(thumbCenterX, centerY),
+                )
+            }
+        }
+    }
+        if (volumeGestureActive && maxMusicVolume > 0) {
+            Row(
+                modifier = Modifier.align(Alignment.Center),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = if (volumeProgress <= 0f) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                    contentDescription = "媒体音量",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .size(26.dp)
+                        .shadow(2.dp, CircleShape, clip = false),
+                )
+                Box(
+                    modifier = Modifier
+                        .width(76.dp)
+                        .height(4.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.30f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(volumeProgress.coerceIn(0f, 1f))
+                            .clip(CircleShape)
+                            .background(Color(0xFF5890FF)),
+                    )
+                }
+            }
+        }
+    }
+}dius,
                     center = Offset(thumbCenterX, centerY),
                 )
             }
