@@ -11160,16 +11160,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cacheHitProgress: String,
         pipelineGeneration: Long? = null,
         dubbingMutationGeneration: Long? = null,
+        speakerRecognitionOnly: Boolean = false,
     ): File {
         return asrAudioDownloadLocks.withLock(videoId) {
             awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
             reusableAsrAudioFile(videoId, cacheNamespace = "youtube-original-track-v2")?.let { cached ->
-                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
                 return@withLock cached
             }
-            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                 if (state.key == sessionKey) {
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
@@ -11184,7 +11185,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ?: throw IllegalStateException(
                     "无法安全确定与原声匹配的 YouTube 音轨。为避免误把其他语言的配音轨当作原声转写，本次已停止处理；请稍后重试。",
                 )
-            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                 if (state.key == sessionKey) {
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
@@ -11207,6 +11208,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     progressLabel = "YouTube · 独立音轨",
                     pipelineGeneration = pipelineGeneration,
                     dubbingMutationGeneration = dubbingMutationGeneration,
+                    speakerRecognitionOnly = speakerRecognitionOnly,
                 )
             } catch (manifest: HlsManifestPayloadException) {
                 HlsAudioDownloader.download(
@@ -11216,7 +11218,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
                     initialSourceKind = HlsAudioDownloader.AudioSourceKind.INDEPENDENT,
                 ) { detail ->
-                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                         if (state.key == sessionKey) {
                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
                         } else state
@@ -11237,7 +11239,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     // StreamInfo caches expiring signed URLs. Invalidate and extract once before
                     // asking the user to retry the same stale URL again.
                     NewPipeRepo.invalidate(videoId)
-                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                         if (state.key == sessionKey) {
                             state.copy(
                                 phase = Phase.DOWNLOADING_AUDIO,
@@ -11652,6 +11654,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cacheHitProgress: String,
         pipelineGeneration: Long? = null,
         dubbingMutationGeneration: Long? = null,
+        speakerRecognitionOnly: Boolean = false,
     ): File {
         awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
         // Reuse downloaded bytes across rotating signed URLs, but never across page origins or
@@ -11666,12 +11669,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     cookie = cookie,
                 )
             if (cachedAudio != null) {
-                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
                 return@withLock cachedAudio
             }
-            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                 if (state.key == sessionKey) {
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
@@ -11709,7 +11712,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             destination,
                             onProgress = { percent, downloadedBytes, totalBytes ->
                                 kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) }
-                                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                                     if (state.key == sessionKey) {
                                         val progress = if (downloadedBytes > 0L || totalBytes != null) {
                                             AudioDownloadProgressFormatter.formatProgress(
@@ -11756,7 +11759,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             throw e
                         }
                         android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
-                        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                        updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(
                                     progress = "独立音轨下载失败，正在检查网页媒体源并提取音轨…",
@@ -11770,7 +11773,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
                         extractionStage = "HLS 主清单音轨分段下载"
                         HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
-                            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
                                 } else state
@@ -11789,8 +11792,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
                                 onSourceType = { kind ->
                                     detectedSourceKind = kind
-                                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
-                                        if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
+                                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                        if (state.key == sessionKey && (speakerRecognitionOnly || state.phase == Phase.DOWNLOADING_AUDIO)) {
                                             state.copy(
                                                 progress = "${kind.displayName} · 正在从网页媒体源提取音轨…",
                                             )
@@ -11798,8 +11801,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     }
                                 },
                                 onProgressPercent = { percent, extractedBytes, totalBytes, totalIsEstimate ->
-                                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
-                                        if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
+                                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                        if (state.key == sessionKey && (speakerRecognitionOnly || state.phase == Phase.DOWNLOADING_AUDIO)) {
                                             state.copy(
                                                 progress = AudioDownloadProgressFormatter.formatProgress(
                                                     label = "${detectedSourceKind.displayName} · 网页媒体流音轨提取",
@@ -11878,7 +11881,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
                                     userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
                                 ) { detail ->
-                                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                                         if (state.key == sessionKey) {
                                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
                                         } else state
@@ -11890,7 +11893,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             ) {
                                 extractionStage = "纯音频直链下载兜底"
                                 // A URL explicitly ending in an audio-only extension is safe to fetch whole.
-                                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                                     if (state.key == sessionKey) {
                                         state.copy(progress = "音轨流式读取失败，正在下载独立音频文件…")
                                     } else state
@@ -11903,6 +11906,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     progressLabel = "独立音轨",
                                     pipelineGeneration = pipelineGeneration,
                                     dubbingMutationGeneration = dubbingMutationGeneration,
+                                    speakerRecognitionOnly = speakerRecognitionOnly,
                                 )
                             } else {
                                 android.util.Log.w(
@@ -11930,6 +11934,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             existingCookie = cookie,
                             destination = destination,
                             originalFailure = mediaError,
+                            speakerRecognitionOnly = speakerRecognitionOnly,
                         )
                     } catch (refreshError: Exception) {
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -11988,6 +11993,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         existingCookie: String?,
         destination: File,
         originalFailure: Throwable,
+        speakerRecognitionOnly: Boolean = false,
     ): File? {
         val diagnosis = RemoteAudioFailurePolicy.classify(originalFailure)
         if (!RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(originalFailure)) {
@@ -12016,7 +12022,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 android.webkit.CookieManager.getInstance().getCookie(pageUrl)
             }.getOrNull()?.takeIf { it.isNotBlank() }
 
-        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+        updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
             if (state.key == sessionKey) {
                 state.copy(
                     phase = Phase.DOWNLOADING_AUDIO,
@@ -12037,7 +12043,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     kotlinx.coroutines.runBlocking {
                         awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
                     }
-                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                         if (state.key == sessionKey) {
                             state.copy(
                                 phase = Phase.DOWNLOADING_AUDIO,
@@ -12298,6 +12304,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         progressLabel: String = "音轨类型待确认 · 音轨",
         pipelineGeneration: Long? = null,
         dubbingMutationGeneration: Long? = null,
+        speakerRecognitionOnly: Boolean = false,
     ): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
@@ -12393,7 +12400,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                             totalBytes = total.takeIf { it > 0L },
                                             percent = percent,
                                         )
-                                        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                                        updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                                             if (state.key == sessionKey) state.copy(
                                                 progress = progress,
                                                 audioProgress = AudioProgressSnapshot(
@@ -12414,7 +12421,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
                                 )
                             }
-                            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(
                                         progress = AudioDownloadProgressFormatter.formatProgress(
@@ -12457,7 +12464,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 lastError = error
                 if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
                 awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
-                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
+                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                     if (state.key == sessionKey) {
                         state.copy(progress = "网络不稳定，正在重试音频下载（第 ${attempt + 1} 次）")
                     } else state
@@ -12468,7 +12475,55 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         throw IllegalStateException("音频下载失败，已达到重试次数上限。", lastError)
     }
 
-    private fun kokoroRuntimeReady(): Boolean = runCatching {
+    
+    /**
+     * Audio acquisition requested by speaker diarization is a secondary player task, not a new
+     * five-stage processing run. Preserve playback phase/progress and publish measured detail
+     * only in the speaker-recognition menu state.
+     */
+    private fun updateAudioAcquisitionUi(
+        sessionKey: String,
+        pipelineGeneration: Long?,
+        dubbingMutationGeneration: Long?,
+        speakerRecognitionOnly: Boolean,
+        transform: (PlayerUiState) -> PlayerUiState,
+    ) {
+        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { current ->
+            val updated = transform(current)
+            if (!speakerRecognitionOnly || current.key != sessionKey) {
+                updated
+            } else {
+                val taskMessage = updated.progress.takeIf {
+                    it.isNotBlank() && it != current.progress
+                }
+                val taskPercent = taskMessage?.let { message ->
+                    Regex("""(\d+(?:\.\d+)?)%""")
+                        .find(message)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toFloatOrNull()
+                        ?.toInt()
+                        ?.coerceIn(0, 100)
+                }
+                updated.copy(
+                    phase = current.phase,
+                    progress = current.progress,
+                    audioProgress = current.audioProgress,
+                    transcriptionProgressPercent = current.transcriptionProgressPercent,
+                    speakerRecognition = if (taskMessage != null) {
+                        current.speakerRecognition.copy(
+                            message = taskMessage,
+                            progressPercent = taskPercent,
+                        )
+                    } else {
+                        current.speakerRecognition
+                    },
+                )
+            }
+        }
+    }
+
+private fun kokoroRuntimeReady(): Boolean = runCatching {
         val files = io.translatetube.local.data.ModelFiles
         if (files.ttsCoreReady(this)) files.installBundledTtsSupportFiles(this)
         files.ttsReady(this)
@@ -13612,6 +13667,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "人物识别 · 复用已下载音频，正在准备分析…",
                                     pipelineGeneration = pipelineGeneration,
                                     dubbingMutationGeneration = mutationGeneration,
+                                    speakerRecognitionOnly = true,
                                 )
                                 sourceUri = null
                             } else if (sessionRemoteMediaUrl != null) {
@@ -13623,6 +13679,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "人物识别 · 复用网页视频音频，正在准备分析…",
                                     pipelineGeneration = pipelineGeneration,
                                     dubbingMutationGeneration = mutationGeneration,
+                                    speakerRecognitionOnly = true,
                                 )
                                 sourceUri = null
                             } else {
