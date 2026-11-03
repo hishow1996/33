@@ -1287,6 +1287,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         playbackHint = playbackHint,
                         isFloating = isFloating,
                         isFullscreen = isFullscreen,
+                        subtitlesVisible = subtitlesVisible,
+                        onToggleOriginal = { PlaybackService.instance?.toggleOriginalVolume() },
+                        onToggleDubbing = { PlaybackService.instance?.toggleDubbingVolume() },
+                        onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
                         onStartFloat = { startFloatingWindow() },
                         onExitFloat = { exitFloating() },
                         onToggleFullscreen = { isFullscreen = !isFullscreen },
@@ -1294,11 +1298,14 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         onTimelineScrubbingChanged = { timelineScrubbing = it },
                     )
                 }
-                if (isFullscreen && state.key == requestKey) {
+                if (isFullscreen && subtitlesVisible && state.key == requestKey) {
                     CurrentSubtitleStrip(
                         state = state,
                         fullscreen = true,
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 64.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .windowInsetsPadding(WindowInsets.displayCutout)
+                            .padding(bottom = 112.dp),
                     )
                 }
                 // A compatible history item opens this player immediately. While its media session
@@ -5137,51 +5144,62 @@ private fun CurrentSubtitleStrip(
         currentLine?.let(::subtitleDisplayText).orEmpty()
     }
     val originalText = currentLine?.text.orEmpty()
-    if (chineseText.isNotBlank() || originalText.isNotBlank()) {
-        val container = if (fullscreen) {
-            modifier
-                .fillMaxWidth()
-                .padding(horizontal = 78.dp)
-                .heightIn(max = 80.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.42f))
-                .padding(horizontal = 10.dp, vertical = 4.dp)
-        } else {
-            modifier
-                .fillMaxWidth()
-                .heightIn(min = 46.dp)
-                .background(Color(0xFFE8EFFF))
-                .padding(horizontal = 8.dp, vertical = 5.dp)
-        }
-        Column(
-            modifier = container,
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(if (fullscreen) 2.dp else 1.dp),
-        ) {
-            if (chineseText.isNotBlank()) {
-                Text(
-                    text = chineseText,
-                    color = if (fullscreen) Color.White else BrandBright,
-                    fontSize = if (fullscreen) 14.sp else 15.sp,
-                    lineHeight = if (fullscreen) 17.sp else 18.sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            if (originalText.isNotBlank()) {
-                Text(
-                    text = originalText,
-                    color = if (fullscreen) Color(0xFFE1E5EC) else Color(0xFF64748B),
-                    fontSize = 12.sp,
-                    lineHeight = 14.sp,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+    val distinctOriginalText = originalText.takeIf {
+        it.isNotBlank() && !it.trim().equals(chineseText.trim(), ignoreCase = true)
+    }.orEmpty()
+    if (chineseText.isNotBlank() || distinctOriginalText.isNotBlank()) {
+        BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+            val horizontalInset = if (fullscreen) {
+                (maxWidth * 0.11f).coerceIn(48.dp, 88.dp)
+            } else 0.dp
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = horizontalInset)
+                    .then(
+                        if (fullscreen) {
+                            Modifier
+                                .heightIn(max = 80.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Black.copy(alpha = 0.46f))
+                        } else {
+                            Modifier
+                                .heightIn(min = 46.dp)
+                                .background(Color(0xFFE8EFFF))
+                        },
+                    )
+                    .padding(
+                        horizontal = if (fullscreen) 10.dp else 8.dp,
+                        vertical = if (fullscreen) 4.dp else 5.dp,
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(if (fullscreen) 2.dp else 1.dp),
+            ) {
+                if (chineseText.isNotBlank()) {
+                    Text(
+                        text = chineseText,
+                        color = if (fullscreen) Color.White else BrandBright,
+                        fontSize = if (fullscreen) 14.sp else 15.sp,
+                        lineHeight = if (fullscreen) 17.sp else 18.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (distinctOriginalText.isNotBlank()) {
+                    Text(
+                        text = distinctOriginalText,
+                        color = if (fullscreen) Color(0xFFE1E5EC) else Color(0xFF64748B),
+                        fontSize = 12.sp,
+                        lineHeight = 14.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
     }
@@ -5849,11 +5867,53 @@ private fun PlaybackOverlayIconButton(
 }
 
 @Composable
+private fun FullscreenQuickToggle(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        color = if (selected) Color(0xD9335F9E) else Color(0xD92B3442),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            Color.White.copy(alpha = if (selected) 0.24f else 0.12f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.height(36.dp).padding(horizontal = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = label,
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
     playbackHint: PlaybackHint?,
     isFloating: Boolean,
     isFullscreen: Boolean,
+    subtitlesVisible: Boolean,
+    onToggleOriginal: () -> Unit,
+    onToggleDubbing: () -> Unit,
+    onToggleSubtitles: () -> Unit,
     onStartFloat: () -> Unit,
     onExitFloat: () -> Unit,
     onToggleFullscreen: () -> Unit,
@@ -6026,15 +6086,22 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(state.key, audioManager, maxMusicVolume) {
+            .windowInsetsPadding(WindowInsets.displayCutout)
+            .pointerInput(state.key, audioManager, maxMusicVolume, isFullscreen) {
                 awaitEachGesture {
                     val down = awaitFirstDown(
                         requireUnconsumed = false,
                         pass = PointerEventPass.Initial,
                     )
-                    val seekbarSafeBottom = with(this) { 44.dp.toPx() }
+                    val seekbarSafeBottom = with(this) {
+                        if (isFullscreen) 108.dp.toPx() else 44.dp.toPx()
+                    }
+                    val rightControlSafeEdge = if (isFullscreen) {
+                        with(this) { 64.dp.toPx() }
+                    } else 0f
                     if (
                         down.position.x < size.width * 0.62f ||
+                        (isFullscreen && down.position.x > size.width - rightControlSafeEdge) ||
                         down.position.y > size.height - seekbarSafeBottom ||
                         audioManager == null ||
                         maxMusicVolume <= 0
@@ -6365,7 +6432,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
 
             AnimatedVisibility(
-                visible = scrubbing && durationForUi > 0L,
+                visible = scrubbing && durationForUi > 0L && !isFullscreen,
                 enter = fadeIn(animationSpec = tween(100)),
                 exit = fadeOut(animationSpec = tween(140)),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 42.dp),
@@ -6479,8 +6546,86 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     center = Offset(thumbCenterX, centerY),
                 )
             }
+
+            if (isFullscreen && durationForUi > 0L) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .padding(bottom = 42.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = formatFloatingTime((pos.coerceIn(0f, 1f) * durationForUi).toLong()),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 10.sp,
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = Color.Black.copy(alpha = 0.85f),
+                                offset = Offset(0f, 1f),
+                                blurRadius = 3f,
+                            ),
+                        ),
+                    )
+                    Text(
+                        text = formatFloatingTime(durationForUi),
+                        color = Color.White.copy(alpha = 0.88f),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 10.sp,
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = Color.Black.copy(alpha = 0.85f),
+                                offset = Offset(0f, 1f),
+                                blurRadius = 3f,
+                            ),
+                        ),
+                    )
+                }
+            }
         }
     }
+
+        AnimatedVisibility(
+            visible = isFullscreen && controlsVisible,
+            enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+            exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 66.dp),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FullscreenQuickToggle(
+                    icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                    label = "原声",
+                    selected = state.originalVolume > 0f,
+                    onClick = {
+                        recordInteraction()
+                        onToggleOriginal()
+                    },
+                )
+                FullscreenQuickToggle(
+                    icon = Icons.Filled.Headphones,
+                    label = "配音",
+                    selected = state.dubbingVolume > 0f,
+                    onClick = {
+                        recordInteraction()
+                        onToggleDubbing()
+                    },
+                )
+                FullscreenQuickToggle(
+                    icon = Icons.Filled.Subtitles,
+                    label = "字幕",
+                    selected = subtitlesVisible,
+                    onClick = {
+                        recordInteraction()
+                        onToggleSubtitles()
+                    },
+                )
+            }
+        }
+
         // Keep fullscreen back navigation available even after the playback controls auto-hide.
         if (isFullscreen) {
             Box(
