@@ -12489,37 +12489,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         transform: (PlayerUiState) -> PlayerUiState,
     ) {
         updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { current ->
-            val updated = transform(current)
-            if (!speakerRecognitionOnly || current.key != sessionKey) {
-                updated
-            } else {
-                val taskMessage = updated.progress.takeIf {
-                    it.isNotBlank() && it != current.progress
-                }
-                val taskPercent = taskMessage?.let { message ->
-                    Regex("""(\d+(?:\.\d+)?)%""")
-                        .find(message)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        ?.toFloatOrNull()
-                        ?.toInt()
-                        ?.coerceIn(0, 100)
-                }
-                updated.copy(
-                    phase = current.phase,
-                    progress = current.progress,
-                    audioProgress = current.audioProgress,
-                    transcriptionProgressPercent = current.transcriptionProgressPercent,
-                    speakerRecognition = if (taskMessage != null) {
-                        current.speakerRecognition.copy(
-                            message = taskMessage,
-                            progressPercent = taskPercent,
-                        )
-                    } else {
-                        current.speakerRecognition
-                    },
-                )
-            }
+            SpeakerRecognitionProgressPolicy.preservePlaybackState(
+                current = current,
+                requested = transform(current),
+                speakerRecognitionOnly = speakerRecognitionOnly,
+            )
         }
     }
 
