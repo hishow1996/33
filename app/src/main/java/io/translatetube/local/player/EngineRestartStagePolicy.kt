@@ -27,6 +27,20 @@ internal object EngineRestartStagePolicy {
     fun requiresFreshDubbing(stage: EngineRestartStage?): Boolean =
         stage != null
 
+    /** Merge a config-derived restart with fresh-stage flags persisted in an interrupted checkpoint. */
+    fun checkpointRestartStage(
+        fingerprintStage: EngineRestartStage?,
+        requireFreshTranslation: Boolean,
+        requireFreshDubbing: Boolean,
+    ): EngineRestartStage? = when {
+        fingerprintStage == EngineRestartStage.TRANSCRIPTION -> EngineRestartStage.TRANSCRIPTION
+        fingerprintStage == EngineRestartStage.TRANSLATION ||
+            requireFreshTranslation -> EngineRestartStage.TRANSLATION
+        fingerprintStage == EngineRestartStage.DUBBING ||
+            requireFreshDubbing -> EngineRestartStage.DUBBING
+        else -> null
+    }
+
     fun ignoresTranscriptionConfig(
         processingFlow: ProcessingFlow?,
         isYouTube: Boolean,
