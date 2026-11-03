@@ -6394,9 +6394,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             val availableItemSize = ((availableControlHeight - 8.dp) / 2f).coerceAtLeast(24.dp)
             val controlTargetSize = preferredControlSize.coerceAtMost(availableItemSize)
             val controlIconSize = (controlTargetSize * 0.58f).coerceIn(14.dp, 24.dp)
+            // Keep the two icons visually grouped; use only a small responsive gap.
             val controlVerticalGap = (
                 availableControlHeight - controlTargetSize * 2f
-            ).coerceIn(8.dp, 32.dp)
+            ).coerceIn(8.dp, 14.dp)
             val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
             val seekThumbRadiusPx = with(LocalDensity.current) { seekThumbRadius.toPx() }
             val durationForUi = (PlaybackService.instance?.duration() ?: 0L)
