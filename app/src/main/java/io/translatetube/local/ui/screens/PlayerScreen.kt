@@ -1415,6 +1415,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 }
             }
 
+            if (!isFullscreen && state.key == requestKey) {
+                CurrentSubtitleStrip(state = state)
+            }
+
             if (!isFullscreen) {
             Spacer(Modifier.height(6.dp))
 
@@ -1534,10 +1538,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         Text("字幕显示已关闭", color = SubText, style = MaterialTheme.typography.bodyLarge)
                     }
                 }
-            }
-            if (state.key == requestKey) {
-                Spacer(Modifier.height(4.dp))
-                CurrentSubtitleStrip(state = state)
             }
             }
         }
@@ -5172,9 +5172,11 @@ private fun CurrentSubtitleStrip(
         }.orEmpty()
     }
     val originalText = currentLine?.text.orEmpty()
-    val distinctOriginalText = originalText.takeIf {
-        it.isNotBlank() && !it.trim().equals(chineseText.trim(), ignoreCase = true)
-    }.orEmpty()
+    val distinctOriginalText = if (fullscreen) {
+        originalText.takeIf {
+            it.isNotBlank() && !it.trim().equals(chineseText.trim(), ignoreCase = true)
+        }.orEmpty()
+    } else ""
     val caption = chineseText to distinctOriginalText
     val captionHasContent = caption.first.isNotBlank() || caption.second.isNotBlank()
     var displayedCaption by remember(state.key, fullscreen) {
@@ -5407,7 +5409,7 @@ private fun ModeButton(
         label = "playbackModeGlyphScale",
     )
     Surface(
-        modifier = modifier.height(60.dp),
+        modifier = modifier.height(52.dp),
         onClick = onClick,
         color = selectedColor,
         shape = RoundedCornerShape(18.dp),
@@ -5417,20 +5419,20 @@ private fun ModeButton(
         ),
     ) {
         Column(
-            Modifier.fillMaxSize().padding(vertical = 5.dp),
+            Modifier.fillMaxSize().padding(vertical = 4.dp),
             horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(1.dp),
         ) {
             Text(
                 glyph,
                 color = BrandBright,
-                style = MaterialTheme.typography.titleMedium.copy(fontSize = 20.sp),
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp),
                 modifier = Modifier.graphicsLayer {
                     scaleX = glyphScale
                     scaleY = glyphScale
                 },
             )
-            Text(title, color = labelColor, style = MaterialTheme.typography.bodyMedium)
+            Text(title, color = labelColor, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp))
         }
     }
 }
@@ -5999,7 +6001,7 @@ private fun PlaybackOverlayIconButton(
             imageVector = icon,
             contentDescription = contentDescription,
             tint = tint,
-            modifier = Modifier.size(iconSize).shadow(2.dp, CircleShape, clip = false),
+            modifier = Modifier.size(iconSize),
         )
     }
 }
@@ -6422,12 +6424,76 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             } else speed.toString()
 
             Box(
-                modifier = Modifier.align(Alignment.CenterStart).padding(start = edgePadding),
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = edgePadding)
+                    .offset(
+                        y = if (isFullscreen && audioManager != null && maxMusicVolume > 0) {
+                            0.dp
+                        } else {
+                            -((controlTargetSize + rightControlsGap) / 2)
+                        },
+                    ),
             ) {
                 Column(
                     horizontalAlignment = Alignment.Start,
                     verticalArrangement = Arrangement.spacedBy(leftControlsGap),
                 ) {
+                    Box {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            PlaybackOverlayIconButton(
+                                icon = Icons.Filled.Speed,
+                                contentDescription = "播放倍速",
+                                touchSize = controlTargetSize,
+                                iconSize = controlIconSize,
+                                tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                                enabled = controlsVisible,
+                                onInteraction = recordInteraction,
+                                onClick = { speedExpanded = true },
+                            )
+                            Text(
+                                text = "${speedLabel}×",
+                                color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    shadow = androidx.compose.ui.graphics.Shadow(
+                                        color = Color.Black.copy(alpha = 0.85f),
+                                        offset = Offset(0f, 1f),
+                                        blurRadius = 3f,
+                                    ),
+                                ),
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        enabled = controlsVisible,
+                                    ) {
+                                        recordInteraction()
+                                        speedExpanded = true
+                                    },
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = speedExpanded,
+                            onDismissRequest = {
+                                if (speedExpanded) recordInteraction()
+                                speedExpanded = false
+                            },
+                        ) {
+                            speedOptions.forEach { value ->
+                                DropdownMenuItem(
+                                    text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
+                                    onClick = {
+                                        PlaybackService.instance?.setSpeed(value)
+                                        recordInteraction()
+                                        speedExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
                     if (isFullscreen && audioManager != null && maxMusicVolume > 0) {
                         Box {
                             PlaybackOverlayIconButton(
@@ -6493,70 +6559,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             }
                         }
                     }
-                    Box {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            PlaybackOverlayIconButton(
-                                icon = Icons.Filled.Speed,
-                                contentDescription = "播放倍速",
-                                touchSize = controlTargetSize,
-                                iconSize = controlIconSize,
-                                tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                                enabled = controlsVisible,
-                                onInteraction = recordInteraction,
-                                onClick = { speedExpanded = true },
-                            )
-                            Text(
-                                text = "${speedLabel}×",
-                                color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                                style = MaterialTheme.typography.labelLarge.copy(
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    shadow = androidx.compose.ui.graphics.Shadow(
-                                        color = Color.Black.copy(alpha = 0.85f),
-                                        offset = Offset(0f, 1f),
-                                        blurRadius = 3f,
-                                    ),
-                                ),
-                                modifier = Modifier
-                                    .padding(end = 8.dp)
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                        enabled = controlsVisible,
-                                    ) {
-                                        recordInteraction()
-                                        speedExpanded = true
-                                    },
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = speedExpanded,
-                            onDismissRequest = {
-                                if (speedExpanded) recordInteraction()
-                                speedExpanded = false
-                            },
-                        ) {
-                            speedOptions.forEach { value ->
-                                DropdownMenuItem(
-                                    text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
-                                    onClick = {
-                                        PlaybackService.instance?.setSpeed(value)
-                                        recordInteraction()
-                                        speedExpanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    PlaybackOverlayIconButton(
-                        icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                        contentDescription = if (isFullscreen) "退出全屏" else "进入全屏",
-                        touchSize = controlTargetSize,
-                        iconSize = controlIconSize,
-                        enabled = controlsVisible,
-                        onInteraction = recordInteraction,
-                        onClick = onToggleFullscreen,
-                    )
+
                 }
             }
 
@@ -6637,6 +6640,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
+                    .padding(end = 44.dp)
                     .padding(bottom = 3.dp)
                     .height(36.dp)
                     .pointerInput(controlsVisible, state.key, state.durationMs) {
@@ -6726,6 +6730,23 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     color = Color(0xFF5890FF),
                     radius = thumbRadius,
                     center = Offset(thumbCenterX, centerY),
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 8.dp)
+                    .offset(y = 10.dp),
+            ) {
+                PlaybackOverlayIconButton(
+                    icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                    contentDescription = if (isFullscreen) "退出全屏" else "进入全屏",
+                    touchSize = 36.dp,
+                    iconSize = 20.dp,
+                    enabled = controlsVisible,
+                    onInteraction = recordInteraction,
+                    onClick = onToggleFullscreen,
                 )
             }
 
@@ -7114,6 +7135,11 @@ private fun SubtitleListRow(
     onSeek: (Long) -> Unit,
 ) {
     val chineseText = remember(line.text, line.zh) { subtitleDisplayText(line) }
+    val sourceText = remember(line.text, line.zh, active, chineseText) {
+        line.text.trim().takeIf {
+            active && it.isNotBlank() && !it.equals(chineseText.trim(), ignoreCase = true)
+        }.orEmpty()
+    }
     val rowBackground by animateColorAsState(
         targetValue = if (active) Color(0xFFF1F5FC) else Color.Transparent,
         animationSpec = tween(220, easing = FastOutSlowInEasing),
@@ -7159,6 +7185,22 @@ private fun SubtitleListRow(
                 scaleY = textScale
             },
         )
+        if (sourceText.isNotBlank()) {
+            Text(
+                text = sourceText,
+                color = Color(0xFF64748B),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    fontWeight = FontWeight.Normal,
+                ),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                softWrap = true,
+                maxLines = Int.MAX_VALUE,
+                overflow = TextOverflow.Clip,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
