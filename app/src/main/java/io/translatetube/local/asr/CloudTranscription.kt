@@ -506,11 +506,16 @@ object CloudTranscription {
             val directoryRoot = checkpointDirectory ?: wavFile.absoluteFile.parentFile
                 ?: throw IOException("云端转写检查点目录无效")
             val directory = File(directoryRoot, "cloud_asr_response_checkpoints")
-            runCatching { CloudAsrResponseCheckpointStore.cleanupStale(directory) }
             responseAudioDigest = CloudAsrResponseCheckpointStore.digestAudioFile(wavFile, checkActive)
             responseCheckpointFile = CloudAsrResponseCheckpointStore.fileFor(
                 directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
             )
+            runCatching {
+                CloudAsrResponseCheckpointStore.cleanupStale(
+                    directory = directory,
+                    keepFile = responseCheckpointFile,
+                )
+            }
             val stableSubmissionGuardIdentity = submissionGuardIdentity
                 ?.takeIf { it.isNotBlank() } ?: stableCheckpointIdentity
             submissionGuardFile = CloudAsrSubmissionGuardStore.fileFor(
