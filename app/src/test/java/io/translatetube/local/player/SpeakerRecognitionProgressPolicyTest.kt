@@ -86,7 +86,7 @@ class SpeakerRecognitionProgressPolicyTest {
             key = "youtube:current",
             phase = Phase.READY,
             progress = "当前视频播放中",
-            audioProgress = 0.65f,
+            audioProgress = AudioProgressSnapshot(downloadedBytes = 65L, totalBytes = 100L),
         )
         val requested = current.copy(
             key = "local:next",
