@@ -782,9 +782,8 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var dubbingDrainSessionKey = ""
     @Volatile private var dubbingDrainPoll: Runnable? = null
     @Volatile private var playerReady = false
-    // False while the playback page is not visible. Audio and dubbing keep running;
-    // only the video-surface first-frame watchdog is suspended in the background.
-    @Volatile private var videoUiVisible = false
+    // The player outlives the Activity; only foreground/floating modes expect a visible video surface.
+    @Volatile private var videoPresentationMode = VideoPresentationMode.BACKGROUND_AUDIO
     // Keep only the latest requested video output. A weak reference avoids retaining an old Activity view.
     @Volatile private var requestedVideoSurface: java.lang.ref.WeakReference<android.view.TextureView>? = null
     // Accessed only on the main thread. Media3 already listens for SurfaceTexture
@@ -2187,31 +2186,40 @@ class PlaybackService : MediaSessionService() {
     fun bufferedAheadMs(): Long = if (playerReady && ::pm.isInitialized) pm.bufferedAheadMs() else 0L
 
     /**
-     * Report whether the playback page is currently visible. This never pauses or releases the
-     * player: background audio and dubbing continue normally. It only gates video-only watchdogs.
+     * Report where video is currently presented. BACKGROUND_AUDIO never pauses the player or
+     * dubbing; it only disables video-only black-screen recovery while no picture is expected.
      */
-    fun setVideoUiVisible(visible: Boolean) {
-        val updateVisibility = Runnable {
-            val changed = videoUiVisible != visible
-            videoUiVisible = visible
+    fun setVideoPresentationMode(mode: VideoPresentationMode) {
+        val updateMode = Runnable {
+            val changed = videoPresentationMode != mode
+            videoPresentationMode = mode
             if (changed) {
-                // Never carry a foreground no-frame timer into the background or vice versa.
+                // A wait window from one presentation mode must not leak into another.
                 noFrameWaitStartedAtMs = 0L
                 noFrameWaitSessionKey = ui.value.key
                 playbackStallWatchSessionKey = ""
                 playbackStallWatchPositionMs = -1L
                 playbackStallWatchLastProgressAtMs = 0L
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.info(
+                        applicationContext,
+                        "PlayerManager",
+                        "视频呈现模式已切换",
+                        diagnosticContext = mapOf("视频呈现模式" to mode.name),
+                    )
+                }
             }
-            if (visible && playerReady && ::pm.isInitialized) {
-                // The Activity may have resumed with the same TextureView instance after the
-                // service was recreated. Re-submit the latest view instead of relying on a new
-                // Android attach callback to happen.
+            if (VideoPresentationModePolicy.shouldRebindVideoSurface(mode) &&
+                playerReady && ::pm.isInitialized
+            ) {
+                // Re-submit the latest TextureView when switching foreground/floating modes or
+                // when an Activity resumes after its playback service has been recreated.
                 attachPendingVideoSurface()
                 refreshPlaybackHint()
             }
         }
-        if (Looper.myLooper() == Looper.getMainLooper()) updateVisibility.run()
-        else surfaceAttachHandler.post(updateVisibility)
+        if (Looper.myLooper() == Looper.getMainLooper()) updateMode.run()
+        else surfaceAttachHandler.post(updateMode)
     }
 
     fun attachSurface(tv: android.view.TextureView) {
@@ -3111,7 +3119,8 @@ class PlaybackService : MediaSessionService() {
         }
         val videoViewBound = surfaceView != null && boundVideoSurface?.get() === surfaceView
         val noFirstFrameTimedOut = if (
-            videoUiVisible && surfaceReady && videoViewBound &&
+            VideoPresentationModePolicy.shouldMonitorVideo(videoPresentationMode) &&
+                surfaceReady && videoViewBound &&
                 (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
         ) {
             if (noFrameWaitSessionKey != state.key || noFrameWaitStartedAtMs <= 0L) {
@@ -3192,7 +3201,7 @@ class PlaybackService : MediaSessionService() {
 
         // A surface can legitimately disappear while Android backgrounds the Activity. Never
         // escalate a hidden audio/dubbing session into a player reload or service rebuild.
-        if (!videoUiVisible) {
+        if (!VideoPresentationModePolicy.shouldMonitorVideo(videoPresentationMode)) {
             noFrameWaitStartedAtMs = 0L
             return
         }
@@ -3201,7 +3210,7 @@ class PlaybackService : MediaSessionService() {
             "视频来源" to diagnosticMediaSourceType(state),
             "视频会话指纹" to safeDiagnosticSessionFingerprint(state.key),
             "当前处理阶段" to state.phase.name,
-            "播放页面是否可见" to videoUiVisible.toString(),
+            "视频呈现模式" to videoPresentationMode.name,
             "画面控件是否存在" to (surfaceView != null).toString(),
             "画面控件是否附着" to (surfaceView?.isAttachedToWindow?.toString() ?: "无画面控件"),
             "画面控件是否可用" to (surfaceView?.isAvailable?.toString() ?: "无画面控件"),
@@ -4493,7 +4502,7 @@ class PlaybackService : MediaSessionService() {
         runCatching { session?.release() }
         if (::pm.isInitialized) runCatching { pm.release() }
         playerReady = false
-        videoUiVisible = false
+        videoPresentationMode = VideoPresentationMode.BACKGROUND_AUDIO
         if (instance === this) {
             // The companion StateFlow outlives this Service. Release subtitle and preview lists
             // here so a stopped player cannot retain a large prior session in process memory.
