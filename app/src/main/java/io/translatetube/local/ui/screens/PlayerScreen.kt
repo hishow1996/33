@@ -6740,7 +6740,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .padding(end = 44.dp)
+                    // Reserve the right-side overlay-control column only in fullscreen.
+                    // Normal playback keeps matching 16.dp gutters on both sides.
+                    .padding(end = if (isFullscreen) 44.dp else 0.dp)
                     .padding(bottom = 3.dp)
                     // Keep the visual track at the same bottom coordinate while providing a
                     // taller touch target for accurate taps and drags.
