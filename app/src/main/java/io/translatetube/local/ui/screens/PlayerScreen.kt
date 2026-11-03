@@ -6759,7 +6759,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             .height(quickToggleHeight),
                         contentAlignment = Alignment.Center,
                     ) {
-                        AnimatedVisibility(
+                        this@Column.AnimatedVisibility(
                             visible = controlsVisible,
                             enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
                             exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
