@@ -6729,15 +6729,16 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         } else {
             "$providerKind|source=$sourceLanguageMode"
         }
-        return TranslationCacheIdentity.providerFingerprint(
+        return TranslationCacheIdentity.providerFingerprintFromStoredCredentials(
             activeId = activeId,
             providerKind = cacheScopedProviderKind,
             type = active?.type.orEmpty(),
             baseUrl = active?.baseUrl.orEmpty(),
-            apiKey = active?.apiKey.orEmpty(),
+            storedApiKey = active?.apiKey.orEmpty(),
             model = active?.model.orEmpty(),
             region = active?.region.orEmpty(),
-            credentialsJson = active?.credentialsJson.orEmpty(),
+            storedCredentialsJson = active?.credentialsJson.orEmpty(),
+            decrypt = io.translatetube.local.translate.Crypto::decrypt,
         )
     }
 
