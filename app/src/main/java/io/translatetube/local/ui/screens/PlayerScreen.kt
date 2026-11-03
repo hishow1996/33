@@ -6029,11 +6029,12 @@ private fun SubtitleList(
                 val translatedText = remember(line.text, line.zh) {
                     SubtitleParsers.preferredTranslationText(line)?.takeIf { it.isNotBlank() }
                 }
-                // Chinese-source captions can already have zh == text. Avoid rendering the same
-                // sentence twice while keeping the original visible whenever a translation exists.
+                // Put Chinese first and the smaller source caption underneath, matching YouTube.
+                // If translation is missing, keep the source caption at the main subtitle size.
                 val showOriginalText = remember(originalText, translatedText) {
                     originalText.isNotBlank() &&
-                        (translatedText.isNullOrBlank() || originalText != translatedText)
+                        translatedText != null &&
+                        originalText != translatedText
                 }
 
                 Column(
@@ -6053,26 +6054,26 @@ private fun SubtitleList(
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    if (showOriginalText) {
+                    val mainText = translatedText ?: originalText
+                    if (mainText.isNotBlank()) {
                         Text(
-                            originalText,
-                            color = SubText.copy(alpha = if (active) 0.92f else 0.78f),
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = if (active) 13.sp else 12.sp,
-                                fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                            mainText,
+                            color = if (active) BrandBright else SubText,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontSize = if (active) 16.sp else 14.sp,
+                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                             ),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    translatedText?.let { translated ->
+                    if (showOriginalText) {
                         Text(
-                            translated,
-                            // Use identical emphasis whether the active cue is source-audio or dubbed playback.
-                            color = if (active) BrandBright else SubText,
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                                fontSize = if (active) 16.sp else 14.sp,
-                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            originalText,
+                            color = SubText.copy(alpha = if (active) 0.88f else 0.72f),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = if (active) 12.sp else 11.sp,
+                                fontWeight = FontWeight.Normal,
                             ),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
@@ -6086,8 +6087,8 @@ private fun SubtitleList(
 
 
 /**
- * Translation-only text for the compact active subtitle strip. The full list separately shows
- * the source caption above its translation, or the source caption alone while translation is unavailable.
+ * Translation-only text for the compact active subtitle strip. The full list presents Chinese
+ * first and the smaller source caption below it, falling back to the source at normal size.
  */
 private fun subtitleDisplayText(line: SubLine): String =
     SubtitleParsers.preferredTranslationText(line)
