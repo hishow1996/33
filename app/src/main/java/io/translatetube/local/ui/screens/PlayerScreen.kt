@@ -1304,6 +1304,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         isFloating = isFloating,
                         isFullscreen = isFullscreen,
                         subtitlesVisible = subtitlesVisible,
+                        fullscreenCaptionVisible = isFullscreen && subtitlesVisible && state.key == requestKey,
+                        currentLine = state.lines.getOrNull(state.currentLine),
+                        captionOverride = state.captionOverride,
                         onToggleOriginal = { PlaybackService.instance?.toggleOriginalVolume() },
                         onToggleDubbing = { PlaybackService.instance?.toggleDubbingVolume() },
                         onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
@@ -1313,26 +1316,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         onExitFullscreen = { isFullscreen = false },
                         onTimelineScrubbingChanged = { timelineScrubbing = it },
                     )
-                }
-                if (isFullscreen && subtitlesVisible && state.key == requestKey) {
-                    BoxWithConstraints(Modifier.fillMaxSize()) {
-                        val navigationBarInset = with(LocalDensity.current) {
-                            WindowInsets.navigationBars.getBottom(this).toDp()
-                        }
-                        // Anchor the fullscreen subtitle just above the timeline and time labels.
-                        // It no longer floats around the middle as the aspect ratio changes.
-                        val subtitleBottomClearance = 54.dp + navigationBarInset
-                        CurrentSubtitleStrip(
-                            sessionKey = state.key,
-                            currentLine = state.lines.getOrNull(state.currentLine),
-                            captionOverride = state.captionOverride,
-                            fullscreen = true,
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .windowInsetsPadding(WindowInsets.displayCutout)
-                                .padding(bottom = subtitleBottomClearance),
-                        )
-                    }
                 }
                 // A compatible history item opens this player immediately. While its media session
                 // is being restored, show a compact loading veil instead of the five-stage pipeline
@@ -5176,6 +5159,7 @@ private fun CurrentSubtitleStrip(
     currentLine: SubLine?,
     captionOverride: String? = null,
     fullscreen: Boolean = false,
+    fullscreenMaxHeight: androidx.compose.ui.unit.Dp? = null,
     modifier: Modifier = Modifier,
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -5257,7 +5241,10 @@ private fun CurrentSubtitleStrip(
                     ).lineCount
                 }
                 val measuredCaptionLines = maxOf(measuredChineseLines, measuredOriginalLines)
+                val compactFullscreenCaption =
+                    fullscreenMaxHeight != null && fullscreenMaxHeight < 76.dp
                 val fullscreenChineseSize = when {
+                    compactFullscreenCaption -> 10.sp
                     measuredChineseLines >= 5 -> 10.sp
                     measuredChineseLines >= 4 -> 11.sp
                     measuredChineseLines >= 3 -> 12.sp
@@ -5271,6 +5258,7 @@ private fun CurrentSubtitleStrip(
                     else -> 17.sp
                 }
                 val fullscreenOriginalSize = when {
+                    compactFullscreenCaption -> 9.sp
                     measuredOriginalLines >= 5 -> 9.sp
                     measuredOriginalLines >= 4 -> 10.sp
                     measuredOriginalLines >= 3 -> 11.sp
@@ -5283,8 +5271,9 @@ private fun CurrentSubtitleStrip(
                     fullscreenOriginalSize <= 11.sp -> 12.sp
                     else -> 14.sp
                 }
-                val captionMaxLines = if (fullscreen && measuredCaptionLines >= 3) 3 else 2
-                val captionMaxHeight = when {
+                val captionMaxLines =
+                    if (fullscreen && measuredCaptionLines >= 3 && !compactFullscreenCaption) 3 else 2
+                val captionMaxHeight = fullscreenMaxHeight ?: when {
                     maxHeight < 220.dp -> 82.dp
                     measuredCaptionLines >= 4 -> 104.dp
                     else -> 96.dp
@@ -6058,6 +6047,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     isFloating: Boolean,
     isFullscreen: Boolean,
     subtitlesVisible: Boolean,
+    fullscreenCaptionVisible: Boolean,
+    currentLine: SubLine?,
+    captionOverride: String?,
     onToggleOriginal: () -> Unit,
     onToggleDubbing: () -> Unit,
     onToggleSubtitles: () -> Unit,
@@ -6698,58 +6690,115 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-        AnimatedVisibility(
-            visible = isFullscreen && controlsVisible,
-            enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
-            exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .windowInsetsPadding(WindowInsets.displayCutout)
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                // Leave a dedicated subtitle lane between the quick toggles and the timeline.
-                .padding(bottom = 166.dp),
-        ) {
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                val compact = maxWidth < 420.dp
+        if (isFullscreen) {
+            // Keep the subtitle and quick toggles in one measured dock. The caption lane and
+            // button lane shrink together on short landscape screens instead of using fixed offsets.
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .windowInsetsPadding(WindowInsets.navigationBars),
+            ) {
+                val compact = maxWidth < 420.dp || maxHeight < 280.dp
                 val horizontalInset = if (maxWidth < 360.dp) 48.dp else 64.dp
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = horizontalInset),
-                    horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                val quickToggleHeight = if (compact) 44.dp else 48.dp
+                val bottomClearance = 54.dp
+                val quickToCaptionGap = when {
+                    maxHeight < 260.dp -> 6.dp
+                    maxHeight < 360.dp -> 10.dp
+                    else -> 16.dp
+                }
+                val preferredCaptionLaneHeight = when {
+                    maxHeight < 260.dp -> 64.dp
+                    maxHeight < 360.dp -> 80.dp
+                    else -> 96.dp
+                }
+                val availableCaptionHeight = (
+                    maxHeight - bottomClearance - quickToggleHeight - quickToCaptionGap - 12.dp
+                    ).coerceAtLeast(42.dp)
+                val captionLaneHeight = minOf(preferredCaptionLaneHeight, availableCaptionHeight)
+
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(bottom = bottomClearance),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    FullscreenQuickToggle(
-                        modifier = Modifier.weight(1f),
-                        icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                        label = "原声",
-                        selected = state.originalVolume > 0f,
-                        compact = compact,
-                        onClick = {
-                            recordInteraction()
-                            onToggleOriginal()
-                        },
-                    )
-                    FullscreenQuickToggle(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.Headphones,
-                        label = "配音",
-                        selected = state.dubbingVolume > 0f,
-                        compact = compact,
-                        onClick = {
-                            recordInteraction()
-                            onToggleDubbing()
-                        },
-                    )
-                    FullscreenQuickToggle(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.Subtitles,
-                        label = "字幕",
-                        selected = subtitlesVisible,
-                        compact = compact,
-                        onClick = {
-                            recordInteraction()
-                            onToggleSubtitles()
-                        },
-                    )
+                    // Reserve this row while hidden so the caption stays at a stable screen position.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(quickToggleHeight),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        AnimatedVisibility(
+                            visible = controlsVisible,
+                            enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+                            exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = horizontalInset),
+                                horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                FullscreenQuickToggle(
+                                    modifier = Modifier.weight(1f),
+                                    icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                                    label = "原声",
+                                    selected = state.originalVolume > 0f,
+                                    compact = compact,
+                                    onClick = {
+                                        recordInteraction()
+                                        onToggleOriginal()
+                                    },
+                                )
+                                FullscreenQuickToggle(
+                                    modifier = Modifier.weight(1f),
+                                    icon = Icons.Filled.Headphones,
+                                    label = "配音",
+                                    selected = state.dubbingVolume > 0f,
+                                    compact = compact,
+                                    onClick = {
+                                        recordInteraction()
+                                        onToggleDubbing()
+                                    },
+                                )
+                                FullscreenQuickToggle(
+                                    modifier = Modifier.weight(1f),
+                                    icon = Icons.Filled.Subtitles,
+                                    label = "字幕",
+                                    selected = subtitlesVisible,
+                                    compact = compact,
+                                    onClick = {
+                                        recordInteraction()
+                                        onToggleSubtitles()
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(quickToCaptionGap))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(captionLaneHeight),
+                        contentAlignment = Alignment.BottomCenter,
+                    ) {
+                        if (fullscreenCaptionVisible) {
+                            CurrentSubtitleStrip(
+                                sessionKey = state.key,
+                                currentLine = currentLine,
+                                captionOverride = captionOverride,
+                                fullscreen = true,
+                                fullscreenMaxHeight = captionLaneHeight,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
                 }
             }
         }
