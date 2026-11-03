@@ -1088,8 +1088,12 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                         color = if (
                                             speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
                                         ) Color(0xFFB64A55) else SubText,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 2,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 11.sp,
+                                            lineHeight = 14.sp,
+                                        ),
+                                        maxLines = 1,
+                                        softWrap = false,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }
