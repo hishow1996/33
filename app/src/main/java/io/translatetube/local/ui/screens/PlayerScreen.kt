@@ -189,9 +189,21 @@ fun PlayerScreen(
     }
     var isFullscreen by remember { mutableStateOf(false) }
     val fullscreenLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    // Invalidates delayed inset callbacks from a previous fullscreen toggle.
+    val fullscreenWindowEpoch = remember { java.util.concurrent.atomic.AtomicLong(0L) }
+    val pendingInsetRecoveryListeners = remember {
+        mutableListOf<Pair<android.view.View, android.view.View.OnLayoutChangeListener>>()
+    }
 
     DisposableEffect(activity, isFullscreen, fullscreenLifecycleOwner) {
         if (activity != null && isFullscreen) {
+            // A rapid re-entry must not leave a previous exit listener attached to the decor view.
+            pendingInsetRecoveryListeners.toList().forEach { (view, listener) ->
+                view.removeOnLayoutChangeListener(listener)
+            }
+            pendingInsetRecoveryListeners.clear()
+            fullscreenWindowEpoch.incrementAndGet()
+
             val previousOrientation = activity.requestedOrientation
             val window = activity.window
             val decorView = window.decorView
@@ -199,7 +211,12 @@ fun PlayerScreen(
             val previousSystemBarsBehavior = insetsController.systemBarsBehavior
             val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
             val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
-            val wasPortraitLayout = decorView.height >= decorView.width
+            val wasPortraitLayout = if (decorView.width > 0 && decorView.height > 0) {
+                decorView.height >= decorView.width
+            } else {
+                activity.resources.configuration.orientation ==
+                    android.content.res.Configuration.ORIENTATION_PORTRAIT
+            }
 
             fun hasRestoredOrientation(width: Int, height: Int): Boolean {
                 if (width <= 0 || height <= 0) return false
@@ -215,14 +232,6 @@ fun PlayerScreen(
                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             }
 
-            fun requestRestoredInsets() {
-                if (activity.isFinishing || activity.isDestroyed) return
-                decorView.requestLayout()
-                ViewCompat.requestApplyInsets(decorView)
-                val content = decorView.findViewById<android.view.View>(android.R.id.content)
-                ViewCompat.requestApplyInsets(content)
-            }
-
             applyFullscreenWindowMode()
             val fullscreenLifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
                 if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
@@ -232,6 +241,19 @@ fun PlayerScreen(
             fullscreenLifecycleOwner.lifecycle.addObserver(fullscreenLifecycleObserver)
             onDispose {
                 fullscreenLifecycleOwner.lifecycle.removeObserver(fullscreenLifecycleObserver)
+                // Every scheduled recovery callback is valid only for this exit transition.
+                // Re-entering fullscreen advances the epoch and makes the old callbacks inert.
+                val restoreEpoch = fullscreenWindowEpoch.incrementAndGet()
+
+                fun requestRestoredInsets() {
+                    if (fullscreenWindowEpoch.get() != restoreEpoch ||
+                        activity.isFinishing || activity.isDestroyed
+                    ) return
+                    decorView.requestLayout()
+                    ViewCompat.requestApplyInsets(decorView)
+                    val content = decorView.findViewById<android.view.View>(android.R.id.content)
+                    ViewCompat.requestApplyInsets(content)
+                }
 
                 // Wait for the actual window bounds to return to their pre-fullscreen orientation.
                 // A single post() can run while the decor is still measured at landscape size.
@@ -247,14 +269,27 @@ fun PlayerScreen(
                         oldRight: Int,
                         oldBottom: Int,
                     ) {
+                        if (fullscreenWindowEpoch.get() != restoreEpoch ||
+                            activity.isFinishing || activity.isDestroyed
+                        ) {
+                            decorView.removeOnLayoutChangeListener(this)
+                            pendingInsetRecoveryListeners.removeAll {
+                                it.first === decorView && it.second === this
+                            }
+                            return
+                        }
                         val width = right - left
                         val height = bottom - top
                         if (!hasRestoredOrientation(width, height)) return
 
                         decorView.removeOnLayoutChangeListener(this)
+                        pendingInsetRecoveryListeners.removeAll {
+                            it.first === decorView && it.second === this
+                        }
                         decorView.post { requestRestoredInsets() }
                     }
                 }
+                pendingInsetRecoveryListeners += decorView to insetRecoveryListener
                 decorView.addOnLayoutChangeListener(insetRecoveryListener)
 
                 // Restore only the window properties changed by fullscreen. Do not write back the
@@ -279,6 +314,9 @@ fun PlayerScreen(
                     decorView.post { requestRestoredInsets() }
                 }.onFailure {
                     decorView.removeOnLayoutChangeListener(insetRecoveryListener)
+                    pendingInsetRecoveryListeners.removeAll {
+                        it.first === decorView && it.second === insetRecoveryListener
+                    }
                 }
             }
         } else {
