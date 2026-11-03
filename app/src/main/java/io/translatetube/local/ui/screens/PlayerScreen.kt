@@ -739,11 +739,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
 
     // Rebind after a service/player recreation even when TextureView itself stayed attached.
     // Also re-submit the visibility state when a replacement service becomes ready.
-    val videoPresentationMode = when {
-        isFloating -> VideoPresentationMode.FLOATING
-        playbackScreenVisible -> VideoPresentationMode.FOREGROUND
-        else -> VideoPresentationMode.BACKGROUND_AUDIO
-    }
+    val videoPresentationMode = VideoPresentationModePolicy.resolve(
+        activityVisible = playbackScreenVisible,
+        isFloating = isFloating,
+    )
     LaunchedEffect(serviceGeneration, videoPresentationMode, isFullscreen) {
         val service = PlaybackService.instance ?: return@LaunchedEffect
         service.setVideoPresentationMode(videoPresentationMode)
