@@ -92,6 +92,20 @@ class SpeakerRecognitionProgressPolicyTest {
     }
 
     @Test
+    fun firstAnalysisChunkShowsCurrentSegmentRatherThanCompletedCount() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.ANALYZING,
+                stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
+                message = "正在分析音频分段…",
+                completedUnits = 0L,
+                totalUnits = 1L,
+            ),
+        )
+        assertEquals("当前分段 1/1", display.secondaryDetail)
+    }
+
+    @Test
     fun subtitleLinkingShowsCueAndPersonCounts() {
         val display = SpeakerRecognitionProgressPolicy.display(
             SpeakerRecognitionUiState(
