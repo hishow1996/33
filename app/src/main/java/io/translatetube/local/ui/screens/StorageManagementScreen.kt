@@ -1,6 +1,7 @@
 package io.translatetube.local.ui.screens
 
 import android.content.Context
+import android.os.StatFs
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -8,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -74,7 +76,8 @@ private enum class StorageAction(val title: String) {
 private data class HistoryDeleteRequest(val keys: List<String>, val clearAll: Boolean = false)
 private data class HistoryDeletionOutcome(val removedCount: Int, val failedItems: List<String> = emptyList())
 private data class StorageSnapshot(
-    val total: Long, val cache: Long, val subtitleCount: Int, val subtitleBytes: Long,
+    val total: Long, val availableBytes: Long, val capacityBytes: Long,
+    val cache: Long, val subtitleCount: Int, val subtitleBytes: Long,
     val historyCount: Int, val favorites: Int, val models: Long, val tts: Long, val whisper: Long,
     val senseVoice: Long, val piperCount: Int, val ttsReady: Boolean, val whisperReady: Boolean,
     val senseReady: Boolean, val selectedAsr: String, val database: Long, val logs: Long,
@@ -151,6 +154,8 @@ fun StorageManagementScreen(
                 val metrics = mapOf(
                     "扫描完成时间戳 ms" to snapshot.timestamp.toString(),
                     "应用数据总占用 bytes" to snapshot.total.toString(),
+                    "应用所在分区可用空间 bytes" to snapshot.availableBytes.toString(),
+                    "应用所在分区总容量 bytes" to snapshot.capacityBytes.toString(),
                     "临时缓存 bytes" to snapshot.cache.toString(),
                     "字幕缓存条数" to snapshot.subtitleCount.toString(),
                     "字幕缓存占用 bytes" to snapshot.subtitleBytes.toString(),
@@ -599,28 +604,73 @@ fun StorageManagementScreen(
 private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (StorageCategory) -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(bottom = 12.dp)) {
         item {
-            Surface(Modifier.fillMaxWidth(), color = Color.White, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, OutlineSoft)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("可识别的应用数据占用", color = SubText, style = MaterialTheme.typography.bodySmall)
-                    Text(data?.let { bytesLabel(it.total) } ?: if (scanning) "统计中…" else "暂不可用", color = OnBg, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text("总占用按应用私有文件、缓存目录和数据库文件统计；字幕缓存估算值不会重复加到总占用中。", color = SubText, style = MaterialTheme.typography.bodySmall)
-                    HorizontalDivider(color = OutlineSoft)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        StorageMetric("可清理缓存", data?.let { bytesLabel(it.cache) } ?: "—", Icons.Filled.FolderOpen, Modifier.weight(1f))
-                        StorageMetric("模型目录", data?.let { bytesLabel(it.models) } ?: "—", Icons.Filled.Memory, Modifier.weight(1f))
+            Surface(
+                Modifier.fillMaxWidth(),
+                color = Color.White,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, OutlineSoft),
+            ) {
+                Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("应用占用", color = SubText, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                data?.let { bytesLabel(it.total) } ?: if (scanning) "统计中…" else "暂不可用",
+                                color = OnBg,
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        if (scanning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = BrandBright,
+                                strokeWidth = 2.5.dp,
+                            )
+                        }
                     }
+                    StorageBreakdown(data)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        StorageMetric(
+                            "可清理缓存",
+                            data?.let { bytesLabel(it.cache) } ?: "—",
+                            Icons.Filled.FolderOpen,
+                            Modifier.weight(1f),
+                        )
+                        StorageMetric(
+                            "模型文件",
+                            data?.let { bytesLabel(it.models) } ?: "—",
+                            Icons.Filled.Memory,
+                            Modifier.weight(1f),
+                        )
+                    }
+                    MetricLine(
+                        "所在分区可用 / 总容量",
+                        data?.let {
+                            if (it.availableBytes >= 0L && it.capacityBytes >= 0L) {
+                                "$${bytesLabel(it.availableBytes)} / $${bytesLabel(it.capacityBytes)}"
+                            } else "暂不可用"
+                        } ?: "—",
+                    )
                 }
             }
         }
-        item { Text("数据分类", color = OnBg, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) }
+        item {
+            Text(
+                "数据分类",
+                color = OnBg,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
         items(StorageCategory.values().toList()) { item ->
             val value = when (item) {
-                StorageCategory.CACHE -> data?.let { "可清理缓存 ${bytesLabel(it.cache)}" } ?: "统计中…"
-                StorageCategory.SUBTITLES -> data?.let { "${it.subtitleCount} 条 · 内容估算 ${bytesLabel(it.subtitleBytes)}" } ?: "统计中…"
-                StorageCategory.MODELS -> data?.let { "模型目录 ${bytesLabel(it.models)}" } ?: "统计中…"
-                StorageCategory.HISTORY -> data?.let { "${it.historyCount} 条记录 · 收藏 ${it.favorites} 条" } ?: "统计中…"
-                StorageCategory.DATABASE -> data?.let { "数据库文件 ${bytesLabel(it.database)}" } ?: "统计中…"
-                StorageCategory.LOGS -> data?.let { "${it.logCount} 条可读记录 · ${bytesLabel(it.logs)}" } ?: "统计中…"
+                StorageCategory.CACHE -> data?.let { "可清理 $${bytesLabel(it.cache)}" } ?: "统计中…"
+                StorageCategory.SUBTITLES -> data?.let { "$${it.subtitleCount} 条 · $${bytesLabel(it.subtitleBytes)}" } ?: "统计中…"
+                StorageCategory.MODELS -> data?.let { bytesLabel(it.models) } ?: "统计中…"
+                StorageCategory.HISTORY -> data?.let { "$${it.historyCount} 条 · 收藏 $${it.favorites}" } ?: "统计中…"
+                StorageCategory.DATABASE -> data?.let { bytesLabel(it.database) } ?: "统计中…"
+                StorageCategory.LOGS -> data?.let { "$${it.logCount} 条 · $${bytesLabel(it.logs)}" } ?: "统计中…"
             }
             StorageRow(item, value) { onOpen(item) }
         }
@@ -630,7 +680,87 @@ private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (Stor
             }
         }
         data?.let { info ->
-            item { Text("上次统计：${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(info.timestamp))}", color = SubText, style = MaterialTheme.typography.labelSmall) }
+            item {
+                Text(
+                    "上次统计：$${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(info.timestamp))}",
+                    color = SubText,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+    }
+}
+
+private data class StorageBreakdownSlice(
+    val title: String,
+    val bytes: Long,
+    val color: Color,
+)
+
+@Composable
+private fun StorageBreakdown(data: StorageSnapshot?) {
+    val snapshot = data ?: return
+    if (
+        snapshot.total <= 0L ||
+        snapshot.cache < 0L ||
+        snapshot.models < 0L ||
+        snapshot.database < 0L ||
+        snapshot.logs < 0L
+    ) return
+
+    val knownBytes = listOf(snapshot.cache, snapshot.models, snapshot.database, snapshot.logs)
+        .fold(0L, ::addSaturated)
+    val otherBytes = (snapshot.total - knownBytes).coerceAtLeast(0L)
+    val slices = listOf(
+        StorageBreakdownSlice("缓存", snapshot.cache, BrandBright),
+        StorageBreakdownSlice("模型", snapshot.models, MutedGreen),
+        StorageBreakdownSlice("数据库", snapshot.database, Color(0xFFE5A642)),
+        StorageBreakdownSlice("日志", snapshot.logs, Color(0xFF8E78C8)),
+        StorageBreakdownSlice("其他", otherBytes, Color(0xFFB7C2D2)),
+    )
+    val visibleSlices = slices.filter { it.bytes > 0L }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.fillMaxWidth()
+                .height(9.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(OutlineSoft),
+        ) {
+            visibleSlices.forEach { slice ->
+                Box(
+                    Modifier.weight(slice.bytes.toFloat())
+                        .fillMaxHeight()
+                        .background(slice.color),
+                )
+            }
+        }
+        slices.chunked(3).forEach { group ->
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                group.forEach { slice ->
+                    Row(
+                        Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Box(
+                            Modifier.size(7.dp)
+                                .background(slice.color, CircleShape),
+                        )
+                        Text(
+                            "$${slice.title} $${bytesLabel(slice.bytes)}",
+                            color = SubText,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                repeat(3 - group.size) { Spacer(Modifier.weight(1f)) }
+            }
         }
     }
 }
@@ -646,18 +776,15 @@ private fun StorageDetail(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     Text("当前占用", color = SubText, style = MaterialTheme.typography.bodySmall)
                     Text(primaryValue(category, data, scanning), color = OnBg, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text(category.hint, color = SubText, style = MaterialTheme.typography.bodySmall)
                     HorizontalDivider(color = OutlineSoft)
                     when (category) {
                         StorageCategory.CACHE -> {
-                            Text("只清理应用标记的临时音频与 HLS 缓存；数据库、字幕缓存和模型文件不受影响。", color = SubText, style = MaterialTheme.typography.bodySmall)
                             if (busy) NoticeBox("播放、处理或模型下载期间不能清理。", true)
                             ActionButton(if (actionBusy) "清理中…" else "清理临时缓存", !busy && !actionBusy && !scanning) { onAction(StorageAction.CACHE) }
                         }
                         StorageCategory.SUBTITLES -> {
                             MetricLine("缓存条目", data?.subtitleCount?.toString() ?: "—")
                             MetricLine("字幕 JSON 内容估算", data?.let { bytesLabel(it.subtitleBytes) } ?: "—")
-                            Text("清理只清空字幕缓存表，不删除视频历史或原始视频。以后可能需要重新获取或翻译字幕。", color = SubText, style = MaterialTheme.typography.bodySmall)
                             if (busy) NoticeBox("播放、处理字幕或下载模型期间不能清理。", true)
                             ActionButton(if (actionBusy) "清理中…" else "清理字幕与翻译缓存", !busy && !actionBusy && !scanning) { onAction(StorageAction.SUBTITLES) }
                         }
@@ -672,16 +799,13 @@ private fun StorageDetail(
                             ModelStatusLine("SenseVoice 转写模型", data?.senseReady == true)
                             MetricLine("已安装 Piper 音色模型", data?.piperCount?.toString() ?: "—")
                             MetricLine("当前选择的本地转写模型", data?.selectedAsr ?: "—")
-                            NoticeBox("此页展示模型占用与就绪状态，不直接删除模型，避免误删仍被引擎引用的文件。下载和切换仍使用设置中的模型管理。", false)
                         }
                         StorageCategory.HISTORY -> {
                             MetricLine("历史记录总数", data?.historyCount?.toString() ?: "—")
                             MetricLine("收藏记录", data?.favorites?.toString() ?: "—")
-                            NoticeBox("请在视频历史列表中选择要清除的单条记录、多条记录或全部历史。", false)
                         }
                         StorageCategory.DATABASE -> {
                             MetricLine("数据库及附属文件", data?.let { bytesLabel(it.database) } ?: "—")
-                            Text("数据库包含历史、字幕缓存和 API 配置。此页不提供删除整个数据库的操作；请在对应分类中执行定向清理。", color = SubText, style = MaterialTheme.typography.bodySmall)
                         }
                         StorageCategory.LOGS -> {
                             MetricLine("可读取日志条数（最多 800）", data?.logCount?.toString() ?: "—")
@@ -690,7 +814,6 @@ private fun StorageDetail(
                                 OutlinedButton(onClick = onOpenLogs, modifier = Modifier.weight(1f), enabled = !actionBusy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright)) { Text("查看 / 导出日志") }
                                 OutlinedButton(onClick = { onAction(StorageAction.LOGS) }, modifier = Modifier.weight(1f), enabled = !actionBusy && !scanning, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed)) { Text("清理日志") }
                             }
-                            Text("需要保留的故障详情请先导出。清理日志不会影响视频、字幕和模型。", color = SubText, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -931,17 +1054,27 @@ private fun StorageRow(category: StorageCategory, value: String, onClick: () -> 
         StorageCategory.DATABASE -> Icons.Filled.FolderOpen
         StorageCategory.LOGS -> Icons.Filled.Description
     }
-    Surface(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).clickable(onClick = onClick), color = Color.White, shape = RoundedCornerShape(15.dp), border = BorderStroke(1.dp, OutlineSoft)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-            Surface(Modifier.size(42.dp), shape = RoundedCornerShape(12.dp), color = Color(0xFFF0F4FC)) {
-                Box(contentAlignment = Alignment.Center) { Icon(image, null, tint = BrandBright, modifier = Modifier.size(22.dp)) }
+    Surface(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).clickable(onClick = onClick),
+        color = Color.White,
+        shape = RoundedCornerShape(15.dp),
+        border = BorderStroke(1.dp, OutlineSoft),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(11.dp),
+        ) {
+            Surface(Modifier.size(40.dp), shape = RoundedCornerShape(12.dp), color = Color(0xFFF0F4FC)) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(image, null, tint = BrandBright, modifier = Modifier.size(21.dp))
+                }
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(category.title, color = OnBg, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                Text(category.hint, color = SubText, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(value, color = BrandBright, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Icon(Icons.Filled.ChevronRight, contentDescription = "进入${category.title}", tint = SubText)
+            Icon(Icons.Filled.ChevronRight, contentDescription = "进入$${category.title}", tint = SubText)
         }
     }
 }
@@ -1003,29 +1136,29 @@ private fun primaryValue(category: StorageCategory, data: StorageSnapshot?, scan
 private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnapshot {
     val warnings = mutableListOf<String>()
     fun measured(label: String, file: File): Long = runCatching { directorySize(file) }.getOrElse {
-        warnings += "$label 统计失败：${it.javaClass.simpleName}"; -1L
+        warnings += "$${it.javaClass.simpleName}"; -1L
     }
     val cache = runCatching { AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir) }.getOrElse {
-        warnings += "临时缓存统计失败：${it.javaClass.simpleName}"; -1L
+        warnings += "临时缓存统计失败：$${it.javaClass.simpleName}"; -1L
     }
     val subtitleCount = runCatching { db.subtitleCacheDao().countEntries() }.getOrElse {
-        warnings += "字幕缓存条数统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "字幕缓存条数统计失败：$${it.javaClass.simpleName}"; -1
     }
     val subtitleBytes = runCatching { db.subtitleCacheDao().payloadBytes() }.getOrElse {
-        warnings += "字幕缓存内容统计失败：${it.javaClass.simpleName}"; -1L
+        warnings += "字幕缓存内容统计失败：$${it.javaClass.simpleName}"; -1L
     }
     val history = runCatching { db.videoDao().countAll() }.getOrElse {
-        warnings += "视频历史统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "视频历史统计失败：$${it.javaClass.simpleName}"; -1
     }
     val favorites = runCatching { db.videoDao().countFavorites() }.getOrElse {
-        warnings += "收藏记录统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "收藏记录统计失败：$${it.javaClass.simpleName}"; -1
     }
     val models = measured("模型目录", File(context.filesDir, "models"))
     val tts = measured("配音模型目录", ModelFiles.ttsDir(context))
     val whisper = measured("Whisper 模型目录", ModelFiles.asrDir(context))
     val sense = measured("SenseVoice 模型目录", ModelFiles.senseVoiceDir(context))
     val piperCount = runCatching { PiperModels.installedIds(context).size }.getOrElse {
-        warnings += "Piper 模型状态读取失败：${it.javaClass.simpleName}"; -1
+        warnings += "Piper 模型状态读取失败：$${it.javaClass.simpleName}"; -1
     }
     val ttsReady = runCatching { ModelFiles.ttsReady(context) }.getOrDefault(false)
     val whisperReady = runCatching { ModelFiles.whisperReady(context) }.getOrDefault(false)
@@ -1033,14 +1166,32 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
     val selectedAsr = ModelFiles.localAsrModelDisplayName(ModelFiles.selectedLocalAsrModelId(context))
     val dbFile = context.getDatabasePath("translatetube.db")
     val databaseBytes = runCatching {
-        dbFile.parentFile?.listFiles { f -> f.isFile && (f.name == dbFile.name || f.name.startsWith(dbFile.name + "-")) }
-            ?.filter { it.isFile }?.fold(0L) { total, f -> addSaturated(total, f.length()) } ?: 0L
-    }.getOrElse { warnings += "数据库文件统计失败：${it.javaClass.simpleName}"; -1L }
+        val parent = dbFile.parentFile
+        if (parent == null || !parent.exists()) {
+            0L
+        } else {
+            val entries = parent.listFiles { file ->
+                file.isFile && (file.name == dbFile.name || file.name.startsWith(dbFile.name + "-"))
+            } ?: throw IllegalStateException("数据库目录无法读取")
+            entries.fold(0L) { total, file -> addSaturated(total, file.length()) }
+        }
+    }.getOrElse {
+        warnings += "数据库文件统计失败：$${it.javaClass.simpleName}"; -1L
+    }
     val logA = measured("应用日志目录", File(context.filesDir, "app_logs"))
     val logB = measured("历史异常目录", File(context.filesDir, "crash"))
     val logBytes = if (logA < 0L || logB < 0L) -1L else addSaturated(logA, logB)
     val logCount = runCatching { AppLogStore.readRecent(context, 800).size }.getOrElse {
-        warnings += "日志条数统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "日志条数统计失败：$${it.javaClass.simpleName}"; -1
+    }
+    val storageStats = runCatching { StatFs(context.filesDir.absolutePath) }.getOrElse {
+        warnings += "应用所在分区空间统计失败：$${it.javaClass.simpleName}"
+        null
+    }
+    val availableBytes = storageStats?.let { runCatching { it.availableBytes.coerceAtLeast(0L) }.getOrDefault(-1L) } ?: -1L
+    val capacityBytes = storageStats?.let { runCatching { it.totalBytes.coerceAtLeast(0L) }.getOrDefault(-1L) } ?: -1L
+    if (storageStats != null && (availableBytes < 0L || capacityBytes < 0L)) {
+        warnings += "应用所在分区可用空间读取失败"
     }
     val parts = listOf(
         measured("应用私有文件", context.filesDir),
@@ -1050,11 +1201,31 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
         measured("代码缓存", context.codeCacheDir),
     )
     val total = if (parts.any { it < 0L }) -1L else parts.fold(0L, ::addSaturated)
-    return StorageSnapshot(total, cache, subtitleCount, subtitleBytes, history, favorites, models, tts, whisper, sense,
-        piperCount, ttsReady, whisperReady, senseReady, selectedAsr, databaseBytes, logBytes, logCount,
-        System.currentTimeMillis(), warnings)
+    return StorageSnapshot(
+        total = total,
+        availableBytes = availableBytes,
+        capacityBytes = capacityBytes,
+        cache = cache,
+        subtitleCount = subtitleCount,
+        subtitleBytes = subtitleBytes,
+        historyCount = history,
+        favorites = favorites,
+        models = models,
+        tts = tts,
+        whisper = whisper,
+        senseVoice = sense,
+        piperCount = piperCount,
+        ttsReady = ttsReady,
+        whisperReady = whisperReady,
+        senseReady = senseReady,
+        selectedAsr = selectedAsr,
+        database = databaseBytes,
+        logs = logBytes,
+        logCount = logCount,
+        timestamp = System.currentTimeMillis(),
+        warnings = warnings,
+    )
 }
-
 private fun directorySize(file: File): Long {
     if (!file.exists()) return 0L
     if (file.isFile) return file.length().coerceAtLeast(0L)
