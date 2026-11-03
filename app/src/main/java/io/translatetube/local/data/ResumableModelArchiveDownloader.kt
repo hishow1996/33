@@ -111,10 +111,17 @@ internal object ResumableModelArchiveDownloader {
         maxBytes: Long,
         expectedSha256: String?,
         checkActive: () -> Unit = {},
+        onVerificationProgress: (Long, Long) -> Unit = { _, _ -> },
     ): Boolean {
         if (!archive.isFile || archive.length() !in 3L..maxBytes) return false
         if (expectedSha256 != null) {
-            val actual = runCatching { sha256File(archive, checkActive) }.getOrNull() ?: return false
+            val actual = try {
+                sha256File(archive, checkActive, onVerificationProgress)
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                return false
+            }
             return actual.equals(expectedSha256, ignoreCase = true)
         }
         return runCatching {
@@ -136,6 +143,7 @@ internal object ResumableModelArchiveDownloader {
         awaitResume: suspend () -> Unit = {},
         checkActive: () -> Unit = {},
         shouldFallbackToMirror: (receivedThisRequest: Long, elapsedMillis: Long) -> Boolean = { _, _ -> false },
+        onVerificationProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): ResumableModelDownloadResult = withContext(Dispatchers.IO) {
         require(maxBytes > 0L) { "模型下载大小限制无效" }
         val parent = partFile.absoluteFile.parentFile ?: throw IOException("模型下载临时目录无效")
@@ -157,12 +165,27 @@ internal object ResumableModelArchiveDownloader {
         // The last byte may have been synced just before the process died.
         val existingBytes = partFile.length()
         if (existingBytes > 0L && metadata?.totalBytes == existingBytes) {
-            val actualHash = runCatching { sha256File(partFile, checkActive) }.getOrNull()
-            if (actualHash != null && (expectedSha256 == null ||
-                    actualHash.equals(expectedSha256, ignoreCase = true))
+            // Whisper does not publish a trusted archive digest. Hashing its entire ~200 MB
+            // package again adds a long, unreported pause after download without validating
+            // anything; archive integrity is checked during decompression instead.
+            val actualHash = if (expectedSha256 != null) {
+                try {
+                    sha256File(partFile, checkActive, onVerificationProgress)
+                } catch (cancel: kotlinx.coroutines.CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    null
+                }
+            } else {
+                ""
+            }
+            if (expectedSha256 == null ||
+                actualHash?.equals(expectedSha256, ignoreCase = true) == true
             ) {
                 onProgress(existingBytes, metadata.totalBytes)
-                return@withContext ResumableModelDownloadResult(existingBytes, metadata.totalBytes, actualHash)
+                return@withContext ResumableModelDownloadResult(
+                    existingBytes, metadata.totalBytes, actualHash.orEmpty()
+                )
             }
             partFile.delete()
             metaFile.delete()
@@ -204,7 +227,11 @@ internal object ResumableModelArchiveDownloader {
                             response.header("Content-Range")
                         )
                         if (serverTotal == offset) {
-                            val actualHash = sha256File(partFile, checkActive)
+                            val actualHash = if (expectedSha256 != null) {
+                                sha256File(partFile, checkActive, onVerificationProgress)
+                            } else {
+                                ""
+                            }
                             if (expectedSha256 != null && !actualHash.equals(expectedSha256, true)) {
                                 partFile.delete()
                                 metaFile.delete()
@@ -327,7 +354,11 @@ internal object ResumableModelArchiveDownloader {
                         )
                     }
                     checkActive()
-                    val actualHash = sha256File(partFile, checkActive)
+                    val actualHash = if (expectedSha256 != null) {
+                        sha256File(partFile, checkActive, onVerificationProgress)
+                    } else {
+                        ""
+                    }
                     if (expectedSha256 != null && !actualHash.equals(expectedSha256, ignoreCase = true)) {
                         partFile.delete()
                         metaFile.delete()
@@ -365,8 +396,16 @@ internal object ResumableModelArchiveDownloader {
         throw IllegalStateException("模型下载循环意外结束")
     }
 
-    fun sha256File(file: File, checkActive: () -> Unit = {}): String {
+    fun sha256File(
+        file: File,
+        checkActive: () -> Unit = {},
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): String {
         val digest = MessageDigest.getInstance("SHA-256")
+        val totalBytes = file.length().coerceAtLeast(0L)
+        var bytesRead = 0L
+        var lastReportedBytes = 0L
+        onProgress(0L, totalBytes)
         FileInputStream(file).use { input ->
             val buffer = ByteArray(128 * 1024)
             while (true) {
@@ -374,9 +413,15 @@ internal object ResumableModelArchiveDownloader {
                 val count = ProgressSafeInput.read(input, buffer)
                 if (count < 0) break
                 digest.update(buffer, 0, count)
+                bytesRead += count
+                if (bytesRead - lastReportedBytes >= 1024L * 1024L || bytesRead >= totalBytes) {
+                    onProgress(bytesRead.coerceAtMost(totalBytes), totalBytes)
+                    lastReportedBytes = bytesRead
+                }
             }
         }
         checkActive()
+        onProgress(bytesRead.coerceAtMost(totalBytes), totalBytes)
         return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 

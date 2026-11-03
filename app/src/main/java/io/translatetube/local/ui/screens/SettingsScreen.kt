@@ -1842,6 +1842,8 @@ private fun ModelRow(
                     }
                     val taskLabel = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在下载模型"
                     val detail = when {
+                        state.indeterminate && state.totalBytes > 0L ->
+                            "$taskLabel · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
                         state.totalBytes > 0L ->
                             "$taskLabel · ${state.progress.coerceIn(0, 99)}% · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
                         state.downloadedBytes > 0L ->

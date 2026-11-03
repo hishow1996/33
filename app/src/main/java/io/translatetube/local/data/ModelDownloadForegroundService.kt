@@ -269,7 +269,9 @@ class ModelDownloadForegroundService : Service() {
     private fun statusText(state: ModelState): String = when (state.status) {
         ModelStatus.DOWNLOADING -> {
             val stage = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在下载模型"
-            if (state.totalBytes > 0L) {
+            if (state.indeterminate && state.totalBytes > 0L) {
+                "$stage · ${state.downloadedMB}/${state.totalMB} MB"
+            } else if (state.totalBytes > 0L) {
                 "$stage · ${state.progress.coerceIn(0, 99)}% · ${state.downloadedMB}/${state.totalMB} MB"
             } else {
                 "$stage · 已下载 ${state.downloadedMB} MB"

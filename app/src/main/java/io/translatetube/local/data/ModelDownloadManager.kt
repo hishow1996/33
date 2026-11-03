@@ -882,7 +882,36 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
             else -> null
         }
-        val reusablePackage = ResumableModelArchiveDownloader.isReusableArchive(pkg, maxArchiveBytes, expectedArchiveSha256)
+        val packageCheckJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        state.value = ModelState(
+            status = ModelStatus.DOWNLOADING,
+            indeterminate = true,
+            stageMessage = if (pkg.isFile) "正在检查本地模型包…" else "正在准备下载模型…",
+        )
+        val reusablePackage = ResumableModelArchiveDownloader.isReusableArchive(
+            archive = pkg,
+            maxBytes = maxArchiveBytes,
+            expectedSha256 = expectedArchiveSha256,
+            checkActive = { packageCheckJob?.ensureActive() },
+            onVerificationProgress = { bytesRead, totalBytes ->
+                if (kind == ModelKind.ASR && totalBytes > 0L) {
+                    val cacheModelId = if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) "sensevoice" else "whisper"
+                    actualAsrArchiveSizes[cacheModelId] = totalBytes
+                }
+                state.value = state.value.copy(
+                    status = ModelStatus.EXTRACTING,
+                    progress = if (totalBytes > 0L) {
+                        (bytesRead.toDouble() * 100.0 / totalBytes.toDouble()).toInt().coerceIn(0, 99)
+                    } else 0,
+                    downloadedMB = bytesRead / 1_048_576L,
+                    totalMB = if (totalBytes > 0L) (totalBytes + 1_048_575L) / 1_048_576L else 0L,
+                    downloadedBytes = bytesRead,
+                    totalBytes = totalBytes,
+                    indeterminate = totalBytes <= 0L,
+                    stageMessage = "正在校验本地模型包…",
+                )
+            },
+        )
         if (pkg.exists() && !reusablePackage) pkg.delete()
         logModelInfo(
             "模型压缩包下载与安装阶段开始",
@@ -893,7 +922,6 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 "安装目录可用空间 MB" to ((destDir.parentFile ?: ctx.filesDir).usableSpace / (1024L * 1024L)).toString(),
             ),
         )
-        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0, indeterminate = true)
         val parentDir = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         // Prefer live source metadata for storage preflight. These constants are used only
         // as a safety fallback if the source does not expose its exact Content-Length.
@@ -992,7 +1020,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             )
             try {
                 if (reuseExistingPackage) {
-                    downloadedArchiveSha256 = expectedArchiveSha256?.let { ResumableModelArchiveDownloader.sha256File(pkg) }
+                    // The cached archive's trusted digest was already checked before the
+                    // source loop; do not hash the same large file a second time.
+                    downloadedArchiveSha256 = expectedArchiveSha256
                 } else {
                     val partFile = sourcePart ?: throw java.io.IOException("模型下载断点路径缺失")
                     val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -1015,18 +1045,34 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         onProgress = { got, total ->
                             val pct = if (total > 0L) (got.toDouble() * 100.0 / total.toDouble()).toInt().coerceIn(0, 99) else 0
                             if (kind == ModelKind.ASR && total > 0L) {
-                                // Remember the server-reported total so the UI stays exact after extraction
-                                // and the separate VAD download stage replaces the transient progress state.
                                 actualAsrArchiveSizes[modelId] = total
                             }
+                            // Do not let the final transfer callback overwrite the active
+                            // "校验模型压缩包" stage after the checksum scan has started.
+                            if (state.value.status != ModelStatus.EXTRACTING) {
+                                state.value = state.value.copy(
+                                    progress = pct,
+                                    downloadedMB = got / 1_048_576L,
+                                    totalMB = if (total > 0L) (total + 1_048_575L) / 1_048_576L else 0L,
+                                    downloadedBytes = got,
+                                    totalBytes = total.coerceAtLeast(0L),
+                                    stageMessage = "正在下载模型包（支持断点续传）…",
+                                    indeterminate = total <= 0L,
+                                )
+                            }
+                        },
+                        onVerificationProgress = { bytesRead, totalBytes ->
                             state.value = state.value.copy(
-                                progress = pct,
-                                downloadedMB = got / 1_048_576L,
-                                totalMB = if (total > 0L) (total + 1_048_575L) / 1_048_576L else 0L,
-                                downloadedBytes = got,
-                                totalBytes = total.coerceAtLeast(0L),
-                                stageMessage = "正在下载模型包（支持断点续传）…",
-                                indeterminate = total <= 0L,
+                                status = ModelStatus.EXTRACTING,
+                                progress = if (totalBytes > 0L) {
+                                    (bytesRead.toDouble() * 100.0 / totalBytes.toDouble()).toInt().coerceIn(0, 99)
+                                } else 0,
+                                downloadedMB = bytesRead / 1_048_576L,
+                                totalMB = if (totalBytes > 0L) (totalBytes + 1_048_575L) / 1_048_576L else 0L,
+                                downloadedBytes = bytesRead,
+                                totalBytes = totalBytes,
+                                stageMessage = "正在校验模型压缩包…",
+                                indeterminate = totalBytes <= 0L,
                             )
                         },
                     )
@@ -1038,12 +1084,6 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 // Whisper does not publish an archive digest, so do not show a fake checksum stage.
                 // TTS and SenseVoice publish verified digests and expose the real check separately.
                 if (expectedArchiveSha256 != null) {
-                    state.value = state.value.copy(
-                        status = ModelStatus.EXTRACTING,
-                        progress = 0,
-                        indeterminate = true,
-                        stageMessage = "正在校验模型压缩包…",
-                    )
                     val actual = downloadedArchiveSha256
                         ?: throw java.io.IOException("模型压缩包未能完成 SHA-256 校验")
                     if (!actual.equals(expectedArchiveSha256, ignoreCase = true)) {
@@ -1069,19 +1109,20 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         pkg = pkg,
                         destDir = destDir,
                         checkActive = { awaitDownloadsResumedBlocking(extractionJob) },
-                        onProgress = { extractedBytes, archiveBytesRead, archiveTotalBytes ->
-                            val handledMB = extractedBytes / (1024L * 1024L)
-                            // Follow actual compressed bytes consumed by the decoder. The old
-                            // fixed expanded-size estimate capped Whisper at 94%.
+                        onProgress = { processedBytes, archiveBytesRead, archiveTotalBytes ->
+                            val handledMB = processedBytes / (1024L * 1024L)
+                            // Report compressed input and decompressed data handled. Once the
+                            // decoder has consumed the full archive, switch to an indeterminate
+                            // spinner instead of leaving a misleading 99% ring during final writes.
+                            val inputExhausted = archiveTotalBytes > 0L &&
+                                archiveBytesRead >= archiveTotalBytes
                             val extractionProgress = if (archiveTotalBytes > 0L) {
                                 (archiveBytesRead.toDouble() * 100.0 / archiveTotalBytes.toDouble())
                                     .toInt().coerceIn(0, 99)
-                            } else {
-                                0
-                            }
+                            } else 0
                             state.value = state.value.copy(
                                 progress = extractionProgress,
-                                indeterminate = false,
+                                indeterminate = inputExhausted || archiveTotalBytes <= 0L,
                                 stageMessage = "正在解压模型（已处理 ${handledMB} MB）",
                             )
                         },
