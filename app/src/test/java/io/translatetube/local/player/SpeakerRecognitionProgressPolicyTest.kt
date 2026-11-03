@@ -44,6 +44,83 @@ class SpeakerRecognitionProgressPolicyTest {
     }
 
     @Test
+    fun stageDisplaySeparatesAudioDownloadStatusAndMeasuredSize() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.PREPARING,
+                stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                message = "YouTube · 独立音轨 · 正在下载 40.0 KB / 1.6 MB · 2%",
+                progressPercent = 2,
+            ),
+        )
+        assertEquals("YouTube · 独立音轨 · 下载中", display.message)
+        assertEquals("40 KB / 1.6 MB", display.secondaryDetail)
+    }
+
+    @Test
+    fun modelDownloadShowsRealByteCounts() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.DOWNLOADING_MODELS,
+                stage = SpeakerRecognitionStage.DOWNLOADING_MODELS,
+                message = "正在下载人物分离模型",
+                progressPercent = 25,
+                completedUnits = 512L * 1024L,
+                totalUnits = 4L * 1024L * 1024L,
+                progressItem = "正在下载人物分离模型",
+            ),
+        )
+        assertEquals("正在下载人物分离模型", display.message)
+        assertEquals("512 KB / 4 MB", display.secondaryDetail)
+    }
+
+    @Test
+    fun analysisShowsCurrentSegmentWithoutRecalculatingProgress() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.ANALYZING,
+                stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
+                message = "正在分析当前音频分段…",
+                progressPercent = 37,
+                completedUnits = 1L,
+                totalUnits = 4L,
+                progressItem = "模型内部分析",
+            ),
+        )
+        assertEquals("正在分析当前音频分段…", display.message)
+        assertEquals("当前分段 2/4", display.secondaryDetail)
+    }
+
+    @Test
+    fun subtitleLinkingShowsCueAndPersonCounts() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.APPLYING,
+                stage = SpeakerRecognitionStage.LINKING_SUBTITLES,
+                message = "正在关联人物与字幕…",
+                progressPercent = 60,
+                completedUnits = 60L,
+                totalUnits = 100L,
+                personCount = 3,
+            ),
+        )
+        assertEquals("已关联 60/100 行 · 3 位人物", display.secondaryDetail)
+    }
+
+    @Test
+    fun applyingVoicesShowsDetectedPeopleCount() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.APPLYING,
+                stage = SpeakerRecognitionStage.APPLYING_VOICES,
+                message = "已识别 3 位人物，正在更新人物音色…",
+                personCount = 3,
+            ),
+        )
+        assertEquals("3 位人物", display.secondaryDetail)
+    }
+
+    @Test
     fun audioAcquisitionWithoutPercentageRemainsIndeterminate() {
         val update = SpeakerRecognitionProgressPolicy.audioAcquisitionProgress(
             "网页媒体流 · 正在提取音轨…",
