@@ -9225,6 +9225,11 @@ updateUiForSession(key, pipelineGeneration) {
                         progress = "", phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
                     )
                 }
+                // The new translation result is now durable. Clear only the translation restart
+                // marker before checkpointing so a later dubbing interruption resumes at stage 5.
+                if (forceFreshTranslationPipelineGeneration == pipelineGeneration) {
+                    forceFreshTranslationPipelineGeneration = 0L
+                }
                 if (!restoreCompletedSnapshot) {
                     // Covers sessions that needed no translation calls, as well as the small gap
                     // between the final translated line and stage-5 synthesis.
