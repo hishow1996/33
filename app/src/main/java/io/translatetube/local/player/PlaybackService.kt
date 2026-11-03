@@ -1765,11 +1765,23 @@ class PlaybackService : MediaSessionService() {
                         val readyRestartState = readyRestartStage?.let { stage ->
                             stateForEngineRestart(state, stage)
                         }
+                        // Before YouTube resolves AUTO into captions or speech recognition, an ASR
+                        // engine switch must re-enter source discovery. An empty AUTO snapshot would
+                        // otherwise skip caption discovery and jump straight to ASR.
+                        val rediscoverYouTubeSourceBeforeAsr =
+                            readyRestartStage == EngineRestartStage.TRANSCRIPTION &&
+                                state.phase == Phase.PARSING &&
+                                state.processingFlow == ProcessingFlow.AUTO &&
+                                state.lines.isEmpty()
+                        val effectiveReadyRestartState =
+                            readyRestartState.takeUnless { rediscoverYouTubeSourceBeforeAsr }
                         val canResumeAtStage = (canResumeWithTimeline || canResumeAtSourceStage) &&
                             readyRestartStage != null &&
-                            readyRestartState != null
-                        val importedRestartLines = if (canResumeAtStage && this@PlaybackService.importedLines != null) {
-                            readyRestartState?.lines
+                            (effectiveReadyRestartState != null || rediscoverYouTubeSourceBeforeAsr)
+                        val importedRestartLines = if (
+                            canResumeAtStage && this@PlaybackService.importedLines != null
+                        ) {
+                            effectiveReadyRestartState?.lines
                         } else null
                         val restartRequestToken = activeOpenRequestToken
 
@@ -1795,7 +1807,8 @@ class PlaybackService : MediaSessionService() {
                                 "旧引擎配置指纹" to processingEngineConfigFingerprint.take(16),
                                 "新引擎配置指纹" to stableFingerprint.take(16),
                                 "选择的恢复阶段" to (readyRestartStage?.name ?: "从流程入口恢复"),
-                                "已复用字幕行数" to (readyRestartState?.lines?.size ?: 0).toString(),
+                                "已复用字幕行数" to (effectiveReadyRestartState?.lines?.size ?: 0).toString(),
+                                "是否重新发现 YouTube 字幕轨" to rediscoverYouTubeSourceBeforeAsr.toString(),
                                 "恢复策略" to when (readyRestartStage) {
                                     EngineRestartStage.TRANSCRIPTION -> "重新获取/转写原文字幕，再翻译和配音"
                                     EngineRestartStage.TRANSLATION -> "复用原文和时间轴，按新翻译引擎重新翻译，再生成配音"
@@ -1818,7 +1831,7 @@ class PlaybackService : MediaSessionService() {
                                 resumeState = if (forceYouTubeSubtitleRefresh) {
                                     null
                                 } else if (canResumeAtStage) {
-                                    readyRestartState
+                                    effectiveReadyRestartState
                                 } else {
                                     null
                                 },
