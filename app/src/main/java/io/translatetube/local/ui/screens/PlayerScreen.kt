@@ -7118,8 +7118,8 @@ private fun SubtitleList(
             }
             itemsIndexed(
                 lines,
-                key = { position, line ->
-                    "${sessionKey}:${position}:${line.index}:${line.startMs}:${line.endMs}:${line.text.hashCode()}"
+                key = { position, _ ->
+                    "${sessionKey}:${position}"
                 },
                 contentType = { _, _ -> "subtitle-row" },
             ) { index, line ->

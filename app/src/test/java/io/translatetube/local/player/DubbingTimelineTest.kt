@@ -153,6 +153,24 @@ class DubbingTimelineTest {
     }
 
     @Test
+    fun primitiveIndexSortPreservesOriginalIndicesForLargeReverseOrderedInput() {
+        val rows = buildList {
+            for (index in 9_999 downTo 0) {
+                val start = index.toLong() * 100L
+                add(SubLine(index, start, start + 250L, "cue $index"))
+            }
+            add(SubLine(10_000, 2_000_000L, 2_001_000L, "same-start first"))
+            add(SubLine(10_001, 2_000_000L, 2_000_500L, "same-start second"))
+        }
+        val timeline = DubbingTimeline(rows)
+
+        assertEquals(9_989, timeline.lineAt(1_000L))
+        assertEquals(10_001, timeline.lineAt(2_000_100L))
+        assertEquals(10_000, timeline.lineAt(2_000_700L))
+        assertEquals(-1, timeline.lineAt(2_001_000L))
+    }
+
+    @Test
     fun indexedLookupMatchesBruteForceForUnorderedOverlappingCueSets() {
         val rows = List(1_200) { index ->
             val start = ((index * 37) % 8_000).toLong()
