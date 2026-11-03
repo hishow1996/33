@@ -5658,6 +5658,7 @@ private fun PlaybackOverlayIconButton(
     iconSize: androidx.compose.ui.unit.Dp,
     tint: Color = Color.White,
     enabled: Boolean = true,
+    onInteraction: () -> Unit = {},
     onClick: () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -5672,7 +5673,6 @@ private fun PlaybackOverlayIconButton(
         animationSpec = tween(110, easing = FastOutSlowInEasing),
         label = "playback-control-alpha",
     )
-
     Box(
         modifier = Modifier
             .size(touchSize)
@@ -5685,7 +5685,10 @@ private fun PlaybackOverlayIconButton(
                 interactionSource = interactionSource,
                 indication = null,
                 enabled = enabled,
-                onClick = onClick,
+                onClick = {
+                    onInteraction()
+                    onClick()
+                },
             ),
         contentAlignment = Alignment.Center,
     ) {
@@ -5693,9 +5696,7 @@ private fun PlaybackOverlayIconButton(
             imageVector = icon,
             contentDescription = contentDescription,
             tint = tint,
-            modifier = Modifier
-                .size(iconSize)
-                .shadow(2.dp, CircleShape, clip = false),
+            modifier = Modifier.size(iconSize).shadow(2.dp, CircleShape, clip = false),
         )
     }
 }
@@ -5709,58 +5710,96 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     onExitFloat: () -> Unit,
 ) {
     var pos by remember(state.key) { mutableStateOf(0f) }
+    var bufferedPos by remember(state.key) { mutableStateOf(0f) }
     var scrubbing by remember(state.key) { mutableStateOf(false) }
     var qualityExpanded by remember { mutableStateOf(false) }
     var speedExpanded by remember { mutableStateOf(false) }
     var controlsVisible by remember(state.key) { mutableStateOf(true) }
+    var interactionVersion by remember(state.key) { mutableStateOf(0) }
     var speed by remember(state.key) {
         mutableStateOf(runCatching { PlaybackService.instance?.playbackSpeed() ?: 1.0f }.getOrDefault(1.0f))
     }
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+    val recordInteraction = { interactionVersion += 1 }
 
-    // Pausing always restores and pins the controls. Only active playback auto-hides them.
+    // Pausing pins the controls; every direct interaction restarts the three-second timer.
     LaunchedEffect(state.key, state.isPlaying) {
         if (!state.isPlaying) controlsVisible = true
     }
-    LaunchedEffect(state.key, state.isPlaying, controlsVisible, qualityExpanded, speedExpanded, scrubbing) {
+    LaunchedEffect(
+        state.key,
+        state.isPlaying,
+        controlsVisible,
+        qualityExpanded,
+        speedExpanded,
+        scrubbing,
+        interactionVersion,
+    ) {
         if (!state.isPlaying || !controlsVisible || qualityExpanded || speedExpanded || scrubbing) {
             return@LaunchedEffect
         }
+        val scheduledInteraction = interactionVersion
         delay(3_000)
-        if (state.isPlaying && !qualityExpanded && !speedExpanded && !scrubbing) {
+        if (
+            state.isPlaying &&
+            controlsVisible &&
+            !qualityExpanded &&
+            !speedExpanded &&
+            !scrubbing &&
+            interactionVersion == scheduledInteraction
+        ) {
             controlsVisible = false
         }
     }
 
-    // Keep the visible multiplier in sync with the actual player parameters.
-    LaunchedEffect(state.key) {
+    // One lightweight ticker updates playhead, buffered range and actual player speed together.
+    LaunchedEffect(state.key, state.durationMs) {
         while (true) {
-            runCatching { PlaybackService.instance?.playbackSpeed() }.getOrNull()
-                ?.takeIf { it.isFinite() && it > 0f }
-                ?.let { speed = it }
-            delay(500)
-        }
-    }
-
-    // Tapping the picture toggles controls only during playback; pause keeps them visible.
-    Box(
-        Modifier.fillMaxSize().pointerInput(state.key, state.isPlaying, controlsVisible) {
-            detectTapGestures {
-                controlsVisible = if (!state.isPlaying) true else !controlsVisible
-            }
-        }
-    )
-
-    LaunchedEffect(state.key) {
-        while (true) {
-            if (!scrubbing) {
-                val duration = PlaybackService.instance?.duration() ?: 0L
-                val position = PlaybackService.instance?.position() ?: 0L
-                pos = if (duration > 0L) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+            val activeService = PlaybackService.instance
+            if (activeService != null) {
+                val duration = activeService.duration().takeIf { it > 0L } ?: state.durationMs
+                val position = activeService.position().coerceAtLeast(0L)
+                val buffered = activeService.bufferedPosition().coerceAtLeast(position)
+                if (!scrubbing) {
+                    pos = if (duration > 0L) {
+                        (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                    } else 0f
+                }
+                bufferedPos = if (duration > 0L) {
+                    (buffered.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+                runCatching { activeService.playbackSpeed() }
+                    .getOrNull()
+                    ?.takeIf { it.isFinite() && it > 0f }
+                    ?.let { speed = it }
             }
             delay(300)
         }
     }
+
+    // Smooth playback/tap updates while direct scrubbing always follows the finger.
+    val animatedProgress by animateFloatAsState(
+        targetValue = pos.coerceIn(0f, 1f),
+        animationSpec = tween(160, easing = FastOutSlowInEasing),
+        label = "playback-seek-progress",
+    )
+    val animatedBufferedProgress by animateFloatAsState(
+        targetValue = bufferedPos.coerceIn(0f, 1f),
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "playback-buffer-progress",
+    )
+    val displayedProgress = if (scrubbing) pos.coerceIn(0f, 1f) else animatedProgress
+    val displayedBufferedProgress = if (scrubbing) bufferedPos else animatedBufferedProgress
+
+    // Tapping the picture toggles controls during playback; pause always keeps them visible.
+    Box(
+        Modifier.fillMaxSize().pointerInput(state.key, state.isPlaying, controlsVisible) {
+            detectTapGestures {
+                recordInteraction()
+                controlsVisible = if (!state.isPlaying) true else !controlsVisible
+            }
+        }
+    )
 
     val showCenterPlaybackControl = !state.isBuffering && playbackHint == null &&
         (!state.isPlaying || controlsVisible)
@@ -5777,6 +5816,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 touchSize = 60.dp,
                 iconSize = 44.dp,
                 enabled = controlsVisible,
+                onInteraction = recordInteraction,
                 onClick = {
                     if (state.isPlaying) PlaybackService.instance?.pausePlayback()
                     else PlaybackService.instance?.playPlayback()
@@ -5793,30 +5833,28 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
-            val bottomReserved = when {
-                maxHeight < 120.dp -> 20.dp
-                maxHeight < 180.dp -> 32.dp
-                else -> 40.dp
-            }
+            val bottomReserved = 40.dp
             val controlTargetSize = when {
-                maxHeight < 120.dp -> 36.dp
-                maxHeight < 180.dp -> 40.dp
+                maxHeight < 100.dp -> 24.dp
+                maxHeight < 130.dp -> 28.dp
+                maxHeight < 160.dp -> 32.dp
+                maxHeight < 200.dp -> 40.dp
                 maxHeight < 240.dp -> 44.dp
                 else -> 48.dp
             }
-            val availableRightHeight = (maxHeight - bottomReserved).coerceAtLeast(72.dp)
+            val availableRightHeight = (maxHeight - bottomReserved).coerceAtLeast(0.dp)
             val rightControlsGap = (availableRightHeight - controlTargetSize - controlTargetSize)
-                .coerceIn(8.dp, 40.dp)
+                .coerceIn(0.dp, 40.dp)
             val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
             val seekThumbRadiusPx = with(LocalDensity.current) { seekThumbRadius.toPx() }
             val durationForUi = (PlaybackService.instance?.duration() ?: 0L)
                 .takeIf { it > 0L } ?: state.durationMs.coerceAtLeast(0L)
+            val speedLabel = if (speed % 1f == 0f) {
+                String.format(java.util.Locale.US, "%.1f", speed)
+            } else speed.toString()
 
-            // Current speed is visible without opening the menu; the icon remains transparent.
             Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = edgePadding),
+                modifier = Modifier.align(Alignment.CenterStart).padding(start = edgePadding),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     PlaybackOverlayIconButton(
@@ -5826,10 +5864,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         iconSize = 24.dp,
                         tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
                         enabled = controlsVisible,
+                        onInteraction = recordInteraction,
                         onClick = { speedExpanded = true },
                     )
                     Text(
-                        text = "${speed}×",
+                        text = "${speedLabel}×",
                         color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
                         style = MaterialTheme.typography.labelLarge.copy(
                             fontSize = 12.sp,
@@ -5845,14 +5884,19 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 }
                 DropdownMenu(
                     expanded = speedExpanded,
-                    onDismissRequest = { speedExpanded = false },
+                    onDismissRequest = {
+                        if (speedExpanded) recordInteraction()
+                        speedExpanded = false
+                    },
                 ) {
                     speedOptions.forEach { value ->
                         DropdownMenuItem(
                             text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
                             onClick = {
                                 PlaybackService.instance?.setSpeed(value)
-                                speed = value
+                                speed = runCatching { PlaybackService.instance?.playbackSpeed() ?: value }
+                                    .getOrDefault(value)
+                                recordInteraction()
                                 speedExpanded = false
                             },
                         )
@@ -5860,11 +5904,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 }
             }
 
-            // Place the right-side pair in the space above the seekbar, not over its touch area.
             Box(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
+                modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
                     .padding(end = edgePadding, bottom = bottomReserved),
             ) {
                 Column(
@@ -5880,17 +5921,22 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             iconSize = 24.dp,
                             tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
                             enabled = controlsVisible && state.qualityOptions.isNotEmpty(),
+                            onInteraction = recordInteraction,
                             onClick = { qualityExpanded = true },
                         )
                         DropdownMenu(
                             expanded = qualityExpanded,
-                            onDismissRequest = { qualityExpanded = false },
+                            onDismissRequest = {
+                                if (qualityExpanded) recordInteraction()
+                                qualityExpanded = false
+                            },
                         ) {
                             state.qualityOptions.forEach { quality ->
                                 DropdownMenuItem(
                                     text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
                                     onClick = {
                                         qualityExpanded = false
+                                        recordInteraction()
                                         PlaybackService.instance?.selectQuality(quality)
                                     },
                                 )
@@ -5905,18 +5951,17 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         iconSize = 24.dp,
                         tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
                         enabled = controlsVisible,
+                        onInteraction = recordInteraction,
                         onClick = { if (isFloating) onExitFloat() else onStartFloat() },
                     )
                 }
             }
 
             AnimatedVisibility(
-                visible = scrubbing,
+                visible = scrubbing && durationForUi > 0L,
                 enter = fadeIn(animationSpec = tween(100)),
                 exit = fadeOut(animationSpec = tween(140)),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 42.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 42.dp),
             ) {
                 Text(
                     text = "${formatFloatingTime((pos * durationForUi).toLong())} / ${formatFloatingTime(durationForUi)}",
@@ -5931,7 +5976,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 )
             }
 
-            // Fine resting track; on drag, both the thumb and track grow temporarily.
             Canvas(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -5945,9 +5989,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             val duration = (PlaybackService.instance?.duration() ?: 0L)
                                 .takeIf { it > 0L } ?: state.durationMs
                             if (duration > 0L && size.width > 0) {
-                                val seekableWidth = (size.width - 2f * 6.dp.toPx()).coerceAtLeast(1f)
-                                pos = ((offset.x - 6.dp.toPx()) / seekableWidth).coerceIn(0f, 1f)
+                                val radiusPx = 6.dp.toPx()
+                                val seekableWidth = (size.width - 2f * radiusPx).coerceAtLeast(1f)
+                                pos = ((offset.x - radiusPx) / seekableWidth).coerceIn(0f, 1f)
                                 PlaybackService.instance?.seek((pos * duration).toLong())
+                                recordInteraction()
                                 scrubbing = false
                             }
                         }
@@ -5956,6 +6002,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         if (!controlsVisible) return@pointerInput
                         detectDragGestures(
                             onDragStart = { offset ->
+                                recordInteraction()
                                 scrubbing = true
                                 if (size.width > 0) {
                                     val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
@@ -5967,8 +6014,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     .takeIf { it > 0L } ?: state.durationMs
                                 if (duration > 0L) PlaybackService.instance?.seek((pos * duration).toLong())
                                 scrubbing = false
+                                recordInteraction()
                             },
-                            onDragCancel = { scrubbing = false },
+                            onDragCancel = {
+                                scrubbing = false
+                                recordInteraction()
+                            },
                         ) { change, _ ->
                             change.consume()
                             if (size.width > 0) {
@@ -5982,7 +6033,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 val centerY = size.height - 8.dp.toPx()
                 val thumbRadius = seekThumbRadiusPx
                 val trackWidth = (size.width - 2f * thumbRadius).coerceAtLeast(0f)
-                val thumbCenterX = thumbRadius + trackWidth * pos.coerceIn(0f, 1f)
+                val thumbCenterX = thumbRadius + trackWidth * displayedProgress
                 val radius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
                 drawRoundRect(
                     color = Color(0x66FFFFFF),
@@ -5990,7 +6041,17 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     size = Size(trackWidth, trackHeight),
                     cornerRadius = radius,
                 )
-                val activeWidth = trackWidth * pos.coerceIn(0f, 1f)
+                val bufferedWidth = trackWidth *
+                    displayedBufferedProgress.coerceAtLeast(displayedProgress).coerceIn(0f, 1f)
+                if (bufferedWidth > 0f) {
+                    drawRoundRect(
+                        color = Color(0xB3D6E1F2),
+                        topLeft = Offset(thumbRadius, centerY - trackHeight / 2f),
+                        size = Size(bufferedWidth, trackHeight),
+                        cornerRadius = radius,
+                    )
+                }
+                val activeWidth = trackWidth * displayedProgress
                 if (activeWidth > 0f) {
                     drawRoundRect(
                         color = Color(0xFF5890FF),

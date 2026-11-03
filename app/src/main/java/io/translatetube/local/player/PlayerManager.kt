@@ -992,6 +992,11 @@ class PlayerManager(private val ctx: Context) {
             .onFailure { if (!released) android.util.Log.w("PlayerManager", "Unable to read playhead", it) }
             .getOrDefault(0L)
 
+    fun bufferedPosition(): Long = if (released) 0L else
+        runCatching { player.bufferedPosition.coerceAtLeast(0L) }
+            .onFailure { if (!released) android.util.Log.w("PlayerManager", "Unable to read buffered playhead", it) }
+            .getOrDefault(0L)
+
     fun release() {
         if (released) return
         released = true

@@ -15126,6 +15126,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     fun setSpeed(s: Float) { pm.speed(s) }
     fun playbackSpeed(): Float = pm.playbackSpeed()
     fun position(): Long = pm.position()
+    fun bufferedPosition(): Long = pm.bufferedPosition()
     fun duration(): Long = pm.duration()
 
     override fun onTaskRemoved(rootIntent: Intent?) {
