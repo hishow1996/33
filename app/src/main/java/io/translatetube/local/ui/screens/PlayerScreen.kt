@@ -393,6 +393,7 @@ fun PlayerScreen(
     }
     val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "google" && voiceOptions.size > 1
     val state by PlaybackService.ui.collectAsState()
+    val serviceGeneration by PlaybackService.serviceGeneration.collectAsState()
     val playbackHint by PlaybackService.playbackHint.collectAsState()
     // Keep the expensive subtitle list independent from unrelated playback UI updates.
     // The State holders remain stable while their values follow the latest service snapshot.
@@ -696,14 +697,43 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     // TextureView. attachSurfaceWhenReady compares texture identities before each bind; Media3
     // keeps sole ownership of its SurfaceTexture listener.
     val resumeLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var playbackScreenVisible by remember(resumeLifecycleOwner) {
+        mutableStateOf(
+            resumeLifecycleOwner.lifecycle.currentState.isAtLeast(
+                androidx.lifecycle.Lifecycle.State.STARTED,
+            ),
+        )
+    }
     androidx.compose.runtime.DisposableEffect(resumeLifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                attachSurfaceWhenReady()
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_START -> playbackScreenVisible = true
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> playbackScreenVisible = false
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    playbackScreenVisible = true
+                    attachSurfaceWhenReady()
+                }
+                else -> Unit
             }
         }
         resumeLifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { resumeLifecycleOwner.lifecycle.removeObserver(observer) }
+        playbackScreenVisible = resumeLifecycleOwner.lifecycle.currentState.isAtLeast(
+            androidx.lifecycle.Lifecycle.State.STARTED,
+        )
+        onDispose {
+            resumeLifecycleOwner.lifecycle.removeObserver(observer)
+            // Leaving this page is not a playback stop: keep audio/dubbing alive, but stop
+            // treating the absent video surface as a foreground black-screen failure.
+            PlaybackService.instance?.setVideoUiVisible(false)
+        }
+    }
+
+    // Rebind after a service/player recreation even when TextureView itself stayed attached.
+    // Also re-submit the visibility state when a replacement service becomes ready.
+    LaunchedEffect(serviceGeneration, playbackScreenVisible) {
+        val service = PlaybackService.instance ?: return@LaunchedEffect
+        service.setVideoUiVisible(playbackScreenVisible)
+        if (playbackScreenVisible) attachSurfaceWhenReady()
     }
 
     // 播放页屏幕常亮
