@@ -79,7 +79,10 @@ object SpeakerRecognitionProgressPolicy {
                 val total = state.totalUnits?.takeIf { it > 0L }
                 val detail = if (completed != null && total != null) {
                     val safeCompleted = completed.coerceIn(0L, total)
-                    if (state.progressItem == "模型内部分析") {
+                    if (
+                        state.progressItem == "模型内部分析" ||
+                        state.message.contains("正在分析")
+                    ) {
                         "当前分段 " + (safeCompleted + 1L).coerceAtMost(total) + "/" + total
                     } else {
                         "已分析 " + safeCompleted + "/" + total + " 段"
