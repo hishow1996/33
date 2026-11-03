@@ -2200,13 +2200,15 @@ class PlaybackService : MediaSessionService() {
                 playbackStallWatchSessionKey = ""
                 playbackStallWatchPositionMs = -1L
                 playbackStallWatchLastProgressAtMs = 0L
-                runCatching {
-                    io.translatetube.local.util.AppLogStore.info(
-                        applicationContext,
-                        "PlayerManager",
-                        "视频呈现模式已切换",
-                        diagnosticContext = mapOf("视频呈现模式" to mode.name),
-                    )
+                scope.launch(Dispatchers.IO) {
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.info(
+                            applicationContext,
+                            "PlayerManager",
+                            "视频呈现模式已切换",
+                            diagnosticContext = mapOf("视频呈现模式" to mode.name),
+                        )
+                    }
                 }
             }
             if (VideoPresentationModePolicy.shouldRebindVideoSurface(mode) &&
