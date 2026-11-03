@@ -6238,24 +6238,16 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         requireUnconsumed = false,
                         pass = PointerEventPass.Initial,
                     )
-                    // Match the compact right-control placement threshold used by the
-                    // layout below, so the gesture exclusion always covers the visible button row.
-                    val compactTopRightControls = isFullscreen &&
-                        size.height < with(this) { 280.dp.toPx() }
                     val seekbarSafeBottom = with(this) {
                         if (isFullscreen) 108.dp.toPx() else 44.dp.toPx()
                     }
+                    // The same right-side vertical control column is used in normal and fullscreen
+                    // playback, so one fixed edge exclusion is sufficient in both modes.
                     val rightControlSafeEdge = if (controlsVisible) {
-                        with(this) {
-                            if (compactTopRightControls) 164.dp.toPx() else 64.dp.toPx()
-                        }
-                    } else 0f
-                    val rightControlSafeTop = if (compactTopRightControls && controlsVisible) {
-                        with(this) { 104.dp.toPx() }
+                        with(this) { 64.dp.toPx() }
                     } else 0f
                     val startsInsideRightControls = controlsVisible &&
-                        down.position.x > size.width - rightControlSafeEdge &&
-                        (!compactTopRightControls || down.position.y < rightControlSafeTop)
+                        down.position.x > size.width - rightControlSafeEdge
                     if (
                         down.position.x < size.width * 0.62f ||
                         startsInsideRightControls ||
@@ -6390,7 +6382,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
             val bottomReserved = 40.dp
-            val availableRightHeight = (maxHeight - bottomReserved).coerceAtLeast(0.dp)
+            val availableControlHeight = (maxHeight - bottomReserved).coerceAtLeast(0.dp)
             val preferredControlSize = when {
                 maxHeight < 100.dp -> 28.dp
                 maxHeight < 140.dp -> 32.dp
@@ -6398,26 +6390,13 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 maxHeight < 240.dp -> 44.dp
                 else -> 48.dp
             }
-            // Fullscreen controls retain a usable touch target. Very short landscape screens
-            // move the three right-side controls into a horizontal row instead of shrinking them.
-            val compactFullscreenRightControls = isFullscreen && maxHeight < 280.dp
-            val controlTargetSize = if (isFullscreen) {
-                preferredControlSize.coerceAtLeast(44.dp)
-            } else {
-                preferredControlSize
-            }
+            // Both sides use the same two-row layout and the same touch target in every mode.
+            val availableItemSize = ((availableControlHeight - 8.dp) / 2f).coerceAtLeast(24.dp)
+            val controlTargetSize = preferredControlSize.coerceAtMost(availableItemSize)
             val controlIconSize = (controlTargetSize * 0.58f).coerceIn(14.dp, 24.dp)
-            // The left side now contains only speed, so it no longer divides its height by three.
-            val leftControlTargetSize = if (isFullscreen) {
-                preferredControlSize.coerceAtLeast(44.dp)
-            } else {
-                preferredControlSize
-            }
-            val leftControlIconSize = (leftControlTargetSize * 0.58f).coerceIn(14.dp, 24.dp)
-            // Three right-side controls share identical vertical gaps when stacked.
-            val rightControlsGap = (
-                (availableRightHeight - controlTargetSize * 3f) / 2f
-            ).coerceIn(0.dp, 40.dp)
+            val controlVerticalGap = (
+                availableControlHeight - controlTargetSize * 2f
+            ).coerceIn(8.dp, 32.dp)
             val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
             val seekThumbRadiusPx = with(LocalDensity.current) { seekThumbRadius.toPx() }
             val durationForUi = (PlaybackService.instance?.duration() ?: 0L)
@@ -6426,72 +6405,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 String.format(java.util.Locale.US, "%.1f", speed)
             } else speed.toString()
 
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = edgePadding),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .height(leftControlTargetSize)
-                        .widthIn(min = 84.dp)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            enabled = controlsVisible,
-                        ) {
-                            recordInteraction()
-                            speedExpanded = true
-                        }
-                        .padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Speed,
-                        contentDescription = "播放倍速",
-                        tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                        modifier = Modifier.size(leftControlIconSize),
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text(
-                        text = "${speedLabel}×",
-                        color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            shadow = androidx.compose.ui.graphics.Shadow(
-                                color = Color.Black.copy(alpha = 0.85f),
-                                offset = Offset(0f, 1f),
-                                blurRadius = 3f,
-                            ),
-                        ),
-                    )
-                }
-                DropdownMenu(
-                    expanded = speedExpanded,
-                    onDismissRequest = {
-                        if (speedExpanded) recordInteraction()
-                        speedExpanded = false
-                    },
-                ) {
-                    speedOptions.forEach { value ->
-                        DropdownMenuItem(
-                            text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
-                            onClick = {
-                                PlaybackService.instance?.setSpeed(value)
-                                recordInteraction()
-                                speedExpanded = false
-                            },
-                        )
-                    }
-                }
-            }
-
             val qualityControl: @Composable () -> Unit = {
                 Box {
                     PlaybackOverlayIconButton(
                         icon = Icons.Filled.HighQuality,
-                        contentDescription = "选择清晰度",
+                        contentDescription = "选择画质",
                         touchSize = controlTargetSize,
                         iconSize = controlIconSize,
                         tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
@@ -6519,6 +6437,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     }
                 }
             }
+
             val floatingControl: @Composable () -> Unit = {
                 PlaybackOverlayIconButton(
                     icon = Icons.Filled.PictureInPictureAlt,
@@ -6543,35 +6462,98 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 )
             }
 
-            if (compactFullscreenRightControls) {
-                val statusBarInset = with(LocalDensity.current) {
-                    WindowInsets.statusBars.getTop(this).toDp()
-                }
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = statusBarInset + 8.dp, end = edgePadding),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            // Left column: speed first, quality beneath it.
+            // The speed icon occupies the same square cell as the quality button, keeping their
+            // icon centers aligned while the speed value remains part of the same click target.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxHeight()
+                    .padding(start = edgePadding, bottom = bottomReserved),
+            ) {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(controlVerticalGap),
                 ) {
+                    Box {
+                        Row(
+                            modifier = Modifier
+                                .height(controlTargetSize)
+                                .widthIn(min = controlTargetSize + 36.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    enabled = controlsVisible,
+                                ) {
+                                    recordInteraction()
+                                    speedExpanded = true
+                                },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier.size(controlTargetSize),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Speed,
+                                    contentDescription = "播放倍速",
+                                    tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                                    modifier = Modifier.size(controlIconSize),
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "${speedLabel}×",
+                                color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    shadow = androidx.compose.ui.graphics.Shadow(
+                                        color = Color.Black.copy(alpha = 0.85f),
+                                        offset = Offset(0f, 1f),
+                                        blurRadius = 3f,
+                                    ),
+                                ),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = speedExpanded,
+                            onDismissRequest = {
+                                if (speedExpanded) recordInteraction()
+                                speedExpanded = false
+                            },
+                        ) {
+                            speedOptions.forEach { value ->
+                                DropdownMenuItem(
+                                    text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
+                                    onClick = {
+                                        PlaybackService.instance?.setSpeed(value)
+                                        recordInteraction()
+                                        speedExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
                     qualityControl()
+                }
+            }
+
+            // Right column mirrors the left column and shares its size, center line and spacing.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(end = edgePadding, bottom = bottomReserved),
+            ) {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(controlVerticalGap),
+                ) {
                     floatingControl()
                     fullscreenControl()
-                }
-            } else {
-                Box(
-                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
-                        .padding(end = edgePadding, bottom = bottomReserved),
-                ) {
-                    Column(
-                        modifier = Modifier.align(Alignment.Center),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(rightControlsGap),
-                    ) {
-                        qualityControl()
-                        floatingControl()
-                        fullscreenControl()
-                    }
                 }
             }
 
