@@ -52,10 +52,31 @@ class SubtitleAutoScrollPolicyTest {
     }
 
     @Test
-    fun resumesFollowingOnNextCueRatherThanCurrentManuallyBrowsedCue() {
+    fun skipsTheFirstCueAfterManualBrowseButFollowsTheNextCue() {
         assertTrue(SubtitleAutoScrollPolicy.shouldSkipImmediateResume(true, 12, 12))
         assertFalse(SubtitleAutoScrollPolicy.shouldSkipImmediateResume(true, 12, 13))
         assertFalse(SubtitleAutoScrollPolicy.shouldSkipImmediateResume(false, 12, 12))
+    }
+
+    @Test
+    fun usesShorterCoalescingForShortCaptions() {
+        assertEquals(35L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 200L))
+        assertEquals(55L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 500L))
+        assertEquals(75L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 1_200L))
+        assertEquals(90L, SubtitleAutoScrollPolicy.coalescingDelayMs(0L, 2_500L))
+    }
+
+    @Test
+    fun jumpsImmediatelyAcrossLargeForwardAndReverseGaps() {
+        assertFalse(SubtitleAutoScrollPolicy.shouldJumpImmediately(10, 11))
+        assertTrue(SubtitleAutoScrollPolicy.shouldJumpImmediately(10, 14))
+        assertTrue(SubtitleAutoScrollPolicy.shouldJumpImmediately(14, 10))
+        assertTrue(SubtitleAutoScrollPolicy.shouldJumpImmediately(Int.MIN_VALUE, 0))
+    }
+
+    @Test
+    fun aTimelineSeekForcesImmediatePositioningEvenForOneCue() {
+        assertTrue(SubtitleAutoScrollPolicy.shouldJumpImmediately(10, 11, forceImmediate = true))
     }
 
     @Test

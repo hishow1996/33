@@ -213,6 +213,7 @@ fun PlayerScreen(
         }
     }
     val listState = rememberLazyListState()
+    var timelineScrubbing by remember(state.key) { mutableStateOf(false) }
     var pauseAutoScrollForUser by remember(listState) { mutableStateOf(false) }
     var manualBrowseLineAtRelease by remember(listState) { mutableIntStateOf(Int.MIN_VALUE) }
     var subtitlesVisible by remember { mutableStateOf(true) }
@@ -1231,6 +1232,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         isFloating = isFloating,
                         onStartFloat = { startFloatingWindow() },
                         onExitFloat = { exitFloating() },
+                        onTimelineScrubbingChanged = { timelineScrubbing = it },
                     )
                 }
                 // A compatible history item opens this player immediately. While its media session
@@ -1663,7 +1665,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     // by a stale Stop/Cancel event from the first one.
     LaunchedEffect(state.key) {
         pauseAutoScrollForUser = false
+        timelineScrubbing = false
         manualBrowseLineAtRelease = Int.MIN_VALUE
+        listState.scrollToItem(0)
     }
     LaunchedEffect(listState) {
         val activeDrags = mutableSetOf<DragInteraction.Start>()
@@ -1703,28 +1707,47 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
     }
 
-    // Keep timeline observation inside the effect. Reading the State holders through
-    // snapshotFlow avoids subscribing the whole PlayerScreen composition to each line change.
+    // Observe playback changes without subscribing the whole player screen to every cue.
+    // Timeline scrubbing is paused separately so release jumps straight to the final cue.
     LaunchedEffect(state.key, state.phase, subtitlesVisible, listState) {
         if (state.phase != Phase.READY || !subtitlesVisible) return@LaunchedEffect
         var lastObservedLine = Int.MIN_VALUE
         var wasManuallyBrowsing = false
+        var wasTimelineScrubbing = false
+        var forceImmediateScroll = false
         snapshotFlow {
             Triple(
                 subtitleActiveLineState.value,
                 subtitleLinesState.value.size,
-                pauseAutoScrollForUser,
+                pauseAutoScrollForUser to timelineScrubbing,
             )
         }
             .distinctUntilChanged()
-            .collectLatest { (target, lineCount, pausedByUser) ->
+            .collectLatest { (observedLine, lineCount, interactionState) ->
+                val (pausedByUser, isTimelineScrubbing) = interactionState
+                if (isTimelineScrubbing) wasTimelineScrubbing = true
                 if (pausedByUser) {
                     wasManuallyBrowsing = true
                     return@collectLatest
                 }
+                if (isTimelineScrubbing) return@collectLatest
+
+                if (wasTimelineScrubbing) {
+                    wasTimelineScrubbing = false
+                    forceImmediateScroll = true
+                    // Let the final seek position reach the playback state before reading its cue.
+                    delay(90L)
+                }
+
+                val target = if (forceImmediateScroll) {
+                    subtitleActiveLineState.value
+                } else {
+                    observedLine
+                }
                 if (wasManuallyBrowsing) {
                     wasManuallyBrowsing = false
                     if (
+                        !forceImmediateScroll &&
                         SubtitleAutoScrollPolicy.shouldSkipImmediateResume(
                             wasManuallyBrowsing = true,
                             lastManualLine = manualBrowseLineAtRelease,
@@ -1735,16 +1758,27 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         return@collectLatest
                     }
                 }
-                if (target == lastObservedLine) return@collectLatest
+                val previousLine = lastObservedLine
+                if (target == lastObservedLine && !forceImmediateScroll) return@collectLatest
                 lastObservedLine = target
                 if (target !in 0 until lineCount) return@collectLatest
 
-                // Coalesce rapid seeks and short cues. collectLatest cancels stale waits/scrolls.
-                delay(100L)
+                val targetCaption = subtitleLinesState.value.getOrNull(target)
+                val coalescingDelay = if (forceImmediateScroll) {
+                    0L
+                } else {
+                    SubtitleAutoScrollPolicy.coalescingDelayMs(
+                        startMs = targetCaption?.startMs ?: 0L,
+                        endMs = targetCaption?.endMs ?: 0L,
+                    )
+                }
+                if (coalescingDelay > 0L) delay(coalescingDelay)
+
                 val latestLine = subtitleActiveLineState.value
                 val latestCount = subtitleLinesState.value.size
                 if (
                     pauseAutoScrollForUser ||
+                    timelineScrubbing ||
                     latestLine != target ||
                     target !in 0 until latestCount
                 ) {
@@ -1766,8 +1800,15 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     itemSize = item?.size,
                 )
                 if (decision.shouldScroll) {
-                    listState.animateScrollToItem(target, scrollOffset = decision.scrollOffset)
+                    val jumpImmediately = forceImmediateScroll ||
+                        SubtitleAutoScrollPolicy.shouldJumpImmediately(previousLine, target)
+                    if (jumpImmediately) {
+                        listState.scrollToItem(target, scrollOffset = decision.scrollOffset)
+                    } else {
+                        listState.animateScrollToItem(target, scrollOffset = decision.scrollOffset)
+                    }
                 }
+                forceImmediateScroll = false
             }
     }
 }
@@ -5770,7 +5811,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     isFloating: Boolean,
     onStartFloat: () -> Unit,
     onExitFloat: () -> Unit,
+    onTimelineScrubbingChanged: (Boolean) -> Unit,
 ) {
+    val latestTimelineScrubbingChanged by rememberUpdatedState(onTimelineScrubbingChanged)
+    DisposableEffect(state.key) {
+        onDispose { latestTimelineScrubbingChanged(false) }
+    }
     var pos by remember(state.key) { mutableStateOf(0f) }
     var bufferedPos by remember(state.key) { mutableStateOf(0f) }
     var scrubbing by remember(state.key) { mutableStateOf(false) }
@@ -6223,6 +6269,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             onDragStart = { offset ->
                                 recordInteraction()
                                 scrubbing = true
+                                latestTimelineScrubbingChanged(true)
                                 if (size.width > 0) {
                                     val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
                                     pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
@@ -6233,11 +6280,13 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     .takeIf { it > 0L } ?: state.durationMs
                                 if (duration > 0L) PlaybackService.instance?.seek((pos * duration).toLong())
                                 scrubbing = false
+                                latestTimelineScrubbingChanged(false)
                                 seekRevision += 1
                                 recordInteraction()
                             },
                             onDragCancel = {
                                 scrubbing = false
+                                latestTimelineScrubbingChanged(false)
                                 seekRevision += 1
                                 recordInteraction()
                             },
@@ -6529,8 +6578,8 @@ private fun SubtitleList(
             }
             itemsIndexed(
                 lines,
-                key = { _, line ->
-                    "${sessionKey}:${line.index}:${line.startMs}:${line.endMs}:${line.text.hashCode()}"
+                key = { position, line ->
+                    "${sessionKey}:${position}:${line.index}:${line.startMs}:${line.endMs}:${line.text.hashCode()}"
                 },
                 contentType = { _, _ -> "subtitle-row" },
             ) { index, line ->
