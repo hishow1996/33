@@ -1889,44 +1889,65 @@ class DubbingEngine(
 
     /**
      * Keep recently used subtitle PCM for quick repeat playback without allowing old videos
-     * to grow the app cache forever. The currently attached video is never evicted here.
+     * to grow the app cache forever. File discovery and LRU sorting run outside the global
+     * publication lock; each deletion is committed only if its inspected file stamp still matches.
      */
     private fun pruneOldDubbingCaches() {
         val root = cacheRootDir
         if (!root.isDirectory) return
-        // Cache publication and eviction must share one process-wide lock. Otherwise an eviction
-        // decision based on an old file listing can delete a freshly installed replacement.
-        synchronized(cacheInstallLock) {
-            val nowMs = System.currentTimeMillis()
-            val staleTemps = root.walkTopDown()
-                .filter { file ->
-                    isStalePcmTemp(file, nowMs) &&
-                        file.parentFile?.absolutePath != cacheDir.absolutePath
-                }
-                .toList()
-            staleTemps.forEach { temp ->
-                if (temp.delete()) temp.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
-            }
 
-            val currentSessionCacheNames = lines.indices.map { cacheFile(it).name }.toHashSet()
-            val pcmFiles = root.walkTopDown()
-                .filter { it.isFile && it.name.endsWith(".pcm") }
-                .toList()
-            val entries = pcmFiles.map { file ->
-                val isCurrentVideoFile = file.parentFile?.absolutePath == cacheDir.absolutePath
-                DubbingCacheEntry(
-                    path = file.absolutePath,
-                    bytes = file.length(),
-                    lastModified = file.lastModified(),
-                    // Protect exact files required by this engine; treat older variants for this
-                    // same video as a lower-priority eviction target than unrelated videos.
-                    isCurrentSessionFile = isCurrentVideoFile && file.name in currentSessionCacheNames,
-                    isCurrentVideoFile = isCurrentVideoFile,
-                )
+        val nowMs = System.currentTimeMillis()
+        val staleTemps = ArrayList<Pair<File, DubbingCacheFileStamp>>()
+        val entries = ArrayList<DubbingCacheEntry>()
+
+        // One recursive pass discovers both abandoned temp files and finalized PCM. Snapshot
+        // identities before taking the lock so lengthy directory walks never block cache writers.
+        root.walkTopDown().forEach { file ->
+            if (!file.isFile) return@forEach
+            val isCurrentVideoFile = file.parentFile?.absolutePath == cacheDir.absolutePath
+            if (!isCurrentVideoFile && isStalePcmTemp(file, nowMs)) {
+                DubbingCacheFileStamp.capture(file)?.let { staleTemps += file to it }
             }
-            for (entry in DubbingCachePolicy.filesToEvict(entries)) {
+            if (!file.name.endsWith(".pcm")) return@forEach
+
+            val stamp = DubbingCacheFileStamp.capture(file) ?: return@forEach
+            // Cache filenames begin with their subtitle index. Resolve only files that actually
+            // exist in the active video's folder instead of hashing every subtitle in a long video.
+            val lineIndex = if (isCurrentVideoFile) {
+                DubbingCacheIdentity.lineIndexFromFileName(file.name)
+            } else {
+                null
+            }
+            val isCurrentSessionFile = lineIndex != null &&
+                lineIndex in lines.indices &&
+                cacheFile(lineIndex).name == file.name
+            entries += DubbingCacheEntry(
+                path = file.absolutePath,
+                bytes = stamp.length,
+                lastModified = stamp.lastModifiedMs,
+                isCurrentSessionFile = isCurrentSessionFile,
+                isCurrentVideoFile = isCurrentVideoFile,
+                fileStamp = stamp,
+            )
+        }
+
+        val evictions = DubbingCachePolicy.filesToEvict(entries)
+        if (staleTemps.isEmpty() && evictions.isEmpty()) return
+
+        // Revalidate each snapshot under the same lock used by cache publication. A file that was
+        // replaced or touched after the scan is preserved and can be considered on the next pass.
+        synchronized(cacheInstallLock) {
+            val deleteNowMs = System.currentTimeMillis()
+            staleTemps.forEach { (temp, stamp) ->
+                if (stamp.stillMatches(temp) && isStalePcmTemp(temp, deleteNowMs)) {
+                    if (temp.delete()) {
+                        temp.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
+                    }
+                }
+            }
+            for (entry in evictions) {
                 val file = File(entry.path)
-                if (file.delete()) {
+                if (entry.fileStamp?.stillMatches(file) == true && file.delete()) {
                     file.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
                 }
             }

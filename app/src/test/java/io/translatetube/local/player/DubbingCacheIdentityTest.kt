@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class DubbingCacheIdentityTest {
@@ -19,6 +20,15 @@ class DubbingCacheIdentityTest {
         speed = speed,
         cueDurationMs = cueDurationMs,
     )
+
+    @Test
+    fun finalizedPcmFilenameExposesOnlyAValidNonNegativeLineIndex() {
+        assertEquals(0, DubbingCacheIdentity.lineIndexFromFileName("0-v-voice.pcm"))
+        assertEquals(42, DubbingCacheIdentity.lineIndexFromFileName("42-v7-v11-speed-abc.pcm"))
+        assertNull(DubbingCacheIdentity.lineIndexFromFileName("not-a-line-v7.pcm"))
+        assertNull(DubbingCacheIdentity.lineIndexFromFileName("-1-v7-v11-speed-abc.pcm"))
+        assertNull(DubbingCacheIdentity.lineIndexFromFileName("42-v7-v11-speed-abc.pcm.tmp"))
+    }
 
     @Test
     fun stagingNamesAreUniqueAcrossEngineInstancesAndRetainCleanupSuffix() {

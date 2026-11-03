@@ -17,6 +17,17 @@ internal object DubbingCacheIdentity {
         return "${targetName.removeSuffix(".pcm")}.${writerId}.pcm.tmp"
     }
 
+    /**
+     * Read the subtitle index prefix from a finalized PCM filename. Callers must still compare
+     * the full expected identity before treating the file as part of the active synthesis session.
+     */
+    fun lineIndexFromFileName(fileName: String): Int? {
+        if (!fileName.endsWith(".pcm")) return null
+        val separator = fileName.indexOf("-v")
+        if (separator <= 0) return null
+        return fileName.substring(0, separator).toIntOrNull()?.takeIf { it >= 0 }
+    }
+
     fun fileName(
         lineIndex: Int,
         speakerId: Int,

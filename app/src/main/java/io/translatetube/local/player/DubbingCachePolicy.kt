@@ -10,6 +10,8 @@ internal data class DubbingCacheEntry(
     val isCurrentSessionFile: Boolean,
     /** A cached voice/model variant belonging to the video currently open in the player. */
     val isCurrentVideoFile: Boolean = false,
+    /** Snapshot used to avoid deleting a newer atomic replacement after LRU discovery. */
+    val fileStamp: DubbingCacheFileStamp? = null,
 )
 
 internal object DubbingCachePolicy {
