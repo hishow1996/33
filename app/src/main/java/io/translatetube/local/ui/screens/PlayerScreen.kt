@@ -122,6 +122,8 @@ import io.translatetube.local.player.PlaybackHint
 import io.translatetube.local.player.PlaybackHintAction
 import io.translatetube.local.player.PlayerRebuildCoordinator
 import io.translatetube.local.player.PlayerUiState
+import io.translatetube.local.player.SpeakerRecognitionProgressDisplay
+import io.translatetube.local.player.SpeakerRecognitionProgressPolicy
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.player.Phase
 import io.translatetube.local.player.ProcessingFlow
@@ -1189,30 +1191,38 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 thickness = 1.dp,
                             )
                             Column(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(7.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
                                 Text(
                                     speakerRecognition.stageTitle,
                                     color = OnBg,
-                                    style = MaterialTheme.typography.titleSmall,
+                                    style = MaterialTheme.typography.titleSmall.copy(
+                                        fontSize = 12.sp,
+                                        lineHeight = 15.sp,
+                                    ),
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 val detailMessage = speakerRecognition.error ?: speakerRecognition.message
-                                if (detailMessage.isNotBlank()) {
+                                val isSpeakerError =
+                                    speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
+                                val progressDisplay = if (speakerRecognition.error.isNullOrBlank()) {
+                                    SpeakerRecognitionProgressPolicy.displayMessage(detailMessage)
+                                } else {
+                                    SpeakerRecognitionProgressDisplay(detailMessage)
+                                }
+                                if (progressDisplay.message.isNotBlank()) {
                                     Text(
-                                        detailMessage,
-                                        color = if (
-                                            speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
-                                        ) Color(0xFFB64A55) else SubText,
+                                        progressDisplay.message,
+                                        color = if (isSpeakerError) Color(0xFFB64A55) else SubText,
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontSize = 11.sp,
                                             lineHeight = 14.sp,
                                         ),
-                                        maxLines = 1,
-                                        softWrap = false,
+                                        maxLines = if (isSpeakerError) 2 else 1,
+                                        softWrap = isSpeakerError,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }
@@ -1250,15 +1260,27 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                             ) {
                                                 Text(
                                                     "${speakerRecognition.completedUnits}/${speakerRecognition.totalUnits}",
+                                                    modifier = Modifier.width(42.dp),
                                                     color = SubText,
-                                                    style = MaterialTheme.typography.labelSmall,
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        fontSize = 10.sp,
+                                                        fontFeatureSettings = "tnum",
+                                                    ),
+                                                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                                    maxLines = 1,
                                                 )
                                             }
                                             Text(
                                                 "${progressPercent.coerceIn(0, 100)}%",
+                                                modifier = Modifier.width(36.dp),
                                                 color = BrandBright,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.SemiBold,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 11.sp,
+                                                    fontFeatureSettings = "tnum",
+                                                    fontWeight = FontWeight.SemiBold,
+                                                ),
+                                                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                                maxLines = 1,
                                             )
                                         } else {
                                             LinearProgressIndicator(
@@ -1275,6 +1297,21 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                             ) { Text("取消") }
                                         }
                                     }
+                                }
+                                if (speakerRecognition.isActive && !progressDisplay.sizeDetail.isNullOrBlank()) {
+                                    Text(
+                                        progressDisplay.sizeDetail,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = SubText,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            lineHeight = 12.sp,
+                                            fontFeatureSettings = "tnum",
+                                        ),
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
                                 }
                             }
                         }
