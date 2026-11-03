@@ -28,13 +28,14 @@ internal data class InProgressProcessingCheckpoint(
     val fingerprints: EngineConfigFingerprints,
     val savedAt: Long,
     val requireFreshDubbing: Boolean = false,
+    val requireFreshTranslation: Boolean = false,
 )
 
 internal object InProgressProcessingCheckpointStore {
     private const val DIRECTORY_NAME = "in_progress_processing"
-    // Version 2 introduced gzip compression; version 3 persists the fresh-dubbing requirement.
-    // Version 1 plain JSON and version 2 compressed checkpoints remain readable for upgrades.
-    private const val VERSION = 3
+    // Version 2 introduced gzip compression; version 3 persists fresh-dubbing and version 4
+    // persists fresh-translation requirements. Older JSON/compressed checkpoints remain readable.
+    private const val VERSION = 4
     private const val MAX_FILE_BYTES = 24L * 1024L * 1024L
     private const val MAX_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BYTES = 96L * 1024L * 1024L
@@ -49,6 +50,7 @@ internal object InProgressProcessingCheckpointStore {
         state: PlayerUiState,
         fingerprints: EngineConfigFingerprints,
         requireFreshDubbing: Boolean = false,
+        requireFreshTranslation: Boolean = false,
     ): Boolean {
         if (!isSupportedKey(videoKey) ||
             identityKey.isBlank() ||
@@ -98,6 +100,7 @@ internal object InProgressProcessingCheckpointStore {
                 .put("translationFingerprint", fingerprints.translation)
                 .put("dubbingFingerprint", fingerprints.dubbing)
                 .put("requireFreshDubbing", requireFreshDubbing)
+                .put("requireFreshTranslation", requireFreshTranslation)
                 .put(
                     "state",
                     JSONObject()
@@ -229,6 +232,7 @@ internal object InProgressProcessingCheckpointStore {
             fingerprints = fingerprints,
             savedAt = savedAt,
             requireFreshDubbing = root.optBoolean("requireFreshDubbing", false),
+            requireFreshTranslation = root.optBoolean("requireFreshTranslation", false),
         )
     }
 
