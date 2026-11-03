@@ -197,6 +197,16 @@ fun PlayerScreen(
     val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "google" && voiceOptions.size > 1
     val state by PlaybackService.ui.collectAsState()
     val playbackHint by PlaybackService.playbackHint.collectAsState()
+    // Keep the expensive subtitle list independent from unrelated playback UI updates.
+    // The State holders remain stable while their values follow the latest service snapshot.
+    val subtitleLinesState = rememberUpdatedState(state.lines)
+    val subtitleActiveLineState = rememberUpdatedState(state.currentLine)
+    val subtitleSeekAction: (Long) -> Unit = remember {
+        { positionMs: Long ->
+            PlaybackService.instance?.seekAndPlay(positionMs)
+            Unit
+        }
+    }
     val listState = rememberLazyListState()
     var pauseAutoScrollForUser by remember(listState) { mutableStateOf(false) }
     var subtitlesVisible by remember { mutableStateOf(true) }
@@ -1406,8 +1416,12 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     if (state.key == requestKey) {
                         SubtitleList(
-                            state = state,
-                            svc = PlaybackService.instance,
+                            sessionKey = state.key,
+                            phase = state.phase,
+                            linesState = subtitleLinesState,
+                            activeLineState = subtitleActiveLineState,
+                            canSeek = PlaybackService.instance != null,
+                            onSeek = subtitleSeekAction,
                             listState = listState,
                             modifier = Modifier.fillMaxSize(),
                         )
@@ -1638,28 +1652,56 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         )
     }
 
-    // A manual drag temporarily takes ownership of the subtitle list. Resume following the
-    // playhead shortly after the finger is lifted so the list never fights the user's gesture.
+    // A user drag owns the list until its fling has settled and there has been time
+    // to read. Track individual drag interactions so a second gesture cannot be resumed
+    // by a stale Stop/Cancel event from the first one.
+    LaunchedEffect(state.key) {
+        pauseAutoScrollForUser = false
+    }
     LaunchedEffect(listState) {
+        val activeDrags = mutableSetOf<DragInteraction.Start>()
         var resumeJob: kotlinx.coroutines.Job? = null
         listState.interactionSource.interactions.collect { interaction ->
             when (interaction) {
                 is DragInteraction.Start -> {
+                    activeDrags.add(interaction)
                     resumeJob?.cancel()
                     pauseAutoScrollForUser = true
                 }
-                is DragInteraction.Stop, is DragInteraction.Cancel -> {
-                    resumeJob?.cancel()
-                    resumeJob = launch {
-                        // Let any fling started by the drag finish before returning control
-                        // to the playhead, then leave a short pause for the user to read.
-                        delay(120L)
-                        withTimeoutOrNull(5_000L) {
-                            snapshotFlow { listState.isScrollInProgress }
-                                .first { scrolling -> !scrolling }
+                is DragInteraction.Stop -> {
+                    activeDrags.remove(interaction.start)
+                    if (activeDrags.isEmpty()) {
+                        resumeJob?.cancel()
+                        resumeJob = launch {
+                            // Give Compose time to start the fling, then wait for it to end.
+                            delay(100L)
+                            if (listState.isScrollInProgress) {
+                                withTimeoutOrNull(10_000L) {
+                                    snapshotFlow { listState.isScrollInProgress }
+                                        .first { scrolling -> !scrolling }
+                                }
+                            }
+                            // Keep following paused while the user reads the selected area.
+                            delay(1_800L)
+                            if (activeDrags.isEmpty()) pauseAutoScrollForUser = false
                         }
-                        delay(850L)
-                        pauseAutoScrollForUser = false
+                    }
+                }
+                is DragInteraction.Cancel -> {
+                    activeDrags.remove(interaction.start)
+                    if (activeDrags.isEmpty()) {
+                        resumeJob?.cancel()
+                        resumeJob = launch {
+                            delay(100L)
+                            if (listState.isScrollInProgress) {
+                                withTimeoutOrNull(10_000L) {
+                                    snapshotFlow { listState.isScrollInProgress }
+                                        .first { scrolling -> !scrolling }
+                                }
+                            }
+                            delay(1_800L)
+                            if (activeDrags.isEmpty()) pauseAutoScrollForUser = false
+                        }
                     }
                 }
             }
@@ -1667,46 +1709,69 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     }
 
     // Follow the video timeline, independently of asynchronous dubbing-audio startup.
-    // The updated triple lets drag state cancel a pending programmatic scroll immediately.
-    val effectiveScrollLine = state.currentLine
+    // When manual browsing ends, do not snap back to the same cue: resume on the next cue.
     val autoScrollTarget = rememberUpdatedState(
-        Triple(effectiveScrollLine, state.lines.size, pauseAutoScrollForUser)
+        Triple(subtitleActiveLineState.value, state.lines.size, pauseAutoScrollForUser)
     )
     LaunchedEffect(state.key, state.phase, subtitlesVisible) {
-        // The list is intentionally absent on the parsing screen and when subtitles are hidden.
         if (state.phase != Phase.READY || !subtitlesVisible) return@LaunchedEffect
+        var lastObservedLine = Int.MIN_VALUE
+        var wasManuallyBrowsing = false
         snapshotFlow { autoScrollTarget.value }
             .distinctUntilChanged()
             .collectLatest { (target, lineCount, pausedByUser) ->
-                if (pausedByUser || target !in 0 until lineCount) return@collectLatest
+                if (pausedByUser) {
+                    lastObservedLine = target
+                    wasManuallyBrowsing = true
+                    return@collectLatest
+                }
+                // Releasing the drag only hands control back. It must not immediately yank
+                // the list away from the subtitle the user has just scrolled to read.
+                if (wasManuallyBrowsing && target == lastObservedLine) {
+                    wasManuallyBrowsing = false
+                    return@collectLatest
+                }
+                wasManuallyBrowsing = false
+                if (target == lastObservedLine) return@collectLatest
+                lastObservedLine = target
+                if (target !in 0 until lineCount) return@collectLatest
 
-                // Coalesce rapid seeks or back-to-back short cues; collectLatest cancels
-                // this wait as soon as a newer playhead target arrives.
-                delay(90L)
-                if (autoScrollTarget.value.third) return@collectLatest
-
-                // Wait for LazyColumn measurement before calculating the target position.
-                listState.layoutInfo.let { info ->
-                    if (info.viewportSize.height <= 0 || info.totalItemsCount <= target) {
-                        snapshotFlow {
-                            listState.layoutInfo.viewportSize.height to listState.layoutInfo.totalItemsCount
-                        }.first { (height, itemCount) -> height > 0 && itemCount > target }
-                    }
+                // Coalesce rapid seeks and very short cues; only the latest target survives.
+                delay(100L)
+                val latest = autoScrollTarget.value
+                if (latest.third || latest.first != target || target !in 0 until latest.second) {
+                    return@collectLatest
                 }
 
+                // Wait for LazyColumn measurement before calculating a target position.
+                val initialInfo = listState.layoutInfo
+                if (initialInfo.viewportSize.height <= 0 || initialInfo.totalItemsCount <= target) {
+                    snapshotFlow {
+                        listState.layoutInfo.viewportSize.height to listState.layoutInfo.totalItemsCount
+                    }.first { (height, itemCount) -> height > 0 && itemCount > target }
+                }
                 val info = listState.layoutInfo
                 val viewportHeight = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
-                val topGuard = info.viewportStartOffset + (viewportHeight * 0.32f).toInt()
-                val bottomGuard = info.viewportStartOffset + (viewportHeight * 0.68f).toInt()
+                val topGuard = info.viewportStartOffset + (viewportHeight * 0.22f).toInt()
+                val bottomGuard = info.viewportEndOffset - (viewportHeight * 0.22f).toInt()
                 val item = info.visibleItemsInfo.firstOrNull { it.index == target }
                 val itemBottom = item?.let { it.offset + it.size } ?: Int.MIN_VALUE
+                val oversizedCaption = item != null && item.size >= (viewportHeight * 0.82f).toInt()
 
-                // Keep the active cue near the middle without scrolling for every playhead tick.
-                if (item == null || item.offset < topGuard || itemBottom > bottomGuard) {
-                    listState.animateScrollToItem(
-                        target,
-                        scrollOffset = -(viewportHeight * 0.46f).toInt(),
-                    )
+                // Long captions cannot fit inside the reading band. Keep them in place while
+                // any part is already visible; normal rows stay within a wide central zone.
+                val shouldFollow = when {
+                    item == null -> true
+                    oversizedCaption -> item.offset < info.viewportStartOffset
+                    else -> item.offset < topGuard || itemBottom > bottomGuard
+                }
+                if (shouldFollow) {
+                    val targetOffset = if (oversizedCaption) {
+                        -(viewportHeight * 0.08f).toInt()
+                    } else {
+                        -(viewportHeight * 0.44f).toInt()
+                    }
+                    listState.animateScrollToItem(target, scrollOffset = targetOffset)
                 }
             }
     }
@@ -6294,14 +6359,18 @@ private fun PlayerToolTile(
 
 @Composable
 private fun SubtitleList(
-    state: PlayerUiState,
-    svc: PlaybackService?,
+    sessionKey: String,
+    phase: Phase,
+    linesState: State<List<SubLine>>,
+    activeLineState: State<Int>,
+    canSeek: Boolean,
+    onSeek: (Long) -> Unit,
     listState: androidx.compose.foundation.lazy.LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    // Keep row highlighting locked to the video timeline in both playback modes.
-    // A late TTS start must not postpone the visual subtitle effect.
-    val activeSubtitleIndex = state.currentLine
+    // Reading this holder subscribes the list to subtitle-content changes, not every
+    // playback-state update. The active line is observed separately by each row below.
+    val lines = linesState.value
     Column(
         modifier.fillMaxSize()
             .background(Color.White)
@@ -6313,7 +6382,7 @@ private fun SubtitleList(
             contentPadding = PaddingValues(top = 5.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            if (state.lines.isEmpty() && state.phase == Phase.READY) {
+            if (lines.isEmpty() && phase == Phase.READY) {
                 item {
                     Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         Text("暂无字幕内容，可从顶部菜单导入字幕文件", color = MutedGreen, style = MaterialTheme.typography.bodyMedium)
@@ -6321,68 +6390,83 @@ private fun SubtitleList(
                 }
             }
             itemsIndexed(
-                state.lines,
+                lines,
                 key = { _, line ->
-                    "${state.key}:${line.index}:${line.startMs}:${line.endMs}:${line.text.hashCode()}"
+                    "${sessionKey}:${line.index}:${line.startMs}:${line.endMs}"
                 },
                 contentType = { _, _ -> "subtitle-row" },
-            ) { i, line ->
-                val active = i == activeSubtitleIndex
-                val translatedText = remember(line.text, line.zh) {
-                    SubtitleParsers.preferredTranslationText(line)?.takeIf { it.isNotBlank() }
+            ) { index, line ->
+                // derivedStateOf means only the previous and current rows need to recompose
+                // when the playhead changes; the rest of the visible list stays stable.
+                val active by remember(activeLineState, index) {
+                    derivedStateOf { activeLineState.value == index }
                 }
-                val chineseText = translatedText ?: "中文字幕暂不可用"
-                val rowBackground by animateColorAsState(
-                    targetValue = if (active) Color(0xFFF1F5FC) else Color.Transparent,
-                    animationSpec = tween(220, easing = FastOutSlowInEasing),
-                    label = "subtitleRowBackground_$i",
+                SubtitleListRow(
+                    line = line,
+                    active = active,
+                    canSeek = canSeek,
+                    onSeek = onSeek,
                 )
-                val textColor by animateColorAsState(
-                    targetValue = if (active) BrandBright else SubText,
-                    animationSpec = tween(220, easing = FastOutSlowInEasing),
-                    label = "subtitleRowTextColor_$i",
-                )
-                val textScale by animateFloatAsState(
-                    targetValue = if (active) 1.018f else 1f,
-                    animationSpec = tween(220, easing = FastOutSlowInEasing),
-                    label = "subtitleRowScale_$i",
-                )
-
-                Column(
-                    Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(rowBackground)
-                        .clickable(
-                            enabled = svc != null && line.startMs >= 0L && line.endMs > line.startMs,
-                        ) { svc?.seekAndPlay(line.startMs) }
-                        .padding(horizontal = 12.dp, vertical = if (active) 8.dp else 7.dp),
-                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        text = chineseText,
-                        color = textColor,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (active) 16.sp else 14.sp,
-                            lineHeight = if (active) 23.sp else 21.sp,
-                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                            lineBreak = LineBreak.Paragraph,
-                        ),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        softWrap = true,
-                        maxLines = Int.MAX_VALUE,
-                        overflow = TextOverflow.Clip,
-                        modifier = Modifier.fillMaxWidth().graphicsLayer {
-                            // Only the Chinese caption receives the active playback emphasis.
-                            scaleX = textScale
-                            scaleY = textScale
-                        },
-                    )
-                }
             }
         }
     }
 }
 
+@Composable
+private fun SubtitleListRow(
+    line: SubLine,
+    active: Boolean,
+    canSeek: Boolean,
+    onSeek: (Long) -> Unit,
+) {
+    val chineseText = remember(line.text, line.zh) { subtitleDisplayText(line) }
+    val rowBackground by animateColorAsState(
+        targetValue = if (active) Color(0xFFF1F5FC) else Color.Transparent,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "subtitleRowBackground_${line.index}",
+    )
+    val textColor by animateColorAsState(
+        targetValue = if (active) BrandBright else SubText,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "subtitleRowTextColor_${line.index}",
+    )
+    val textScale by animateFloatAsState(
+        targetValue = if (active) 1.012f else 1f,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "subtitleRowScale_${line.index}",
+    )
+
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowBackground)
+            .clickable(
+                enabled = canSeek && line.startMs >= 0L && line.endMs > line.startMs,
+            ) { onSeek(line.startMs) }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = chineseText,
+            color = textColor,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = if (active) 16.sp else 14.sp,
+                lineHeight = if (active) 23.sp else 21.sp,
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                lineBreak = LineBreak.Paragraph,
+            ),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            softWrap = true,
+            maxLines = Int.MAX_VALUE,
+            overflow = TextOverflow.Clip,
+            modifier = Modifier.fillMaxWidth().graphicsLayer {
+                // The slight emphasis stays within the row's horizontal padding.
+                scaleX = textScale
+                scaleY = textScale
+            },
+        )
+    }
+}
 
 /**
  * Chinese translation text for the compact active subtitle strip and the full subtitle list.

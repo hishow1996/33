@@ -904,6 +904,8 @@ class PlaybackService : MediaSessionService() {
     // rather than rebuilding it every playback tick or assuming the UI list is sorted.
     private var highlightTimelineSource: List<SubLine>? = null
     private var highlightTimeline = DubbingTimeline(emptyList())
+    // Cache the first usable caption with the interval index; gap ticks must not rescan all rows.
+    private var highlightFirstSpokenLine = -1
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
@@ -12718,6 +12720,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (highlightTimelineSource !== lines) {
             highlightTimeline = DubbingTimeline(lines)
             highlightTimelineSource = lines
+            highlightFirstSpokenLine = lines.indexOfFirst { it.text.isNotBlank() }
             // Don't carry a line index across a newly published subtitle snapshot.
             lastLineIdx = Int.MIN_VALUE
         }
@@ -12726,8 +12729,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
         // 首句宽限期：ASR 给第一句的起点普遍偏晚（视频已开口、时间戳还没到）。
         // 播放头处于片头空白且第一句在 2.5s 内开始时，直接提前显示第一句。
-        val firstSpoken = lines.indexOfFirst { it.text.isNotBlank() }
-        if (firstSpoken >= 0) {
+        val firstSpoken = highlightFirstSpokenLine
+        if (firstSpoken in lines.indices) {
             val first = lines[firstSpoken]
             val lead = first.startMs - positionMs
             if (lead in 0L..2_500L) return firstSpoken
