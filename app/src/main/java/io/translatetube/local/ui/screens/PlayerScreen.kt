@@ -35,6 +35,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -1522,7 +1523,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 Surface(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     shape = RoundedCornerShape(0.dp),
-                    color = Color.White,
+                    color = Color(0xFFF3F5F8),
                 ) {
                     Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         Text("字幕显示已关闭", color = SubText, style = MaterialTheme.typography.bodyLarge)
@@ -5201,7 +5202,8 @@ private fun CurrentSubtitleStrip(
         renderedCaption.first.isNotBlank() || renderedCaption.second.isNotBlank()
     if (!fullscreen || renderedCaptionHasContent || captionHasContent) {
         BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-            val horizontalInset = if (fullscreen) {
+            // Fullscreen captions use a separately draggable lane; avoid a second inset here.
+            val horizontalInset = if (fullscreen && fullscreenMaxHeight == null) {
                 (maxWidth * 0.11f).coerceIn(48.dp, 88.dp)
             } else 0.dp
             val captionContentWidth = (
@@ -5292,7 +5294,7 @@ private fun CurrentSubtitleStrip(
                                 // with the surrounding white subtitle list.
                                 Modifier
                                     .height(50.dp)
-                                    .background(Color.White)
+                                    .background(Color(0xFFF3F5F8))
                             },
                         )
                         .padding(
@@ -6080,6 +6082,23 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val recordInteraction = { interactionVersion += 1 }
 
     val context = LocalContext.current
+    val fullscreenCaptionPrefs = remember(context) {
+        context.applicationContext.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    }
+    var fullscreenCaptionCenterX by remember(fullscreenCaptionPrefs) {
+        mutableStateOf(fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_x_v1", 0.5f).coerceIn(0f, 1f))
+    }
+    var fullscreenCaptionCenterY by remember(fullscreenCaptionPrefs) {
+        mutableStateOf(fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_y_v1", 0.76f).coerceIn(0f, 1f))
+    }
+    val latestFullscreenCaptionCenterX by rememberUpdatedState(fullscreenCaptionCenterX)
+    val latestFullscreenCaptionCenterY by rememberUpdatedState(fullscreenCaptionCenterY)
+    fun persistFullscreenCaptionPosition() {
+        fullscreenCaptionPrefs.edit()
+            .putFloat("player_fullscreen_caption_center_x_v1", fullscreenCaptionCenterX)
+            .putFloat("player_fullscreen_caption_center_y_v1", fullscreenCaptionCenterY)
+            .apply()
+    }
     val audioManager = remember(context) {
         context.applicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager
     }
@@ -6232,6 +6251,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 qualityExpanded,
                 speedExpanded,
                 scrubbing,
+                fullscreenCaptionVisible,
             ) {
                 awaitEachGesture {
                     val down = awaitFirstDown(
@@ -6248,9 +6268,13 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     } else 0f
                     val startsInsideRightControls = controlsVisible &&
                         down.position.x > size.width - rightControlSafeEdge
+                    val startsInsideFullscreenCaption = fullscreenCaptionVisible && isFullscreen &&
+                        abs(down.position.x - size.width * latestFullscreenCaptionCenterX) <= size.width * 0.43f &&
+                        abs(down.position.y - size.height * latestFullscreenCaptionCenterY) <= with(this) { 64.dp.toPx() }
                     if (
                         down.position.x < size.width * 0.62f ||
                         startsInsideRightControls ||
+                        startsInsideFullscreenCaption ||
                         down.position.y > size.height - seekbarSafeBottom ||
                         audioManager == null ||
                         maxMusicVolume <= 0 ||
@@ -6394,10 +6418,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             val availableItemSize = ((availableControlHeight - 8.dp) / 2f).coerceAtLeast(24.dp)
             val controlTargetSize = preferredControlSize.coerceAtMost(availableItemSize)
             val controlIconSize = (controlTargetSize * 0.58f).coerceIn(14.dp, 24.dp)
-            // Keep the two icons visually grouped; use only a small responsive gap.
-            val controlVerticalGap = (
-                availableControlHeight - controlTargetSize * 2f
-            ).coerceIn(8.dp, 14.dp)
+            // Keep the side controls balanced while giving fullscreen a little more breathing room.
+            val freeControlGap = (availableControlHeight - controlTargetSize * 2f).coerceAtLeast(0.dp)
+            val preferredControlGap = if (isFullscreen) 20.dp else 14.dp
+            val controlVerticalGap = preferredControlGap.coerceAtMost(freeControlGap)
             val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
             val seekThumbRadiusPx = with(LocalDensity.current) { seekThumbRadius.toPx() }
             val durationForUi = (PlaybackService.instance?.duration() ?: 0L)
@@ -6718,8 +6742,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     }
 
         if (isFullscreen) {
-            // Keep the subtitle and quick toggles in one measured dock. The caption lane and
-            // button lane shrink together on short landscape screens instead of using fixed offsets.
+            // Keep quick audio/subtitle actions at the top edge so they never cover the video center.
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
@@ -6727,104 +6750,137 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .windowInsetsPadding(WindowInsets.navigationBars),
             ) {
                 val compact = maxWidth < 420.dp || maxHeight < 280.dp
-                val horizontalInset = if (maxWidth < 360.dp) 48.dp else 64.dp
-                val quickToggleHeight = if (compact) 44.dp else 48.dp
-                val bottomClearance = 54.dp
-                val quickToCaptionGap = when {
-                    maxHeight < 260.dp -> 6.dp
-                    maxHeight < 360.dp -> 10.dp
-                    else -> 16.dp
-                }
-                val preferredCaptionLaneHeight = when {
-                    maxHeight < 260.dp -> 64.dp
-                    maxHeight < 360.dp -> 80.dp
-                    else -> 96.dp
-                }
-                val availableCaptionHeight = (
-                    maxHeight - bottomClearance - quickToggleHeight - quickToCaptionGap - 12.dp
-                    ).coerceAtLeast(42.dp)
-                val captionLaneHeight = minOf(preferredCaptionLaneHeight, availableCaptionHeight)
-
-                Column(
+                val quickToggleWidth = if (compact) 54.dp else 60.dp
+                Box(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
+                        .align(Alignment.TopCenter)
                         .fillMaxWidth()
-                        .padding(bottom = bottomClearance),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                        .padding(top = if (compact) 6.dp else 10.dp),
+                    contentAlignment = Alignment.TopCenter,
                 ) {
-                    // Reserve this row while hidden so the caption stays at a stable screen position.
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(quickToggleHeight),
-                        contentAlignment = Alignment.Center,
+                    AnimatedVisibility(
+                        visible = controlsVisible,
+                        enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+                        exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
                     ) {
-                        this@Column.AnimatedVisibility(
-                            visible = controlsVisible,
-                            enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
-                            exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(if (compact) 24.dp else 34.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = horizontalInset),
-                                horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                FullscreenQuickToggle(
-                                    modifier = Modifier.weight(1f),
-                                    icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                                    label = "原声",
-                                    selected = state.originalVolume > 0f,
-                                    compact = compact,
-                                    onClick = {
-                                        recordInteraction()
-                                        onToggleOriginal()
-                                    },
-                                )
-                                FullscreenQuickToggle(
-                                    modifier = Modifier.weight(1f),
-                                    icon = Icons.Filled.Headphones,
-                                    label = "配音",
-                                    selected = state.dubbingVolume > 0f,
-                                    compact = compact,
-                                    onClick = {
-                                        recordInteraction()
-                                        onToggleDubbing()
-                                    },
-                                )
-                                FullscreenQuickToggle(
-                                    modifier = Modifier.weight(1f),
-                                    icon = Icons.Filled.Subtitles,
-                                    label = "字幕",
-                                    selected = subtitlesVisible,
-                                    compact = compact,
-                                    onClick = {
-                                        recordInteraction()
-                                        onToggleSubtitles()
-                                    },
-                                )
-                            }
-                        }
-                    }
-
-                    if (fullscreenCaptionVisible) {
-                        Spacer(modifier = Modifier.height(quickToCaptionGap))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(captionLaneHeight),
-                            contentAlignment = Alignment.BottomCenter,
-                        ) {
-                            CurrentSubtitleStrip(
-                                sessionKey = state.key,
-                                currentLine = currentLine,
-                                captionOverride = captionOverride,
-                                fullscreen = true,
-                                fullscreenMaxHeight = captionLaneHeight,
-                                modifier = Modifier.fillMaxWidth(),
+                            FullscreenQuickToggle(
+                                modifier = Modifier.width(quickToggleWidth),
+                                icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                                label = "原声",
+                                selected = state.originalVolume > 0f,
+                                compact = compact,
+                                onClick = {
+                                    recordInteraction()
+                                    onToggleOriginal()
+                                },
+                            )
+                            FullscreenQuickToggle(
+                                modifier = Modifier.width(quickToggleWidth),
+                                icon = Icons.Filled.Headphones,
+                                label = "配音",
+                                selected = state.dubbingVolume > 0f,
+                                compact = compact,
+                                onClick = {
+                                    recordInteraction()
+                                    onToggleDubbing()
+                                },
+                            )
+                            FullscreenQuickToggle(
+                                modifier = Modifier.width(quickToggleWidth),
+                                icon = Icons.Filled.Subtitles,
+                                label = "字幕",
+                                selected = subtitlesVisible,
+                                compact = compact,
+                                onClick = {
+                                    recordInteraction()
+                                    onToggleSubtitles()
+                                },
                             )
                         }
+                    }
+                }
+
+                if (fullscreenCaptionVisible) {
+                    val captionLaneHeight = when {
+                        maxHeight < 260.dp -> 64.dp
+                        maxHeight < 360.dp -> 80.dp
+                        else -> 96.dp
+                    }
+                    val captionLaneWidth = (maxWidth * 0.74f).coerceAtMost(maxWidth - 16.dp)
+                    val density = LocalDensity.current
+                    val containerWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
+                    val containerHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
+                    val captionWidthPx = with(density) { captionLaneWidth.toPx() }
+                    val captionHeightPx = with(density) { captionLaneHeight.toPx() }
+                    val horizontalSafePx = with(density) { 8.dp.toPx() }
+                    val topSafePx = with(density) { if (compact) 54.dp.toPx() else 60.dp.toPx() }
+                    val bottomSafePx = with(density) { 52.dp.toPx() }
+                    val minLeftPx = horizontalSafePx
+                    val maxLeftPx = (containerWidthPx - captionWidthPx - horizontalSafePx)
+                        .coerceAtLeast(minLeftPx)
+                    val minTopPx = topSafePx
+                    val maxTopPx = (containerHeightPx - captionHeightPx - bottomSafePx)
+                        .coerceAtLeast(minTopPx)
+                    val leftPx = (
+                        containerWidthPx * fullscreenCaptionCenterX - captionWidthPx / 2f
+                    ).coerceIn(minLeftPx, maxLeftPx)
+                    val topPx = (
+                        containerHeightPx * fullscreenCaptionCenterY - captionHeightPx / 2f
+                    ).coerceIn(minTopPx, maxTopPx)
+
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                androidx.compose.ui.unit.IntOffset(leftPx.roundToInt(), topPx.roundToInt())
+                            }
+                            .width(captionLaneWidth)
+                            .height(captionLaneHeight)
+                            .pointerInput(
+                                state.key,
+                                maxWidth,
+                                maxHeight,
+                                captionLaneWidth,
+                                captionLaneHeight,
+                            ) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        controlsVisible = true
+                                        recordInteraction()
+                                    },
+                                    onDragEnd = { persistFullscreenCaptionPosition() },
+                                    onDragCancel = { persistFullscreenCaptionPosition() },
+                                ) { change, dragAmount ->
+                                    change.consume()
+                                    val currentLeft = (
+                                        containerWidthPx * fullscreenCaptionCenterX - captionWidthPx / 2f
+                                    ).coerceIn(minLeftPx, maxLeftPx)
+                                    val currentTop = (
+                                        containerHeightPx * fullscreenCaptionCenterY - captionHeightPx / 2f
+                                    ).coerceIn(minTopPx, maxTopPx)
+                                    val nextLeft = (currentLeft + dragAmount.x).coerceIn(minLeftPx, maxLeftPx)
+                                    val nextTop = (currentTop + dragAmount.y).coerceIn(minTopPx, maxTopPx)
+                                    fullscreenCaptionCenterX = (
+                                        (nextLeft + captionWidthPx / 2f) / containerWidthPx
+                                    ).coerceIn(0f, 1f)
+                                    fullscreenCaptionCenterY = (
+                                        (nextTop + captionHeightPx / 2f) / containerHeightPx
+                                    ).coerceIn(0f, 1f)
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CurrentSubtitleStrip(
+                            sessionKey = state.key,
+                            currentLine = currentLine,
+                            captionOverride = captionOverride,
+                            fullscreen = true,
+                            fullscreenMaxHeight = captionLaneHeight,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
             }
