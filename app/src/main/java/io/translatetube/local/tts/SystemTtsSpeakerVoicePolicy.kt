@@ -52,6 +52,9 @@ internal object SystemTtsSpeakerVoicePolicy {
      * entries directly. Do not wrap unavailable/old IDs onto another real voice: that makes the
      * same person silently change voice when a phone's catalog changes.
      */
+    /** Speaker IDs only affect generated audio when the system exposes alternatives. */
+    fun speakerIdAffectsOutput(voiceCount: Int): Boolean = voiceCount > 1
+
     fun indexForSpeaker(speakerId: Int, voiceCount: Int): Int {
         if (voiceCount <= 1 || speakerId < 0) return 0
         return if (speakerId < voiceCount - 1) speakerId + 1 else 0

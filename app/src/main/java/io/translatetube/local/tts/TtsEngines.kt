@@ -186,6 +186,11 @@ class SystemTts(
     val chineseVoiceNames: List<String> get() = chineseVoiceCatalog.map { it.name }
     val supportsMultipleChineseVoices: Boolean get() = chineseVoiceCount > 1
 
+    // A single installed Chinese voice produces identical PCM for every detected speaker.
+    // Avoid duplicating the same disk/RAM cache once per speaker in that case.
+    override val speakerIdAffectsOutput: Boolean
+        get() = SystemTtsSpeakerVoicePolicy.speakerIdAffectsOutput(chineseVoiceCount)
+
     private data class TimelineCallbacks(
         val onStarted: () -> Unit,
         val onCompleted: (String?) -> Unit,

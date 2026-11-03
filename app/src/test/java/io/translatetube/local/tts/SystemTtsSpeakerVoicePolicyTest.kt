@@ -1,10 +1,19 @@
 package io.translatetube.local.tts
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SystemTtsSpeakerVoicePolicyTest {
+    @Test
+    fun singleVoiceSystemTtsDoesNotSplitPcmCacheBySpeaker() {
+        assertFalse(SystemTtsSpeakerVoicePolicy.speakerIdAffectsOutput(0))
+        assertFalse(SystemTtsSpeakerVoicePolicy.speakerIdAffectsOutput(1))
+        assertTrue(SystemTtsSpeakerVoicePolicy.speakerIdAffectsOutput(2))
+        assertTrue(SystemTtsSpeakerVoicePolicy.speakerIdAffectsOutput(8))
+    }
+
     @Test
     fun unknownSpeakerAndSingleVoiceUseDefault() {
         assertEquals(0, SystemTtsSpeakerVoicePolicy.indexForSpeaker(-1, 4))
