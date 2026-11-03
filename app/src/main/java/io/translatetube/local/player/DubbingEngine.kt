@@ -576,6 +576,19 @@ class DubbingEngine(
                         ),
                     )
 
+                    // Clean abandoned staging files for both PCM and immediate-System-TTS
+                    // modes. The latter returns early below, so doing this after that branch left
+                    // stale temporary files in its own video directory indefinitely.
+                    synchronized(cacheInstallLock) {
+                        val nowMs = System.currentTimeMillis()
+                        val existing = cacheDir.listFiles().orEmpty()
+                        for (file in existing) {
+                            checkCacheInitActive()
+                            if (released || generation != cacheInitGeneration.get()) return@launch
+                            if (isStalePcmTemp(file, nowMs)) file.delete()
+                        }
+                    }
+
                     // Instant System TTS keeps its direct audible playback path. Queue valid cues
                     // for optional PCM warm-up, but do not allocate a second TTS service or begin
                     // synthesis until the user actually selects original-only playback.
@@ -623,22 +636,12 @@ class DubbingEngine(
                                 "配音引擎" to (tts?.name ?: "未知引擎"),
                             ),
                         )
+                        // Immediate playback used to return before the global PCM LRU pass.
+                        // Keep old voice/model variants and other videos under the same storage
+                        // budget even when the selected system TTS mode does not synthesize PCM.
+                        pruneOldDubbingCaches()
                         if (backgroundSynthesisRequested) ensureBackgroundSynthesisEngine()
                         return@launch
-                    }
-
-                    // Keep valid PCM caches for other voices/engines. They are harmless when
-                    // the active session uses a different cache key; the shared LRU budget below
-                    // can evict them when needed. Deleting all non-current names here raced with
-                    // overlapping old/new engines for the same video and discarded reusable audio.
-                    synchronized(cacheInstallLock) {
-                        val nowMs = System.currentTimeMillis()
-                        val existing = cacheDir.listFiles().orEmpty()
-                        for (file in existing) {
-                            checkCacheInitActive()
-                            if (released || generation != cacheInitGeneration.get()) return@launch
-                            if (isStalePcmTemp(file, nowMs)) file.delete()
-                        }
                     }
 
                     for (i in this@DubbingEngine.lines.indices) {
