@@ -5163,6 +5163,7 @@ private fun CurrentSubtitleStrip(
     // Keep the caption bound to the single subtitle cue selected by the playback head.
     val index = state.currentLine.takeIf { it in state.lines.indices } ?: -1
     val currentLine = state.lines.getOrNull(index)
+    val textMeasurer = rememberTextMeasurer()
     // Fullscreen captions use only a real translation. Keep the normal player's existing fallback.
     val chineseText = remember(currentLine?.text, currentLine?.zh, fullscreen) {
         currentLine?.let {
@@ -5207,28 +5208,76 @@ private fun CurrentSubtitleStrip(
             val horizontalInset = if (fullscreen) {
                 (maxWidth * 0.11f).coerceIn(48.dp, 88.dp)
             } else 0.dp
+            val captionContentWidth = (
+                maxWidth - horizontalInset - horizontalInset -
+                    if (fullscreen) 20.dp else 16.dp
+                ).coerceAtLeast(120.dp)
+            val captionContentWidthPx = with(LocalDensity.current) {
+                captionContentWidth.roundToPx().coerceAtLeast(1)
+            }
             val captionContent: @Composable (Pair<String, String>) -> Unit = { caption ->
                 val (translated, source) = caption
-                val longestCaptionLength = maxOf(translated.length, source.length)
+                val measuredChineseLines = remember(translated, captionContentWidthPx, fullscreen) {
+                    if (!fullscreen || translated.isBlank()) 0
+                    else textMeasurer.measure(
+                        text = translated,
+                        style = androidx.compose.ui.text.TextStyle(
+                            fontSize = 14.sp,
+                            lineHeight = 17.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        ),
+                        constraints = Constraints(maxWidth = captionContentWidthPx),
+                        maxLines = 6,
+                    ).lineCount
+                }
+                val measuredOriginalLines = remember(source, captionContentWidthPx, fullscreen) {
+                    if (!fullscreen || source.isBlank()) 0
+                    else textMeasurer.measure(
+                        text = source,
+                        style = androidx.compose.ui.text.TextStyle(
+                            fontSize = 12.sp,
+                            lineHeight = 14.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        ),
+                        constraints = Constraints(maxWidth = captionContentWidthPx),
+                        maxLines = 6,
+                    ).lineCount
+                }
+                val measuredCaptionLines = maxOf(measuredChineseLines, measuredOriginalLines)
                 val fullscreenChineseSize = when {
-                    longestCaptionLength > 88 -> 11.sp
-                    longestCaptionLength > 60 -> 12.sp
-                    longestCaptionLength > 34 -> 13.sp
+                    measuredChineseLines >= 5 -> 10.sp
+                    measuredChineseLines >= 4 -> 11.sp
+                    measuredChineseLines >= 3 -> 12.sp
+                    captionContentWidth < 320.dp -> 13.sp
                     else -> 14.sp
                 }
                 val fullscreenChineseLineHeight = when {
-                    longestCaptionLength > 60 -> 14.sp
-                    longestCaptionLength > 34 -> 16.sp
+                    fullscreenChineseSize <= 10.sp -> 12.sp
+                    fullscreenChineseSize <= 11.sp -> 13.sp
+                    fullscreenChineseSize <= 12.sp -> 15.sp
                     else -> 17.sp
                 }
                 val fullscreenOriginalSize = when {
-                    longestCaptionLength > 60 -> 10.sp
-                    longestCaptionLength > 34 -> 11.sp
+                    measuredOriginalLines >= 5 -> 9.sp
+                    measuredOriginalLines >= 4 -> 10.sp
+                    measuredOriginalLines >= 3 -> 11.sp
+                    captionContentWidth < 320.dp -> 11.sp
                     else -> 12.sp
                 }
-                val fullscreenOriginalLineHeight = if (longestCaptionLength > 34) 12.sp else 14.sp
-                val captionMaxLines = if (fullscreen && (maxWidth < 420.dp || longestCaptionLength > 34)) 3 else 2
-                val captionMaxHeight = if (fullscreen && maxHeight < 220.dp) 82.dp else 96.dp
+                val fullscreenOriginalLineHeight = when {
+                    fullscreenOriginalSize <= 9.sp -> 10.sp
+                    fullscreenOriginalSize <= 10.sp -> 11.sp
+                    fullscreenOriginalSize <= 11.sp -> 12.sp
+                    else -> 14.sp
+                }
+                val captionMaxLines = if (fullscreen && measuredCaptionLines >= 3) 3 else 2
+                val captionMaxHeight = when {
+                    !fullscreen -> 96.dp
+                    maxHeight < 220.dp -> 82.dp
+                    measuredCaptionLines >= 4 -> 104.dp
+                    else -> 96.dp
+                }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -6468,7 +6517,16 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                         blurRadius = 3f,
                                     ),
                                 ),
-                                modifier = Modifier.padding(end = 8.dp),
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        enabled = controlsVisible,
+                                    ) {
+                                        recordInteraction()
+                                        speedExpanded = true
+                                    },
                             )
                         }
                         DropdownMenu(
