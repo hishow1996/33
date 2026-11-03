@@ -35,6 +35,46 @@ class SpeakerRecognitionUiStateTest {
     }
 
     @Test
+    fun cancellationRemainsAvailableDuringRecognitionStages() {
+        val cancellableStages = listOf(
+            SpeakerRecognitionStage.PREPARING_AUDIO,
+            SpeakerRecognitionStage.AUDIO_DECODING,
+            SpeakerRecognitionStage.DOWNLOADING_MODELS,
+            SpeakerRecognitionStage.ANALYZING_AUDIO,
+            SpeakerRecognitionStage.LINKING_SUBTITLES,
+        )
+        cancellableStages.forEach { stage ->
+            assertTrue(
+                "Expected cancellation to remain available at $stage",
+                SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.ANALYZING,
+                    stage = stage,
+                ).canCancel,
+            )
+        }
+    }
+
+    @Test
+    fun cancellationIsDisabledDuringVoiceApplicationAndEngineReplacement() {
+        val applyingVoices = SpeakerRecognitionUiState(
+            phase = SpeakerRecognitionPhase.APPLYING,
+            stage = SpeakerRecognitionStage.APPLYING_VOICES,
+        )
+        assertTrue(applyingVoices.isActive)
+        assertFalse(applyingVoices.canCancel)
+    }
+
+    @Test
+    fun cancellationIsDisabledAfterCancellationHasStarted() {
+        val cancelling = SpeakerRecognitionUiState(
+            phase = SpeakerRecognitionPhase.CANCELLING,
+            stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
+        )
+        assertTrue(cancelling.isActive)
+        assertFalse(cancelling.canCancel)
+    }
+
+    @Test
     fun stageTitleUsesTypedStageInsteadOfMessageText() {
         assertEquals(
             "解压人物模型",
