@@ -4637,18 +4637,17 @@ class PlaybackService : MediaSessionService() {
                     fallbackRestartStage = fallbackRestartStage,
                 )
         )
-        // Freshly process a genuinely new configuration. If this is an exact historical success,
-        // reuse that configuration's own speech cache instead; restoreReadySnapshot also marks
-        // callers that explicitly hand in a verified, exact-match success snapshot.
+        // Restore an exact current-config result only when no relevant engine switch was detected.
+        // An explicit stage restart always takes precedence and bypasses the old downstream outputs.
         val regenerateDubbingThisRun =
             EngineRestartStagePolicy.requiresFreshDubbing(effectiveForceRegenerateFromStage) ||
                 ReadySessionSnapshotReusePolicy.shouldRegenerateDubbingForFallback(
-            forceRegenerateDubbing = forceRegenerateDubbing,
-            restoreReadySnapshot = restoreReadySnapshot,
-            hasReusableSnapshot = reusableSnapshot != null,
-            fallbackSnapshotAvailable = fallbackSnapshot != null,
-            fallbackConfigComparable = fallbackCanBeCompared,
-            fallbackRestartStage = fallbackRestartStage,
+                    forceRegenerateDubbing = forceRegenerateDubbing,
+                    restoreReadySnapshot = restoreReadySnapshot,
+                    hasReusableSnapshot = reusableSnapshot != null,
+                    fallbackSnapshotAvailable = fallbackSnapshot != null,
+                    fallbackConfigComparable = fallbackCanBeCompared,
+                    fallbackRestartStage = fallbackRestartStage,
                     engineConfigChangedSinceLastSuccess = engineConfigChangedSinceLastSuccess,
                 )
         // Keep the current source mounted during a same-video stage restart. In particular,
