@@ -122,8 +122,8 @@ import io.translatetube.local.player.PlaybackHint
 import io.translatetube.local.player.PlaybackHintAction
 import io.translatetube.local.player.PlayerRebuildCoordinator
 import io.translatetube.local.player.PlayerUiState
-import io.translatetube.local.player.SpeakerRecognitionProgressDisplay
 import io.translatetube.local.player.SpeakerRecognitionProgressPolicy
+import io.translatetube.local.player.SpeakerRecognitionUiState
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.player.Phase
 import io.translatetube.local.player.ProcessingFlow
@@ -1204,130 +1204,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 color = OutlineSoft,
                                 thickness = 1.dp,
                             )
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
-                                verticalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                Text(
-                                    speakerRecognition.stageTitle,
-                                    color = OnBg,
-                                    style = MaterialTheme.typography.titleSmall.copy(
-                                        fontSize = 12.sp,
-                                        lineHeight = 15.sp,
-                                    ),
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                val detailMessage = speakerRecognition.error ?: speakerRecognition.message
-                                val isSpeakerError =
-                                    speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
-                                val progressDisplay = if (speakerRecognition.error.isNullOrBlank()) {
-                                    SpeakerRecognitionProgressPolicy.displayMessage(detailMessage)
-                                } else {
-                                    SpeakerRecognitionProgressDisplay(detailMessage)
-                                }
-                                if (progressDisplay.message.isNotBlank()) {
-                                    Text(
-                                        progressDisplay.message,
-                                        color = if (isSpeakerError) Color(0xFFB64A55) else SubText,
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 11.sp,
-                                            lineHeight = 14.sp,
-                                        ),
-                                        maxLines = if (isSpeakerError) 2 else 1,
-                                        softWrap = isSpeakerError,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                if (speakerRecognition.isActive) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        val progressPercent = speakerRecognition.progressPercent
-                                        if (progressPercent != null) {
-                                            key(speakerRecognition.stage, speakerRecognition.progressItem, speakerRecognition.taskToken) {
-                                                val animatedProgress by animateFloatAsState(
-                                                    targetValue = progressPercent.coerceIn(0, 100) / 100f,
-                                                    animationSpec = tween(
-                                                        durationMillis = 260,
-                                                        easing = FastOutSlowInEasing,
-                                                    ),
-                                                    label = "speakerRecognitionProgress",
-                                                )
-                                                LinearProgressIndicator(
-                                                    progress = { animatedProgress },
-                                                    modifier = Modifier.weight(1f).height(4.dp),
-                                                )
-                                            }
-                                            if (
-                                                speakerRecognition.progressItem == null &&
-                                                speakerRecognition.completedUnits != null &&
-                                                speakerRecognition.totalUnits != null &&
-                                                speakerRecognition.totalUnits > 0L &&
-                                                speakerRecognition.stage in setOf(
-                                                    io.translatetube.local.player.SpeakerRecognitionStage.ANALYZING_AUDIO,
-                                                    io.translatetube.local.player.SpeakerRecognitionStage.LINKING_SUBTITLES,
-                                                )
-                                            ) {
-                                                Text(
-                                                    "${speakerRecognition.completedUnits}/${speakerRecognition.totalUnits}",
-                                                    modifier = Modifier.width(42.dp),
-                                                    color = SubText,
-                                                    style = MaterialTheme.typography.labelSmall.copy(
-                                                        fontSize = 10.sp,
-                                                        fontFeatureSettings = "tnum",
-                                                    ),
-                                                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                                                    maxLines = 1,
-                                                )
-                                            }
-                                            Text(
-                                                "${progressPercent.coerceIn(0, 100)}%",
-                                                modifier = Modifier.width(36.dp),
-                                                color = BrandBright,
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontSize = 11.sp,
-                                                    fontFeatureSettings = "tnum",
-                                                    fontWeight = FontWeight.SemiBold,
-                                                ),
-                                                textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                                                maxLines = 1,
-                                            )
-                                        } else {
-                                            LinearProgressIndicator(
-                                                modifier = Modifier.weight(1f).height(4.dp),
-                                            )
-                                        }
-                                        if (
-                                            PlaybackService.instance?.canCancelSpeakerRecognition == true &&
-                                            speakerRecognition.phase != io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING
-                                        ) {
-                                            TextButton(
-                                                onClick = { PlaybackService.instance?.cancelSpeakerRecognition() },
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                            ) { Text("取消") }
-                                        }
-                                    }
-                                }
-                                if (speakerRecognition.isActive && !progressDisplay.sizeDetail.isNullOrBlank()) {
-                                    Text(
-                                        progressDisplay.sizeDetail,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        color = SubText,
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 10.sp,
-                                            lineHeight = 12.sp,
-                                            fontFeatureSettings = "tnum",
-                                        ),
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
+                            SpeakerRecognitionProgressPanel(
+                                state = speakerRecognition,
+                                canCancel = PlaybackService.instance?.canCancelSpeakerRecognition == true,
+                                onCancel = { PlaybackService.instance?.cancelSpeakerRecognition() },
+                            )
                         }
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
@@ -7694,6 +7575,152 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             color = SubText,
             style = MaterialTheme.typography.labelSmall,
         )
+    }
+}
+
+@Composable
+private fun SpeakerRecognitionProgressPanel(
+    state: SpeakerRecognitionUiState,
+    canCancel: Boolean,
+    onCancel: () -> Unit,
+) {
+    val display = remember(
+        state.stage,
+        state.message,
+        state.error,
+        state.progressPercent,
+        state.completedUnits,
+        state.totalUnits,
+        state.progressItem,
+        state.personCount,
+        state.phase,
+    ) {
+        SpeakerRecognitionProgressPolicy.display(state)
+    }
+    val isError = state.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
+    val titleColor = when (state.phase) {
+        io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> Color(0xFF15966B)
+        io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> Color(0xFFB64A55)
+        io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> Color(0xFFA86B13)
+        else -> OnBg
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Text(
+            state.stageTitle,
+            color = titleColor,
+            style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = 12.sp,
+                lineHeight = 15.sp,
+            ),
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (display.message.isNotBlank()) {
+            Text(
+                display.message,
+                color = if (isError) Color(0xFFB64A55) else SubText,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                ),
+                maxLines = if (isError) 2 else 1,
+                softWrap = isError,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        if (state.isActive) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                val progressPercent = state.progressPercent?.coerceIn(0, 100)
+                if (progressPercent != null) {
+                    key(state.stage, state.progressItem, state.taskToken) {
+                        val animatedProgress by animateFloatAsState(
+                            targetValue = progressPercent / 100f,
+                            animationSpec = tween(
+                                durationMillis = 260,
+                                easing = FastOutSlowInEasing,
+                            ),
+                            label = "speakerRecognitionProgress",
+                        )
+                        LinearProgressIndicator(
+                            progress = { animatedProgress },
+                            modifier = Modifier.weight(1f).height(4.dp),
+                        )
+                    }
+                    Text(
+                        progressPercent.toString() + "%",
+                        modifier = Modifier.width(36.dp),
+                        color = BrandBright,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 11.sp,
+                            fontFeatureSettings = "tnum",
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                        maxLines = 1,
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.weight(1f).height(4.dp),
+                    )
+                    Spacer(Modifier.width(36.dp))
+                }
+
+                if (canCancel && state.phase != io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING) {
+                    TextButton(
+                        onClick = onCancel,
+                        contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            "取消",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+
+            // Hold one detail row while active so switching stages does not resize the panel.
+            if (!display.secondaryDetail.isNullOrBlank()) {
+                Text(
+                    display.secondaryDetail,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = SubText,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        fontFeatureSettings = "tnum",
+                    ),
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                Spacer(Modifier.height(12.dp))
+            }
+        } else if (!display.secondaryDetail.isNullOrBlank()) {
+            Text(
+                display.secondaryDetail,
+                color = SubText,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
