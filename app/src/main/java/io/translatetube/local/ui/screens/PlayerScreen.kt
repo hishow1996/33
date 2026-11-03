@@ -5242,7 +5242,7 @@ private fun CurrentSubtitleStrip(
                 }
                 val measuredCaptionLines = maxOf(measuredChineseLines, measuredOriginalLines)
                 val compactFullscreenCaption =
-                    fullscreenMaxHeight != null && fullscreenMaxHeight < 76.dp
+                    fullscreenMaxHeight != null && fullscreenMaxHeight < 88.dp
                 val fullscreenChineseSize = when {
                     compactFullscreenCaption -> 10.sp
                     measuredChineseLines >= 5 -> 10.sp
