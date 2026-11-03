@@ -93,6 +93,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
@@ -127,6 +128,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collectLatest
@@ -1651,9 +1653,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     resumeJob = launch {
                         // Let any fling started by the drag finish before returning control
                         // to the playhead, then leave a short pause for the user to read.
-                        delay(180L)
-                        while (listState.isScrollInProgress) {
-                            delay(100L)
+                        delay(120L)
+                        withTimeoutOrNull(5_000L) {
+                            snapshotFlow { listState.isScrollInProgress }
+                                .first { scrolling -> !scrolling }
                         }
                         delay(850L)
                         pauseAutoScrollForUser = false
@@ -1676,6 +1679,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             .distinctUntilChanged()
             .collectLatest { (target, lineCount, pausedByUser) ->
                 if (pausedByUser || target !in 0 until lineCount) return@collectLatest
+
+                // Coalesce rapid seeks or back-to-back short cues; collectLatest cancels
+                // this wait as soon as a newer playhead target arrives.
+                delay(90L)
+                if (autoScrollTarget.value.third) return@collectLatest
 
                 // Wait for LazyColumn measurement before calculating the target position.
                 listState.layoutInfo.let { info ->
@@ -6199,8 +6207,8 @@ private fun SubtitleList(
             }
             itemsIndexed(
                 state.lines,
-                key = { index, line ->
-                    "${state.key.hashCode()}:${line.startMs}:${line.endMs}:${line.index}:$index"
+                key = { _, line ->
+                    "${state.key}:${line.index}:${line.startMs}:${line.endMs}:${line.text.hashCode()}"
                 },
                 contentType = { _, _ -> "subtitle-row" },
             ) { i, line ->
@@ -6242,6 +6250,7 @@ private fun SubtitleList(
                             fontSize = if (active) 16.sp else 14.sp,
                             lineHeight = if (active) 23.sp else 21.sp,
                             fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            lineBreak = LineBreak.Paragraph,
                         ),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         softWrap = true,
