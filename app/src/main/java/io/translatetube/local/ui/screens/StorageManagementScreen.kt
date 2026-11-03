@@ -648,7 +648,7 @@ private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (Stor
                         "所在分区可用 / 总容量",
                         data?.let {
                             if (it.availableBytes >= 0L && it.capacityBytes >= 0L) {
-                                "$${bytesLabel(it.availableBytes)} / $${bytesLabel(it.capacityBytes)}"
+                                "${bytesLabel(it.availableBytes)} / ${bytesLabel(it.capacityBytes)}"
                             } else "暂不可用"
                         } ?: "—",
                     )
@@ -665,12 +665,12 @@ private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (Stor
         }
         items(StorageCategory.values().toList()) { item ->
             val value = when (item) {
-                StorageCategory.CACHE -> data?.let { "可清理 $${bytesLabel(it.cache)}" } ?: "统计中…"
-                StorageCategory.SUBTITLES -> data?.let { "$${it.subtitleCount} 条 · $${bytesLabel(it.subtitleBytes)}" } ?: "统计中…"
+                StorageCategory.CACHE -> data?.let { "可清理 ${bytesLabel(it.cache)}" } ?: "统计中…"
+                StorageCategory.SUBTITLES -> data?.let { "${it.subtitleCount} 条 · ${bytesLabel(it.subtitleBytes)}" } ?: "统计中…"
                 StorageCategory.MODELS -> data?.let { bytesLabel(it.models) } ?: "统计中…"
-                StorageCategory.HISTORY -> data?.let { "$${it.historyCount} 条 · 收藏 $${it.favorites}" } ?: "统计中…"
+                StorageCategory.HISTORY -> data?.let { "${it.historyCount} 条 · 收藏 ${it.favorites}" } ?: "统计中…"
                 StorageCategory.DATABASE -> data?.let { bytesLabel(it.database) } ?: "统计中…"
-                StorageCategory.LOGS -> data?.let { "$${it.logCount} 条 · $${bytesLabel(it.logs)}" } ?: "统计中…"
+                StorageCategory.LOGS -> data?.let { "${it.logCount} 条 · ${bytesLabel(it.logs)}" } ?: "统计中…"
             }
             StorageRow(item, value) { onOpen(item) }
         }
@@ -682,7 +682,7 @@ private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (Stor
         data?.let { info ->
             item {
                 Text(
-                    "上次统计：$${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(info.timestamp))}",
+                    "上次统计：${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(info.timestamp))}",
                     color = SubText,
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -751,7 +751,7 @@ private fun StorageBreakdown(data: StorageSnapshot?) {
                                 .background(slice.color, CircleShape),
                         )
                         Text(
-                            "$${slice.title} $${bytesLabel(slice.bytes)}",
+                            "${slice.title} ${bytesLabel(slice.bytes)}",
                             color = SubText,
                             style = MaterialTheme.typography.labelSmall,
                             maxLines = 1,
@@ -1074,7 +1074,7 @@ private fun StorageRow(category: StorageCategory, value: String, onClick: () -> 
                 Text(category.title, color = OnBg, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                 Text(value, color = BrandBright, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Icon(Icons.Filled.ChevronRight, contentDescription = "进入$${category.title}", tint = SubText)
+            Icon(Icons.Filled.ChevronRight, contentDescription = "进入${category.title}", tint = SubText)
         }
     }
 }
@@ -1136,29 +1136,29 @@ private fun primaryValue(category: StorageCategory, data: StorageSnapshot?, scan
 private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnapshot {
     val warnings = mutableListOf<String>()
     fun measured(label: String, file: File): Long = runCatching { directorySize(file) }.getOrElse {
-        warnings += "$${it.javaClass.simpleName}"; -1L
+        warnings += "$label 统计失败：${it.javaClass.simpleName}"; -1L
     }
     val cache = runCatching { AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir) }.getOrElse {
-        warnings += "临时缓存统计失败：$${it.javaClass.simpleName}"; -1L
+        warnings += "临时缓存统计失败：${it.javaClass.simpleName}"; -1L
     }
     val subtitleCount = runCatching { db.subtitleCacheDao().countEntries() }.getOrElse {
-        warnings += "字幕缓存条数统计失败：$${it.javaClass.simpleName}"; -1
+        warnings += "字幕缓存条数统计失败：${it.javaClass.simpleName}"; -1
     }
     val subtitleBytes = runCatching { db.subtitleCacheDao().payloadBytes() }.getOrElse {
-        warnings += "字幕缓存内容统计失败：$${it.javaClass.simpleName}"; -1L
+        warnings += "字幕缓存内容统计失败：${it.javaClass.simpleName}"; -1L
     }
     val history = runCatching { db.videoDao().countAll() }.getOrElse {
-        warnings += "视频历史统计失败：$${it.javaClass.simpleName}"; -1
+        warnings += "视频历史统计失败：${it.javaClass.simpleName}"; -1
     }
     val favorites = runCatching { db.videoDao().countFavorites() }.getOrElse {
-        warnings += "收藏记录统计失败：$${it.javaClass.simpleName}"; -1
+        warnings += "收藏记录统计失败：${it.javaClass.simpleName}"; -1
     }
     val models = measured("模型目录", File(context.filesDir, "models"))
     val tts = measured("配音模型目录", ModelFiles.ttsDir(context))
     val whisper = measured("Whisper 模型目录", ModelFiles.asrDir(context))
     val sense = measured("SenseVoice 模型目录", ModelFiles.senseVoiceDir(context))
     val piperCount = runCatching { PiperModels.installedIds(context).size }.getOrElse {
-        warnings += "Piper 模型状态读取失败：$${it.javaClass.simpleName}"; -1
+        warnings += "Piper 模型状态读取失败：${it.javaClass.simpleName}"; -1
     }
     val ttsReady = runCatching { ModelFiles.ttsReady(context) }.getOrDefault(false)
     val whisperReady = runCatching { ModelFiles.whisperReady(context) }.getOrDefault(false)
@@ -1176,16 +1176,16 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
             entries.fold(0L) { total, file -> addSaturated(total, file.length()) }
         }
     }.getOrElse {
-        warnings += "数据库文件统计失败：$${it.javaClass.simpleName}"; -1L
+        warnings += "数据库文件统计失败：${it.javaClass.simpleName}"; -1L
     }
     val logA = measured("应用日志目录", File(context.filesDir, "app_logs"))
     val logB = measured("历史异常目录", File(context.filesDir, "crash"))
     val logBytes = if (logA < 0L || logB < 0L) -1L else addSaturated(logA, logB)
     val logCount = runCatching { AppLogStore.readRecent(context, 800).size }.getOrElse {
-        warnings += "日志条数统计失败：$${it.javaClass.simpleName}"; -1
+        warnings += "日志条数统计失败：${it.javaClass.simpleName}"; -1
     }
     val storageStats = runCatching { StatFs(context.filesDir.absolutePath) }.getOrElse {
-        warnings += "应用所在分区空间统计失败：$${it.javaClass.simpleName}"
+        warnings += "应用所在分区空间统计失败：${it.javaClass.simpleName}"
         null
     }
     val availableBytes = storageStats?.let { runCatching { it.availableBytes.coerceAtLeast(0L) }.getOrDefault(-1L) } ?: -1L
