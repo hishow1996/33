@@ -189,7 +189,12 @@ class PlaybackHintPolicyTest {
 
     @Test
     fun shortHintChangesAreHeldForAtLeastOneAndAHalfSeconds() {
-        val current = hint(PlaybackHintInput(isBuffering = true))
+        val current = hint(
+            PlaybackHintInput(
+                isBuffering = true,
+                bufferingDurationMs = PlaybackHintPolicy.MIN_LOADING_HINT_DELAY_MS,
+            ),
+        )
         val next = hint(PlaybackHintInput(isBuffering = true, bufferingDurationMs = 5_000L))
         assertTrue(PlaybackHintPolicy.shouldKeepCurrent(current, next, 1_000L))
         assertFalse(PlaybackHintPolicy.shouldKeepCurrent(current, next, 1_500L))
