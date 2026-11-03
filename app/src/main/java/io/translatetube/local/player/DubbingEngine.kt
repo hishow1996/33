@@ -245,6 +245,10 @@ class DubbingEngine(
     @Volatile private var synthJob: Job? = null
     @Volatile private var cacheInitJob: Job? = null
     private val synthStartLock = Any()
+    /** Wakes a CPU-bound TTS worker when a deferred cue enters the playhead window. */
+    private val synthesisScheduleWakeup = kotlinx.coroutines.channels.Channel<Unit>(
+        kotlinx.coroutines.channels.Channel.CONFLATED,
+    )
     private val synthesisRecoveryRetryCounts = java.util.concurrent.ConcurrentHashMap<Int, Int>()
     private val cacheInitGeneration = AtomicInteger(0)
 
@@ -814,7 +818,9 @@ class DubbingEngine(
         // The playhead moves on almost every subtitle boundary. Keep the worker's scheduling
         // target current, but do not drain/re-sort the full long-video backlog while it remains
         // inside the range already promoted to the front of the queue.
+        val previousTarget = priorityTarget
         priorityTarget = index
+        if (previousTarget != index) synthesisScheduleWakeup.trySend(Unit)
         if (!DubbingSynthesisSchedulingPolicy.shouldRefreshPriorityWindow(
                 currentIndex = index,
                 queueWindowStart = priorityQueueWindowStart,
@@ -844,6 +850,7 @@ class DubbingEngine(
             reordered.forEach { pending.offerLast(it) }
             priorityQueueWindowStart = index
             priorityLookAhead = effectiveAhead
+            synthesisScheduleWakeup.trySend(Unit)
         }
     }
 
@@ -967,7 +974,15 @@ class DubbingEngine(
                         !released && isWorkerTaskCurrent() && pending.offerLast(idx)
                     }
                     if (deferred) {
-                        kotlinx.coroutines.delay(DubbingSynthesisSchedulingPolicy.DEFER_DELAY_MS)
+                        // Keep the cue queued but park this worker. Repeated 120ms poll/requeue
+                        // cycles used to walk the entire distant backlog while playback continued.
+                        // A changed playhead wakes immediately; timeout is only a fallback for
+                        // pause/resume transitions that do not produce a new subtitle index.
+                        kotlinx.coroutines.withTimeoutOrNull(
+                            DubbingSynthesisSchedulingPolicy.DEFER_RECHECK_DELAY_MS,
+                        ) {
+                            synthesisScheduleWakeup.receive()
+                        }
                         continue
                     }
                 }

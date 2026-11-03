@@ -6,7 +6,8 @@ package io.translatetube.local.player
  * or as the playhead approaches them; no cue is discarded or marked as prepared.
  */
 internal object DubbingSynthesisSchedulingPolicy {
-    const val DEFER_DELAY_MS = 120L
+    /** Periodic fallback to notice pause/resume when the playhead index does not change. */
+    const val DEFER_RECHECK_DELAY_MS = 1_000L
 
     /**
      * A full queue reorder is needed only when the playhead leaves the previously promoted

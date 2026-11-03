@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -83,6 +84,11 @@ class DubbingSynthesisSchedulingPolicyTest {
                 requestedLookAhead = 2,
             ),
         )
+    }
+
+    @Test
+    fun deferredWorkerUsesAOneSecondFallbackInsteadOfRapidPolling() {
+        assertEquals(1_000L, DubbingSynthesisSchedulingPolicy.DEFER_RECHECK_DELAY_MS)
     }
 
     @Test
