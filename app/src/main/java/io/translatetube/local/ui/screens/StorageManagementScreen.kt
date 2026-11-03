@@ -893,8 +893,17 @@ private fun StorageBreakdown(data: StorageSnapshot?) {
 
 @Composable
 private fun StorageDetail(
-    category: StorageCategory, data: StorageSnapshot?, scanning: Boolean, busy: Boolean,
-    actionBusy: Boolean, onAction: (StorageAction) -> Unit, onOpenLogs: () -> Unit,
+    category: StorageCategory,
+    data: StorageSnapshot?,
+    scanning: Boolean,
+    busy: Boolean,
+    actionBusy: Boolean,
+    onAction: (StorageAction) -> Unit,
+    onOpenLogs: () -> Unit,
+    selectedPiperModelId: String?,
+    activePiperModelIds: Set<String>,
+    canUninstallPiperModels: Boolean,
+    onUninstallPiper: (StoragePiperModel) -> Unit,
 ) {
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(bottom = 14.dp)) {
         item {
@@ -926,6 +935,26 @@ private fun StorageDetail(
                             ModelStatusLine("SenseVoice 转写模型", data?.senseReady == true)
                             MetricLine("已安装 Piper 音色模型", data?.piperCount?.toString() ?: "—")
                             MetricLine("当前选择的本地转写模型", data?.selectedAsr ?: "—")
+                            HorizontalDivider(color = OutlineSoft)
+                            Text(
+                                "Piper 音色清单",
+                                color = OnBg,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            if (data?.piperModels.isNullOrEmpty()) {
+                                Text("暂无已安装音色", color = SubText, style = MaterialTheme.typography.bodySmall)
+                            } else {
+                                data?.piperModels.orEmpty().forEach { model ->
+                                    StoragePiperModelRow(
+                                        model = model,
+                                        selected = selectedPiperModelId == model.id,
+                                        inUse = model.id in activePiperModelIds,
+                                        canUninstall = canUninstallPiperModels,
+                                        onUninstall = { onUninstallPiper(model) },
+                                    )
+                                }
+                            }
                         }
                         StorageCategory.HISTORY -> {
                             MetricLine("历史记录总数", data?.historyCount?.toString() ?: "—")
@@ -950,6 +979,66 @@ private fun StorageDetail(
 }
 
 
+@Composable
+private fun StoragePiperModelRow(
+    model: StoragePiperModel,
+    selected: Boolean,
+    inUse: Boolean,
+    canUninstall: Boolean,
+    onUninstall: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xFFF7F9FD),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, OutlineSoft),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 11.dp, end = 5.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    model.voiceLabel,
+                    color = OnBg,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    model.languageLabel + " · " + bytesLabel(model.bytes),
+                    color = SubText,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
+                if (selected || inUse) {
+                    Text(
+                        if (selected) "当前选择" else "使用中",
+                        color = if (selected) BrandBright else MutedGreen,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
+            TextButton(
+                onClick = onUninstall,
+                enabled = canUninstall && !selected && !inUse,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    when {
+                        selected -> "当前选择"
+                        inUse -> "使用中"
+                        else -> "卸载"
+                    },
+                    color = if (selected || inUse) SubText else DangerRed,
+                )
+            }
+        }
+    }
+}
 @Composable
 private fun StorageHistoryDetail(
     videos: List<VideoEntity>,
