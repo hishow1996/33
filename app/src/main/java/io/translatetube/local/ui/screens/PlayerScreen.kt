@@ -213,13 +213,21 @@ fun PlayerScreen(
             val previousSystemBarsBehavior = insetsController.systemBarsBehavior
             val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
             val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
+            val previousSystemUiVisibility = decorView.systemUiVisibility
+            // setDecorFitsSystemWindows changes only these legacy layout bits on Android 9.
+            // Preserve this subset instead of writing the full systemUiVisibility mask back.
+            val layoutInsetFlagsMask =
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            val previousLayoutInsetFlags = previousSystemUiVisibility and layoutInsetFlagsMask
             val previousRootInsets = ViewCompat.getRootWindowInsets(decorView)
             val wasStatusBarVisible = previousRootInsets?.isVisible(
                 WindowInsetsCompat.Type.statusBars()
-            ) ?: true
+            ) ?: (previousSystemUiVisibility and android.view.View.SYSTEM_UI_FLAG_FULLSCREEN == 0)
             val wasNavigationBarVisible = previousRootInsets?.isVisible(
                 WindowInsetsCompat.Type.navigationBars()
-            ) ?: true
+            ) ?: (previousSystemUiVisibility and android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION == 0)
             val wasPortraitLayout = if (decorView.width > 0 && decorView.height > 0) {
                 decorView.height >= decorView.width
             } else {
@@ -309,6 +317,12 @@ fun PlayerScreen(
                     insetsController.isAppearanceLightStatusBars = previousLightStatusBars
                     insetsController.isAppearanceLightNavigationBars = previousLightNavigationBars
                     WindowCompat.setDecorFitsSystemWindows(window, true)
+                    if (android.os.Build.VERSION.SDK_INT < 30) {
+                        val currentSystemUiVisibility = decorView.systemUiVisibility
+                        decorView.systemUiVisibility =
+                            (currentSystemUiVisibility and layoutInsetFlagsMask.inv()) or
+                                previousLayoutInsetFlags
+                    }
                     if (wasStatusBarVisible) {
                         insetsController.show(WindowInsetsCompat.Type.statusBars())
                     } else {
