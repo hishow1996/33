@@ -18,6 +18,25 @@ class EngineRestartStagePolicyTest {
     ) = EngineConfigFingerprints(transcription, translation, dubbing)
 
     @Test
+    fun everyEngineSwitchRegeneratesItsOwnStageAndAllDownstreamStages() {
+        assertEquals(false, EngineRestartStagePolicy.requiresFreshTranscription(null))
+        assertEquals(false, EngineRestartStagePolicy.requiresFreshTranslation(null))
+        assertEquals(false, EngineRestartStagePolicy.requiresFreshDubbing(null))
+
+        assertEquals(true, EngineRestartStagePolicy.requiresFreshTranscription(EngineRestartStage.TRANSCRIPTION))
+        assertEquals(true, EngineRestartStagePolicy.requiresFreshTranslation(EngineRestartStage.TRANSCRIPTION))
+        assertEquals(true, EngineRestartStagePolicy.requiresFreshDubbing(EngineRestartStage.TRANSCRIPTION))
+
+        assertEquals(false, EngineRestartStagePolicy.requiresFreshTranscription(EngineRestartStage.TRANSLATION))
+        assertEquals(true, EngineRestartStagePolicy.requiresFreshTranslation(EngineRestartStage.TRANSLATION))
+        assertEquals(true, EngineRestartStagePolicy.requiresFreshDubbing(EngineRestartStage.TRANSLATION))
+
+        assertEquals(false, EngineRestartStagePolicy.requiresFreshTranscription(EngineRestartStage.DUBBING))
+        assertEquals(false, EngineRestartStagePolicy.requiresFreshTranslation(EngineRestartStage.DUBBING))
+        assertEquals(true, EngineRestartStagePolicy.requiresFreshDubbing(EngineRestartStage.DUBBING))
+    }
+
+    @Test
     fun switchingVoicesWithinTheSameEngineRestartsDubbingAndRegeneratesPcm() {
         val voiceA = EngineConfigFingerprints(
             transcription = "asr-a",
