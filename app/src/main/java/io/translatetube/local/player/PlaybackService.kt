@@ -146,6 +146,7 @@ private object ReadyHistorySessionConfigStore {
         context: Context,
         ignoreTranscription: Boolean = false,
         videoKey: String? = null,
+        youtubeSubtitleModeOverride: String? = null,
     ): String {
         val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         // Persisted settings are sparse: older installs can still use the default English mode
@@ -154,7 +155,7 @@ private object ReadyHistorySessionConfigStore {
         val youtubeSubtitleModeEntry =
             io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeFingerprintEntry(
                 videoKey = videoKey,
-                storedValue = settings.getString(
+                storedValue = youtubeSubtitleModeOverride ?: settings.getString(
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
                 ),
@@ -384,6 +385,7 @@ private object ReadyHistorySessionConfigStore {
         ignoreTranscription: Boolean,
         fingerprints: EngineConfigFingerprints,
         processingFlow: ProcessingFlow,
+        youtubeSubtitleMode: String? = null,
     ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
@@ -396,7 +398,10 @@ private object ReadyHistorySessionConfigStore {
             .putString(key + "-processing-flow", processingFlow.name)
             .putString(
                 key + "-youtube-subtitle-mode",
-                context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                youtubeSubtitleMode?.let {
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                        .modeFromPreference(it).preferenceValue
+                } ?: context.getSharedPreferences("settings", Context.MODE_PRIVATE)
                     .getString(
                         io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
                         io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
@@ -1363,6 +1368,12 @@ class PlaybackService : MediaSessionService() {
                             forceFreshDubbingPipelineGeneration == pipelineGeneration,
                         requireFreshTranslation =
                             forceFreshTranslationPipelineGeneration == pipelineGeneration,
+                        youtubeSubtitleMode = activeProcessingYouTubeSubtitleMode.takeIf {
+                            sessionKey.startsWith("youtube:", ignoreCase = true) &&
+                                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                                    state.processingFlow,
+                                )
+                        },
                     )
                 }
             }
@@ -1397,11 +1408,13 @@ class PlaybackService : MediaSessionService() {
         current: EngineConfigFingerprints,
         state: PlayerUiState,
         ignoreTranscription: Boolean,
+        skipSavedYouTubeSubtitleModeCheck: Boolean = false,
     ): EngineRestartStage? {
         // A subtitle-language preference change must re-enter YouTube source discovery even when
         // the previous run fell back to ASR; the new mode may expose a usable caption track.
         if (
-            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
+            !skipSavedYouTubeSubtitleModeCheck &&
+                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
                 ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)
         ) {
             return EngineRestartStage.TRANSCRIPTION
@@ -1523,7 +1536,13 @@ class PlaybackService : MediaSessionService() {
     private fun processingEnginePreferenceFingerprint(
         ignoreTranscription: Boolean = false,
         forVideoKey: String = videoKey,
-    ): String = ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription, forVideoKey)
+        youtubeSubtitleModeOverride: String? = null,
+    ): String = ReadyHistorySessionConfigStore.fingerprint(
+        this,
+        ignoreTranscription,
+        forVideoKey,
+        youtubeSubtitleModeOverride,
+    )
 
     private fun selectedYouTubeSubtitleMode(): String =
         getSharedPreferences("settings", MODE_PRIVATE).getString(
@@ -4284,6 +4303,7 @@ class PlaybackService : MediaSessionService() {
         forceRegenerateFromStage: EngineRestartStage? = null,
         reuseMatchingDubbingCache: Boolean = false,
         forceYouTubeSubtitleRefresh: Boolean = false,
+        resumeYouTubeSubtitleMode: String? = null,
         precomputedLocalMediaIdentityKey: String? = null,
         localIdentityResolutionToken: Long? = null,
         skipInProgressCheckpointRestore: Boolean = false,
@@ -4305,18 +4325,34 @@ class PlaybackService : MediaSessionService() {
         }
         val previousYouTubeProcessingFlow =
             resumeState?.processingFlow
-                ?: ReadyHistorySessionConfigStore.savedProcessingFlow(this, key)
                 ?: ui.value.takeIf { it.key == key }?.processingFlow
+                ?: ReadyHistorySessionConfigStore.savedProcessingFlow(this, key)
+        val resumeModeBaseline = resumeYouTubeSubtitleMode
+            ?: if (resumeState != null && ui.value.key == key) {
+                activeProcessingYouTubeSubtitleMode
+            } else {
+                null
+            }
+        val resumeSubtitleModeChanged = when {
+            resumeModeBaseline != null ->
+                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.hasModeChanged(
+                    resumeModeBaseline,
+                    selectedYouTubeSubtitleMode(),
+                )
+            resumeState != null ->
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key)
+            else -> false
+        }
         val refreshYouTubeSubtitleSource =
             forceYouTubeSubtitleRefresh ||
-                (videoId != null &&
+                (resumeState != null &&
+                    videoId != null &&
                     importedLines.isNullOrEmpty() &&
                     key.startsWith("youtube:", ignoreCase = true) &&
-                    ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key) &&
-                    previousYouTubeProcessingFlow != null &&
                     ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
-                        previousYouTubeProcessingFlow,
-                    ))
+                        resumeState.processingFlow,
+                    ) &&
+                    resumeSubtitleModeChanged)
         val checkpointLookupToken = if (skipInProgressCheckpointRestore) {
             processingCheckpointRestoreGeneration.get()
         } else {
@@ -4413,6 +4449,7 @@ class PlaybackService : MediaSessionService() {
                             forceRegenerateFromStage = forceRegenerateFromStage,
                             reuseMatchingDubbingCache = reuseMatchingDubbingCache,
                             forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
+                            resumeYouTubeSubtitleMode = resumeYouTubeSubtitleMode,
                             precomputedLocalMediaIdentityKey = identity,
                             localIdentityResolutionToken = identityToken,
                             skipInProgressCheckpointRestore = skipInProgressCheckpointRestore,
@@ -4458,23 +4495,59 @@ class PlaybackService : MediaSessionService() {
                 if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
                     return@launch
                 }
+                val checkpointUsesYouTubeSubtitleSelection =
+                    checkpoint != null &&
+                        videoId != null &&
+                        key.startsWith("youtube:", ignoreCase = true) &&
+                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                            checkpoint.state.processingFlow,
+                        )
+                val checkpointSubtitleModeChanged = checkpoint?.let { saved ->
+                    checkpointUsesYouTubeSubtitleSelection &&
+                        (saved.youtubeSubtitleMode == null ||
+                            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.hasModeChanged(
+                                saved.youtubeSubtitleMode,
+                                selectedYouTubeSubtitleMode(),
+                            ))
+                } == true
+                val refreshAfterCheckpointMiss =
+                    checkpoint == null &&
+                        videoId != null &&
+                        importedLines.isNullOrEmpty() &&
+                        previousYouTubeProcessingFlow != null &&
+                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                            previousYouTubeProcessingFlow,
+                        ) &&
+                        ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(
+                            this@PlaybackService,
+                            key,
+                        )
                 val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
-                val fingerprintRestartStage = checkpoint?.let { saved ->
-                    chooseEngineRestartStage(
-                        previous = saved.fingerprints,
+                val fingerprintRestartStage = when {
+                    checkpointSubtitleModeChanged -> EngineRestartStage.TRANSCRIPTION
+                    checkpoint != null -> chooseEngineRestartStage(
+                        previous = checkpoint.fingerprints,
                         current = currentDomains,
-                        state = saved.state,
+                        state = checkpoint.state,
                         ignoreTranscription = false,
+                        skipSavedYouTubeSubtitleModeCheck = checkpointUsesYouTubeSubtitleSelection,
                     )
+                    else -> null
                 }
                 val checkpointRestartStage = EngineRestartStagePolicy.checkpointRestartStage(
                     fingerprintStage = fingerprintRestartStage,
                     requireFreshTranslation = checkpoint?.requireFreshTranslation == true,
                     requireFreshDubbing = checkpoint?.requireFreshDubbing == true,
                 )
-                val checkpointState = when (checkpointRestartStage) {
-                    // A changed ASR configuration invalidates the transcript, but the normal
-                    // audio cache still avoids downloading/extracting the webpage track again.
+                val effectiveCheckpointRestartStage =
+                    if (refreshAfterCheckpointMiss) {
+                        EngineRestartStage.TRANSCRIPTION
+                    } else {
+                        checkpointRestartStage
+                    }
+                val checkpointState = when (effectiveCheckpointRestartStage) {
+                    // A YouTube subtitle-mode change must discard the old source timeline. The
+                    // source cache path will try the newly selected caption track before ASR fallback.
                     EngineRestartStage.TRANSCRIPTION -> null
                     EngineRestartStage.TRANSLATION ->
                         checkpoint?.let { stateForEngineRestart(it.state, EngineRestartStage.TRANSLATION) }
@@ -4503,7 +4576,7 @@ class PlaybackService : MediaSessionService() {
                                 } else {
                                     "配音"
                                 },
-                                "引擎配置变化" to when (checkpointRestartStage) {
+                                "引擎配置变化" to when (effectiveCheckpointRestartStage) {
                                     EngineRestartStage.TRANSCRIPTION -> "转写"
                                     EngineRestartStage.TRANSLATION -> "翻译"
                                     EngineRestartStage.DUBBING -> "配音"
@@ -4541,11 +4614,15 @@ class PlaybackService : MediaSessionService() {
                         // Persisted stage flags survive process death even when the checkpoint
                         // fingerprint baseline already reflects the newly selected downstream engine.
                         forceRegenerateDubbing = forceRegenerateDubbing ||
-                            checkpointRestartStage != null ||
+                            effectiveCheckpointRestartStage != null ||
                             checkpoint?.requireFreshDubbing == true,
-                        forceRegenerateFromStage = checkpointRestartStage ?: forceRegenerateFromStage,
+                        forceRegenerateFromStage = effectiveCheckpointRestartStage ?: forceRegenerateFromStage,
                         reuseMatchingDubbingCache = false,
-                        forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
+                        forceYouTubeSubtitleRefresh =
+                            refreshYouTubeSubtitleSource || checkpointSubtitleModeChanged || refreshAfterCheckpointMiss,
+                        resumeYouTubeSubtitleMode = checkpointState?.let {
+                            checkpoint?.youtubeSubtitleMode
+                        },
                         precomputedLocalMediaIdentityKey = localMediaIdentityKey,
                         localIdentityResolutionToken = localIdentityResolutionToken,
                         skipInProgressCheckpointRestore = true,
@@ -5094,14 +5171,28 @@ class PlaybackService : MediaSessionService() {
                     val completedFingerprint = processingEnginePreferenceFingerprint(
                         ignoreTranscription = ignoreTranscription,
                         forVideoKey = key,
+                        youtubeSubtitleModeOverride = activeProcessingYouTubeSubtitleMode.takeIf {
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                                finishedState.processingFlow,
+                            )
+                        },
                     )
                     val completedDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
-                    val pipelineConfigurationChanged = EngineRestartStagePolicy.hasRelevantConfigChange(
-                        previous = processingEngineDomainFingerprints,
-                        current = completedDomainFingerprints,
-                        processingFlow = finishedState.processingFlow,
-                        ignoreTranscription = ignoreTranscription,
-                    )
+                    val youtubeSubtitleModeChangedDuringRun =
+                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                            finishedState.processingFlow,
+                        ) && io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.hasModeChanged(
+                            activeProcessingYouTubeSubtitleMode,
+                            selectedYouTubeSubtitleMode(),
+                        )
+                    val pipelineConfigurationChanged =
+                        youtubeSubtitleModeChangedDuringRun ||
+                            EngineRestartStagePolicy.hasRelevantConfigChange(
+                                previous = processingEngineDomainFingerprints,
+                                current = completedDomainFingerprints,
+                                processingFlow = finishedState.processingFlow,
+                                ignoreTranscription = ignoreTranscription,
+                            )
                     if (pipelineConfigurationChanged) {
                         // An engine preference can change after the stage selected its engine but
                         // before the 850 ms watcher restarts it. Never store this output as a success
@@ -5156,6 +5247,11 @@ class PlaybackService : MediaSessionService() {
                                     ignoreTranscription,
                                     completedDomainFingerprints,
                                     finishedState.processingFlow,
+                                    youtubeSubtitleMode = activeProcessingYouTubeSubtitleMode.takeIf {
+                                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                                            finishedState.processingFlow,
+                                        )
+                                    },
                                 )
                             } else {
                                 io.translatetube.local.util.AppLogStore.warning(

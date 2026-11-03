@@ -26,6 +26,12 @@ internal object YouTubeSubtitleSelectionPolicy {
     fun modeFromPreference(value: String?): YouTubeSubtitleLanguageMode =
         YouTubeSubtitleLanguageMode.fromPreference(value)
 
+    /** Compare canonical values so unsupported and missing preferences resolve to the default mode. */
+    fun hasModeChanged(previousValue: String?, currentValue: String?): Boolean {
+        if (previousValue == null) return false
+        return modeFromPreference(previousValue) != modeFromPreference(currentValue)
+    }
+
     fun modeAppliesToVideo(videoKey: String?): Boolean =
         videoKey?.startsWith("youtube:", ignoreCase = true) == true
 

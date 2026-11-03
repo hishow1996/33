@@ -29,13 +29,15 @@ internal data class InProgressProcessingCheckpoint(
     val savedAt: Long,
     val requireFreshDubbing: Boolean = false,
     val requireFreshTranslation: Boolean = false,
+    val youtubeSubtitleMode: String? = null,
 )
 
 internal object InProgressProcessingCheckpointStore {
     private const val DIRECTORY_NAME = "in_progress_processing"
     // Version 2 introduced gzip compression; version 3 persists fresh-dubbing and version 4
-    // persists fresh-translation requirements. Older JSON/compressed checkpoints remain readable.
-    private const val VERSION = 4
+    // persists fresh-translation requirements. Version 5 records the YouTube subtitle mode used
+    // to create the checkpoint so a changed preference cannot restore a stale caption timeline.
+    private const val VERSION = 5
     private const val MAX_FILE_BYTES = 24L * 1024L * 1024L
     private const val MAX_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BYTES = 96L * 1024L * 1024L
@@ -51,6 +53,7 @@ internal object InProgressProcessingCheckpointStore {
         fingerprints: EngineConfigFingerprints,
         requireFreshDubbing: Boolean = false,
         requireFreshTranslation: Boolean = false,
+        youtubeSubtitleMode: String? = null,
     ): Boolean {
         if (!isSupportedKey(videoKey) ||
             identityKey.isBlank() ||
@@ -101,6 +104,7 @@ internal object InProgressProcessingCheckpointStore {
                 .put("dubbingFingerprint", fingerprints.dubbing)
                 .put("requireFreshDubbing", requireFreshDubbing)
                 .put("requireFreshTranslation", requireFreshTranslation)
+                .put("youtubeSubtitleMode", youtubeSubtitleMode ?: JSONObject.NULL)
                 .put(
                     "state",
                     JSONObject()
@@ -226,6 +230,14 @@ internal object InProgressProcessingCheckpointStore {
             return null
         }
 
+        val rawYoutubeSubtitleMode = root.opt("youtubeSubtitleMode")
+        val youtubeSubtitleMode = if (
+            rawYoutubeSubtitleMode == null || rawYoutubeSubtitleMode == JSONObject.NULL
+        ) {
+            null
+        } else {
+            rawYoutubeSubtitleMode.toString().takeIf { it.isNotBlank() }
+        }
         runCatching { file.setLastModified(now) }
         return InProgressProcessingCheckpoint(
             state = restored,
@@ -233,6 +245,7 @@ internal object InProgressProcessingCheckpointStore {
             savedAt = savedAt,
             requireFreshDubbing = root.optBoolean("requireFreshDubbing", false),
             requireFreshTranslation = root.optBoolean("requireFreshTranslation", false),
+            youtubeSubtitleMode = youtubeSubtitleMode,
         )
     }
 

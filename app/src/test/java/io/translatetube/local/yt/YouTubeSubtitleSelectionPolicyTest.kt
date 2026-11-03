@@ -144,6 +144,15 @@ class YouTubeSubtitleSelectionPolicyTest {
     }
 
     @Test
+    fun subtitleModeChangeComparisonUsesCanonicalDefaultAndAliases() {
+        assertTrue(YouTubeSubtitleSelectionPolicy.hasModeChanged("english", "original"))
+        assertFalse(YouTubeSubtitleSelectionPolicy.hasModeChanged("original", "original"))
+        assertFalse(YouTubeSubtitleSelectionPolicy.hasModeChanged(null, "original"))
+        assertFalse(YouTubeSubtitleSelectionPolicy.hasModeChanged("unsupported-value", null))
+        assertTrue(YouTubeSubtitleSelectionPolicy.hasModeChanged("original", null))
+    }
+
+    @Test
     fun subtitleModePreferenceOnlyAppliesToYouTubeVideoKeys() {
         assertTrue(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("youtube:abc123"))
         assertTrue(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("YouTube:abc123"))
