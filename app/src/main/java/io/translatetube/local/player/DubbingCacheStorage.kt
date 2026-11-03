@@ -3,6 +3,7 @@ package io.translatetube.local.player
 import android.content.Context
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.DataInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -51,8 +52,9 @@ internal object DubbingCacheStorage {
             if (!source.isFile) continue
             val destination = File(durableDirectory, source.name)
             if (destination.isFile) {
-                // A matching filename and length are not enough: interrupted/bit-flipped PCM can
-                // have the same size. Remove the legacy copy only after an exact byte comparison.
+                // First prefer any already-validated durable copy. A different payload with the
+                // same cache identity is acceptable when both files are structurally/audibly valid;
+                // the cache is derived data and either completed synthesis can be reused.
                 val identical = try {
                     filesEqual(source, destination, checkActive)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -60,7 +62,34 @@ internal object DubbingCacheStorage {
                 } catch (_: Exception) {
                     false
                 }
-                if (identical) source.delete()
+                if (identical) {
+                    source.delete()
+                    continue
+                }
+
+                val destinationValid = isValidPcmCache(destination, checkActive)
+                val sourceValid = isValidPcmCache(source, checkActive)
+                if (destinationValid) {
+                    // The durable payload is already usable; discard only the redundant legacy
+                    // copy. Never let an older cache overwrite a good durable synthesis.
+                    source.delete()
+                    continue
+                }
+                if (!sourceValid) {
+                    // Neither copy is usable. Preserve both until the normal cache reader can
+                    // reject them and the active engine can regenerate the cue safely.
+                    continue
+                }
+
+                val replaced = replaceInvalidDestination(
+                    source = source,
+                    destination = destination,
+                    checkActive = checkActive,
+                )
+                if (replaced && isValidPcmCache(destination, checkActive)) {
+                    runCatching { destination.setLastModified(source.lastModified()) }
+                    if (source.delete()) migratedCount++
+                }
                 continue
             }
 
@@ -120,6 +149,107 @@ internal object DubbingCacheStorage {
             runCatching { legacyDirectory.delete() }
         }
         return migratedCount
+    }
+
+    /**
+     * Verify a complete persisted PCM payload, not just its header. Cache migration can encounter
+     * a same-name/same-size destination whose float payload was damaged by an interrupted write.
+     */
+    private fun isValidPcmCache(file: File, checkActive: () -> Unit): Boolean {
+        if (!file.isFile) return false
+        val expectedLength = file.length()
+        val expectedModified = file.lastModified()
+        if (expectedLength !in 8L..(8L + DubbingPcmValidation.MAX_SAMPLE_COUNT.toLong() * 4L)) {
+            return false
+        }
+
+        val valid = try {
+            DataInputStream(BufferedInputStream(FileInputStream(file))).use { input ->
+                val sampleRate = input.readInt()
+                val sampleCount = input.readInt()
+                if (!DubbingPcmValidation.isValidCacheHeader(sampleRate, sampleCount, expectedLength)) {
+                    return false
+                }
+                var audible = sampleCount == 0
+                for (index in 0 until sampleCount) {
+                    if ((index and 0x1fff) == 0) checkActive()
+                    val sample = input.readFloat()
+                    if (!sample.isFinite()) return false
+                    if (!audible && DubbingPcmValidation.isAudibleSample(sample)) audible = true
+                }
+                audible && input.read() == -1
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+
+        return valid &&
+            file.isFile &&
+            file.length() == expectedLength &&
+            file.lastModified() == expectedModified
+    }
+
+    /**
+     * Replace a corrupt durable entry through a same-directory backup/rename sequence. The legacy
+     * source is never touched here, so every failed step retains at least one recovery candidate.
+     */
+    private fun replaceInvalidDestination(
+        source: File,
+        destination: File,
+        checkActive: () -> Unit,
+    ): Boolean {
+        val sourceLength = source.length()
+        val sourceModified = source.lastModified()
+        val temp = File(destination.parentFile, "${source.name}.${System.nanoTime()}.migration.tmp")
+        val backup = File(destination.parentFile, "${destination.name}.${System.nanoTime()}.migration.bak")
+        runCatching { temp.delete() }
+        runCatching { backup.delete() }
+
+        val copiedAndVerified = try {
+            copyFile(source, temp, checkActive)
+            temp.length() == sourceLength &&
+                source.isFile &&
+                source.length() == sourceLength &&
+                source.lastModified() == sourceModified &&
+                filesEqual(source, temp, checkActive) &&
+                isValidPcmCache(temp, checkActive)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            runCatching { temp.delete() }
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+        if (!copiedAndVerified) {
+            runCatching { temp.delete() }
+            return false
+        }
+
+        checkActive()
+        if (!destination.isFile || !destination.renameTo(backup)) {
+            runCatching { temp.delete() }
+            return false
+        }
+        val published = runCatching { temp.renameTo(destination) }.getOrDefault(false)
+        if (!published) {
+            runCatching { backup.renameTo(destination) }
+            runCatching { temp.delete() }
+            return false
+        }
+
+        val verified = isValidPcmCache(destination, checkActive) &&
+            destination.length() == sourceLength &&
+            filesEqual(source, destination, checkActive)
+        if (!verified) {
+            runCatching { destination.delete() }
+            runCatching { backup.renameTo(destination) }
+            runCatching { temp.delete() }
+            return false
+        }
+
+        runCatching { backup.delete() }
+        return true
     }
 
     /**
