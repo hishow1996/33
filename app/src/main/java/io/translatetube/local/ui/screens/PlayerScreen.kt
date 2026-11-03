@@ -6082,8 +6082,8 @@ private fun SubtitleList(
 
 
 /**
- * Translation-only text for the compact active subtitle strip. The full list presents Chinese
- * first and the smaller source caption below it, falling back to the source at normal size.
+ * Translation-only text for the compact active subtitle strip and bilingual active-row fallback.
+ * In the full list, inactive rows remain Chinese-only; the active row may add its source caption.
  */
 private fun subtitleDisplayText(line: SubLine): String =
     SubtitleParsers.preferredTranslationText(line)
