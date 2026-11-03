@@ -1666,6 +1666,33 @@ class PlaybackService : MediaSessionService() {
                         val restartRemoteCookie = remoteMediaCookie
                         val restartRemoteUserAgent = remoteMediaUserAgent
 
+                        // A newer video open or a second settings change may supersede this
+                        // debounced decision. Revalidate both the session and the exact preference
+                        // fingerprint before starting any stage restart.
+                        if (
+                            videoKey != sessionKey ||
+                            activePipelineGeneration != changedPipelineGeneration ||
+                            ui.value.key != sessionKey
+                        ) return@launch
+                        if (!EnginePreferenceRestartDecisionPolicy.isStillCurrent(
+                                decisionFingerprint = stableFingerprint,
+                                currentFingerprint = processingEnginePreferenceFingerprint(),
+                            )
+                        ) {
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "引擎配置在恢复决策期间再次变化，已丢弃过期重处理决定",
+                                diagnosticContext = mapOf(
+                                    "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                                    "旧决策指纹" to stableFingerprint.take(16),
+                                    "当前配置指纹" to processingEnginePreferenceFingerprint().take(16),
+                                    "是否启动旧配置重处理" to "否",
+                                ),
+                            )
+                            return@launch
+                        }
+
                         if (pendingSubtitleModeRefresh) pendingYouTubeSubtitleRefreshKey = null
 
                         // A selected engine change starts a new output run even when this exact combination
