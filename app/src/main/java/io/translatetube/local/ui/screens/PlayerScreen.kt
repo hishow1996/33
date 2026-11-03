@@ -857,6 +857,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         )
     }
 
+    // If playback falls back to the processing page while fullscreen, restore the normal window.
+    LaunchedEffect(showProcessingPage) {
+        if (showProcessingPage) isFullscreen = false
+    }
+
     Box(
         Modifier.fillMaxSize()
             .background(BgDark)
@@ -5136,7 +5141,8 @@ private fun CurrentSubtitleStrip(
         val container = if (fullscreen) {
             modifier
                 .fillMaxWidth()
-                .padding(horizontal = 42.dp)
+                .padding(horizontal = 78.dp)
+                .heightIn(max = 80.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color.Black.copy(alpha = 0.42f))
                 .padding(horizontal = 10.dp, vertical = 4.dp)
@@ -5864,6 +5870,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     var seekRevision by remember(state.key) { mutableStateOf(0) }
     var qualityExpanded by remember { mutableStateOf(false) }
     var speedExpanded by remember { mutableStateOf(false) }
+    var volumeExpanded by remember { mutableStateOf(false) }
     var controlsVisible by remember(state.key) { mutableStateOf(true) }
     var interactionVersion by remember(state.key) { mutableStateOf(0) }
     val speedFlow = remember(PlaybackService.instance) {
@@ -5882,6 +5889,16 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         runCatching { audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 0 }
             .getOrDefault(0)
             .coerceAtLeast(0)
+    }
+    var selectedMusicVolume by remember(state.key, audioManager, maxMusicVolume) {
+        mutableIntStateOf(
+            runCatching { audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0 }
+                .getOrDefault(0)
+                .coerceIn(0, maxMusicVolume),
+        )
+    }
+    LaunchedEffect(isFullscreen) {
+        if (!isFullscreen) volumeExpanded = false
     }
     var volumeGestureActive by remember(state.key) { mutableStateOf(false) }
     var volumeProgress by remember(state.key) { mutableStateOf(0f) }
@@ -5920,6 +5937,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         controlsVisible,
         qualityExpanded,
         speedExpanded,
+        volumeExpanded,
         scrubbing,
         interactionVersion,
         lifecycleResumed,
@@ -5930,6 +5948,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             !controlsVisible ||
             qualityExpanded ||
             speedExpanded ||
+            volumeExpanded ||
             scrubbing
         ) {
             return@LaunchedEffect
@@ -5942,6 +5961,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             controlsVisible &&
             !qualityExpanded &&
             !speedExpanded &&
+            !volumeExpanded &&
             !scrubbing &&
             interactionVersion == scheduledInteraction
         ) {
@@ -6080,6 +6100,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     }.getOrNull()
                                     lastRequestedVolume = nextVolume
                                     if (actualVolume != null) {
+                                        selectedMusicVolume = actualVolume.coerceIn(0, maxMusicVolume)
                                         volumeProgress = actualVolume
                                             .coerceIn(0, maxMusicVolume)
                                             .toFloat() / maxMusicVolume.toFloat()
@@ -6165,8 +6186,73 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             ) {
                 Column(
                     horizontalAlignment = Alignment.Start,
-                    verticalArrangement = Arrangement.spacedBy(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (maxHeight < 240.dp) 10.dp else 20.dp),
                 ) {
+                    if (isFullscreen && audioManager != null && maxMusicVolume > 0) {
+                        Box {
+                            PlaybackOverlayIconButton(
+                                icon = when {
+                                    selectedMusicVolume <= 0 -> Icons.Filled.VolumeOff
+                                    selectedMusicVolume < (maxMusicVolume + 2) / 3 -> Icons.Filled.VolumeDown
+                                    else -> Icons.Filled.VolumeUp
+                                },
+                                contentDescription = "媒体音量",
+                                touchSize = controlTargetSize,
+                                iconSize = controlIconSize,
+                                enabled = controlsVisible,
+                                onInteraction = recordInteraction,
+                                onClick = {
+                                    selectedMusicVolume = runCatching {
+                                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                    }.getOrDefault(selectedMusicVolume).coerceIn(0, maxMusicVolume)
+                                    volumeExpanded = true
+                                },
+                            )
+                            DropdownMenu(
+                                expanded = volumeExpanded,
+                                onDismissRequest = {
+                                    volumeExpanded = false
+                                    recordInteraction()
+                                },
+                            ) {
+                                Row(
+                                    modifier = Modifier.width(210.dp)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        imageVector = when {
+                                            selectedMusicVolume <= 0 -> Icons.Filled.VolumeOff
+                                            selectedMusicVolume < (maxMusicVolume + 2) / 3 -> Icons.Filled.VolumeDown
+                                            else -> Icons.Filled.VolumeUp
+                                        },
+                                        contentDescription = "媒体音量",
+                                        tint = Color(0xFF52647D),
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                    Slider(
+                                        value = selectedMusicVolume.toFloat(),
+                                        onValueChange = { value ->
+                                            val requested = value.roundToInt().coerceIn(0, maxMusicVolume)
+                                            val actual = runCatching {
+                                                audioManager.setStreamVolume(
+                                                    AudioManager.STREAM_MUSIC,
+                                                    requested,
+                                                    0,
+                                                )
+                                                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                            }.getOrNull()
+                                            if (actual != null) {
+                                                selectedMusicVolume = actual.coerceIn(0, maxMusicVolume)
+                                            }
+                                        },
+                                        valueRange = 0f..maxMusicVolume.toFloat(),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
                     Box {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             PlaybackOverlayIconButton(
@@ -6221,23 +6307,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         enabled = controlsVisible,
                         onInteraction = recordInteraction,
                         onClick = onToggleFullscreen,
-                    )
-                }
-            }
-
-            if (isFullscreen) {
-                Box(
-                    modifier = Modifier.align(Alignment.TopStart)
-                        .padding(start = edgePadding, top = 8.dp),
-                ) {
-                    PlaybackOverlayIconButton(
-                        icon = Icons.Filled.ArrowBack,
-                        contentDescription = "退出全屏",
-                        touchSize = controlTargetSize,
-                        iconSize = controlIconSize,
-                        enabled = controlsVisible,
-                        onInteraction = recordInteraction,
-                        onClick = onExitFullscreen,
                     )
                 }
             }
@@ -6412,6 +6481,27 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
         }
     }
+        // Keep fullscreen back navigation available even after the playback controls auto-hide.
+        if (isFullscreen) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 10.dp, top = 8.dp)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.38f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                PlaybackOverlayIconButton(
+                    icon = Icons.Filled.ArrowBack,
+                    contentDescription = "返回播放页面",
+                    touchSize = 44.dp,
+                    iconSize = 22.dp,
+                    onInteraction = recordInteraction,
+                    onClick = onExitFullscreen,
+                )
+            }
+        }
         if (volumeGestureActive && maxMusicVolume > 0) {
             Row(
                 modifier = Modifier.align(Alignment.Center),
