@@ -62,7 +62,10 @@ object SpeakerRecognitionProgressPolicy {
             SpeakerRecognitionStage.PREPARING_AUDIO -> base
 
             SpeakerRecognitionStage.DOWNLOADING_MODELS -> {
-                val status = base.message.replace(Regex("""(?:·\s*)?已下载$"""), "").trim()
+                val status = base.message
+                    .replace(Regex("""^下载中(?=\S)"""), "正在下载")
+                    .replace(Regex("""(?:·\s*)?已下载$"""), "")
+                    .trim()
                 val downloaded = state.completedUnits?.takeIf { it > 0L }
                 val total = state.totalUnits?.takeIf { it > 0L }
                 val detail = when {
