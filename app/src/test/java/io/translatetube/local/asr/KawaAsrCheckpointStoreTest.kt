@@ -117,6 +117,54 @@ class KawaAsrCheckpointStoreTest {
     }
 
     @Test
+    fun cleanupBoundsOtherVideosButPreservesEveryActiveVideoChunk() {
+        val directory = createTempDir(prefix = "kawa-checkpoint-capacity")
+        try {
+            val now = 20_000_000_000L
+            val activeIdentity = "active-video|session"
+            val otherIdentity = "older-video|session"
+            val activeFiles = (0..2).map { index ->
+                KawaAsrCheckpointStore.fileFor(
+                    directory = directory,
+                    identity = activeIdentity,
+                    chunkIndex = index,
+                    audioDigest = (index + 1).toString(16).padStart(64, 'a'),
+                ).apply {
+                    writeText("{}")
+                    setLastModified(now - 10_000L - index)
+                }
+            }
+            val otherFiles = (0..KawaAsrCheckpointStore.MAX_CACHED_FILES + 2).map { index ->
+                KawaAsrCheckpointStore.fileFor(
+                    directory = directory,
+                    identity = otherIdentity,
+                    chunkIndex = index,
+                    audioDigest = (index + 1).toString(16).padStart(64, 'b'),
+                ).apply {
+                    writeText("{}")
+                    setLastModified(now - 1_000L - index)
+                }
+            }
+
+            KawaAsrCheckpointStore.cleanupStale(
+                directory = directory,
+                nowMs = now,
+                activeIdentity = activeIdentity,
+            )
+
+            assertTrue(activeFiles.all { it.exists() })
+            assertFalse(otherFiles.last().exists())
+            assertTrue(
+                directory.listFiles()!!.count {
+                    it.isFile && it.name.startsWith("kawa-") && it.name.endsWith(".json")
+                } <= KawaAsrCheckpointStore.MAX_CACHED_FILES
+            )
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun corruptCheckpointIsRejectedAndDeleted() {
         val directory = createTempDir(prefix = "kawa-checkpoint-corrupt")
         try {
