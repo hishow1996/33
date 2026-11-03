@@ -5284,6 +5284,7 @@ private fun CurrentSubtitleStrip(
     captionOverride: String? = null,
     fullscreen: Boolean = false,
     fullscreenMaxHeight: androidx.compose.ui.unit.Dp? = null,
+    fullscreenCaptionAdjusting: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -5412,6 +5413,15 @@ private fun CurrentSubtitleStrip(
                                     .heightIn(min = 42.dp, max = captionMaxHeight)
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(Color.Black.copy(alpha = 0.46f))
+                                    .then(
+                                        if (fullscreenCaptionAdjusting) {
+                                            Modifier.border(
+                                                width = 1.dp,
+                                                color = Color(0xCC9CBFFF),
+                                                shape = RoundedCornerShape(8.dp),
+                                            )
+                                        } else Modifier
+                                    )
                             } else {
                                 // Keep the inline current-caption area visually continuous
                                 // with the surrounding white subtitle list.
@@ -6862,7 +6872,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .padding(horizontal = 22.dp)
-                        .padding(bottom = 42.dp),
+                        .padding(bottom = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -7002,11 +7012,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             }
                             .width(captionLaneWidth)
                             .height(captionLaneHeight)
-                            .then(
-                                if (fullscreenCaptionAdjusting) {
-                                    Modifier.border(1.dp, Color(0xCC9CBFFF), RoundedCornerShape(10.dp))
-                                } else Modifier
-                            )
                             .pointerInput(
                                 state.key,
                                 maxWidth,
@@ -7024,11 +7029,13 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     onDragEnd = {
                                         fullscreenCaptionDragging = false
                                         persistFullscreenCaptionPosition()
+                                        fullscreenCaptionAdjusting = false
                                         recordInteraction()
                                     },
                                     onDragCancel = {
                                         fullscreenCaptionDragging = false
                                         persistFullscreenCaptionPosition()
+                                        fullscreenCaptionAdjusting = false
                                         recordInteraction()
                                     },
                                 ) { change, dragAmount ->
@@ -7057,6 +7064,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             captionOverride = captionOverride,
                             fullscreen = true,
                             fullscreenMaxHeight = captionLaneHeight,
+                            fullscreenCaptionAdjusting = fullscreenCaptionAdjusting,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         AnimatedVisibility(
@@ -7085,20 +7093,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                         Icon(
                                             imageVector = Icons.Filled.Refresh,
                                             contentDescription = "恢复字幕默认位置",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp),
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = {
-                                            fullscreenCaptionAdjusting = false
-                                            recordInteraction()
-                                        },
-                                        modifier = Modifier.size(30.dp),
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Check,
-                                            contentDescription = "完成字幕位置调整",
                                             tint = Color.White,
                                             modifier = Modifier.size(16.dp),
                                         )
