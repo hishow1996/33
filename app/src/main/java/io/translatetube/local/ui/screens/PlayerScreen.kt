@@ -676,6 +676,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
             }
+            // Re-check after a resize/reattach without forcing Media3 to clear a healthy output.
+            target.post { attachSurfaceWhenReady() }
             return
         }
         (tv.parent as? ViewGroup)?.removeView(tv)
@@ -692,6 +694,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 "PlayerScreen",
                 "Skip TextureView reparent: current parent=" + tv.parent?.javaClass?.simpleName,
             )
+        }
+        if (tv.parent === target) {
+            // A new container (especially the detached overlay host) must get a fresh binding
+            // check once its window attachment has completed.
+            target.post { attachSurfaceWhenReady() }
         }
     }
 
@@ -726,7 +733,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             resumeLifecycleOwner.lifecycle.removeObserver(observer)
             // Leaving this page is not a playback stop: keep audio/dubbing alive, but stop
             // treating the absent video surface as a foreground black-screen failure.
-            PlaybackService.instance?.setVideoUiVisible(false)
+            PlaybackService.instance?.setVideoPresentationMode(VideoPresentationMode.BACKGROUND_AUDIO)
         }
     }
 
