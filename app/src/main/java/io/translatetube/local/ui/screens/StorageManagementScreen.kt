@@ -79,7 +79,7 @@ private data class StorageSnapshot(
     val total: Long, val availableBytes: Long, val capacityBytes: Long,
     val cache: Long, val subtitleCount: Int, val subtitleBytes: Long,
     val historyCount: Int, val favorites: Int, val models: Long, val tts: Long, val whisper: Long,
-    val senseVoice: Long, val piperCount: Int, val ttsReady: Boolean, val whisperReady: Boolean,
+    val senseVoice: Long, val piperBytes: Long, val piperCount: Int, val ttsReady: Boolean, val whisperReady: Boolean,
     val senseReady: Boolean, val selectedAsr: String, val database: Long, val logs: Long,
     val logCount: Int, val timestamp: Long, val warnings: List<String>,
 )
@@ -162,6 +162,7 @@ fun StorageManagementScreen(
                     "视频历史条数" to snapshot.historyCount.toString(),
                     "收藏记录条数" to snapshot.favorites.toString(),
                     "模型目录占用 bytes" to snapshot.models.toString(),
+                    "Piper 音色模型占用 bytes" to snapshot.piperBytes.toString(),
                     "TTS 模型完整性" to snapshot.ttsReady.toString(),
                     "Whisper 模型完整性" to snapshot.whisperReady.toString(),
                     "SenseVoice 模型完整性" to snapshot.senseReady.toString(),
@@ -528,7 +529,14 @@ fun StorageManagementScreen(
         }
         if (category == null) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                StorageHome(data, scanning) { category = it; message = null }
+                StorageHome(
+                    data = data,
+                    scanning = scanning,
+                    canClearCache = !destructiveBusy && !actionBusy && !scanning,
+                    actionBusy = actionBusy,
+                    onQuickClean = { requestClear(StorageAction.CACHE) },
+                    onOpen = { category = it; message = null },
+                )
             }
         } else {
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -601,7 +609,14 @@ fun StorageManagementScreen(
 }
 
 @Composable
-private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (StorageCategory) -> Unit) {
+private fun StorageHome(
+    data: StorageSnapshot?,
+    scanning: Boolean,
+    canClearCache: Boolean,
+    actionBusy: Boolean,
+    onQuickClean: () -> Unit,
+    onOpen: (StorageCategory) -> Unit,
+) {
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(bottom = 12.dp)) {
         item {
             Surface(
@@ -643,6 +658,17 @@ private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (Stor
                             Icons.Filled.Memory,
                             Modifier.weight(1f),
                         )
+                    }
+                    if ((data?.cache ?: 0L) > 0L) {
+                        OutlinedButton(
+                            onClick = onQuickClean,
+                            enabled = canClearCache && !actionBusy,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed),
+                        ) {
+                            Text(if (actionBusy) "清理中…" else "清理临时缓存 · ${bytesLabel(data?.cache ?: 0L)}")
+                        }
                     }
                     MetricLine(
                         "所在分区可用 / 总容量",
@@ -790,7 +816,8 @@ private fun StorageDetail(
                         }
                         StorageCategory.MODELS -> {
                             MetricLine("模型目录总占用", data?.let { bytesLabel(it.models) } ?: "—")
-                            MetricLine("Kokoro / Piper 配音目录", data?.let { bytesLabel(it.tts) } ?: "—")
+                            MetricLine("Kokoro 与配音辅助文件", data?.let { bytesLabel(it.tts) } ?: "—")
+                            MetricLine("Piper 音色模型目录", data?.let { bytesLabel(it.piperBytes) } ?: "—")
                             MetricLine("Whisper 与共享 VAD", data?.let { bytesLabel(it.whisper) } ?: "—")
                             MetricLine("SenseVoice", data?.let { bytesLabel(it.senseVoice) } ?: "—")
                             HorizontalDivider(color = OutlineSoft)
@@ -1136,29 +1163,56 @@ private fun primaryValue(category: StorageCategory, data: StorageSnapshot?, scan
 private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnapshot {
     val warnings = mutableListOf<String>()
     fun measured(label: String, file: File): Long = runCatching { directorySize(file) }.getOrElse {
-        warnings += "$label 统计失败：${it.javaClass.simpleName}"; -1L
+        warnings += "${label 统计失败：${{it.javaClass.simpleName}"; -1L
     }
-    val cache = runCatching { AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir) }.getOrElse {
-        warnings += "临时缓存统计失败：${it.javaClass.simpleName}"; -1L
+
+    val filesDir = context.filesDir
+    val filesTree = scanDirectoryTreeOnce(
+        root = filesDir,
+        targets = mapOf(
+            "models" to File(filesDir, "models"),
+            "tts" to ModelFiles.ttsDir(context),
+            "piper" to PiperModels.piperRoot(context),
+            "whisper" to ModelFiles.asrDir(context),
+            "senseVoice" to ModelFiles.senseVoiceDir(context),
+            "logs" to File(filesDir, "app_logs"),
+            "crash" to File(filesDir, "crash"),
+        ),
+        warnings = warnings,
+    )
+    val models = filesTree.totalFor("models")
+    val ttsDirectoryBytes = filesTree.totalFor("tts")
+    val piperBytes = filesTree.totalFor("piper")
+    val tts = if (ttsDirectoryBytes < 0L || piperBytes < 0L) {
+        -1L
+    } else {
+        (ttsDirectoryBytes - piperBytes).coerceAtLeast(0L)
+    }
+    val whisper = filesTree.totalFor("whisper")
+    val sense = filesTree.totalFor("senseVoice")
+    val logA = filesTree.totalFor("logs")
+    val logB = filesTree.totalFor("crash")
+    val logBytes = if (logA < 0L || logB < 0L) -1L else addSaturated(logA, logB)
+
+    val cache = runCatching {
+        AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir)
+    }.getOrElse {
+        warnings += "临时缓存统计失败：${{it.javaClass.simpleName}"; -1L
     }
     val subtitleCount = runCatching { db.subtitleCacheDao().countEntries() }.getOrElse {
-        warnings += "字幕缓存条数统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "字幕缓存条数统计失败：${{it.javaClass.simpleName}"; -1
     }
     val subtitleBytes = runCatching { db.subtitleCacheDao().payloadBytes() }.getOrElse {
-        warnings += "字幕缓存内容统计失败：${it.javaClass.simpleName}"; -1L
+        warnings += "字幕缓存内容统计失败：${{it.javaClass.simpleName}"; -1L
     }
     val history = runCatching { db.videoDao().countAll() }.getOrElse {
-        warnings += "视频历史统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "视频历史统计失败：${{it.javaClass.simpleName}"; -1
     }
     val favorites = runCatching { db.videoDao().countFavorites() }.getOrElse {
-        warnings += "收藏记录统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "收藏记录统计失败：${{it.javaClass.simpleName}"; -1
     }
-    val models = measured("模型目录", File(context.filesDir, "models"))
-    val tts = measured("配音模型目录", ModelFiles.ttsDir(context))
-    val whisper = measured("Whisper 模型目录", ModelFiles.asrDir(context))
-    val sense = measured("SenseVoice 模型目录", ModelFiles.senseVoiceDir(context))
     val piperCount = runCatching { PiperModels.installedIds(context).size }.getOrElse {
-        warnings += "Piper 模型状态读取失败：${it.javaClass.simpleName}"; -1
+        warnings += "Piper 模型状态读取失败：${{it.javaClass.simpleName}"; -1
     }
     val ttsReady = runCatching { ModelFiles.ttsReady(context) }.getOrDefault(false)
     val whisperReady = runCatching { ModelFiles.whisperReady(context) }.getOrDefault(false)
@@ -1176,25 +1230,27 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
             entries.fold(0L) { total, file -> addSaturated(total, file.length()) }
         }
     }.getOrElse {
-        warnings += "数据库文件统计失败：${it.javaClass.simpleName}"; -1L
+        warnings += "数据库文件统计失败：${{it.javaClass.simpleName}"; -1L
     }
-    val logA = measured("应用日志目录", File(context.filesDir, "app_logs"))
-    val logB = measured("历史异常目录", File(context.filesDir, "crash"))
-    val logBytes = if (logA < 0L || logB < 0L) -1L else addSaturated(logA, logB)
     val logCount = runCatching { AppLogStore.readRecent(context, 800).size }.getOrElse {
-        warnings += "日志条数统计失败：${it.javaClass.simpleName}"; -1
+        warnings += "日志条数统计失败：${{it.javaClass.simpleName}"; -1
     }
-    val storageStats = runCatching { StatFs(context.filesDir.absolutePath) }.getOrElse {
-        warnings += "应用所在分区空间统计失败：${it.javaClass.simpleName}"
+    val storageStats = runCatching { StatFs(filesDir.absolutePath) }.getOrElse {
+        warnings += "应用所在分区空间统计失败：${{it.javaClass.simpleName}"
         null
     }
-    val availableBytes = storageStats?.let { runCatching { it.availableBytes.coerceAtLeast(0L) }.getOrDefault(-1L) } ?: -1L
-    val capacityBytes = storageStats?.let { runCatching { it.totalBytes.coerceAtLeast(0L) }.getOrDefault(-1L) } ?: -1L
+    val availableBytes = storageStats?.let {
+        runCatching { it.availableBytes.coerceAtLeast(0L) }.getOrDefault(-1L)
+    } ?: -1L
+    val capacityBytes = storageStats?.let {
+        runCatching { it.totalBytes.coerceAtLeast(0L) }.getOrDefault(-1L)
+    } ?: -1L
     if (storageStats != null && (availableBytes < 0L || capacityBytes < 0L)) {
         warnings += "应用所在分区可用空间读取失败"
     }
+
     val parts = listOf(
-        measured("应用私有文件", context.filesDir),
+        filesTree.totalBytes,
         measured("应用缓存", context.cacheDir),
         databaseBytes,
         measured("无备份文件", context.noBackupFilesDir),
@@ -1214,6 +1270,7 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
         tts = tts,
         whisper = whisper,
         senseVoice = sense,
+        piperBytes = piperBytes,
         piperCount = piperCount,
         ttsReady = ttsReady,
         whisperReady = whisperReady,
@@ -1225,6 +1282,45 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
         timestamp = System.currentTimeMillis(),
         warnings = warnings,
     )
+}
+
+private data class DirectoryTreeSnapshot(
+    val totalBytes: Long,
+    val bytesByTarget: Map<String, Long>,
+) {
+    fun totalFor(key: String): Long = bytesByTarget[key] ?: -1L
+}
+
+/** Walks filesDir once and collects nested model/log directory sizes at the same time. */
+private fun scanDirectoryTreeOnce(
+    root: File,
+    targets: Map<String, File>,
+    warnings: MutableList<String>,
+): DirectoryTreeSnapshot {
+    val targetPaths = targets.mapValues { (_, directory) ->
+        directory.absoluteFile.toPath().normalize().toString().trimEnd(File.separatorChar)
+    }
+    val sizes = targetPaths.keys.associateWith { 0L }.toMutableMap()
+    var totalBytes = 0L
+    if (!root.exists()) {
+        return DirectoryTreeSnapshot(0L, sizes)
+    }
+    root.walkTopDown()
+        .onFail { failedFile, error ->
+            warnings += "目录 ${{failedFile.name} 读取失败：${{error.javaClass.simpleName}"
+        }
+        .forEach { file ->
+            if (!file.isFile) return@forEach
+            val bytes = file.length().coerceAtLeast(0L)
+            totalBytes = addSaturated(totalBytes, bytes)
+            val filePath = file.absoluteFile.toPath().normalize().toString()
+            for ((key, targetPath) in targetPaths) {
+                if (filePath == targetPath || filePath.startsWith(targetPath + File.separator)) {
+                    sizes[key] = addSaturated(sizes.getValue(key), bytes)
+                }
+            }
+        }
+    return DirectoryTreeSnapshot(totalBytes, sizes)
 }
 private fun directorySize(file: File): Long {
     if (!file.exists()) return 0L
