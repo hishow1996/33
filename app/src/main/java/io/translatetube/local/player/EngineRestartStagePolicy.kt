@@ -18,6 +18,15 @@ internal data class EngineConfigFingerprints(
 )
 
 internal object EngineRestartStagePolicy {
+    fun requiresFreshTranscription(stage: EngineRestartStage?): Boolean =
+        stage == EngineRestartStage.TRANSCRIPTION
+
+    fun requiresFreshTranslation(stage: EngineRestartStage?): Boolean =
+        stage == EngineRestartStage.TRANSCRIPTION || stage == EngineRestartStage.TRANSLATION
+
+    fun requiresFreshDubbing(stage: EngineRestartStage?): Boolean =
+        stage != null
+
     fun ignoresTranscriptionConfig(
         processingFlow: ProcessingFlow?,
         isYouTube: Boolean,
