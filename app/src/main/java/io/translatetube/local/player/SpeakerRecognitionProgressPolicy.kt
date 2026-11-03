@@ -44,12 +44,19 @@ object SpeakerRecognitionProgressPolicy {
      * Numeric progress is never derived here; it remains owned by the worker updates.
      */
     fun display(state: SpeakerRecognitionUiState): SpeakerRecognitionProgressDisplay {
-        val rawMessage = state.error?.takeIf { it.isNotBlank() }
-            ?: state.message.ifBlank { state.activeLabel }
-        val base = displayMessage(rawMessage)
         if (!state.error.isNullOrBlank()) {
-            return SpeakerRecognitionProgressDisplay(base.message, base.secondaryDetail)
+            return SpeakerRecognitionProgressDisplay(state.error.trim())
         }
+        if (state.phase == SpeakerRecognitionPhase.SUCCEEDED) {
+            val people = state.personCount.takeIf { it > 0 }?.let { it.toString() + " 位人物" }
+            return SpeakerRecognitionProgressDisplay("识别完成", people)
+        }
+        if (state.phase == SpeakerRecognitionPhase.CANCELLED) {
+            return SpeakerRecognitionProgressDisplay("人物识别已取消")
+        }
+
+        val rawMessage = state.message.ifBlank { state.activeLabel }
+        val base = displayMessage(rawMessage)
 
         return when (state.stage) {
             SpeakerRecognitionStage.PREPARING_AUDIO -> base
