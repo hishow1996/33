@@ -121,6 +121,34 @@ class SpeakerRecognitionProgressPolicyTest {
     }
 
     @Test
+    fun failureDetailIsNotStrippedAsProgressMetadata() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.FAILED,
+                stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                message = "人物识别失败",
+                error = "下载失败：HTTP 403，服务器拒绝访问；已接收 40 KB。",
+            ),
+        )
+        assertEquals("下载失败：HTTP 403，服务器拒绝访问；已接收 40 KB。", display.message)
+        assertNull(display.secondaryDetail)
+    }
+
+    @Test
+    fun completedDisplayMovesPersonCountToItsOwnDetailLine() {
+        val display = SpeakerRecognitionProgressPolicy.display(
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.SUCCEEDED,
+                stage = SpeakerRecognitionStage.APPLYING_VOICES,
+                message = "识别完成 · 3 位人物",
+                personCount = 3,
+            ),
+        )
+        assertEquals("识别完成", display.message)
+        assertEquals("3 位人物", display.secondaryDetail)
+    }
+
+    @Test
     fun audioAcquisitionWithoutPercentageRemainsIndeterminate() {
         val update = SpeakerRecognitionProgressPolicy.audioAcquisitionProgress(
             "网页媒体流 · 正在提取音轨…",
