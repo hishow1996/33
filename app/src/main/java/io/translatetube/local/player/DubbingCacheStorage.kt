@@ -16,6 +16,7 @@ import java.io.FileOutputStream
 internal object DubbingCacheStorage {
     private const val DIRECTORY_NAME = "dub"
     private const val COPY_BUFFER_BYTES = 64 * 1024
+    private const val MIGRATION_ARTIFACT_MAX_AGE_MS = 6L * 60L * 60L * 1_000L
 
     fun rootDirectory(context: Context): File =
         File(context.applicationContext.noBackupFilesDir, DIRECTORY_NAME).apply { mkdirs() }
@@ -33,15 +34,21 @@ internal object DubbingCacheStorage {
      * Move only finalized PCM files. A failed/interrupted copy never removes the legacy source,
      * and each cache is published with a rename so readers cannot observe a partial destination.
      */
+    @Synchronized
     internal fun migrateLegacyVideoDirectory(
         legacyDirectory: File,
         durableDirectory: File,
         checkActive: () -> Unit = {},
     ): Int {
-        if (!legacyDirectory.isDirectory) return 0
         if (!durableDirectory.isDirectory && !durableDirectory.mkdirs() && !durableDirectory.isDirectory) {
             return 0
         }
+
+        // A completed migration may leave a staging file behind if the process is killed between
+        // publishing the replacement and deleting its backup. Reclaim only artifacts older than
+        // the same six-hour safety window used for ordinary PCM temp files.
+        cleanupStaleMigrationArtifacts(durableDirectory, System.currentTimeMillis(), checkActive)
+        if (!legacyDirectory.isDirectory) return 0
 
         var migratedCount = 0
         val legacyFiles = legacyDirectory.listFiles()
@@ -149,6 +156,34 @@ internal object DubbingCacheStorage {
             runCatching { legacyDirectory.delete() }
         }
         return migratedCount
+    }
+
+    /**
+     * Remove abandoned migration staging files without touching fresh work or finalized PCM.
+     * The whole migration entry point is synchronized, so another in-process migration cannot
+     * have one of these files open while this cleanup runs.
+     */
+    private fun cleanupStaleMigrationArtifacts(
+        directory: File,
+        nowMs: Long,
+        checkActive: () -> Unit,
+    ) {
+        for (file in directory.listFiles().orEmpty()) {
+            checkActive()
+            if (!file.isFile ||
+                (!file.name.endsWith(".migration.tmp") && !file.name.endsWith(".migration.bak"))
+            ) {
+                continue
+            }
+            val modified = file.lastModified()
+            if (
+                modified > 0L &&
+                nowMs >= modified &&
+                nowMs - modified > MIGRATION_ARTIFACT_MAX_AGE_MS
+            ) {
+                runCatching { file.delete() }
+            }
+        }
     }
 
     /**
