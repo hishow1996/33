@@ -6385,13 +6385,23 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 maxHeight < 240.dp -> 44.dp
                 else -> 48.dp
             }
-            val leftControlsGap = (maxHeight * 0.07f).coerceIn(5.dp, 16.dp)
-            val maxLeftControlSize = (
-                (availableRightHeight - leftControlsGap * 2f).coerceAtLeast(0.dp) / 3f
-            ).coerceAtLeast(20.dp)
-            val controlTargetSize = preferredControlSize.coerceAtMost(maxLeftControlSize)
+            // Fullscreen controls retain a usable touch target. Very short landscape screens
+            // move the three right-side controls into a horizontal row instead of shrinking them.
+            val compactFullscreenRightControls = isFullscreen && maxHeight < 280.dp
+            val controlTargetSize = if (isFullscreen) {
+                preferredControlSize.coerceAtLeast(44.dp)
+            } else {
+                preferredControlSize
+            }
             val controlIconSize = (controlTargetSize * 0.58f).coerceIn(14.dp, 24.dp)
-            // Three right-side controls share the same vertical gap.
+            // The left side now contains only speed, so it no longer divides its height by three.
+            val leftControlTargetSize = if (isFullscreen) {
+                preferredControlSize.coerceAtLeast(44.dp)
+            } else {
+                preferredControlSize
+            }
+            val leftControlIconSize = (leftControlTargetSize * 0.58f).coerceIn(14.dp, 24.dp)
+            // Three right-side controls share identical vertical gaps when stacked.
             val rightControlsGap = (
                 (availableRightHeight - controlTargetSize * 3f) / 2f
             ).coerceIn(0.dp, 40.dp)
@@ -6408,128 +6418,147 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .align(Alignment.CenterStart)
                     .padding(start = edgePadding),
             ) {
-                Column(
-                    horizontalAlignment = Alignment.Start,
-                    verticalArrangement = Arrangement.spacedBy(rightControlsGap),
-                ) {
-                    Box {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            PlaybackOverlayIconButton(
-                                icon = Icons.Filled.Speed,
-                                contentDescription = "播放倍速",
-                                touchSize = controlTargetSize,
-                                iconSize = controlIconSize,
-                                tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                                enabled = controlsVisible,
-                                onInteraction = recordInteraction,
-                                onClick = { speedExpanded = true },
-                            )
-                            Text(
-                                text = "${speedLabel}×",
-                                color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                                style = MaterialTheme.typography.labelLarge.copy(
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    shadow = androidx.compose.ui.graphics.Shadow(
-                                        color = Color.Black.copy(alpha = 0.85f),
-                                        offset = Offset(0f, 1f),
-                                        blurRadius = 3f,
-                                    ),
-                                ),
-                                modifier = Modifier
-                                    .padding(end = 8.dp)
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                        enabled = controlsVisible,
-                                    ) {
-                                        recordInteraction()
-                                        speedExpanded = true
-                                    },
-                            )
+                Row(
+                    modifier = Modifier
+                        .height(leftControlTargetSize)
+                        .widthIn(min = 84.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            enabled = controlsVisible,
+                        ) {
+                            recordInteraction()
+                            speedExpanded = true
                         }
-                        DropdownMenu(
-                            expanded = speedExpanded,
-                            onDismissRequest = {
-                                if (speedExpanded) recordInteraction()
+                        .padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Speed,
+                        contentDescription = "播放倍速",
+                        tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                        modifier = Modifier.size(leftControlIconSize),
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "${speedLabel}×",
+                        color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = Color.Black.copy(alpha = 0.85f),
+                                offset = Offset(0f, 1f),
+                                blurRadius = 3f,
+                            ),
+                        ),
+                    )
+                }
+                DropdownMenu(
+                    expanded = speedExpanded,
+                    onDismissRequest = {
+                        if (speedExpanded) recordInteraction()
+                        speedExpanded = false
+                    },
+                ) {
+                    speedOptions.forEach { value ->
+                        DropdownMenuItem(
+                            text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
+                            onClick = {
+                                PlaybackService.instance?.setSpeed(value)
+                                recordInteraction()
                                 speedExpanded = false
                             },
-                        ) {
-                            speedOptions.forEach { value ->
-                                DropdownMenuItem(
-                                    text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
-                                    onClick = {
-                                        PlaybackService.instance?.setSpeed(value)
-                                        recordInteraction()
-                                        speedExpanded = false
-                                    },
-                                )
-                            }
-                        }
+                        )
                     }
                 }
             }
 
-            Box(
-                modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
-                    .padding(end = edgePadding, bottom = bottomReserved),
-            ) {
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(rightControlsGap),
-                ) {
-                    Box {
-                        PlaybackOverlayIconButton(
-                            icon = Icons.Filled.HighQuality,
-                            contentDescription = "选择清晰度",
-                            touchSize = controlTargetSize,
-                            iconSize = controlIconSize,
-                            tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
-                            enabled = controlsVisible && state.qualityOptions.isNotEmpty(),
-                            onInteraction = recordInteraction,
-                            onClick = { qualityExpanded = true },
-                        )
-                        DropdownMenu(
-                            expanded = qualityExpanded,
-                            onDismissRequest = {
-                                if (qualityExpanded) recordInteraction()
-                                qualityExpanded = false
-                            },
-                        ) {
-                            state.qualityOptions.forEach { quality ->
-                                DropdownMenuItem(
-                                    text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
-                                    onClick = {
-                                        qualityExpanded = false
-                                        recordInteraction()
-                                        PlaybackService.instance?.selectQuality(quality)
-                                    },
-                                )
-                            }
+            val qualityControl: @Composable () -> Unit = {
+                Box {
+                    PlaybackOverlayIconButton(
+                        icon = Icons.Filled.HighQuality,
+                        contentDescription = "选择清晰度",
+                        touchSize = controlTargetSize,
+                        iconSize = controlIconSize,
+                        tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
+                        enabled = controlsVisible && state.qualityOptions.isNotEmpty(),
+                        onInteraction = recordInteraction,
+                        onClick = { qualityExpanded = true },
+                    )
+                    DropdownMenu(
+                        expanded = qualityExpanded,
+                        onDismissRequest = {
+                            if (qualityExpanded) recordInteraction()
+                            qualityExpanded = false
+                        },
+                    ) {
+                        state.qualityOptions.forEach { quality ->
+                            DropdownMenuItem(
+                                text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
+                                onClick = {
+                                    qualityExpanded = false
+                                    recordInteraction()
+                                    PlaybackService.instance?.selectQuality(quality)
+                                },
+                            )
                         }
                     }
+                }
+            }
+            val floatingControl: @Composable () -> Unit = {
+                PlaybackOverlayIconButton(
+                    icon = Icons.Filled.PictureInPictureAlt,
+                    contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
+                    touchSize = controlTargetSize,
+                    iconSize = controlIconSize,
+                    tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
+                    enabled = controlsVisible,
+                    onInteraction = recordInteraction,
+                    onClick = { if (isFloating) onExitFloat() else onStartFloat() },
+                )
+            }
+            val fullscreenControl: @Composable () -> Unit = {
+                PlaybackOverlayIconButton(
+                    icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                    contentDescription = if (isFullscreen) "退出全屏" else "进入全屏",
+                    touchSize = controlTargetSize,
+                    iconSize = controlIconSize,
+                    enabled = controlsVisible,
+                    onInteraction = recordInteraction,
+                    onClick = onToggleFullscreen,
+                )
+            }
 
-                    PlaybackOverlayIconButton(
-                        icon = Icons.Filled.PictureInPictureAlt,
-                        contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
-                        touchSize = controlTargetSize,
-                        iconSize = controlIconSize,
-                        tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
-                        enabled = controlsVisible,
-                        onInteraction = recordInteraction,
-                        onClick = { if (isFloating) onExitFloat() else onStartFloat() },
-                    )
-
-                    PlaybackOverlayIconButton(
-                        icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                        contentDescription = if (isFullscreen) "退出全屏" else "进入全屏",
-                        touchSize = controlTargetSize,
-                        iconSize = controlIconSize,
-                        enabled = controlsVisible,
-                        onInteraction = recordInteraction,
-                        onClick = onToggleFullscreen,
-                    )
+            if (compactFullscreenRightControls) {
+                val statusBarInset = with(LocalDensity.current) {
+                    WindowInsets.statusBars.getTop(this).toDp()
+                }
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = statusBarInset + 8.dp, end = edgePadding),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    qualityControl()
+                    floatingControl()
+                    fullscreenControl()
+                }
+            } else {
+                Box(
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+                        .padding(end = edgePadding, bottom = bottomReserved),
+                ) {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(rightControlsGap),
+                    ) {
+                        qualityControl()
+                        floatingControl()
+                        fullscreenControl()
+                    }
                 }
             }
 
@@ -6781,14 +6810,14 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(quickToCaptionGap))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(captionLaneHeight),
-                        contentAlignment = Alignment.BottomCenter,
-                    ) {
-                        if (fullscreenCaptionVisible) {
+                    if (fullscreenCaptionVisible) {
+                        Spacer(modifier = Modifier.height(quickToCaptionGap))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(captionLaneHeight),
+                            contentAlignment = Alignment.BottomCenter,
+                        ) {
                             CurrentSubtitleStrip(
                                 sessionKey = state.key,
                                 currentLine = currentLine,
