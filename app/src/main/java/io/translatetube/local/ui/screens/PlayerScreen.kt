@@ -5994,93 +5994,89 @@ private fun SubtitleList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    // Keep the active row tied to the video timeline, independent of dubbing startup latency.
+    // Keep row highlighting locked to the video timeline in both playback modes.
+    // A late TTS start must not postpone the visual subtitle effect.
     val activeSubtitleIndex = state.currentLine
+    val hasActiveSubtitle = activeSubtitleIndex in state.lines.indices
+    val activeSubtitlePulse by animateFloatAsState(
+        targetValue = if (hasActiveSubtitle) 1.01f else 1f,
+        animationSpec = tween(180),
+        label = "subtitleActiveScale",
+    )
 
     Column(
         modifier.fillMaxSize()
             .background(Color.White)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 12.dp, vertical = 5.dp),
     ) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f),
-            contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp),
+            contentPadding = PaddingValues(top = 3.dp, bottom = 5.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             if (state.lines.isEmpty() && state.phase == Phase.READY) {
                 item {
-                    Box(
-                        Modifier.fillMaxWidth().height(160.dp),
-                        contentAlignment = androidx.compose.ui.Alignment.Center,
-                    ) {
-                        Text(
-                            "暂无字幕内容，可从顶部菜单导入字幕文件",
-                            color = MutedGreen,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                    Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                        Text("暂无字幕内容，可从顶部菜单导入字幕文件", color = MutedGreen, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
             itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
                 val active = i == activeSubtitleIndex
+                val activeScale = if (active) activeSubtitlePulse else 1f
                 val originalText = remember(line.text) { line.text.trim() }
                 val translatedText = remember(line.text, line.zh) {
                     SubtitleParsers.preferredTranslationText(line)?.takeIf { it.isNotBlank() }
                 }
-                // Chinese-source subtitles may already carry the same text as their translation.
-                val showOriginalText = translatedText != null && originalText.isNotBlank() && originalText != translatedText
-                val displayText = translatedText ?: originalText
+                // Chinese-source captions can already have zh == text. Avoid rendering the same
+                // sentence twice while keeping the original visible whenever a translation exists.
+                val showOriginalText = remember(originalText, translatedText) {
+                    originalText.isNotBlank() &&
+                        (translatedText.isNullOrBlank() || originalText != translatedText)
+                }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (active) Color(0xFFF1F3F4) else Color.Transparent)
+                Column(
+                    Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (active) Color(0xFFF6F7F9) else Color.Transparent
+                        )
                         .clickable(
                             enabled = svc != null && line.startMs >= 0L && line.endMs > line.startMs,
                         ) { svc?.seekAndPlay(line.startMs) }
-                        .padding(horizontal = 10.dp, vertical = if (active) 9.dp else 8.dp),
-                    verticalAlignment = Alignment.Top,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        .padding(horizontal = 10.dp, vertical = if (active) 7.dp else 6.dp)
+                        .graphicsLayer {
+                            scaleX = activeScale
+                            scaleY = activeScale
+                        },
+                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    Text(
-                        text = subtitleTimestampLabel(line.startMs),
-                        color = if (active) BrandBright else SubText.copy(alpha = 0.82f),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 11.sp,
-                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                        ),
-                        maxLines = 1,
-                        modifier = Modifier.width(42.dp).padding(top = 2.dp),
-                    )
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        if (showOriginalText) {
-                            Text(
-                                text = originalText,
-                                color = SubText,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Normal,
-                                ),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        if (displayText.isNotBlank()) {
-                            Text(
-                                text = displayText,
-                                color = if (active) BrandBright else OnBg,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontSize = if (active) 15.sp else 14.sp,
-                                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                                ),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
+                    if (showOriginalText) {
+                        Text(
+                            originalText,
+                            color = SubText.copy(alpha = if (active) 0.92f else 0.78f),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = if (active) 13.sp else 12.sp,
+                                fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                            ),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    translatedText?.let { translated ->
+                        Text(
+                            translated,
+                            // Use identical emphasis whether the active cue is source-audio or dubbed playback.
+                            color = if (active) BrandBright else SubText,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontSize = if (active) 16.sp else 14.sp,
+                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            ),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
             }
@@ -6088,17 +6084,6 @@ private fun SubtitleList(
     }
 }
 
-private fun subtitleTimestampLabel(timeMs: Long): String {
-    val totalSeconds = timeMs.coerceAtLeast(0L) / 1000L
-    val seconds = totalSeconds % 60L
-    val minutes = (totalSeconds / 60L) % 60L
-    val hours = totalSeconds / 3600L
-    return if (hours > 0L) {
-        "%d:%02d:%02d".format(java.util.Locale.ROOT, hours, minutes, seconds)
-    } else {
-        "%d:%02d".format(java.util.Locale.ROOT, totalSeconds / 60L, seconds)
-    }
-}
 
 /**
  * Translation-only text for the compact active subtitle strip. The full list separately shows
