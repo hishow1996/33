@@ -37,6 +37,50 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun checkpointFreshStageFlagsOverrideLaterFingerprintRestarts() {
+        assertEquals(
+            null,
+            EngineRestartStagePolicy.checkpointRestartStage(
+                fingerprintStage = null,
+                requireFreshTranslation = false,
+                requireFreshDubbing = false,
+            ),
+        )
+        assertEquals(
+            EngineRestartStage.TRANSLATION,
+            EngineRestartStagePolicy.checkpointRestartStage(
+                fingerprintStage = null,
+                requireFreshTranslation = true,
+                requireFreshDubbing = false,
+            ),
+        )
+        assertEquals(
+            EngineRestartStage.DUBBING,
+            EngineRestartStagePolicy.checkpointRestartStage(
+                fingerprintStage = null,
+                requireFreshTranslation = false,
+                requireFreshDubbing = true,
+            ),
+        )
+        assertEquals(
+            EngineRestartStage.TRANSLATION,
+            EngineRestartStagePolicy.checkpointRestartStage(
+                fingerprintStage = EngineRestartStage.DUBBING,
+                requireFreshTranslation = true,
+                requireFreshDubbing = false,
+            ),
+        )
+        assertEquals(
+            EngineRestartStage.TRANSCRIPTION,
+            EngineRestartStagePolicy.checkpointRestartStage(
+                fingerprintStage = EngineRestartStage.TRANSCRIPTION,
+                requireFreshTranslation = true,
+                requireFreshDubbing = true,
+            ),
+        )
+    }
+
+    @Test
     fun switchingVoicesWithinTheSameEngineRestartsDubbingAndRegeneratesPcm() {
         val voiceA = EngineConfigFingerprints(
             transcription = "asr-a",
