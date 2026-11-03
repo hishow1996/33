@@ -73,6 +73,37 @@ class SpeakerRecognitionProgressPolicyTest {
     }
 
     @Test
+    fun audioAcquisitionParsesDecimalPercentageAndOptionalSpace() {
+        val update = SpeakerRecognitionProgressPolicy.audioAcquisitionProgress(
+            "网页音轨下载 42.5 %",
+        )
+        assertEquals(42, update.progressPercent)
+    }
+
+    @Test
+    fun speakerAudioProgressDoesNotCrossSessionBoundary() {
+        val current = PlayerUiState(
+            key = "youtube:current",
+            phase = Phase.READY,
+            progress = "当前视频播放中",
+            audioProgress = 0.65f,
+        )
+        val requested = current.copy(
+            key = "local:next",
+            phase = Phase.DOWNLOADING_AUDIO,
+            progress = "本地音轨下载 70%",
+        )
+        val result = SpeakerRecognitionProgressPolicy.preservePlaybackState(
+            current = current,
+            requested = requested,
+            speakerRecognitionOnly = true,
+        )
+        assertEquals("local:next", result.key)
+        assertEquals(Phase.DOWNLOADING_AUDIO, result.phase)
+        assertEquals("本地音轨下载 70%", result.progress)
+    }
+
+    @Test
     fun singleChunkUsesIndeterminateProgressWhileRunning() {
         val update = SpeakerRecognitionProgressPolicy.analysisChunkStarted(1L, 1L)
         assertEquals(SpeakerRecognitionStage.ANALYZING_AUDIO, update.stage)
