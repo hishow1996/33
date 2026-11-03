@@ -6029,7 +6029,7 @@ private fun SubtitleList(
                     SubtitleParsers.preferredTranslationText(line)?.takeIf { it.isNotBlank() }
                 }
                 // Chinese-source subtitles may already carry the same text as their translation.
-                val showOriginalText = originalText.isNotBlank() && originalText != translatedText
+                val showOriginalText = translatedText != null && originalText.isNotBlank() && originalText != translatedText
                 val displayText = translatedText ?: originalText
 
                 Row(
