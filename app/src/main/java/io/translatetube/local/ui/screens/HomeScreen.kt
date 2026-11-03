@@ -201,7 +201,7 @@ fun HomeScreen(
                 }
             } else {
                 pendingResumeTaskProgress?.takeIf { it.isNotBlank() } ?: when {
-                    savedStageLabel != null -> "上次停在$savedStageLabel阶段，继续时复用已保存进度"
+                    savedStageLabel != null -> "上次停在${savedStageLabel}阶段，继续时复用已保存进度"
                     resumeTaskKey.startsWith("webpage:") -> resumeTaskKey.removePrefix("webpage:")
                     resumeTaskKey.startsWith("youtube:") -> "上次解析因应用退出而中断，点击后重新开始"
                     resumeTaskKey.startsWith("remote:") -> "上次视频处理被中断，点击重新打开"

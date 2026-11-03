@@ -4503,7 +4503,7 @@ class PlaybackService : MediaSessionService() {
             forceYouTubeSubtitleRefresh ||
                 (resumeState != null &&
                     videoId != null &&
-                    importedLines.isNullOrEmpty() &&
+                    (importedLines == null || importedLines.isEmpty()) &&
                     key.startsWith("youtube:", ignoreCase = true) &&
                     ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
                         resumeState.processingFlow,
@@ -8043,7 +8043,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             if (canRestoreLegacyAsrTranslation) {
                 val legacyTranslationPrefix = "$baseTranslationCacheKey|asr-$asrEngineCachePrefix"
                 val legacyTranslation = db.subtitleCacheDao()
-                    .getLatestByCacheKeyPrefix(legacyTranslationPrefix)
+                    .getLatestCompletedByCacheKeyPrefix(legacyTranslationPrefix)
                     ?.takeIf { entry ->
                         isUsableTranslationCache(entry.linesJson) &&
                             translationCacheMatchesSource(entry.linesJson, restoredSourceLines.orEmpty())

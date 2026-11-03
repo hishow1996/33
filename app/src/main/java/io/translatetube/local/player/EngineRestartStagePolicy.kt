@@ -5,7 +5,7 @@ package io.translatetube.local.player
  * The policy is source-independent: YouTube, webpage and local video share translation/dubbing
  * restart rules; imported subtitle flows and actual YouTube-caption flow ignore ASR changes.
  */
-internal enum class EngineRestartStage {
+enum class EngineRestartStage {
     TRANSCRIPTION,
     TRANSLATION,
     DUBBING,
