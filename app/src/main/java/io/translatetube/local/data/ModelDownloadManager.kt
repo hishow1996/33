@@ -230,10 +230,7 @@ object ModelFiles {
             vadValidationCache.remove(file.absolutePath)
             return false
         }
-        val identity = runCatching {
-            val stat = android.system.Os.stat(file.absolutePath)
-            "${stat.st_dev}:${stat.st_ino}"
-        }.getOrNull()
+        val identity = vadFileIdentity(file)
         val path = file.absolutePath
         val length = file.length()
         val modified = file.lastModified()
@@ -258,6 +255,27 @@ object ModelFiles {
         vadValidationCache[path] = VadValidation(length, modified, identity, valid)
         return valid
     }
+
+    /** Trust the downloader's already-verified official digest for the installed file identity. */
+    internal fun cacheVerifiedVadModel(file: File, verifiedSha256: String) {
+        if (!verifiedSha256.equals(VAD_SHA256, ignoreCase = true)) {
+            throw java.io.IOException("语音检测模型 SHA-256 与官方摘要不一致")
+        }
+        if (!file.isFile || file.length() < WhisperModelFilePolicy.MIN_VAD_BYTES) {
+            throw java.io.IOException("已下载的语音检测模型文件不完整")
+        }
+        vadValidationCache[file.absolutePath] = VadValidation(
+            length = file.length(),
+            modifiedMs = file.lastModified(),
+            identity = vadFileIdentity(file),
+            valid = true,
+        )
+    }
+
+    private fun vadFileIdentity(file: File): String? = runCatching {
+        val stat = android.system.Os.stat(file.absolutePath)
+        "${stat.st_dev}:${stat.st_ino}"
+    }.getOrNull()
 
     private data class VadValidation(
         val length: Long,
@@ -1176,16 +1194,30 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                     vad,
                                     expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
                                     onProgress = { got, total ->
-                                        val expected = total.takeIf { it > 0L } ?: 643_854L
+                                        if (state.value.status != ModelStatus.EXTRACTING) {
+                                            val expected = total.takeIf { it > 0L } ?: 643_854L
+                                            state.value = state.value.copy(
+                                                progress = (got * 100L / expected).toInt().coerceIn(0, 99),
+                                                downloadedMB = got / (1024L * 1024L),
+                                                totalMB = if (total > 0L) ((total + 1_048_575L) / 1_048_576L) else 1L,
+                                                downloadedBytes = got,
+                                                totalBytes = expected,
+                                                indeterminate = false,
+                                                stageMessage = "正在下载语音检测模型…",
+                                            )
+                                        }
+                                    },
+                                    onVerificationProgress = { bytesRead, totalBytes ->
+                                        val expected = totalBytes.takeIf { it > 0L } ?: 643_854L
                                         state.value = state.value.copy(
-                                            progress = if (total > 0L) (got * 100L / total).toInt().coerceIn(0, 99)
-                                                else if (expected > 0L) (got * 100L / expected).toInt().coerceIn(0, 99) else 0,
-                                            downloadedMB = got / (1024L * 1024L),
-                                            totalMB = if (total > 0L) ((total + 1_048_575L) / 1_048_576L) else 1L,
-                                            downloadedBytes = got,
-                                            totalBytes = total.coerceAtLeast(0L),
+                                            status = ModelStatus.EXTRACTING,
+                                            progress = (bytesRead * 100L / expected).toInt().coerceIn(0, 99),
+                                            downloadedMB = bytesRead / (1024L * 1024L),
+                                            totalMB = if (totalBytes > 0L) ((totalBytes + 1_048_575L) / 1_048_576L) else 1L,
+                                            downloadedBytes = bytesRead,
+                                            totalBytes = expected,
                                             indeterminate = false,
-                                            stageMessage = "正在下载语音检测模型…",
+                                            stageMessage = "正在校验语音检测模型…",
                                         )
                                     },
                                 )
@@ -1352,15 +1384,30 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     vad,
                     expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
                     onProgress = { got, total ->
-                        val expected = total.takeIf { it > 0L } ?: 643_854L
+                        if (state.value.status != ModelStatus.EXTRACTING) {
+                            val expected = total.takeIf { it > 0L } ?: 643_854L
+                            state.value = state.value.copy(
+                                progress = (got * 100L / expected).toInt().coerceIn(0, 99),
+                                downloadedMB = got / (1024L * 1024L),
+                                totalMB = 1,
+                                downloadedBytes = got,
+                                totalBytes = expected,
+                                indeterminate = false,
+                                stageMessage = "正在下载语音检测模型…",
+                            )
+                        }
+                    },
+                    onVerificationProgress = { bytesRead, totalBytes ->
+                        val expected = totalBytes.takeIf { it > 0L } ?: 643_854L
                         state.value = state.value.copy(
-                            progress = if (expected > 0L) (got * 100L / expected).toInt().coerceIn(0, 99) else 0,
-                            downloadedMB = got / (1024L * 1024L),
+                            status = ModelStatus.EXTRACTING,
+                            progress = (bytesRead * 100L / expected).toInt().coerceIn(0, 99),
+                            downloadedMB = bytesRead / (1024L * 1024L),
                             totalMB = 1,
-                            downloadedBytes = got,
-                            totalBytes = total.takeIf { it > 0L } ?: expected,
+                            downloadedBytes = bytesRead,
+                            totalBytes = expected,
                             indeterminate = false,
-                            stageMessage = "正在下载语音检测模型…",
+                            stageMessage = "正在校验语音检测模型…",
                         )
                     },
                 )
@@ -1464,12 +1511,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         dest: File,
         onProgress: ((got: Long, total: Long) -> Unit)? = null,
         expectedSha256: String? = null,
+        onVerificationProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
     ) = withContext(Dispatchers.IO) {
         val parent = dest.parentFile ?: throw java.io.IOException("模型目录无效")
         if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型目录")
         val partFile = ResumableModelArchiveDownloader.partFileFor(dest, url)
         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-        ResumableModelArchiveDownloader.download(
+        val result = ResumableModelArchiveDownloader.download(
             client = http,
             url = url,
             partFile = partFile,
@@ -1478,8 +1526,14 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             awaitResume = { awaitDownloadsResumed() },
             checkActive = { ownerJob?.ensureActive() },
             onProgress = { got, total -> onProgress?.invoke(got, total) },
+            onVerificationProgress = { bytesRead, totalBytes ->
+                onVerificationProgress?.invoke(bytesRead, totalBytes)
+            },
         )
         AtomicFileInstaller.install(partFile, dest)
+        if (dest.name == "silero_vad.onnx" && expectedSha256 != null) {
+            ModelFiles.cacheVerifiedVadModel(dest, result.sha256)
+        }
         ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
         ResumableModelArchiveDownloader.cleanupPartialFiles(dest)
     }
