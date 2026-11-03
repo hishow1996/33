@@ -5653,6 +5653,56 @@ private fun PlaybackHintOverlay(
 @Composable
 
 
+private fun PlaybackOverlayIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    touchSize: androidx.compose.ui.unit.Dp,
+    iconSize: androidx.compose.ui.unit.Dp,
+    tint: Color = Color.White,
+    enabled: Boolean = true,
+    onInteraction: () -> Unit = {},
+    onClick: () -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.92f else 1f,
+        animationSpec = tween(110, easing = FastOutSlowInEasing),
+        label = "playback-control-scale",
+    )
+    val alpha by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.74f else if (enabled) 1f else 0.58f,
+        animationSpec = tween(110, easing = FastOutSlowInEasing),
+        label = "playback-control-alpha",
+    )
+    Box(
+        modifier = Modifier
+            .size(touchSize)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                this.alpha = alpha
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                onClick = {
+                    onInteraction()
+                    onClick()
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(iconSize).shadow(2.dp, CircleShape, clip = false),
+        )
+    }
+}
+
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
