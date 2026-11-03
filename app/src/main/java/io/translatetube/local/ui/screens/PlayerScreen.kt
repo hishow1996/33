@@ -6025,14 +6025,9 @@ private fun SubtitleList(
             itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
                 val active = i == activeSubtitleIndex
                 val activeScale = if (active) activeSubtitlePulse else 1f
-                val originalText = remember(line.text) { line.text.trim() }
                 val translatedText = remember(line.text, line.zh) {
                     SubtitleParsers.preferredTranslationText(line)?.takeIf { it.isNotBlank() }
                 }
-                // Only the currently playing row is bilingual. Other rows stay Chinese-only.
-                val showOriginalText = active &&
-                    originalText.isNotBlank() &&
-                    originalText != translatedText
                 val chineseText = translatedText ?: "中文字幕暂不可用"
 
                 Column(
@@ -6046,7 +6041,6 @@ private fun SubtitleList(
                         ) { svc?.seekAndPlay(line.startMs) }
                         .padding(horizontal = 10.dp, vertical = if (active) 7.dp else 6.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     Text(
                         chineseText,
@@ -6062,18 +6056,6 @@ private fun SubtitleList(
                             scaleY = activeScale
                         },
                     )
-                    if (showOriginalText) {
-                        Text(
-                            originalText,
-                            color = BrandBright,
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Normal,
-                            ),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
                 }
             }
         }
@@ -6082,8 +6064,7 @@ private fun SubtitleList(
 
 
 /**
- * Translation-only text for the compact active subtitle strip and bilingual active-row fallback.
- * In the full list, inactive rows remain Chinese-only; the active row may add its source caption.
+ * Chinese translation text for the compact active subtitle strip and the full subtitle list.
  */
 private fun subtitleDisplayText(line: SubLine): String =
     SubtitleParsers.preferredTranslationText(line)
