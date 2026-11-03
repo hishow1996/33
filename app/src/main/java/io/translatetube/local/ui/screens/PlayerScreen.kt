@@ -1648,7 +1648,13 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 is DragInteraction.Stop, is DragInteraction.Cancel -> {
                     resumeJob?.cancel()
                     resumeJob = launch {
-                        delay(1_800L)
+                        // Let any fling started by the drag finish before returning control
+                        // to the playhead, then leave a short pause for the user to read.
+                        delay(180L)
+                        while (listState.isScrollInProgress) {
+                            delay(100L)
+                        }
+                        delay(850L)
                         pauseAutoScrollForUser = false
                     }
                 }
