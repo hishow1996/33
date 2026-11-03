@@ -782,6 +782,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var dubbingDrainSessionKey = ""
     @Volatile private var dubbingDrainPoll: Runnable? = null
     @Volatile private var playerReady = false
+    // False while the playback page is not visible. Audio and dubbing keep running;
+    // only the video-surface first-frame watchdog is suspended in the background.
+    @Volatile private var videoUiVisible = false
     // Keep only the latest requested video output. A weak reference avoids retaining an old Activity view.
     @Volatile private var requestedVideoSurface: java.lang.ref.WeakReference<android.view.TextureView>? = null
     // Accessed only on the main thread. Media3 already listens for SurfaceTexture
@@ -935,6 +938,8 @@ class PlaybackService : MediaSessionService() {
 
         @Volatile var instance: PlaybackService? = null
             private set
+        /** Changes after every successful service/player initialization so the screen can rebind its retained TextureView. */
+        val serviceGeneration = MutableStateFlow(0L)
         private val cloudAsrResubmissionConsentKeys =
             java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val ui = MutableStateFlow(PlayerUiState())
@@ -2181,6 +2186,34 @@ class PlaybackService : MediaSessionService() {
     /** 播放头前方已缓冲的时长（毫秒），供加载转圈如实显示进度；需在主线程调用。 */
     fun bufferedAheadMs(): Long = if (playerReady && ::pm.isInitialized) pm.bufferedAheadMs() else 0L
 
+    /**
+     * Report whether the playback page is currently visible. This never pauses or releases the
+     * player: background audio and dubbing continue normally. It only gates video-only watchdogs.
+     */
+    fun setVideoUiVisible(visible: Boolean) {
+        val updateVisibility = Runnable {
+            val changed = videoUiVisible != visible
+            videoUiVisible = visible
+            if (changed) {
+                // Never carry a foreground no-frame timer into the background or vice versa.
+                noFrameWaitStartedAtMs = 0L
+                noFrameWaitSessionKey = ui.value.key
+                playbackStallWatchSessionKey = ""
+                playbackStallWatchPositionMs = -1L
+                playbackStallWatchLastProgressAtMs = 0L
+            }
+            if (visible && playerReady && ::pm.isInitialized) {
+                // The Activity may have resumed with the same TextureView instance after the
+                // service was recreated. Re-submit the latest view instead of relying on a new
+                // Android attach callback to happen.
+                attachPendingVideoSurface()
+                refreshPlaybackHint()
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) updateVisibility.run()
+        else surfaceAttachHandler.post(updateVisibility)
+    }
+
     fun attachSurface(tv: android.view.TextureView) {
         // Remember the newest view even if the service/player is still initializing. The
         // successful initialization path will attach it, so an early call cannot be lost.
@@ -2679,6 +2712,9 @@ class PlaybackService : MediaSessionService() {
             }
             playerReady = true
             instance = this
+            // A new ready service means a new ExoPlayer instance. Notify an already-composed
+            // PlayerScreen so it rebinds its retained TextureView even if no attach event fires.
+            serviceGeneration.value = serviceGeneration.value + 1L
             attachPendingVideoSurface()
             startPlaybackHintMonitor()
             // Start only after PlayerManager/notification collection are ready. The watchdog
@@ -3065,7 +3101,7 @@ class PlaybackService : MediaSessionService() {
         // for playWhenReady here missed the case where play silently never took effect.
         val videoViewBound = boundVideoSurface?.get() != null
         val noFirstFrameTimedOut = if (
-            (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
+            videoUiVisible && (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
         ) {
             if (noFrameWaitSessionKey != state.key || noFrameWaitStartedAtMs <= 0L) {
                 noFrameWaitSessionKey = state.key
@@ -3143,11 +3179,18 @@ class PlaybackService : MediaSessionService() {
         )
         if (action == FirstFrameTimeoutAction.WAIT || action == FirstFrameTimeoutAction.DONE) return
 
+        // A surface can legitimately disappear while Android backgrounds the Activity. Never
+        // escalate a hidden audio/dubbing session into a player reload or service rebuild.
+        if (!videoUiVisible) {
+            noFrameWaitStartedAtMs = 0L
+            return
+        }
         val surfaceView = requestedVideoSurface?.get()
         val context = mapOf(
             "视频来源" to diagnosticMediaSourceType(state),
             "视频会话指纹" to safeDiagnosticSessionFingerprint(state.key),
             "当前处理阶段" to state.phase.name,
+            "播放页面是否可见" to videoUiVisible.toString(),
             "画面控件是否存在" to (surfaceView != null).toString(),
             "画面控件是否可用" to (surfaceView?.isAvailable?.toString() ?: "无画面控件"),
             "画面是否已绑定播放器" to (boundVideoSurface?.get() != null).toString(),
@@ -4437,6 +4480,7 @@ class PlaybackService : MediaSessionService() {
         runCatching { session?.release() }
         if (::pm.isInitialized) runCatching { pm.release() }
         playerReady = false
+        videoUiVisible = false
         if (instance === this) {
             // The companion StateFlow outlives this Service. Release subtitle and preview lists
             // here so a stopped player cannot retain a large prior session in process memory.
