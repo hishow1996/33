@@ -213,6 +213,11 @@ fun PlayerScreen(
 
             val previousOrientation = activity.requestedOrientation
             val window = activity.window
+            // Android 9+ may reserve a side strip for the display cutout in landscape.
+            // Let the video extend behind that area; overlay controls keep their own cutout insets.
+            val previousCutoutMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                window.attributes.layoutInDisplayCutoutMode
+            } else null
             val decorView = window.decorView
             val insetsController = WindowInsetsControllerCompat(window, decorView)
             val previousSystemBarsBehavior = insetsController.systemBarsBehavior
@@ -243,6 +248,18 @@ fun PlayerScreen(
                 // Fullscreen only hides the bars and rotates; it never flips decorFitsSystemWindows,
                 // otherwise Compose keeps a stale status-bar inset after exit and the whole app
                 // ends up with a duplicated blank strip at the top.
+                // Also opt into the short-edge cutout area on Android 9+ so landscape video does
+                // not retain a black/empty strip beside a camera notch. Controls remain inset-safe.
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    val attributes = window.attributes
+                    if (attributes.layoutInDisplayCutoutMode !=
+                        android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    ) {
+                        attributes.layoutInDisplayCutoutMode =
+                            android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                        window.attributes = attributes
+                    }
+                }
                 insetsController.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 insetsController.hide(WindowInsetsCompat.Type.systemBars())
@@ -325,6 +342,11 @@ fun PlayerScreen(
                         insetsController.show(WindowInsetsCompat.Type.navigationBars())
                     } else {
                         insetsController.hide(WindowInsetsCompat.Type.navigationBars())
+                    }
+                    previousCutoutMode?.let { mode ->
+                        val attributes = window.attributes
+                        attributes.layoutInDisplayCutoutMode = mode
+                        window.attributes = attributes
                     }
                     activity.requestedOrientation = previousOrientation
                     // A freeform/tablet window may already have the original aspect ratio, so its
