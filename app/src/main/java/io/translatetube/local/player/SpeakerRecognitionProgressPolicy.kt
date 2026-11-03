@@ -25,10 +25,10 @@ data class SpeakerRecognitionProgressUpdate(
     val progressItem: String? = null,
 )
 
-/** Presentation-only split of a progress message into its status and optional byte detail. */
+/** Presentation-only model shared by all speaker-recognition stages and media sources. */
 data class SpeakerRecognitionProgressDisplay(
     val message: String,
-    val sizeDetail: String? = null,
+    val secondaryDetail: String? = null,
 )
 
 object SpeakerRecognitionProgressPolicy {
@@ -40,8 +40,73 @@ object SpeakerRecognitionProgressPolicy {
     private val percentagePattern = Regex("""\d+(?:\.\d+)?\s*%""")
 
     /**
-     * Removes details already shown beside/below the progress bar. This does not calculate or
-     * alter progress: the real percentage continues to come from the worker's measured update.
+     * Produces a consistent status/detail split for all sources and processing stages.
+     * Numeric progress is never derived here; it remains owned by the worker updates.
+     */
+    fun display(state: SpeakerRecognitionUiState): SpeakerRecognitionProgressDisplay {
+        val rawMessage = state.error?.takeIf { it.isNotBlank() }
+            ?: state.message.ifBlank { state.activeLabel }
+        val base = displayMessage(rawMessage)
+        if (!state.error.isNullOrBlank()) {
+            return SpeakerRecognitionProgressDisplay(base.message, base.secondaryDetail)
+        }
+
+        return when (state.stage) {
+            SpeakerRecognitionStage.PREPARING_AUDIO -> base
+
+            SpeakerRecognitionStage.DOWNLOADING_MODELS -> {
+                val status = base.message.replace(Regex("""(?:·\\s*)?已下载$"""), "").trim()
+                val downloaded = state.completedUnits?.takeIf { it > 0L }
+                val total = state.totalUnits?.takeIf { it > 0L }
+                val detail = when {
+                    downloaded != null && total != null ->
+                        formatCompactBytes(downloaded) + " / " + formatCompactBytes(total)
+                    downloaded != null -> "已下载 " + formatCompactBytes(downloaded)
+                    else -> base.secondaryDetail
+                }
+                SpeakerRecognitionProgressDisplay(status, detail)
+            }
+
+            SpeakerRecognitionStage.ANALYZING_AUDIO -> {
+                val completed = state.completedUnits
+                val total = state.totalUnits?.takeIf { it > 0L }
+                val detail = if (completed != null && total != null) {
+                    val safeCompleted = completed.coerceIn(0L, total)
+                    if (state.progressItem == "模型内部分析") {
+                        "当前分段 " + (safeCompleted + 1L).coerceAtMost(total) + "/" + total
+                    } else {
+                        "已分析 " + safeCompleted + "/" + total + " 段"
+                    }
+                } else {
+                    base.secondaryDetail
+                }
+                SpeakerRecognitionProgressDisplay(base.message, detail)
+            }
+
+            SpeakerRecognitionStage.LINKING_SUBTITLES -> {
+                val completed = state.completedUnits
+                val total = state.totalUnits?.takeIf { it > 0L }
+                val detail = if (completed != null && total != null) {
+                    val people = state.personCount.takeIf { it > 0 }?.let { " · " + it + " 位人物" }.orEmpty()
+                    "已关联 " + completed.coerceIn(0L, total) + "/" + total + " 行" + people
+                } else {
+                    state.personCount.takeIf { it > 0 }?.let { it.toString() + " 位人物" }
+                }
+                SpeakerRecognitionProgressDisplay(base.message, detail ?: base.secondaryDetail)
+            }
+
+            SpeakerRecognitionStage.APPLYING_VOICES -> {
+                val people = state.personCount.takeIf { it > 0 }?.let { it.toString() + " 位人物" }
+                SpeakerRecognitionProgressDisplay(base.message, people ?: base.secondaryDetail)
+            }
+
+            else -> base
+        }
+    }
+
+    /**
+     * Removes details already displayed beside/below the progress bar. The percentage is
+     * deliberately not recomputed here; it remains the worker's measured value.
      */
     fun displayMessage(message: String): SpeakerRecognitionProgressDisplay {
         val raw = message.trim()
@@ -62,12 +127,18 @@ object SpeakerRecognitionProgressPolicy {
             .replace(Regex("""\s+"""), " ")
             .trim()
             .trim(' ', '·', '•', '：', ':')
+            .replace(Regex("""(?:·\s*)?已下载$"""), "")
+            .trim()
 
         return SpeakerRecognitionProgressDisplay(
             message = status,
-            sizeDetail = sizeDetail,
+            secondaryDetail = sizeDetail,
         )
     }
+
+    private fun formatCompactBytes(bytes: Long): String =
+        io.translatetube.local.util.AudioDownloadProgressFormatter.formatBytes(bytes)
+            .replace(Regex("""(\d+)\.0(?=\s)"""), "$1")
 
     /** Audio fetched for speaker diarization is secondary player work, not stage-one processing. */
     fun audioAcquisitionProgress(message: String): SpeakerRecognitionProgressUpdate {
