@@ -24,10 +24,9 @@ class SpeakerDiarizerChunkingTest {
     }
 
     @Test
-    fun longerWindowsDoLessDuplicatedWorkThanTheOldThreeMinuteWindow() {
-        fun redundantShare(chunkMs: Long, overlapMs: Long) = overlapMs.toDouble() / chunkMs.toDouble()
-        val old = redundantShare(3L * 60_000L, SpeakerDiarizer.DEFAULT_OVERLAP_MS)
-        val now = redundantShare(SpeakerDiarizer.DEFAULT_CHUNK_DURATION_MS, SpeakerDiarizer.DEFAULT_OVERLAP_MS)
-        assertTrue(now < old)
+    fun defaultWindowIsShorterThanTheOldThreeMinuteWindow() {
+        assertTrue(
+            SpeakerDiarizer.DEFAULT_CHUNK_DURATION_MS < 3L * 60_000L,
+        )
     }
 }
