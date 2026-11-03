@@ -7540,7 +7540,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 localUri != null -> "本地视频"
                                 else -> "其他"
                             },
-                            "原文字幕行数" to restoredSourceLines.size.toString(),
+                            "原文字幕行数" to restoredSourceLines.orEmpty().size.toString(),
                             "恢复策略" to "不重新语音转写",
                         ),
                     )
@@ -7661,7 +7661,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     (sourceCachedKey == sourceSubtitleCacheKey ||
                         legacyYouTubeAsrSourceCacheKeys.contains(sourceCachedKey) ||
                         sourceCachedKey?.let { cachedKey ->
-                            asrSourceCacheLookupPrefixes.any(cachedKey::startsWith)
+                            asrSourceCacheLookupPrefixes.any { prefix -> cachedKey.startsWith(prefix) }
                         } == true) ->
                     ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
                 videoId != null && restoredSourceLines != null ->
@@ -7744,7 +7744,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         "PlaybackFlow",
                         "已复用旧版同一转写引擎的字幕翻译缓存",
                         diagnosticContext = mapOf(
-                            "原文字幕行数" to restoredSourceLines.size.toString(),
+                            "原文字幕行数" to restoredSourceLines.orEmpty().size.toString(),
                             "恢复策略" to "跳过重复翻译",
                         ),
                     )
