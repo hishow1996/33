@@ -6072,6 +6072,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     var qualityExpanded by remember { mutableStateOf(false) }
     var speedExpanded by remember { mutableStateOf(false) }
     var controlsVisible by remember(state.key) { mutableStateOf(true) }
+    var fullscreenCaptionDragging by remember(state.key) { mutableStateOf(false) }
+    var fullscreenCaptionAdjusting by remember(state.key) { mutableStateOf(false) }
     var interactionVersion by remember(state.key) { mutableStateOf(0) }
     val speedFlow = remember(PlaybackService.instance) {
         PlaybackService.instance?.playbackSpeedState()
@@ -6089,7 +6091,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         mutableStateOf(fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_x_v1", 0.5f).coerceIn(0f, 1f))
     }
     var fullscreenCaptionCenterY by remember(fullscreenCaptionPrefs) {
-        mutableStateOf(fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_y_v1", 0.76f).coerceIn(0f, 1f))
+        mutableStateOf(fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_y_v1", 0.82f).coerceIn(0f, 1f))
     }
     val latestFullscreenCaptionCenterX by rememberUpdatedState(fullscreenCaptionCenterX)
     val latestFullscreenCaptionCenterY by rememberUpdatedState(fullscreenCaptionCenterY)
@@ -6098,6 +6100,14 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             .putFloat("player_fullscreen_caption_center_x_v1", fullscreenCaptionCenterX)
             .putFloat("player_fullscreen_caption_center_y_v1", fullscreenCaptionCenterY)
             .apply()
+    }
+    fun restoreFullscreenCaptionPosition() {
+        fullscreenCaptionCenterX = 0.5f
+        fullscreenCaptionCenterY = 0.82f
+        persistFullscreenCaptionPosition()
+        fullscreenCaptionAdjusting = false
+        controlsVisible = true
+        recordInteraction()
     }
     val audioManager = remember(context) {
         context.applicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager
@@ -6156,6 +6166,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         qualityExpanded,
         speedExpanded,
         scrubbing,
+        fullscreenCaptionDragging,
         interactionVersion,
         lifecycleResumed,
     ) {
@@ -6165,7 +6176,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             !controlsVisible ||
             qualityExpanded ||
             speedExpanded ||
-            scrubbing
+            scrubbing ||
+            fullscreenCaptionDragging
         ) {
             return@LaunchedEffect
         }
@@ -6178,6 +6190,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             !qualityExpanded &&
             !speedExpanded &&
             !scrubbing &&
+            !fullscreenCaptionDragging &&
             interactionVersion == scheduledInteraction
         ) {
             controlsVisible = false
@@ -6364,6 +6377,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
             .pointerInput(state.key, state.isPlaying, controlsVisible) {
                 detectTapGestures {
+                    fullscreenCaptionAdjusting = false
                     recordInteraction()
                     controlsVisible = if (!state.isPlaying) true else !controlsVisible
                 }
@@ -6751,11 +6765,19 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             ) {
                 val compact = maxWidth < 420.dp || maxHeight < 280.dp
                 val quickToggleWidth = if (compact) 54.dp else 60.dp
+                val preferredQuickToggleGap = if (compact) 24.dp else 34.dp
+                val availableQuickToggleGap = ((maxWidth - quickToggleWidth * 3f - 32.dp) / 2f)
+                    .coerceAtLeast(8.dp)
+                val quickToggleGap = preferredQuickToggleGap.coerceAtMost(availableQuickToggleGap)
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
-                        .padding(top = if (compact) 6.dp else 10.dp),
+                        .padding(top = when {
+                            maxHeight < 260.dp -> 4.dp
+                            compact -> 6.dp
+                            else -> 10.dp
+                        }),
                     contentAlignment = Alignment.TopCenter,
                 ) {
                     AnimatedVisibility(
@@ -6764,7 +6786,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
                     ) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(if (compact) 24.dp else 34.dp),
+                            horizontalArrangement = Arrangement.spacedBy(quickToggleGap),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             FullscreenQuickToggle(
@@ -6818,7 +6840,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val captionHeightPx = with(density) { captionLaneHeight.toPx() }
                     val horizontalSafePx = with(density) { 8.dp.toPx() }
                     val topSafePx = with(density) { if (compact) 54.dp.toPx() else 60.dp.toPx() }
-                    val bottomSafePx = with(density) { 52.dp.toPx() }
+                    // Bring the caption closer to the seek bar while keeping a clear touch-safe gap.
+                    val bottomSafePx = with(density) { 40.dp.toPx() }
                     val minLeftPx = horizontalSafePx
                     val maxLeftPx = (containerWidthPx - captionWidthPx - horizontalSafePx)
                         .coerceAtLeast(minLeftPx)
@@ -6839,6 +6862,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             }
                             .width(captionLaneWidth)
                             .height(captionLaneHeight)
+                            .then(
+                                if (fullscreenCaptionAdjusting) {
+                                    Modifier.border(1.dp, Color(0xCC9CBFFF), RoundedCornerShape(10.dp))
+                                } else Modifier
+                            )
                             .pointerInput(
                                 state.key,
                                 maxWidth,
@@ -6848,11 +6876,21 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             ) {
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = {
+                                        fullscreenCaptionAdjusting = true
+                                        fullscreenCaptionDragging = true
                                         controlsVisible = true
                                         recordInteraction()
                                     },
-                                    onDragEnd = { persistFullscreenCaptionPosition() },
-                                    onDragCancel = { persistFullscreenCaptionPosition() },
+                                    onDragEnd = {
+                                        fullscreenCaptionDragging = false
+                                        persistFullscreenCaptionPosition()
+                                        recordInteraction()
+                                    },
+                                    onDragCancel = {
+                                        fullscreenCaptionDragging = false
+                                        persistFullscreenCaptionPosition()
+                                        recordInteraction()
+                                    },
                                 ) { change, dragAmount ->
                                     change.consume()
                                     val currentLeft = (
@@ -6881,6 +6919,53 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             fullscreenMaxHeight = captionLaneHeight,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        AnimatedVisibility(
+                            visible = fullscreenCaptionAdjusting,
+                            enter = fadeIn(animationSpec = tween(120)),
+                            exit = fadeOut(animationSpec = tween(100)),
+                            modifier = Modifier.align(Alignment.TopEnd).padding(3.dp),
+                        ) {
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.72f),
+                                shape = RoundedCornerShape(16.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "字幕位置",
+                                        color = Color.White.copy(alpha = 0.88f),
+                                        fontSize = 10.sp,
+                                    )
+                                    IconButton(
+                                        onClick = { restoreFullscreenCaptionPosition() },
+                                        modifier = Modifier.size(30.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Refresh,
+                                            contentDescription = "恢复字幕默认位置",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            fullscreenCaptionAdjusting = false
+                                            recordInteraction()
+                                        },
+                                        modifier = Modifier.size(30.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Check,
+                                            contentDescription = "完成字幕位置调整",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
