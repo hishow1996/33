@@ -5944,11 +5944,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
-            val bottomReserved = when {
-                maxHeight < 96.dp -> 16.dp
-                maxHeight < 160.dp -> 28.dp
-                else -> 40.dp
-            }
+            val bottomReserved = 40.dp
             val availableRightHeight = (maxHeight - bottomReserved).coerceAtLeast(0.dp)
             val preferredControlSize = when {
                 maxHeight < 100.dp -> 28.dp
