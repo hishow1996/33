@@ -847,7 +847,7 @@ internal fun LocalTranslationSection(
                                 color = Color(0xFF3569D4),
                             )
                             Text(
-                                hyMtState.progress.toString() + "% · " +
+                                
                                     formatLocalModelBytes(hyMtState.downloadedBytes) + " / " +
                                     formatLocalModelBytes(hyMtState.totalBytes),
                                 color = Color(0xFF64748B),
@@ -1468,7 +1468,7 @@ internal fun LocalTranslationSection(
                                 color = Color(0xFF3569D4),
                             )
                             Text(
-                                small100State.progress.toString() + "% · " +
+                                
                                     formatLocalModelBytes(small100State.downloadedBytes) + " / " +
                                     formatLocalModelBytes(small100State.totalBytes),
                                 color = Color(0xFF64748B),
@@ -1631,7 +1631,7 @@ internal fun LocalTranslationSection(
                                 color = Color(0xFF3569D4),
                             )
                             Text(
-                                small100State.progress.toString() + "% · " +
+                                
                                     formatLocalModelBytes(small100State.downloadedBytes) + " / " +
                                     formatLocalModelBytes(small100State.totalBytes),
                                 color = Color(0xFF64748B),
