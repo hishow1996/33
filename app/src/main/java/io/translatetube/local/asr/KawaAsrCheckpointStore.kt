@@ -22,6 +22,8 @@ internal object KawaAsrCheckpointStore {
     private const val MAX_CUES = 200_000
     private const val MAX_TEXT_CHARS = 10_000
     const val MAX_AGE_MS = 7L * 24L * 60L * 60L * 1_000L
+    const val MAX_CACHED_FILES = 128
+    const val MAX_CACHED_BYTES = 96L * 1024L * 1024L
     private const val PARTIAL_MAX_AGE_MS = 6L * 60L * 60L * 1_000L
     private val digestPattern = Regex("^[0-9a-f]{64}$")
 
@@ -178,8 +180,15 @@ internal object KawaAsrCheckpointStore {
         }
     }
 
-    /** Remove only expired Kawa-owned result files and abandoned atomic-write stages. */
-    fun cleanupStale(directory: File, nowMs: Long = System.currentTimeMillis()): Int {
+    /**
+     * Expire old results and bound retained caches from other videos. Keep every checkpoint for
+     * the currently transcribed source so a long recording can still resume all completed chunks.
+     */
+    fun cleanupStale(
+        directory: File,
+        nowMs: Long = System.currentTimeMillis(),
+        activeIdentity: String? = null,
+    ): Int {
         val files = directory.listFiles() ?: return 0
         var deleted = 0
         for (file in files) {
@@ -190,6 +199,24 @@ internal object KawaAsrCheckpointStore {
             val ageLimit = if (isPartial) PARTIAL_MAX_AGE_MS else MAX_AGE_MS
             val modified = file.lastModified()
             if (modified > 0L && nowMs >= modified && nowMs - modified > ageLimit && file.delete()) {
+                deleted++
+            }
+        }
+
+        val activePrefix = activeIdentity?.takeIf { it.isNotBlank() }
+            ?.let { "kawa-${sha256(it).take(24)}-" }
+        val results = directory.listFiles { file ->
+            file.isFile && file.name.startsWith("kawa-") && file.name.endsWith(".json")
+        }?.sortedByDescending { it.lastModified() } ?: return deleted
+        var totalBytes = results.sumOf { it.length().coerceAtLeast(0L) }
+        var remaining = results.size
+        for (file in results.asReversed()) {
+            if (remaining <= MAX_CACHED_FILES && totalBytes <= MAX_CACHED_BYTES) break
+            if (activePrefix != null && file.name.startsWith(activePrefix)) continue
+            val size = file.length().coerceAtLeast(0L)
+            if (file.delete()) {
+                totalBytes = (totalBytes - size).coerceAtLeast(0L)
+                remaining--
                 deleted++
             }
         }
