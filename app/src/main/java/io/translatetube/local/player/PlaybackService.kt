@@ -6832,6 +6832,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 sourceImportedLines.isNullOrEmpty()
         val forceFreshTranslationForThisRun =
             EngineRestartStagePolicy.requiresFreshTranslation(forceRegenerateFromStage)
+        fun mustRegenerateTranslation(): Boolean =
+            forceFreshTranslationForThisRun ||
+                forceFreshTranslationPipelineGeneration == pipelineGeneration
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
@@ -7220,13 +7223,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // entries. Defer the YouTube lookup until the source cache/discovery identifies the flow.
             val deferYouTubeTranslationCacheLookup =
                 resumeState == null && videoId != null && sourceImportedLines.isNullOrEmpty()
-            if (forceFreshTranslationForThisRun) {
+            if (mustRegenerateTranslation()) {
                 runCatching { db.subtitleCacheDao().delete(translationCacheKey) }
             }
             var storedTranslationCache = if (
                 resumeState == null &&
                 !deferYouTubeTranslationCacheLookup &&
-                !forceFreshTranslationForThisRun
+                !mustRegenerateTranslation()
             ) {
                 db.subtitleCacheDao().get(translationCacheKey)
             } else null
@@ -7652,11 +7655,17 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(translationCacheKey = translationCacheKey)
                 }
-                storedTranslationCache = db.subtitleCacheDao().get(translationCacheKey)
-                cached = if (manualTranslationRequestedKeys.contains(key)) {
-                    null
+                if (mustRegenerateTranslation()) {
+                    runCatching { db.subtitleCacheDao().delete(translationCacheKey) }
+                    storedTranslationCache = null
+                    cached = null
                 } else {
-                    storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                    storedTranslationCache = db.subtitleCacheDao().get(translationCacheKey)
+                    cached = if (manualTranslationRequestedKeys.contains(key)) {
+                        null
+                    } else {
+                        storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                    }
                 }
                 if (storedTranslationCache != null && cached == null) {
                     android.util.Log.w(
@@ -7671,7 +7680,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // contained language/credential/decoder settings. Reuse an old translation only after
             // its original cue timeline is matched against the validated source transcript.
             val canRestoreLegacyAsrTranslation =
-                !forceFreshTranslationForThisRun &&
+                !mustRegenerateTranslation() &&
                     cached == null &&
                     !manualTranslationRequestedKeys.contains(key) &&
                     sourceImportedLines.isNullOrEmpty() &&
@@ -8920,9 +8929,7 @@ updateUiForSession(key, pipelineGeneration) {
             } else {
                 latestBaseModeAwareTranslationCacheKey
             }
-            val forceFreshTranslationNow =
-                forceFreshTranslationForThisRun ||
-                    forceFreshTranslationPipelineGeneration == pipelineGeneration
+            val forceFreshTranslationNow = mustRegenerateTranslation()
             val translationIdentityChanged = latestTranslationId != selectedTranslationId ||
                 latestProviderFingerprint != providerFingerprint ||
                 latestTranslationCacheKey != translationCacheKey
