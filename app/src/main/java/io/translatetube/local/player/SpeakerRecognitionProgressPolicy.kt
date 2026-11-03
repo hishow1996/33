@@ -29,7 +29,7 @@ object SpeakerRecognitionProgressPolicy {
 
     /** Audio fetched for speaker diarization is secondary player work, not stage-one processing. */
     fun audioAcquisitionProgress(message: String): SpeakerRecognitionProgressUpdate {
-        val percent = Regex("""(\\d+(?:\\.\\d+)?)%""")
+        val percent = Regex("""(\d+(?:\.\d+)?)\s*%""")
             .find(message)
             ?.groupValues
             ?.getOrNull(1)
