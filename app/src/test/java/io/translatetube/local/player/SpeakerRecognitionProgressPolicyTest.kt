@@ -22,7 +22,7 @@ class SpeakerRecognitionProgressPolicyTest {
             "YouTube · 独立音轨 · 正在下载 40.0 KB / 1.6 MB · 2%",
         )
         assertEquals("YouTube · 独立音轨 · 下载中", display.message)
-        assertEquals("40 KB / 1.6 MB", display.sizeDetail)
+        assertEquals("40 KB / 1.6 MB", display.secondaryDetail)
     }
 
     @Test
@@ -31,7 +31,7 @@ class SpeakerRecognitionProgressPolicyTest {
             "网页音轨 · 分段下载 3/10 · 30%",
         )
         assertEquals("网页音轨 · 分段下载 3/10", display.message)
-        assertNull(display.sizeDetail)
+        assertNull(display.secondaryDetail)
     }
 
     @Test
@@ -40,7 +40,7 @@ class SpeakerRecognitionProgressPolicyTest {
             "本地音轨 · 正在下载 1.5 MB / 预计约 8.0 MB · 18%",
         )
         assertEquals("本地音轨 · 下载中", display.message)
-        assertEquals("1.5 MB / 预计约 8 MB", display.sizeDetail)
+        assertEquals("1.5 MB / 预计约 8 MB", display.secondaryDetail)
     }
 
     @Test
