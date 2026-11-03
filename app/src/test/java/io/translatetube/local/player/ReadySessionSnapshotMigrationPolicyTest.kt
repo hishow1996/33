@@ -86,10 +86,10 @@ class ReadySessionSnapshotMigrationPolicyTest {
             ),
         )
 
-        val (validName, validBytes) = snapshot()
+        val (tooManyRowsName, tooManyRowsBytes) = snapshot(lineCount = 2)
         assertFalse(
             ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
-                validName, validBytes, 1, 1024L, 0,
+                tooManyRowsName, tooManyRowsBytes, 1, 1024L, 1,
             ),
         )
     }
@@ -98,26 +98,26 @@ class ReadySessionSnapshotMigrationPolicyTest {
         identity: String? = keyHash,
         startMs: Long = 0L,
         endMs: Long = 100L,
+        lineCount: Int = 1,
     ): Pair<String, ByteArray> {
         val identityPart = if (identity == null || identity == keyHash) "" else "${identity}_"
         val fileName = "ready_${keyHash}_${identityPart}${fingerprint}_include_asr.json"
+        val lines = JSONArray()
+        repeat(lineCount) { index ->
+            val lineStartMs = startMs + index * 100L
+            lines.put(
+                JSONObject()
+                    .put("s", lineStartMs)
+                    .put("e", endMs + index * 100L)
+                    .put("t", "hello"),
+            )
+        }
         val root = JSONObject()
             .put("version", 1)
             .put("keyHash", keyHash)
             .put("fingerprint", fingerprint)
             .put("ignoreTranscription", false)
-            .put(
-                "state",
-                JSONObject().put(
-                    "lines",
-                    JSONArray().put(
-                        JSONObject()
-                            .put("s", startMs)
-                            .put("e", endMs)
-                            .put("t", "hello"),
-                    ),
-                ),
-            )
+            .put("state", JSONObject().put("lines", lines))
         if (identity != null && identity != keyHash) root.put("identityHash", identity)
         return fileName to root.toString().toByteArray(Charsets.UTF_8)
     }
