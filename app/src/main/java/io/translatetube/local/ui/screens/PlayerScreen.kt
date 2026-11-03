@@ -5627,16 +5627,15 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     var speed by remember(state.key) { mutableStateOf(1.0f) }
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
 
-    // Hide the seekbar and player tools after a short idle period, whether playing or paused.
-    // Leave dropdown menus interactive; tapping the video toggles the controls back on.
+    // Hide the outer controls after inactivity. AnimatedVisibility below keeps the exit
+    // transition alive instead of removing the controls immediately.
     LaunchedEffect(state.key, state.isPlaying, controlsVisible, qualityExpanded, speedExpanded, scrubbing) {
         if (!controlsVisible || qualityExpanded || speedExpanded || scrubbing) return@LaunchedEffect
         delay(3_000)
         controlsVisible = false
     }
 
-    // This transparent tap target sits behind the controls, so tapping a button or seeking
-    // keeps its own gesture; a tap on the actual picture toggles the overlay.
+    // Transparent picture tap target remains behind all controls.
     Box(
         Modifier.fillMaxSize().pointerInput(state.key, state.isPlaying, controlsVisible) {
             detectTapGestures {
@@ -5656,191 +5655,215 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-    // A single transparent playback control is centered over the video.
-    // Keep Play visible while paused; show Pause only while the control overlay is visible.
+    // The center playback control stays available while paused and fades with the overlay while playing.
     val showCenterPlaybackControl = !state.isBuffering && playbackHint == null &&
         (!state.isPlaying || controlsVisible)
-    if (showCenterPlaybackControl) {
+    AnimatedVisibility(
+        visible = showCenterPlaybackControl,
+        enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+        exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+        modifier = Modifier.fillMaxSize(),
+    ) {
         Box(
             Modifier.fillMaxSize(),
-            contentAlignment = androidx.compose.ui.Alignment.Center,
+            contentAlignment = Alignment.Center,
         ) {
             IconButton(
                 onClick = {
                     if (state.isPlaying) PlaybackService.instance?.pausePlayback()
                     else PlaybackService.instance?.playPlayback()
                 },
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(52.dp),
             ) {
                 Icon(
                     imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     contentDescription = if (state.isPlaying) "暂停" else "播放",
                     tint = Color.White,
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier
+                        .size(44.dp)
+                        .shadow(2.dp, CircleShape, clip = false),
                 )
             }
         }
     }
 
-    if (controlsVisible) {
-        val seekThumbRadiusPx = with(LocalDensity.current) { 6.dp.toPx() }
+    AnimatedVisibility(
+        visible = controlsVisible,
+        enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+        exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val compactVideo = maxHeight < 180.dp
+            val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
+            val controlTargetSize = if (compactVideo) 44.dp else 48.dp
+            val rightControlsGap = if (compactVideo) 18.dp else 40.dp
+            val seekThumbRadiusPx = with(LocalDensity.current) { 6.dp.toPx() }
 
-        // Playback speed stays on the left edge, vertically centered.
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .padding(start = 14.dp),
-        ) {
-            IconButton(
-                onClick = { speedExpanded = true },
-                modifier = Modifier.size(44.dp),
+            // Speed remains on the left edge, vertically centered, with a full-size touch target.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = edgePadding),
             ) {
-                Icon(
-                    Icons.Filled.Speed,
-                    contentDescription = "播放倍速",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp),
-                )
-            }
-            DropdownMenu(
-                expanded = speedExpanded,
-                onDismissRequest = { speedExpanded = false },
-            ) {
-                speedOptions.forEach { value ->
-                    DropdownMenuItem(
-                        text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
-                        onClick = {
-                            speed = value
-                            PlaybackService.instance?.setSpeed(value)
-                            speedExpanded = false
-                        },
-                    )
-                }
-            }
-        }
-
-        // Quality is above picture-in-picture; the group is centered on the right side.
-        // A wider vertical gap keeps the two transparent icons visually distinct.
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(40.dp),
-        ) {
-            Box {
                 IconButton(
-                    onClick = { qualityExpanded = true },
-                    enabled = state.qualityOptions.isNotEmpty(),
-                    modifier = Modifier.size(44.dp),
+                    onClick = { speedExpanded = true },
+                    modifier = Modifier.size(controlTargetSize),
                 ) {
                     Icon(
-                        Icons.Filled.HighQuality,
-                        contentDescription = "选择清晰度",
-                        tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
-                        modifier = Modifier.size(24.dp),
+                        Icons.Filled.Speed,
+                        contentDescription = "播放倍速",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .shadow(2.dp, CircleShape, clip = false),
                     )
                 }
                 DropdownMenu(
-                    expanded = qualityExpanded,
-                    onDismissRequest = { qualityExpanded = false },
+                    expanded = speedExpanded,
+                    onDismissRequest = { speedExpanded = false },
                 ) {
-                    state.qualityOptions.forEach { quality ->
+                    speedOptions.forEach { value ->
                         DropdownMenuItem(
-                            text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
+                            text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
                             onClick = {
-                                qualityExpanded = false
-                                PlaybackService.instance?.selectQuality(quality)
+                                speed = value
+                                PlaybackService.instance?.setSpeed(value)
+                                speedExpanded = false
                             },
                         )
                     }
                 }
             }
 
-            IconButton(
-                onClick = { if (isFloating) onExitFloat() else onStartFloat() },
-                modifier = Modifier.size(44.dp),
+            // Quality is above picture-in-picture. Keep the preferred 40dp gap on normal
+            // video sizes and compact it only when the actual video height needs the space.
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = edgePadding),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(rightControlsGap),
             ) {
-                Icon(
-                    Icons.Filled.PictureInPictureAlt,
-                    contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
-                    tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
-                    modifier = Modifier.size(24.dp),
-                )
-            }
-        }
-
-        // The seekbar is the only control along the bottom; no panel or button row behind it.
-        Canvas(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp)
-                .padding(bottom = 8.dp)
-                .height(28.dp)
-                .pointerInput(state.key, state.durationMs) {
-                    detectTapGestures { offset ->
-                        val duration = (PlaybackService.instance?.duration() ?: 0L)
-                            .takeIf { it > 0L } ?: state.durationMs
-                        if (duration > 0L && size.width > 0) {
-                            val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
-                            pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
-                            PlaybackService.instance?.seek((pos * duration).toLong())
-                            scrubbing = false
+                Box {
+                    IconButton(
+                        onClick = { qualityExpanded = true },
+                        enabled = state.qualityOptions.isNotEmpty(),
+                        modifier = Modifier.size(controlTargetSize),
+                    ) {
+                        Icon(
+                            Icons.Filled.HighQuality,
+                            contentDescription = "选择清晰度",
+                            tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
+                            modifier = Modifier
+                                .size(24.dp)
+                                .shadow(2.dp, CircleShape, clip = false),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = qualityExpanded,
+                        onDismissRequest = { qualityExpanded = false },
+                    ) {
+                        state.qualityOptions.forEach { quality ->
+                            DropdownMenuItem(
+                                text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
+                                onClick = {
+                                    qualityExpanded = false
+                                    PlaybackService.instance?.selectQuality(quality)
+                                },
+                            )
                         }
                     }
                 }
-                .pointerInput(state.key, state.durationMs) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            scrubbing = true
-                            if (size.width > 0) {
-                                val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
-                                pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
-                            }
-                        },
-                        onDragEnd = {
+
+                IconButton(
+                    onClick = { if (isFloating) onExitFloat() else onStartFloat() },
+                    modifier = Modifier.size(controlTargetSize),
+                ) {
+                    Icon(
+                        Icons.Filled.PictureInPictureAlt,
+                        contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
+                        tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .shadow(2.dp, CircleShape, clip = false),
+                    )
+                }
+            }
+
+            // The seekbar is the only control along the bottom. Its transparent touch
+            // target is 36dp high while the visible track stays close to the lower edge.
+            Canvas(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 3.dp)
+                    .height(36.dp)
+                    .pointerInput(state.key, state.durationMs) {
+                        detectTapGestures { offset ->
                             val duration = (PlaybackService.instance?.duration() ?: 0L)
                                 .takeIf { it > 0L } ?: state.durationMs
-                            if (duration > 0L) PlaybackService.instance?.seek((pos * duration).toLong())
-                            scrubbing = false
-                        },
-                        onDragCancel = { scrubbing = false },
-                    ) { change, _ ->
-                        change.consume()
-                        if (size.width > 0) {
-                            val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
-                            pos = ((change.position.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
+                            if (duration > 0L && size.width > 0) {
+                                val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
+                                pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
+                                PlaybackService.instance?.seek((pos * duration).toLong())
+                                scrubbing = false
+                            }
                         }
                     }
-                },
-        ) {
-            val trackHeight = 2.dp.toPx()
-            val centerY = size.height / 2f
-            val thumbRadius = seekThumbRadiusPx
-            val trackWidth = (size.width - 2f * thumbRadius).coerceAtLeast(0f)
-            val thumbCenterX = thumbRadius + trackWidth * pos.coerceIn(0f, 1f)
-            val radius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
-            drawRoundRect(
-                color = Color(0x66FFFFFF),
-                topLeft = Offset(thumbRadius, centerY - trackHeight / 2f),
-                size = Size(trackWidth, trackHeight),
-                cornerRadius = radius,
-            )
-            val activeWidth = trackWidth * pos.coerceIn(0f, 1f)
-            if (activeWidth > 0f) {
+                    .pointerInput(state.key, state.durationMs) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                scrubbing = true
+                                if (size.width > 0) {
+                                    val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
+                                    pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
+                                }
+                            },
+                            onDragEnd = {
+                                val duration = (PlaybackService.instance?.duration() ?: 0L)
+                                    .takeIf { it > 0L } ?: state.durationMs
+                                if (duration > 0L) PlaybackService.instance?.seek((pos * duration).toLong())
+                                scrubbing = false
+                            },
+                            onDragCancel = { scrubbing = false },
+                        ) { change, _ ->
+                            change.consume()
+                            if (size.width > 0) {
+                                val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
+                                pos = ((change.position.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
+                            }
+                        }
+                    },
+            ) {
+                val trackHeight = 2.dp.toPx()
+                val centerY = size.height - 8.dp.toPx()
+                val thumbRadius = seekThumbRadiusPx
+                val trackWidth = (size.width - 2f * thumbRadius).coerceAtLeast(0f)
+                val thumbCenterX = thumbRadius + trackWidth * pos.coerceIn(0f, 1f)
+                val radius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
                 drawRoundRect(
-                    color = Color(0xFF5890FF),
+                    color = Color(0x66FFFFFF),
                     topLeft = Offset(thumbRadius, centerY - trackHeight / 2f),
-                    size = Size(activeWidth, trackHeight),
+                    size = Size(trackWidth, trackHeight),
                     cornerRadius = radius,
                 )
+                val activeWidth = trackWidth * pos.coerceIn(0f, 1f)
+                if (activeWidth > 0f) {
+                    drawRoundRect(
+                        color = Color(0xFF5890FF),
+                        topLeft = Offset(thumbRadius, centerY - trackHeight / 2f),
+                        size = Size(activeWidth, trackHeight),
+                        cornerRadius = radius,
+                    )
+                }
+                drawCircle(
+                    color = Color(0xFF5890FF),
+                    radius = thumbRadius,
+                    center = Offset(thumbCenterX, centerY),
+                )
             }
-            drawCircle(
-                color = Color(0xFF5890FF),
-                radius = thumbRadius,
-                center = Offset(thumbCenterX, centerY),
-            )
         }
     }
 }
