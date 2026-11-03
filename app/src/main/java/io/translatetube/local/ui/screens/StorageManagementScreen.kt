@@ -337,6 +337,89 @@ fun StorageManagementScreen(
         }
     }
 
+    fun requestPiperUninstall(model: StoragePiperModel) {
+        val selected = selectedTtsEngineId == "piper" && selectedPiperModelId == model.id
+        when {
+            destructiveBusy || actionBusy || scanning -> {
+                message = "当前有播放、处理或模型下载任务，暂不能卸载模型。"
+                messageError = true
+            }
+            model.id in PiperModels.activeModelIds.value -> {
+                message = "该音色仍被配音引擎占用，释放后才能卸载。"
+                messageError = true
+            }
+            selected -> {
+                message = "该音色仍是当前选择项，请先切换配音引擎或选择其他音色。"
+                messageError = true
+            }
+            else -> {
+                pendingPiperUninstall = PiperUninstallRequest(model.id, model.voiceLabel, model.bytes)
+                message = null
+                messageError = false
+            }
+        }
+    }
+
+    fun executePiperUninstall(request: PiperUninstallRequest) {
+        val prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val selectedNow = prefs.getString("tts_engine", "edge") == "piper" &&
+            (prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium") == request.id
+        if (destructiveBusy || actionBusy || scanning ||
+            request.id in PiperModels.activeModelIds.value || selectedNow
+        ) {
+            pendingPiperUninstall = null
+            message = when {
+                request.id in PiperModels.activeModelIds.value -> "配音引擎仍在使用该模型，已取消卸载。"
+                selectedNow -> "该音色已成为当前选择项，已取消卸载。"
+                else -> "当前有播放、处理或模型下载任务，已取消卸载。"
+            }
+            messageError = true
+            return
+        }
+        pendingPiperUninstall = null
+        actionBusy = true
+        message = null
+        messageError = false
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    AppLogStore.info(ctx, "StorageManagementScreen", "开始卸载 Piper 音色模型", diagnosticContext = mapOf(
+                        "模型 ID" to request.id,
+                        "音色名称" to request.voiceLabel,
+                        "卸载前占用 bytes" to request.bytes.toString(),
+                    ))
+                    PiperModels.uninstallInstalledModel(ctx, request.id)
+                }
+            }
+            val summary = result.fold(
+                onSuccess = { removed ->
+                    if (removed) "已卸载 " + request.voiceLabel + "，释放约 " + bytesLabel(request.bytes) + "。"
+                    else "模型目录已不存在，存储数据已刷新。"
+                },
+                onFailure = { failure -> "卸载失败：" + (failure.message ?: failure.javaClass.simpleName) },
+            )
+            message = summary
+            messageError = result.isFailure
+            withContext(Dispatchers.IO) {
+                val failure = result.exceptionOrNull()
+                if (failure != null) {
+                    AppLogStore.error(ctx, "StorageManagementScreen", "Piper 音色模型卸载失败", failure, diagnosticContext = mapOf(
+                        "模型 ID" to request.id,
+                        "音色名称" to request.voiceLabel,
+                        "错误摘要" to (failure.message ?: failure.javaClass.simpleName).take(300),
+                    ))
+                } else {
+                    AppLogStore.info(ctx, "StorageManagementScreen", "Piper 音色模型卸载完成", diagnosticContext = mapOf(
+                        "模型 ID" to request.id,
+                        "音色名称" to request.voiceLabel,
+                        "卸载前占用 bytes" to request.bytes.toString(),
+                    ))
+                }
+            }
+            actionBusy = false
+            refresh++
+        }
+    }
     fun requestClear(action: StorageAction) {
         pending = action
         message = null
@@ -558,7 +641,19 @@ fun StorageManagementScreen(
                         onPlay = onPlay,
                     )
                 } else {
-                    StorageDetail(category!!, data, scanning, destructiveBusy, actionBusy, ::requestClear, onOpenLogs)
+                    StorageDetail(
+                        category = category!!,
+                        data = data,
+                        scanning = scanning,
+                        busy = destructiveBusy,
+                        actionBusy = actionBusy,
+                        onAction = ::requestClear,
+                        onOpenLogs = onOpenLogs,
+                        selectedPiperModelId = selectedPiperModelId.takeIf { selectedTtsEngineId == "piper" },
+                        activePiperModelIds = activePiperModelIds,
+                        canUninstallPiperModels = !destructiveBusy && !actionBusy && !scanning,
+                        onUninstallPiper = ::requestPiperUninstall,
+                    )
                 }
             }
         }
@@ -585,6 +680,30 @@ fun StorageManagementScreen(
         )
     }
 
+    pendingPiperUninstall?.let { request ->
+        AlertDialog(
+            onDismissRequest = { if (!actionBusy) pendingPiperUninstall = null },
+            title = { Text("卸载 " + request.voiceLabel + "？", color = OnBg) },
+            text = {
+                Text(
+                    "将删除这个 Piper 音色模型，预计释放 " + bytesLabel(request.bytes) + "。其他模型、历史记录和字幕缓存不会受影响。",
+                    color = SubText,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !actionBusy && !destructiveBusy &&
+                        request.id !in activePiperModelIds &&
+                        !(selectedTtsEngineId == "piper" && selectedPiperModelId == request.id),
+                    onClick = { executePiperUninstall(request) },
+                ) { Text(if (actionBusy) "处理中…" else "确认卸载", color = DangerRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!actionBusy) pendingPiperUninstall = null }) { Text("取消", color = SubText) }
+            },
+            containerColor = SurfaceDark,
+        )
+    }
     pending?.let { action ->
         AlertDialog(
             onDismissRequest = { if (!actionBusy) pending = null },
