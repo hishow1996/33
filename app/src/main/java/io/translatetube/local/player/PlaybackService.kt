@@ -1154,7 +1154,7 @@ class PlaybackService : MediaSessionService() {
             val taskToken = recognition.taskToken
             if (
                 !recognition.canCancel ||
-                taskToken == speakerRecognitionCommitTaskToken ||
+                taskToken != null && taskToken == speakerRecognitionCommitTaskToken ||
                 job?.isActive != true ||
                 current.key.isBlank()
             ) return
