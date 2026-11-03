@@ -22,6 +22,45 @@ class ReadySessionSnapshotInvalidationPolicyTest {
     )
 
     @Test
+    fun youtubeCaptionPreferenceRefreshIsLimitedToCaptionFlows() {
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.AUTO,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.IMPORTED_SUBTITLES,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            ),
+        )
+    }
+
+    @Test
     fun sameCaptionTimelineIsMatchedAcrossTranslationAndTtsResults() {
         assertTrue(
             ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(

@@ -447,12 +447,13 @@ private object ReadyHistorySessionConfigStore {
             )
         ) return true
 
-        // Older imported-subtitle sessions may have stored a fingerprint that included ASR
-        // settings. Compare engine domains for those sessions so an unrelated ASR change does not
-        // make the completed imported subtitle result disappear from history.
+        // Older imported-subtitle sessions and YouTube ASR sessions may have a global
+        // fingerprint mismatch caused only by an unrelated preference. Compare the actual engine
+        // domains so history does not falsely mark reusable results as requiring a full reprocess.
         val importedSubtitleFlow = savedFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
             savedFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-        if (importedSubtitleFlow) {
+        val youtubeAsrFlow = isYouTube && savedFlow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+        if (importedSubtitleFlow || youtubeAsrFlow) {
             val previous = savedFingerprints(context, videoKey) ?: return false
             return !EngineRestartStagePolicy.hasRelevantConfigChange(
                 previous = previous,
@@ -1370,12 +1371,11 @@ class PlaybackService : MediaSessionService() {
         state: PlayerUiState,
         ignoreTranscription: Boolean,
     ): EngineRestartStage? {
-        // YouTube caption preference changes affect only captions fetched from YouTube.
-        // User-imported subtitles are already the authoritative source and must remain untouched.
-        val usesUserImportedSubtitles = state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
-            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-        if (!usesUserImportedSubtitles &&
-            ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)
+        // YouTube caption preference changes affect only sessions that actually consume
+        // downloaded YouTube captions (or legacy AUTO snapshots). ASR transcripts are independent.
+        if (
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(state.processingFlow) &&
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)
         ) {
             return EngineRestartStage.TRANSCRIPTION
         }
@@ -1529,13 +1529,17 @@ class PlaybackService : MediaSessionService() {
         activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
             if (changedKey != null && isProcessingEnginePreferenceKey(changedKey)) {
+                val current = ui.value
                 if (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY && videoKey.isNotBlank()) {
+                    val usesYouTubeCaptionSource =
+                        current.key == videoKey &&
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(current.processingFlow)
                     pendingYouTubeSubtitleRefreshKey =
-                        if (selectedYouTubeSubtitleMode() != activeProcessingYouTubeSubtitleMode) videoKey
-                        else null
+                        if (usesYouTubeCaptionSource &&
+                            selectedYouTubeSubtitleMode() != activeProcessingYouTubeSubtitleMode
+                        ) videoKey else null
                 }
                 val latestFingerprint = processingEnginePreferenceFingerprint()
-                val current = ui.value
                 if (!shouldRestartForEnginePreferenceChange(current)) {
                     processingEngineConfigFingerprint = latestFingerprint
                     processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
@@ -1598,9 +1602,11 @@ class PlaybackService : MediaSessionService() {
                         } else {
                             null
                         }
-                        val forceYouTubeSubtitleRefresh = !usesUserImportedSubtitles &&
-                            pendingSubtitleModeRefresh &&
-                            restartVideoIdCandidate != null
+                        val forceYouTubeSubtitleRefresh =
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(state.processingFlow) &&
+                                !usesUserImportedSubtitles &&
+                                pendingSubtitleModeRefresh &&
+                                restartVideoIdCandidate != null
                         val ignoreTranscriptionForCurrentFlow =
                             state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
                                 usesUserImportedSubtitles ||
