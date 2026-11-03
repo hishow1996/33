@@ -6244,7 +6244,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val seekbarSafeBottom = with(this) {
                         if (isFullscreen) 108.dp.toPx() else 44.dp.toPx()
                     }
-                    val rightControlSafeEdge = if (isFullscreen && controlsVisible) {
+                    val rightControlSafeEdge = if (controlsVisible) {
                         with(this) {
                             if (shortLandscapeControls) 164.dp.toPx() else 64.dp.toPx()
                         }
@@ -6252,8 +6252,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val rightControlSafeTop = if (shortLandscapeControls && controlsVisible) {
                         with(this) { 104.dp.toPx() }
                     } else 0f
-                    val startsInsideRightControls = isFullscreen &&
-                        controlsVisible &&
+                    val startsInsideRightControls = controlsVisible &&
                         down.position.x > size.width - rightControlSafeEdge &&
                         (!shortLandscapeControls || down.position.y < rightControlSafeTop)
                     if (
