@@ -75,11 +75,13 @@ private enum class StorageAction(val title: String) {
 
 private data class HistoryDeleteRequest(val keys: List<String>, val clearAll: Boolean = false)
 private data class HistoryDeletionOutcome(val removedCount: Int, val failedItems: List<String> = emptyList())
+private data class StoragePiperModel(val id: String, val languageLabel: String, val voiceLabel: String, val bytes: Long)
+private data class PiperUninstallRequest(val id: String, val voiceLabel: String, val bytes: Long)
 private data class StorageSnapshot(
     val total: Long, val availableBytes: Long, val capacityBytes: Long,
     val cache: Long, val subtitleCount: Int, val subtitleBytes: Long,
     val historyCount: Int, val favorites: Int, val models: Long, val tts: Long, val whisper: Long,
-    val senseVoice: Long, val piperBytes: Long, val piperCount: Int, val ttsReady: Boolean, val whisperReady: Boolean,
+    val senseVoice: Long, val piperBytes: Long, val piperCount: Int, val piperModels: List<StoragePiperModel>, val ttsReady: Boolean, val whisperReady: Boolean,
     val senseReady: Boolean, val selectedAsr: String, val database: Long, val logs: Long,
     val logCount: Int, val timestamp: Long, val warnings: List<String>,
 )
@@ -99,6 +101,9 @@ fun StorageManagementScreen(
     val asrState by manager.asr.collectAsState()
     val player by PlaybackService.ui.collectAsState()
     val piperDownloads by PiperModels.activeDownloadCount.collectAsState()
+    val activePiperModelIds by PiperModels.activeModelIds.collectAsState()
+    val selectedTtsEngineId = remember(refresh) { ctx.getSharedPreferences("settings", Context.MODE_PRIVATE).getString("tts_engine", "edge") ?: "edge" }
+    val selectedPiperModelId = remember(refresh) { ctx.getSharedPreferences("settings", Context.MODE_PRIVATE).getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium" }
     var data by remember { mutableStateOf<StorageSnapshot?>(null) }
     var scanning by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
@@ -114,6 +119,7 @@ fun StorageManagementScreen(
     var historyMenuExpanded by remember { mutableStateOf(false) }
     var historyFavoritesOnly by remember(historyOnly) { mutableStateOf(false) }
     var pendingHistoryDelete by remember { mutableStateOf<HistoryDeleteRequest?>(null) }
+    var pendingPiperUninstall by remember { mutableStateOf<PiperUninstallRequest?>(null) }
 
     LaunchedEffect(db) {
         db.videoDao().all().collect { items ->
