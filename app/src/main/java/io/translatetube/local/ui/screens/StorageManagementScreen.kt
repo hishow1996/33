@@ -1298,7 +1298,7 @@ private fun scanDirectoryTreeOnce(
     warnings: MutableList<String>,
 ): DirectoryTreeSnapshot {
     val targetPaths = targets.mapValues { (_, directory) ->
-        directory.absoluteFile.toPath().normalize().toString().trimEnd(File.separatorChar)
+        directory.absolutePath.trimEnd(File.separatorChar)
     }
     val sizes = targetPaths.keys.associateWith { 0L }.toMutableMap()
     var totalBytes = 0L
@@ -1313,7 +1313,7 @@ private fun scanDirectoryTreeOnce(
             if (!file.isFile) return@forEach
             val bytes = file.length().coerceAtLeast(0L)
             totalBytes = addSaturated(totalBytes, bytes)
-            val filePath = file.absoluteFile.toPath().normalize().toString()
+            val filePath = file.absolutePath
             for ((key, targetPath) in targetPaths) {
                 if (filePath == targetPath || filePath.startsWith(targetPath + File.separator)) {
                     sizes[key] = addSaturated(sizes.getValue(key), bytes)
