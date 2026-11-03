@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -5797,6 +5798,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     }
     var volumeGestureActive by remember(state.key) { mutableStateOf(false) }
     var volumeProgress by remember(state.key) { mutableStateOf(0f) }
+    val animatedVolumeProgress by animateFloatAsState(
+        targetValue = volumeProgress.coerceIn(0f, 1f),
+        animationSpec = tween(90, easing = FastOutSlowInEasing),
+        label = "volume-gesture-progress",
+    )
 
     // Respect the actual host lifecycle (including the floating-window owner).
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -5934,9 +5940,14 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val initialVolume = runCatching {
                         audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                     }.getOrDefault(0).coerceIn(0, maxMusicVolume)
-                    val dragRangePx = (size.height * 0.58f).coerceAtLeast(1f)
+                    // Keep the same physical travel distance on short landscape windows;
+                    // otherwise a short swipe can jump several volume steps at once.
+                    val dragRangePx = maxOf(
+                        size.height * 0.58f,
+                        with(this) { 240.dp.toPx() },
+                    ).coerceAtLeast(1f)
                     var claimedVolumeGesture = false
-                    var lastAppliedVolume = initialVolume
+                    var lastRequestedVolume = initialVolume
 
                     try {
                         while (true) {
@@ -5969,17 +5980,22 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     initialVolume.toFloat() -
                                         deltaY / dragRangePx * maxMusicVolume.toFloat()
                                     ).roundToInt().coerceIn(0, maxMusicVolume)
-                                if (nextVolume != lastAppliedVolume) {
-                                    val applied = runCatching {
+                                if (nextVolume != lastRequestedVolume) {
+                                    val actualVolume = runCatching {
                                         audioManager.setStreamVolume(
                                             AudioManager.STREAM_MUSIC,
                                             nextVolume,
                                             0,
                                         )
-                                    }.isSuccess
-                                    if (applied) {
-                                        lastAppliedVolume = nextVolume
-                                        volumeProgress = nextVolume.toFloat() / maxMusicVolume.toFloat()
+                                        // Read back the system value so the indicator follows
+                                        // any device-side volume cap instead of assuming success.
+                                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                    }.getOrNull()
+                                    lastRequestedVolume = nextVolume
+                                    if (actualVolume != null) {
+                                        volumeProgress = actualVolume
+                                            .coerceIn(0, maxMusicVolume)
+                                            .toFloat() / maxMusicVolume.toFloat()
                                     }
                                 }
                             }
@@ -6283,7 +6299,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Icon(
-                    imageVector = if (volumeProgress <= 0f) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                    imageVector = when {
+                        volumeProgress <= 0f -> Icons.Filled.VolumeOff
+                        volumeProgress < 0.34f -> Icons.Filled.VolumeDown
+                        else -> Icons.Filled.VolumeUp
+                    },
                     contentDescription = "媒体音量",
                     tint = Color.White,
                     modifier = Modifier
@@ -6300,7 +6320,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .fillMaxWidth(volumeProgress.coerceIn(0f, 1f))
+                            .fillMaxWidth(animatedVolumeProgress)
                             .clip(CircleShape)
                             .background(Color(0xFF5890FF)),
                     )
