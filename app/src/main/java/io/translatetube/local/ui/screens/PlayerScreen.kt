@@ -6025,8 +6025,15 @@ private fun SubtitleList(
             itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
                 val active = i == activeSubtitleIndex
                 val activeScale = if (active) activeSubtitlePulse else 1f
+                val originalText = remember(line.text) { line.text.trim() }
                 val translatedText = remember(line.text, line.zh) {
-                    subtitleDisplayText(line)
+                    SubtitleParsers.preferredTranslationText(line)?.takeIf { it.isNotBlank() }
+                }
+                // Chinese-source captions can already have zh == text. Avoid rendering the same
+                // sentence twice while keeping the original visible whenever a translation exists.
+                val showOriginalText = remember(originalText, translatedText) {
+                    originalText.isNotBlank() &&
+                        (translatedText.isNullOrBlank() || originalText != translatedText)
                 }
 
                 Column(
@@ -6038,23 +6045,39 @@ private fun SubtitleList(
                         .clickable(
                             enabled = svc != null && line.startMs >= 0L && line.endMs > line.startMs,
                         ) { svc?.seekAndPlay(line.startMs) }
-                        .padding(horizontal = 10.dp, vertical = if (active) 6.dp else 5.dp),
-                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        translatedText,
-                        // Use identical emphasis whether the active cue is source-audio or dubbed playback.
-                        color = if (active) BrandBright else SubText,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (active) 16.sp else 14.sp,
-                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                        ),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().graphicsLayer {
+                        .padding(horizontal = 10.dp, vertical = if (active) 7.dp else 6.dp)
+                        .graphicsLayer {
                             scaleX = activeScale
                             scaleY = activeScale
                         },
-                    )
+                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (showOriginalText) {
+                        Text(
+                            originalText,
+                            color = SubText.copy(alpha = if (active) 0.92f else 0.78f),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = if (active) 13.sp else 12.sp,
+                                fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                            ),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    translatedText?.let { translated ->
+                        Text(
+                            translated,
+                            // Use identical emphasis whether the active cue is source-audio or dubbed playback.
+                            color = if (active) BrandBright else SubText,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontSize = if (active) 16.sp else 14.sp,
+                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            ),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }
