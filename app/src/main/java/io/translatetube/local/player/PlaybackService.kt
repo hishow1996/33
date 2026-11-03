@@ -1168,10 +1168,15 @@ class PlaybackService : MediaSessionService() {
         ) { ignore ->
             ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
         }
+        val youtubeSubtitleModeChanged =
+            isYouTube &&
+                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key)
         if (
             currentConfigSnapshot != null &&
             currentConfigSnapshot.fingerprint != completedReadySessionEngineFingerprint &&
-            !ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
+            !ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key) &&
+            !youtubeSubtitleModeChanged
         ) {
             val restoredState = currentConfigSnapshot.state.copy(
                 // Playback volume controls audibility; keep timeline preparation independent so
