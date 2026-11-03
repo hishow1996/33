@@ -504,12 +504,14 @@ class MainActivity : ComponentActivity() {
                                     // but the service's key/phase/progress are still the live session.
                                     // Match the persisted source+active pair directly and reconnect to
                                     // that session instead of calling PlayerScreen.open() for a new run.
-                                    val savedTaskMatchesLive = savedTask != null &&
-                                        live.key == savedTask.activeKey &&
-                                        (taskKey == savedTask.sourceKey || taskKey == savedTask.activeKey)
-                                    val belongsToExistingRun = live.phase != Phase.IDLE &&
-                                        live.key.isNotBlank() &&
-                                        (live.key == taskKey || savedTaskMatchesLive)
+                                    val belongsToExistingRun =
+                                        PendingMediaResumeContextPolicy.shouldReconnectToLiveTask(
+                                            livePhase = live.phase,
+                                            liveKey = live.key,
+                                            requestedTaskKey = taskKey,
+                                            savedSourceKey = savedTask?.sourceKey,
+                                            savedActiveKey = savedTask?.activeKey,
+                                        )
                                     if (belongsToExistingRun) {
                                         val activeRequest = currentRequest?.takeIf { it.key == live.key }
                                             ?: when {
