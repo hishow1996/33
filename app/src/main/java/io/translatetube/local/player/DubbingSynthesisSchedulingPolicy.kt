@@ -8,6 +8,26 @@ package io.translatetube.local.player
 internal object DubbingSynthesisSchedulingPolicy {
     const val DEFER_DELAY_MS = 120L
 
+    /**
+     * A full queue reorder is needed only when the playhead leaves the previously promoted
+     * window, seeks backward, or asks for a wider look-ahead. Normal forward playback updates
+     * the live playhead without repeatedly sorting every pending subtitle.
+     */
+    fun shouldRefreshPriorityWindow(
+        currentIndex: Int,
+        queueWindowStart: Int,
+        currentLookAhead: Int,
+        requestedLookAhead: Int,
+    ): Boolean {
+        if (currentIndex < 0) return false
+        if (queueWindowStart < 0) return true
+        val currentAhead = currentLookAhead.coerceAtLeast(0)
+        val requestedAhead = requestedLookAhead.coerceAtLeast(0)
+        return requestedAhead > currentAhead ||
+            currentIndex < queueWindowStart ||
+            currentIndex.toLong() > queueWindowStart.toLong() + currentAhead.toLong()
+    }
+
     fun shouldDefer(
         index: Int,
         currentIndex: Int,

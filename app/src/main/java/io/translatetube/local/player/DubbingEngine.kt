@@ -237,7 +237,10 @@ class DubbingEngine(
     @Volatile private var activeSynthesisIndex = -1
     /** Cache misses observed while the same cue is synthesizing are reconsidered when it exits. */
     private val retryAfterActiveSynthesis = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+    /** Latest playhead cue used by the worker's defer policy. */
     @Volatile private var priorityTarget = -1
+    /** Anchor of the last full queue reorder; separate from the moving playhead. */
+    @Volatile private var priorityQueueWindowStart = -1
     @Volatile private var priorityLookAhead = 2
     @Volatile private var synthJob: Job? = null
     @Volatile private var cacheInitJob: Job? = null
@@ -499,6 +502,7 @@ class DubbingEngine(
             readinessProgress.clear(this.lines.size, ::publishReadinessProgress)
             pending.clear()
             priorityTarget = -1
+            priorityQueueWindowStart = -1
             priorityLookAhead = 2
             latestTimelineCursor = DubbingTimelineCursor()
             logDubbingInfo(
@@ -622,6 +626,7 @@ class DubbingEngine(
                                     this@DubbingEngine.lines.size,
                                     lookAhead = priorityLookAhead,
                                 ).forEach { pending.offerLast(it) }
+                                priorityQueueWindowStart = target
                             }
                         }
                         bumpPrepared()
@@ -704,7 +709,9 @@ class DubbingEngine(
                                 queued,
                                 target,
                                 this@DubbingEngine.lines.size,
+                                lookAhead = priorityLookAhead,
                             ).forEach { pending.offerLast(it) }
+                            priorityQueueWindowStart = target
                         }
                     }
                     if (!released && generation == cacheInitGeneration.get()) {
@@ -745,11 +752,27 @@ class DubbingEngine(
                     }
                     if (!released && generation == cacheInitGeneration.get()) {
                         // Cache I/O failure must not permanently strand the dubbing queue.
-                        pending.clear()
-                        this@DubbingEngine.lines.indices
-                            .filter { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
-                            .filterNot { readiness.isReady(it) }
-                            .forEach { pending.offerLast(it) }
+                        synchronized(pending) {
+                            pending.clear()
+                            this@DubbingEngine.lines.indices
+                                .filter { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
+                                .filterNot { readiness.isReady(it) }
+                                .forEach { pending.offerLast(it) }
+                            val target = priorityTarget
+                            if (target in this@DubbingEngine.lines.indices) {
+                                val queued = mutableListOf<Int>()
+                                pending.drainTo(queued)
+                                DubbingQueueOrder.prioritize(
+                                    queued,
+                                    target,
+                                    this@DubbingEngine.lines.size,
+                                    lookAhead = priorityLookAhead,
+                                ).forEach { pending.offerLast(it) }
+                                priorityQueueWindowStart = target
+                            } else {
+                                priorityQueueWindowStart = -1
+                            }
+                        }
                         this@DubbingEngine.lines.indices
                             .filterNot { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
                             .forEach { markCuePrepared(it, hasAudio = false) }
@@ -787,9 +810,28 @@ class DubbingEngine(
     fun prioritizeAround(index: Int, lookAhead: Int? = null) {
         if (released || synthesisMemoryFailure || index !in lines.indices) return
         val requestedAhead = (lookAhead ?: priorityLookAhead).coerceIn(2, 12)
-        if (index == priorityTarget && requestedAhead <= priorityLookAhead) return
+
+        // The playhead moves on almost every subtitle boundary. Keep the worker's scheduling
+        // target current, but do not drain/re-sort the full long-video backlog while it remains
+        // inside the range already promoted to the front of the queue.
+        priorityTarget = index
+        if (!DubbingSynthesisSchedulingPolicy.shouldRefreshPriorityWindow(
+                currentIndex = index,
+                queueWindowStart = priorityQueueWindowStart,
+                currentLookAhead = priorityLookAhead,
+                requestedLookAhead = requestedAhead,
+            )
+        ) return
+
         synchronized(pending) {
-            if (index == priorityTarget && requestedAhead <= priorityLookAhead) return
+            priorityTarget = index
+            if (!DubbingSynthesisSchedulingPolicy.shouldRefreshPriorityWindow(
+                    currentIndex = index,
+                    queueWindowStart = priorityQueueWindowStart,
+                    currentLookAhead = priorityLookAhead,
+                    requestedLookAhead = requestedAhead,
+                )
+            ) return
             val queued = mutableListOf<Int>()
             pending.drainTo(queued)
             val effectiveAhead = maxOf(priorityLookAhead, requestedAhead)
@@ -800,7 +842,7 @@ class DubbingEngine(
                 lookAhead = effectiveAhead,
             )
             reordered.forEach { pending.offerLast(it) }
-            priorityTarget = index
+            priorityQueueWindowStart = index
             priorityLookAhead = effectiveAhead
         }
     }
@@ -3899,6 +3941,7 @@ class DubbingEngine(
         synchronized(pending) {
             pending.clear()
             priorityTarget = -1
+            priorityQueueWindowStart = -1
             priorityLookAhead = 2
         }
         synthesisRealtimeFactorValue = Float.NaN
