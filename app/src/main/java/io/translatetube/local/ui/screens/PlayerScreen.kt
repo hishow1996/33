@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -94,6 +96,9 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.LineBreak
@@ -169,6 +174,44 @@ fun PlayerScreen(
     showPlayerWhileRestoringHistory: Boolean = false,
 ) {
     val ctx = LocalContext.current
+    val activity = remember(ctx) {
+        var currentContext: android.content.Context? = ctx
+        while (
+            currentContext != null &&
+            currentContext !is android.app.Activity &&
+            currentContext is android.content.ContextWrapper
+        ) {
+            currentContext = currentContext.baseContext
+        }
+        currentContext as? android.app.Activity
+    }
+    var isFullscreen by remember { mutableStateOf(false) }
+
+    DisposableEffect(activity, isFullscreen) {
+        if (activity != null && isFullscreen) {
+            val previousOrientation = activity.requestedOrientation
+            val window = activity.window
+            val insetsController = WindowInsetsControllerCompat(window, window.decorView)
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            insetsController.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+            activity.requestedOrientation =
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            onDispose {
+                runCatching { activity.requestedOrientation = previousOrientation }
+                runCatching {
+                    insetsController.show(WindowInsetsCompat.Type.systemBars())
+                    WindowCompat.setDecorFitsSystemWindows(window, true)
+                }
+            }
+        } else {
+            onDispose {}
+        }
+    }
+    BackHandler(enabled = isFullscreen) {
+        isFullscreen = false
+    }
     val settingsPrefs = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
     val selectedTtsEngine = io.translatetube.local.player.DubbingConfigPreferencePolicy
         .normalizeEngineId(settingsPrefs.getString("tts_engine", "edge"))
@@ -815,7 +858,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     }
 
     Box(
-        Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
+        Modifier.fillMaxSize()
+            .background(BgDark)
+            .then(if (isFullscreen) Modifier else Modifier.systemBarsPadding())
     ) {
         if (showProcessingPage) {
             VideoParsingPage(
@@ -835,6 +880,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             )
         } else {
         Column(Modifier.fillMaxSize()) {
+            if (!isFullscreen) {
             // ===== 顶部栏（保留原导航栏外观与位置） =====
             Box(
                 Modifier
@@ -1207,11 +1253,16 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             }
             }
 
+            }
+
             // ===== 视频画面（常驻容器，浮窗时 tv 被摘走；竖屏视频自适应比例） =====
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .aspectRatio(state.videoAspect)
+                    .then(
+                        if (isFullscreen) Modifier.weight(1f)
+                        else Modifier.aspectRatio(state.videoAspect),
+                    )
                     .background(Color(0xFF172033))
             ) {
                 AndroidView(
@@ -1230,9 +1281,19 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         state = state,
                         playbackHint = playbackHint,
                         isFloating = isFloating,
+                        isFullscreen = isFullscreen,
                         onStartFloat = { startFloatingWindow() },
                         onExitFloat = { exitFloating() },
+                        onToggleFullscreen = { isFullscreen = !isFullscreen },
+                        onExitFullscreen = { isFullscreen = false },
                         onTimelineScrubbingChanged = { timelineScrubbing = it },
+                    )
+                }
+                if (isFullscreen && state.key == requestKey) {
+                    CurrentSubtitleStrip(
+                        state = state,
+                        fullscreen = true,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 64.dp),
                     )
                 }
                 // A compatible history item opens this player immediately. While its media session
@@ -1319,6 +1380,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 }
             }
 
+            if (!isFullscreen) {
             Spacer(Modifier.height(6.dp))
 
             // 模型/配音问题提示可以单独关闭；关闭只隐藏提示，不会改变播放状态。
@@ -1394,18 +1456,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             }
 
             if (state.key == requestKey) {
-                CurrentSubtitleStrip(state = state)
-            } else {
-                Box(
-                    Modifier.fillMaxWidth().heightIn(min = 28.dp),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    Text("正在载入历史视频字幕…", color = SubText, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Spacer(Modifier.height(5.dp))
-
-            if (state.key == requestKey) {
                 PlaybackModeSelector(
                     state = state,
                     subtitlesVisible = subtitlesVisible,
@@ -1449,6 +1499,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         Text("字幕显示已关闭", color = SubText, style = MaterialTheme.typography.bodyLarge)
                     }
                 }
+            }
+            if (state.key == requestKey) {
+                Spacer(Modifier.height(4.dp))
+                CurrentSubtitleStrip(state = state)
+            }
             }
         }
         }
@@ -5065,80 +5120,63 @@ private fun AllSubtitlesDialog(
 }
 
 @Composable
-private fun CurrentSubtitleStrip(state: PlayerUiState) {
-    // Both the strip and the subtitle list render the same single playhead-selected cue.
-    // Do not replace it with a multi-cue TTS merge: the audio may combine neighboring cues,
-    // but the on-screen caption must stay aligned with state.currentLine.
+private fun CurrentSubtitleStrip(
+    state: PlayerUiState,
+    fullscreen: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    // Keep the caption bound to the single subtitle cue selected by the playback head.
     val index = state.currentLine.takeIf { it in state.lines.indices } ?: -1
     val currentLine = state.lines.getOrNull(index)
-    val currentText = remember(currentLine?.text, currentLine?.zh) {
+    val chineseText = remember(currentLine?.text, currentLine?.zh) {
         currentLine?.let(::subtitleDisplayText).orEmpty()
     }
-
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(46.dp)
-            .background(Color(0xFFE8EFFF))
-            .padding(horizontal = 8.dp),
-        contentAlignment = androidx.compose.ui.Alignment.Center,
-    ) {
-        if (currentText.isNotBlank()) {
-            val textMeasurer = rememberTextMeasurer()
-            val density = LocalDensity.current
-            val widthPx = with(density) { maxWidth.roundToPx() }
-            val heightPx = with(density) { maxHeight.roundToPx() }
-            val baseStyle = MaterialTheme.typography.bodyMedium.copy(
-                color = BrandBright,
-                fontWeight = FontWeight.Medium,
-            )
-            // Allow two readable lines. Longer cues scale down only as much as needed
-            // to fit in this compact region, rather than being clipped with an ellipsis.
-            val fontSizeSp = remember(currentText, widthPx, heightPx, baseStyle.fontSize) {
-                var low = 8.5f
-                var high = 15.5f
-                var best = low
-                repeat(16) {
-                    val candidate = (low + high) / 2f
-                    val measured = textMeasurer.measure(
-                        text = currentText,
-                        style = baseStyle.copy(
-                            fontSize = candidate.sp,
-                            lineHeight = (candidate * 1.22f).sp,
-                        ),
-                        softWrap = true,
-                        maxLines = 2,
-                        overflow = TextOverflow.Clip,
-                        constraints = Constraints(
-                            maxWidth = widthPx,
-                            maxHeight = heightPx,
-                        ),
-                    )
-                    if (!measured.didOverflowWidth &&
-                        !measured.didOverflowHeight &&
-                        measured.lineCount <= 2
-                    ) {
-                        best = candidate
-                        low = candidate
-                    } else {
-                        high = candidate
-                    }
-                }
-                best
+    val originalText = currentLine?.text.orEmpty()
+    if (chineseText.isNotBlank() || originalText.isNotBlank()) {
+        val container = if (fullscreen) {
+            modifier
+                .fillMaxWidth()
+                .padding(horizontal = 42.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.42f))
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+        } else {
+            modifier
+                .fillMaxWidth()
+                .heightIn(min = 46.dp)
+                .background(Color(0xFFE8EFFF))
+                .padding(horizontal = 8.dp, vertical = 5.dp)
+        }
+        Column(
+            modifier = container,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(if (fullscreen) 2.dp else 1.dp),
+        ) {
+            if (chineseText.isNotBlank()) {
+                Text(
+                    text = chineseText,
+                    color = if (fullscreen) Color.White else BrandBright,
+                    fontSize = if (fullscreen) 14.sp else 15.sp,
+                    lineHeight = if (fullscreen) 17.sp else 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
-            Text(
-                text = currentText,
-                color = BrandBright,
-                style = baseStyle.copy(
-                    fontSize = fontSizeSp.sp,
-                    lineHeight = (fontSizeSp * 1.22f).sp,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                maxLines = 2,
-                softWrap = true,
-                overflow = TextOverflow.Clip,
-            )
+            if (originalText.isNotBlank()) {
+                Text(
+                    text = originalText,
+                    color = if (fullscreen) Color(0xFFE1E5EC) else Color(0xFF64748B),
+                    fontSize = 12.sp,
+                    lineHeight = 14.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 }
@@ -5809,8 +5847,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
     playbackHint: PlaybackHint?,
     isFloating: Boolean,
+    isFullscreen: Boolean,
     onStartFloat: () -> Unit,
     onExitFloat: () -> Unit,
+    onToggleFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit,
     onTimelineScrubbingChanged: (Boolean) -> Unit,
 ) {
     val latestTimelineScrubbingChanged by rememberUpdatedState(onTimelineScrubbingChanged)
@@ -6122,49 +6163,82 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             Box(
                 modifier = Modifier.align(Alignment.CenterStart).padding(start = edgePadding),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    PlaybackOverlayIconButton(
-                        icon = Icons.Filled.Speed,
-                        contentDescription = "播放倍速",
-                        touchSize = controlTargetSize,
-                        iconSize = controlIconSize,
-                        tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                        enabled = controlsVisible,
-                        onInteraction = recordInteraction,
-                        onClick = { speedExpanded = true },
-                    )
-                    Text(
-                        text = "${speedLabel}×",
-                        color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            shadow = androidx.compose.ui.graphics.Shadow(
-                                color = Color.Black.copy(alpha = 0.85f),
-                                offset = Offset(0f, 1f),
-                                blurRadius = 3f,
-                            ),
-                        ),
-                        modifier = Modifier.padding(end = 8.dp),
-                    )
-                }
-                DropdownMenu(
-                    expanded = speedExpanded,
-                    onDismissRequest = {
-                        if (speedExpanded) recordInteraction()
-                        speedExpanded = false
-                    },
+                Column(
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(24.dp),
                 ) {
-                    speedOptions.forEach { value ->
-                        DropdownMenuItem(
-                            text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
-                            onClick = {
-                                PlaybackService.instance?.setSpeed(value)
-                                recordInteraction()
+                    Box {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            PlaybackOverlayIconButton(
+                                icon = Icons.Filled.Speed,
+                                contentDescription = "播放倍速",
+                                touchSize = controlTargetSize,
+                                iconSize = controlIconSize,
+                                tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                                enabled = controlsVisible,
+                                onInteraction = recordInteraction,
+                                onClick = { speedExpanded = true },
+                            )
+                            Text(
+                                text = "${speedLabel}×",
+                                color = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    shadow = androidx.compose.ui.graphics.Shadow(
+                                        color = Color.Black.copy(alpha = 0.85f),
+                                        offset = Offset(0f, 1f),
+                                        blurRadius = 3f,
+                                    ),
+                                ),
+                                modifier = Modifier.padding(end = 8.dp),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = speedExpanded,
+                            onDismissRequest = {
+                                if (speedExpanded) recordInteraction()
                                 speedExpanded = false
                             },
-                        )
+                        ) {
+                            speedOptions.forEach { value ->
+                                DropdownMenuItem(
+                                    text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
+                                    onClick = {
+                                        PlaybackService.instance?.setSpeed(value)
+                                        recordInteraction()
+                                        speedExpanded = false
+                                    },
+                                )
+                            }
+                        }
                     }
+                    PlaybackOverlayIconButton(
+                        icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                        contentDescription = if (isFullscreen) "退出全屏" else "进入全屏",
+                        touchSize = controlTargetSize,
+                        iconSize = controlIconSize,
+                        enabled = controlsVisible,
+                        onInteraction = recordInteraction,
+                        onClick = onToggleFullscreen,
+                    )
+                }
+            }
+
+            if (isFullscreen) {
+                Box(
+                    modifier = Modifier.align(Alignment.TopStart)
+                        .padding(start = edgePadding, top = 8.dp),
+                ) {
+                    PlaybackOverlayIconButton(
+                        icon = Icons.Filled.ArrowBack,
+                        contentDescription = "退出全屏",
+                        touchSize = controlTargetSize,
+                        iconSize = controlIconSize,
+                        enabled = controlsVisible,
+                        onInteraction = recordInteraction,
+                        onClick = onExitFullscreen,
+                    )
                 }
             }
 
