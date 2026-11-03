@@ -5160,16 +5160,13 @@ private fun CurrentSubtitleStrip(
     fullscreen: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    // Keep the caption bound to the single subtitle cue selected by the playback head.
+    // The strip follows only the cue selected by the playback head.
     val index = state.currentLine.takeIf { it in state.lines.indices } ?: -1
     val currentLine = state.lines.getOrNull(index)
     val textMeasurer = rememberTextMeasurer()
-    // Fullscreen captions use only a real translation. Keep the normal player's existing fallback.
-    val chineseText = remember(currentLine?.text, currentLine?.zh, fullscreen) {
-        currentLine?.let {
-            if (fullscreen) SubtitleParsers.preferredTranslationText(it).orEmpty()
-            else subtitleDisplayText(it)
-        }.orEmpty()
+    // The inline strip never shows source text or a fallback error label.
+    val chineseText = remember(currentLine?.text, currentLine?.zh) {
+        currentLine?.let { SubtitleParsers.preferredTranslationText(it).orEmpty() }.orEmpty()
     }
     val originalText = currentLine?.text.orEmpty()
     val distinctOriginalText = if (fullscreen) {
@@ -5186,26 +5183,25 @@ private fun CurrentSubtitleStrip(
         mutableStateOf(captionHasContent)
     }
     LaunchedEffect(caption, fullscreen) {
-        if (fullscreen && caption != displayedCaption) {
-            val previousHasContent =
-                displayedCaption.first.isNotBlank() || displayedCaption.second.isNotBlank()
-            if (previousHasContent) {
-                captionVisible = false
-                delay(110)
-            }
+        if (caption != displayedCaption) {
+            captionVisible = false
+            delay(if (fullscreen) 110L else 65L)
             displayedCaption = caption
             captionVisible = captionHasContent
         }
     }
     val captionAlpha by animateFloatAsState(
-        targetValue = if (!fullscreen || captionVisible) 1f else 0f,
-        animationSpec = if (captionVisible) tween(120) else tween(100),
-        label = "fullscreen-caption-sequential-alpha",
+        targetValue = if (captionVisible) 1f else 0f,
+        animationSpec = if (captionVisible) tween(130) else tween(90),
+        label = if (fullscreen) "fullscreen-caption-alpha" else "inline-caption-alpha",
     )
-    val renderedCaption = if (fullscreen) displayedCaption else caption
+    val renderedCaption = displayedCaption
     val renderedCaptionHasContent =
         renderedCaption.first.isNotBlank() || renderedCaption.second.isNotBlank()
-    if (renderedCaptionHasContent || (fullscreen && captionHasContent)) {
+
+    // Keep a fixed 50dp slot in normal mode so one-line, two-line and empty cues
+    // never move the three playback buttons or the subtitle list vertically.
+    if (!fullscreen || renderedCaptionHasContent || captionHasContent) {
         BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
             val horizontalInset = if (fullscreen) {
                 (maxWidth * 0.11f).coerceIn(48.dp, 88.dp)
@@ -5217,8 +5213,8 @@ private fun CurrentSubtitleStrip(
             val captionContentWidthPx = with(LocalDensity.current) {
                 captionContentWidth.roundToPx().coerceAtLeast(1)
             }
-            val captionContent: @Composable (Pair<String, String>) -> Unit = { caption ->
-                val (translated, source) = caption
+            val captionContent: @Composable (Pair<String, String>) -> Unit = { item ->
+                val (translated, source) = item
                 val measuredChineseLines = remember(translated, captionContentWidthPx, fullscreen) {
                     if (!fullscreen || translated.isBlank()) 0
                     else textMeasurer.measure(
@@ -5275,7 +5271,6 @@ private fun CurrentSubtitleStrip(
                 }
                 val captionMaxLines = if (fullscreen && measuredCaptionLines >= 3) 3 else 2
                 val captionMaxHeight = when {
-                    !fullscreen -> 96.dp
                     maxHeight < 220.dp -> 82.dp
                     measuredCaptionLines >= 4 -> 104.dp
                     else -> 96.dp
@@ -5291,16 +5286,18 @@ private fun CurrentSubtitleStrip(
                                     .background(Color.Black.copy(alpha = 0.46f))
                             } else {
                                 Modifier
-                                    .heightIn(min = 46.dp)
+                                    .height(50.dp)
+                                    .clip(RoundedCornerShape(12.dp))
                                     .background(Color(0xFFE8EFFF))
                             },
                         )
                         .padding(
-                            horizontal = if (fullscreen) 10.dp else 8.dp,
-                            vertical = if (fullscreen) 4.dp else 5.dp,
-                        ),
+                            horizontal = if (fullscreen) 10.dp else 12.dp,
+                            vertical = if (fullscreen) 4.dp else 3.dp,
+                        )
+                        .graphicsLayer { alpha = captionAlpha },
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = if (fullscreen) Arrangement.Center else Arrangement.Top,
+                    verticalArrangement = Arrangement.Center,
                 ) {
                     if (translated.isNotBlank()) {
                         Text(
@@ -5318,9 +5315,9 @@ private fun CurrentSubtitleStrip(
                     if (source.isNotBlank()) {
                         Text(
                             text = source,
-                            color = if (fullscreen) Color(0xFFE1E5EC) else Color(0xFF64748B),
-                            fontSize = if (fullscreen) fullscreenOriginalSize else 12.sp,
-                            lineHeight = if (fullscreen) fullscreenOriginalLineHeight else 14.sp,
+                            color = Color(0xFFE1E5EC),
+                            fontSize = fullscreenOriginalSize,
+                            lineHeight = fullscreenOriginalLineHeight,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             maxLines = captionMaxLines,
                             overflow = TextOverflow.Ellipsis,
@@ -5332,14 +5329,9 @@ private fun CurrentSubtitleStrip(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = horizontalInset)
-                    .graphicsLayer {
-                        alpha = if (fullscreen) captionAlpha else 1f
-                    },
+                    .padding(horizontal = horizontalInset),
             ) {
-                if (renderedCaptionHasContent) {
-                    captionContent(renderedCaption)
-                }
+                if (renderedCaptionHasContent) captionContent(renderedCaption)
             }
         }
     }
@@ -5361,21 +5353,21 @@ private fun PlaybackModeSelector(
         ModeButton(
             modifier = Modifier.weight(1f),
             title = "原声",
-            glyph = "◖))",
+            icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
             selected = state.originalVolume > 0f,
             onClick = onOriginal,
         )
         ModeButton(
             modifier = Modifier.weight(1f),
             title = "中文配音",
-            glyph = "≋",
+            icon = Icons.Filled.Headphones,
             selected = state.dubbingVolume > 0f,
             onClick = onDub,
         )
         ModeButton(
             modifier = Modifier.weight(1f),
             title = "字幕",
-            glyph = "▤",
+            icon = Icons.Filled.Subtitles,
             selected = subtitlesVisible,
             onClick = onToggleSubtitles,
         )
@@ -5386,7 +5378,7 @@ private fun PlaybackModeSelector(
 private fun ModeButton(
     modifier: Modifier,
     title: String,
-    glyph: String,
+    icon: ImageVector,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
@@ -5399,14 +5391,6 @@ private fun ModeButton(
         targetValue = if (selected) BrandBright else OnBg,
         animationSpec = tween(210, easing = FastOutSlowInEasing),
         label = "playbackModeLabelColor",
-    )
-    val glyphScale by animateFloatAsState(
-        targetValue = if (selected) 1.06f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium,
-        ),
-        label = "playbackModeGlyphScale",
     )
     Surface(
         modifier = modifier.height(52.dp),
@@ -5423,16 +5407,19 @@ private fun ModeButton(
             horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(1.dp),
         ) {
-            Text(
-                glyph,
-                color = BrandBright,
-                style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp),
-                modifier = Modifier.graphicsLayer {
-                    scaleX = glyphScale
-                    scaleY = glyphScale
-                },
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = BrandBright,
+                modifier = Modifier.size(20.dp),
             )
-            Text(title, color = labelColor, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp))
+            Text(
+                title,
+                color = labelColor,
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }
@@ -6407,7 +6394,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 maxHeight < 240.dp -> 44.dp
                 else -> 48.dp
             }
-            val leftControlsGap = (maxHeight * 0.07f).coerceIn(5.dp, 16.dp)
             val maxLeftControlSize = (
                 (availableRightHeight - leftControlsGap * 2f).coerceAtLeast(0.dp) / 3f
             ).coerceAtLeast(20.dp)
@@ -6437,7 +6423,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             ) {
                 Column(
                     horizontalAlignment = Alignment.Start,
-                    verticalArrangement = Arrangement.spacedBy(leftControlsGap),
+                    verticalArrangement = Arrangement.spacedBy(rightControlsGap),
                 ) {
                     Box {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -6693,7 +6679,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                 pos = ((change.position.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
                             }
                         }
-                    },
+                    }
+                    .offset(y = (-10).dp),
             ) {
                 val trackHeight = if (scrubbing) 4.dp.toPx() else 2.dp.toPx()
                 val centerY = size.height - 8.dp.toPx()
@@ -6736,8 +6723,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 8.dp)
-                    .offset(y = 10.dp),
+                    .padding(end = 8.dp),
             ) {
                 PlaybackOverlayIconButton(
                     icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
@@ -6852,9 +6838,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .windowInsetsPadding(WindowInsets.displayCutout)
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(start = 10.dp, top = 8.dp)
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.38f)),
+                    .size(44.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 PlaybackOverlayIconButton(
@@ -7150,11 +7134,6 @@ private fun SubtitleListRow(
         animationSpec = tween(220, easing = FastOutSlowInEasing),
         label = "subtitleRowTextColor_${line.index}",
     )
-    val textScale by animateFloatAsState(
-        targetValue = if (active) 1.012f else 1f,
-        animationSpec = tween(220, easing = FastOutSlowInEasing),
-        label = "subtitleRowScale_${line.index}",
-    )
 
     Column(
         Modifier.fillMaxWidth()
@@ -7179,19 +7158,15 @@ private fun SubtitleListRow(
             softWrap = true,
             maxLines = Int.MAX_VALUE,
             overflow = TextOverflow.Clip,
-            modifier = Modifier.fillMaxWidth().graphicsLayer {
-                // The slight emphasis stays within the row's horizontal padding.
-                scaleX = textScale
-                scaleY = textScale
-            },
+            modifier = Modifier.fillMaxWidth(),
         )
         if (sourceText.isNotBlank()) {
             Text(
                 text = sourceText,
                 color = Color(0xFF64748B),
                 style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
                     fontWeight = FontWeight.Normal,
                 ),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
