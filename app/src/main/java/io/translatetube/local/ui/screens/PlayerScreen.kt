@@ -6086,9 +6086,8 @@ private fun SubtitleList(
 
 
 /**
- * One shared display rule keeps the active subtitle strip and its row in the list identical.
- * Never fall back to the source sentence or show merged neighboring cues when a translation
- * is unavailable; that would make the two subtitle surfaces appear out of sync.
+ * Translation-only text for the compact active subtitle strip. The full list separately shows
+ * the source caption above its translation, or the source caption alone while translation is unavailable.
  */
 private fun subtitleDisplayText(line: SubLine): String =
     SubtitleParsers.preferredTranslationText(line)
