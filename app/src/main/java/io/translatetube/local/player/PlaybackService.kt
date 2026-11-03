@@ -3111,7 +3111,9 @@ class PlaybackService : MediaSessionService() {
         val surfaceReady = surfaceView?.let { view ->
             view.isAttachedToWindow && view.isAvailable && view.width > 0 && view.height > 0
         } == true
-        if (videoUiVisible && surfaceReady && boundVideoSurface?.get() !== surfaceView) {
+        if (VideoPresentationModePolicy.shouldRebindVideoSurface(videoPresentationMode) &&
+            surfaceReady && boundVideoSurface?.get() !== surfaceView
+        ) {
             // A visible, ready TextureView that is not connected to this service's player is a
             // binding problem, not a decoder failure. Repair the binding before starting the
             // first-frame timeout so it cannot force an unnecessary player/service rebuild.
