@@ -529,14 +529,7 @@ fun StorageManagementScreen(
         }
         if (category == null) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                StorageHome(
-                    data = data,
-                    scanning = scanning,
-                    canClearCache = !destructiveBusy && !actionBusy && !scanning,
-                    actionBusy = actionBusy,
-                    onQuickClean = { requestClear(StorageAction.CACHE) },
-                    onOpen = { category = it; message = null },
-                )
+                StorageHome(data, scanning) { category = it; message = null }
             }
         } else {
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -609,14 +602,7 @@ fun StorageManagementScreen(
 }
 
 @Composable
-private fun StorageHome(
-    data: StorageSnapshot?,
-    scanning: Boolean,
-    canClearCache: Boolean,
-    actionBusy: Boolean,
-    onQuickClean: () -> Unit,
-    onOpen: (StorageCategory) -> Unit,
-) {
+private fun StorageHome(data: StorageSnapshot?, scanning: Boolean, onOpen: (StorageCategory) -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(9.dp), contentPadding = PaddingValues(bottom = 12.dp)) {
         item {
             Surface(
@@ -658,17 +644,6 @@ private fun StorageHome(
                             Icons.Filled.Memory,
                             Modifier.weight(1f),
                         )
-                    }
-                    if ((data?.cache ?: 0L) > 0L) {
-                        OutlinedButton(
-                            onClick = onQuickClean,
-                            enabled = canClearCache && !actionBusy,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed),
-                        ) {
-                            Text(if (actionBusy) "清理中…" else "清理临时缓存 · ${bytesLabel(data?.cache ?: 0L)}")
-                        }
                     }
                     MetricLine(
                         "所在分区可用 / 总容量",
