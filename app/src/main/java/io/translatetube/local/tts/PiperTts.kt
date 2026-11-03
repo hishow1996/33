@@ -132,9 +132,17 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
             maxNumSentences = 2,
         )
         // assets=null → use absolute filesystem paths just like Kokoro.
-        val nativeTts = OfflineTts(null, config)
+        val nativeTts = PiperModels.withModelLease(appCtx, modelId) {
+            OfflineTts(null, config)
+        }
         tts = nativeTts
-        guard = NativeResourceGuard("Piper") { nativeTts.release() }
+        guard = NativeResourceGuard("Piper") {
+            try {
+                nativeTts.release()
+            } finally {
+                PiperModels.releaseModelLease(modelId)
+            }
+        }
     }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
@@ -292,6 +300,81 @@ object PiperModels {
     private var activeDownloadRequests = 0
     private val _activeDownloadCount = MutableStateFlow(0)
     val activeDownloadCount: StateFlow<Int> = _activeDownloadCount
+
+    // Track native model ownership, not merely whether playback is audible. A paused or retired
+    // engine can still hold the ONNX files until NativeResourceGuard completes its final release.
+    private val modelUseLock = Any()
+    private val modelUseCounts = mutableMapOf<String, Int>()
+    private val _activeModelIds = MutableStateFlow<Set<String>>(emptySet())
+    val activeModelIds: StateFlow<Set<String>> = _activeModelIds
+
+    /** Create a native engine while holding a lease that prevents concurrent model removal. */
+    internal fun <T> withModelLease(ctx: Context, id: String, create: () -> T): T =
+        synchronized(modelUseLock) {
+            val definition = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：${id}")
+            check(complete(modelDir(ctx, id), definition)) {
+                "Piper 模型尚未完整安装，无法加载：${id}"
+            }
+            modelUseCounts[id] = (modelUseCounts[id] ?: 0) + 1
+            _activeModelIds.value = modelUseCounts.keys.toSet()
+            try {
+                create()
+            } catch (failure: Throwable) {
+                releaseModelLeaseLocked(id)
+                throw failure
+            }
+        }
+
+    /** Release only after the native resource has actually been destroyed. */
+    internal fun releaseModelLease(id: String) {
+        synchronized(modelUseLock) {
+            releaseModelLeaseLocked(id)
+        }
+    }
+
+    private fun releaseModelLeaseLocked(id: String) {
+        val remaining = (modelUseCounts[id] ?: 0) - 1
+        if (remaining <= 0) modelUseCounts.remove(id) else modelUseCounts[id] = remaining
+        _activeModelIds.value = modelUseCounts.keys.toSet()
+    }
+
+    /**
+     * Remove one complete, known Piper voice. Installs and removals share the install mutex;
+     * native engine creation and removal share modelUseLock so files cannot disappear mid-load.
+     */
+    suspend fun uninstallInstalledModel(ctx: Context, id: String): Boolean = installMutex.withLock {
+        val definition = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：${id}")
+        val removed = synchronized(modelUseLock) {
+            check((modelUseCounts[id] ?: 0) == 0) {
+                "该 Piper 音色仍被配音引擎占用，请先停止并释放当前配音任务"
+            }
+            val downloadActive = synchronized(downloadStateLock) {
+                val job = downloadJobs[id]
+                (job != null && !job.isCompleted && !job.isCancelled) ||
+                    (_downloadStates.value[id]?.isActive == true)
+            }
+            check(!downloadActive) { "该 Piper 模型正在下载或安装，暂不能卸载" }
+
+            val prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            val isSelected = prefs.getString("tts_engine", "edge") == "piper" &&
+                (prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium") == id
+            check(!isSelected) { "该音色仍是当前选中的配音模型，请先切换配音引擎或选择其他音色" }
+
+            val root = piperRoot(ctx).canonicalFile
+            val target = modelDir(ctx, id).canonicalFile
+            check(target.parentFile == root) { "Piper 模型路径校验失败，已阻止删除" }
+            if (!target.exists()) return@synchronized false
+            check(target.isDirectory && complete(target, definition)) {
+                "该目录不是完整的已安装 Piper 模型，已拒绝自动删除"
+            }
+            if (!target.deleteRecursively()) {
+                throw java.io.IOException("无法完整删除 Piper 音色模型：${definition.voiceLabel}")
+            }
+            true
+        }
+        if (removed) refreshInstalled(ctx)
+        removed
+    }
 
     private fun updateDownloadState(id: String, transform: (PiperModelDownloadState) -> PiperModelDownloadState) {
         synchronized(downloadStateLock) {
