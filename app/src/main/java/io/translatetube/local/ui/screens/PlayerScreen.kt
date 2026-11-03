@@ -201,6 +201,11 @@ fun PlayerScreen(
             val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
             val wasPortraitLayout = decorView.height >= decorView.width
 
+            fun hasRestoredOrientation(width: Int, height: Int): Boolean {
+                if (width <= 0 || height <= 0) return false
+                return if (wasPortraitLayout) height >= width else width >= height
+            }
+
             fun applyFullscreenWindowMode() {
                 WindowCompat.setDecorFitsSystemWindows(window, false)
                 insetsController.systemBarsBehavior =
@@ -244,9 +249,7 @@ fun PlayerScreen(
                     ) {
                         val width = right - left
                         val height = bottom - top
-                        if (width <= 0 || height <= 0) return
-                        val restoredOrientation = if (wasPortraitLayout) height >= width else width >= height
-                        if (!restoredOrientation) return
+                        if (!hasRestoredOrientation(width, height)) return
 
                         decorView.removeOnLayoutChangeListener(this)
                         decorView.post { requestRestoredInsets() }
@@ -264,6 +267,11 @@ fun PlayerScreen(
                     insetsController.show(WindowInsetsCompat.Type.systemBars())
                     WindowCompat.setDecorFitsSystemWindows(window, true)
                     activity.requestedOrientation = previousOrientation
+                    // A freeform/tablet window may already have the original aspect ratio, so its
+                    // size listener would never receive an orientation-changing layout pass.
+                    if (hasRestoredOrientation(decorView.width, decorView.height)) {
+                        decorView.removeOnLayoutChangeListener(insetRecoveryListener)
+                    }
                     requestRestoredInsets()
 
                     // Keep a fallback dispatch for devices where the pre-fullscreen and fullscreen
