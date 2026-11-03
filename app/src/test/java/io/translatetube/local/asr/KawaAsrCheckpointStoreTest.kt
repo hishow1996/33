@@ -134,7 +134,7 @@ class KawaAsrCheckpointStoreTest {
                     setLastModified(now - 10_000L - index)
                 }
             }
-            val otherFiles = (0..KawaAsrCheckpointStore.MAX_CACHED_FILES + 2).map { index ->
+            val otherFiles = (0..(KawaAsrCheckpointStore.MAX_CACHED_FILES + 2)).map { index ->
                 KawaAsrCheckpointStore.fileFor(
                     directory = directory,
                     identity = otherIdentity,
