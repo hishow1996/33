@@ -160,6 +160,9 @@ class PlayerManager(private val ctx: Context) {
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
+
+    private val _playbackSpeedState = MutableStateFlow(1.0f)
+    val playbackSpeedState: StateFlow<Float> = _playbackSpeedState
     /** 播放器正在加载/缓冲（含首次加载、拖动进度后的重新加载）。 */
     private val _isBuffering = MutableStateFlow(false)
     val isBuffering: StateFlow<Boolean> = _isBuffering
@@ -402,6 +405,7 @@ class PlayerManager(private val ctx: Context) {
 
     init {
         player.volume = 1f
+        _playbackSpeedState.value = runCatching { player.playbackParameters.speed }.getOrDefault(1.0f)
         resetPlaybackStatusForNewSource()
         // 音频焦点：耳机拔出/来电/其他应用播放时自动暂停或压低
         player.setAudioAttributes(
@@ -425,6 +429,7 @@ class PlayerManager(private val ctx: Context) {
                 syncTicker()
             }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                _playbackSpeedState.value = playbackParameters.speed
                 // Push seek/speed synchronization now rather than waiting for the 100 ms ticker.
                 // Read the playhead inside notifyTick's guarded path.
                 notifyTick()

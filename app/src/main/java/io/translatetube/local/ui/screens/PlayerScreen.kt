@@ -5651,55 +5651,7 @@ private fun PlaybackHintOverlay(
 }
 
 @Composable
-private fun PlaybackOverlayIconButton(
-    icon: ImageVector,
-    contentDescription: String,
-    touchSize: androidx.compose.ui.unit.Dp,
-    iconSize: androidx.compose.ui.unit.Dp,
-    tint: Color = Color.White,
-    enabled: Boolean = true,
-    onInteraction: () -> Unit = {},
-    onClick: () -> Unit,
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed && enabled) 0.92f else 1f,
-        animationSpec = tween(110, easing = FastOutSlowInEasing),
-        label = "playback-control-scale",
-    )
-    val alpha by animateFloatAsState(
-        targetValue = if (pressed && enabled) 0.74f else if (enabled) 1f else 0.58f,
-        animationSpec = tween(110, easing = FastOutSlowInEasing),
-        label = "playback-control-alpha",
-    )
-    Box(
-        modifier = Modifier
-            .size(touchSize)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-                this.alpha = alpha
-            }
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                enabled = enabled,
-                onClick = {
-                    onInteraction()
-                    onClick()
-                },
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            tint = tint,
-            modifier = Modifier.size(iconSize).shadow(2.dp, CircleShape, clip = false),
-        )
-    }
-}
+
 
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
@@ -5712,20 +5664,42 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     var pos by remember(state.key) { mutableStateOf(0f) }
     var bufferedPos by remember(state.key) { mutableStateOf(0f) }
     var scrubbing by remember(state.key) { mutableStateOf(false) }
+    var seekRevision by remember(state.key) { mutableStateOf(0) }
     var qualityExpanded by remember { mutableStateOf(false) }
     var speedExpanded by remember { mutableStateOf(false) }
     var controlsVisible by remember(state.key) { mutableStateOf(true) }
     var interactionVersion by remember(state.key) { mutableStateOf(0) }
-    var speed by remember(state.key) {
-        mutableStateOf(runCatching { PlaybackService.instance?.playbackSpeed() ?: 1.0f }.getOrDefault(1.0f))
+    val speedFlow = remember(PlaybackService.instance) {
+        PlaybackService.instance?.playbackSpeedState()
+            ?: kotlinx.coroutines.flow.flowOf(1.0f)
     }
+    val speed by speedFlow.collectAsState(initial = 1.0f)
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
     val recordInteraction = { interactionVersion += 1 }
 
-    // Pausing pins the controls; every direct interaction restarts the three-second timer.
-    LaunchedEffect(state.key, state.isPlaying) {
-        if (!state.isPlaying) controlsVisible = true
+    // Respect the actual host lifecycle (including the floating-window owner).
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var lifecycleResumed by remember(lifecycleOwner) {
+        mutableStateOf(
+            lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED),
+        )
     }
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            lifecycleResumed = when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> true
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE,
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> false
+                else -> lifecycleOwner.lifecycle.currentState.isAtLeast(
+                    androidx.lifecycle.Lifecycle.State.RESUMED,
+                )
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Pausing pins the controls; every direct interaction restarts the three-second timer.
     LaunchedEffect(
         state.key,
         state.isPlaying,
@@ -5734,13 +5708,22 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         speedExpanded,
         scrubbing,
         interactionVersion,
+        lifecycleResumed,
     ) {
-        if (!state.isPlaying || !controlsVisible || qualityExpanded || speedExpanded || scrubbing) {
+        if (
+            !lifecycleResumed ||
+            !state.isPlaying ||
+            !controlsVisible ||
+            qualityExpanded ||
+            speedExpanded ||
+            scrubbing
+        ) {
             return@LaunchedEffect
         }
         val scheduledInteraction = interactionVersion
         delay(3_000)
         if (
+            lifecycleResumed &&
             state.isPlaying &&
             controlsVisible &&
             !qualityExpanded &&
@@ -5751,9 +5734,21 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             controlsVisible = false
         }
     }
+    LaunchedEffect(state.key, state.isPlaying) {
+        if (!state.isPlaying) controlsVisible = true
+    }
 
-    // One lightweight ticker updates playhead, buffered range and actual player speed together.
-    LaunchedEffect(state.key, state.durationMs) {
+    // Refresh immediately on reveal/seek/resume. While hidden or paused, do not poll every frame.
+    LaunchedEffect(
+        state.key,
+        state.durationMs,
+        state.isPlaying,
+        controlsVisible,
+        scrubbing,
+        seekRevision,
+        lifecycleResumed,
+    ) {
+        if (!lifecycleResumed || !controlsVisible) return@LaunchedEffect
         while (true) {
             val activeService = PlaybackService.instance
             if (activeService != null) {
@@ -5763,16 +5758,17 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 if (!scrubbing) {
                     pos = if (duration > 0L) {
                         (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-                    } else 0f
+                    } else {
+                        0f
+                    }
                 }
                 bufferedPos = if (duration > 0L) {
                     (buffered.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-                } else 0f
-                runCatching { activeService.playbackSpeed() }
-                    .getOrNull()
-                    ?.takeIf { it.isFinite() && it > 0f }
-                    ?.let { speed = it }
+                } else {
+                    0f
+                }
             }
+            if (!state.isPlaying || scrubbing) break
             delay(300)
         }
     }
@@ -5833,16 +5829,23 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
-            val bottomReserved = 40.dp
-            val controlTargetSize = when {
-                maxHeight < 100.dp -> 24.dp
-                maxHeight < 130.dp -> 28.dp
-                maxHeight < 160.dp -> 32.dp
-                maxHeight < 200.dp -> 40.dp
+            val bottomReserved = when {
+                maxHeight < 96.dp -> 16.dp
+                maxHeight < 160.dp -> 28.dp
+                else -> 40.dp
+            }
+            val availableRightHeight = (maxHeight - bottomReserved).coerceAtLeast(0.dp)
+            val preferredControlSize = when {
+                maxHeight < 100.dp -> 28.dp
+                maxHeight < 140.dp -> 32.dp
+                maxHeight < 180.dp -> 40.dp
                 maxHeight < 240.dp -> 44.dp
                 else -> 48.dp
             }
-            val availableRightHeight = (maxHeight - bottomReserved).coerceAtLeast(0.dp)
+            val controlTargetSize = preferredControlSize.coerceAtMost(
+                (availableRightHeight / 2f).coerceAtLeast(20.dp),
+            )
+            val controlIconSize = (controlTargetSize * 0.58f).coerceIn(16.dp, 24.dp)
             val rightControlsGap = (availableRightHeight - controlTargetSize - controlTargetSize)
                 .coerceIn(0.dp, 40.dp)
             val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
@@ -5861,7 +5864,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         icon = Icons.Filled.Speed,
                         contentDescription = "播放倍速",
                         touchSize = controlTargetSize,
-                        iconSize = 24.dp,
+                        iconSize = controlIconSize,
                         tint = if (speed != 1.0f) Color(0xFF9CBFFF) else Color.White,
                         enabled = controlsVisible,
                         onInteraction = recordInteraction,
@@ -5894,8 +5897,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
                             onClick = {
                                 PlaybackService.instance?.setSpeed(value)
-                                speed = runCatching { PlaybackService.instance?.playbackSpeed() ?: value }
-                                    .getOrDefault(value)
                                 recordInteraction()
                                 speedExpanded = false
                             },
@@ -5918,7 +5919,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             icon = Icons.Filled.HighQuality,
                             contentDescription = "选择清晰度",
                             touchSize = controlTargetSize,
-                            iconSize = 24.dp,
+                            iconSize = controlIconSize,
                             tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
                             enabled = controlsVisible && state.qualityOptions.isNotEmpty(),
                             onInteraction = recordInteraction,
@@ -5948,7 +5949,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         icon = Icons.Filled.PictureInPictureAlt,
                         contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
                         touchSize = controlTargetSize,
-                        iconSize = 24.dp,
+                        iconSize = controlIconSize,
                         tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
                         enabled = controlsVisible,
                         onInteraction = recordInteraction,
@@ -5993,8 +5994,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                 val seekableWidth = (size.width - 2f * radiusPx).coerceAtLeast(1f)
                                 pos = ((offset.x - radiusPx) / seekableWidth).coerceIn(0f, 1f)
                                 PlaybackService.instance?.seek((pos * duration).toLong())
-                                recordInteraction()
                                 scrubbing = false
+                                seekRevision += 1
+                                recordInteraction()
                             }
                         }
                     }
@@ -6014,10 +6016,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     .takeIf { it > 0L } ?: state.durationMs
                                 if (duration > 0L) PlaybackService.instance?.seek((pos * duration).toLong())
                                 scrubbing = false
+                                seekRevision += 1
                                 recordInteraction()
                             },
                             onDragCancel = {
                                 scrubbing = false
+                                seekRevision += 1
                                 recordInteraction()
                             },
                         ) { change, _ ->
