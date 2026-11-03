@@ -214,6 +214,7 @@ fun PlayerScreen(
     val isSpeakerRecognitionVisible = speakerRecognition.isActive ||
         speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED ||
         speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED ||
+        speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.INTERRUPTED ||
         speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED
 
     // 错误时允许用户显式重试同一个视频；不监听 phase，避免失败后自动重试循环。
@@ -953,6 +954,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 isSpeakerBusy -> "正在更新人物音色…"
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> "重试区分人物"
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> "重试区分人物"
+                                speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.INTERRUPTED -> "重新区分人物"
                                 speakerRecognition.phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> "重新区分人物"
                                 else -> "区分人物"
                             },
@@ -965,6 +967,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                         io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED,
                                         io.translatetube.local.player.SpeakerRecognitionPhase.FAILED,
                                         io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED,
+                                        io.translatetube.local.player.SpeakerRecognitionPhase.INTERRUPTED,
                                     ),
                                 )
                             },
@@ -1007,7 +1010,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                     ) {
                                         val progressPercent = speakerRecognition.progressPercent
                                         if (progressPercent != null) {
-                                            key(speakerRecognition.stage) {
+                                            key(speakerRecognition.stage, speakerRecognition.progressItem, speakerRecognition.taskToken) {
                                                 val animatedProgress by animateFloatAsState(
                                                     targetValue = progressPercent.coerceIn(0, 100) / 100f,
                                                     animationSpec = tween(
@@ -1019,6 +1022,22 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                                 LinearProgressIndicator(
                                                     progress = { animatedProgress },
                                                     modifier = Modifier.weight(1f).height(4.dp),
+                                                )
+                                            }
+                                            if (
+                                                speakerRecognition.progressItem == null &&
+                                                speakerRecognition.completedUnits != null &&
+                                                speakerRecognition.totalUnits != null &&
+                                                speakerRecognition.totalUnits > 0L &&
+                                                speakerRecognition.stage in setOf(
+                                                    io.translatetube.local.player.SpeakerRecognitionStage.ANALYZING_AUDIO,
+                                                    io.translatetube.local.player.SpeakerRecognitionStage.LINKING_SUBTITLES,
+                                                )
+                                            ) {
+                                                Text(
+                                                    "${speakerRecognition.completedUnits}/${speakerRecognition.totalUnits}",
+                                                    color = SubText,
+                                                    style = MaterialTheme.typography.labelSmall,
                                                 )
                                             }
                                             Text(

@@ -27,6 +27,7 @@ class SpeakerRecognitionUiStateTest {
             SpeakerRecognitionPhase.SUCCEEDED,
             SpeakerRecognitionPhase.FAILED,
             SpeakerRecognitionPhase.CANCELLED,
+            SpeakerRecognitionPhase.INTERRUPTED,
         )
         terminal.forEach { phase ->
             assertFalse(SpeakerRecognitionUiState(phase = phase).isActive)
@@ -62,6 +63,10 @@ class SpeakerRecognitionUiStateTest {
         assertEquals(
             "区分完成",
             SpeakerRecognitionUiState(phase = SpeakerRecognitionPhase.SUCCEEDED).stageTitle,
+        )
+        assertEquals(
+            "上次识别已中断",
+            SpeakerRecognitionUiState(phase = SpeakerRecognitionPhase.INTERRUPTED).stageTitle,
         )
     }
 }

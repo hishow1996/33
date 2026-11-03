@@ -26,12 +26,39 @@ class SpeakerRecognitionProgressPolicyTest {
     fun completedChunkAdvancesMeasuredProgress() {
         val update = SpeakerRecognitionProgressPolicy.analysisChunkCompleted(2L, 5L)
         assertEquals(40, update.progressPercent)
-        assertEquals("已完成音频分段 2/5", update.message)
+        assertEquals("已完成音频分析", update.message)
     }
 
     @Test
     fun completedSingleChunkReachesOneHundredPercent() {
         assertEquals(100, SpeakerRecognitionProgressPolicy.analysisChunkCompleted(1L, 1L).progressPercent)
+    }
+
+    @Test
+    fun nativeInferenceProgressUsesCompletedAudioChunksAndCurrentWorkFraction() {
+        val update = SpeakerRecognitionProgressPolicy.analysisInferenceProgress(
+            completedChunks = 1L,
+            totalChunks = 4L,
+            processedInferenceUnits = 2L,
+            totalInferenceUnits = 4L,
+        )
+        assertEquals(37, update.progressPercent)
+        assertEquals(1L, update.completedUnits)
+        assertEquals(4L, update.totalUnits)
+        assertEquals("模型内部分析", update.progressItem)
+    }
+
+    @Test
+    fun nativeInferenceProgressClampsInvalidCounts() {
+        val update = SpeakerRecognitionProgressPolicy.analysisInferenceProgress(
+            completedChunks = 8L,
+            totalChunks = 4L,
+            processedInferenceUnits = 10L,
+            totalInferenceUnits = 2L,
+        )
+        assertEquals(100, update.progressPercent)
+        assertEquals(4L, update.completedUnits)
+        assertEquals(4L, update.totalUnits)
     }
 
     @Test

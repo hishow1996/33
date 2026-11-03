@@ -21,6 +21,8 @@ data class SpeakerRecognitionProgressUpdate(
     val progressPercent: Int? = null,
     val completedUnits: Long? = null,
     val totalUnits: Long? = null,
+    /** Distinguishes consecutive downloads that share the same visible stage. */
+    val progressItem: String? = null,
 )
 
 object SpeakerRecognitionProgressPolicy {
@@ -30,17 +32,41 @@ object SpeakerRecognitionProgressPolicy {
         return (completed * 100L / totalCount).toInt().coerceIn(0, 100)
     }
 
-    /** A single long inference window has no measurable intra-window callback, so stay indeterminate. */
+    /** Before the optional native callback starts, a single window remains indeterminate. */
     fun analysisChunkStarted(currentChunk: Long, totalChunks: Long): SpeakerRecognitionProgressUpdate {
         val total = totalChunks.coerceAtLeast(1L)
         val current = currentChunk.coerceIn(1L, total)
         val completed = current - 1L
         return SpeakerRecognitionProgressUpdate(
             stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
-            message = "正在分析音频分段 $current/$total · 已完成 $completed/$total 段…",
+            message = "正在分析音频分段…",
             progressPercent = if (total > 1L) percentForCount(completed, total) else null,
             completedUnits = completed,
             totalUnits = total,
+        )
+    }
+
+    fun analysisInferenceProgress(
+        completedChunks: Long,
+        totalChunks: Long,
+        processedInferenceUnits: Long,
+        totalInferenceUnits: Long,
+    ): SpeakerRecognitionProgressUpdate {
+        val total = totalChunks.coerceAtLeast(1L)
+        val completed = completedChunks.coerceIn(0L, total)
+        val inferenceTotal = totalInferenceUnits.coerceAtLeast(1L)
+        val inferenceCompleted = processedInferenceUnits.coerceIn(0L, inferenceTotal)
+        val withinChunkFraction = inferenceCompleted.toDouble() / inferenceTotal.toDouble()
+        val percent = (((completed.toDouble() + withinChunkFraction) / total.toDouble()) * 100.0)
+            .toInt()
+            .coerceIn(0, 100)
+        return SpeakerRecognitionProgressUpdate(
+            stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
+            message = "正在分析当前音频分段…",
+            progressPercent = percent,
+            completedUnits = completed,
+            totalUnits = total,
+            progressItem = "模型内部分析",
         )
     }
 
@@ -49,7 +75,7 @@ object SpeakerRecognitionProgressPolicy {
         val completed = completedChunks.coerceIn(0L, total)
         return SpeakerRecognitionProgressUpdate(
             stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
-            message = "已完成音频分段 $completed/$total",
+            message = "已完成音频分析",
             progressPercent = percentForCount(completed, total),
             completedUnits = completed,
             totalUnits = total,

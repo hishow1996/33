@@ -539,6 +539,7 @@ enum class SpeakerRecognitionPhase {
     ANALYZING,
     APPLYING,
     CANCELLING,
+    INTERRUPTED,
     SUCCEEDED,
     FAILED,
     CANCELLED,
@@ -551,6 +552,11 @@ data class SpeakerRecognitionUiState(
     val progressPercent: Int? = null,
     val personCount: Int = 0,
     val error: String? = null,
+    val completedUnits: Long? = null,
+    val totalUnits: Long? = null,
+    val progressItem: String? = null,
+    /** Identifies one user-triggered pass; stale callbacks cannot update a replacement task. */
+    val taskToken: Long? = null,
 ) {
     val isActive: Boolean
         get() = phase == SpeakerRecognitionPhase.PREPARING ||
@@ -565,6 +571,7 @@ data class SpeakerRecognitionUiState(
             SpeakerRecognitionPhase.SUCCEEDED -> "区分完成"
             SpeakerRecognitionPhase.FAILED -> "区分失败"
             SpeakerRecognitionPhase.CANCELLED -> "已取消"
+            SpeakerRecognitionPhase.INTERRUPTED -> "上次识别已中断"
             SpeakerRecognitionPhase.CANCELLING -> "取消人物区分"
             else -> stage.title
         }
@@ -900,6 +907,10 @@ class PlaybackService : MediaSessionService() {
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
+    @Volatile private var speakerCancelRequestedAtMs = 0L
+    @Volatile private var speakerCancelTaskToken: Long? = null
+    @Volatile private var speakerCancelStageAtRequest = ""
+    @Volatile private var speakerCancelProgressAtRequest = "不定进度"
     @Volatile private var subtitleDownloadJob: Job? = null
     private val asrAudioDownloadLocks = KeyedMutex<String>()
     private val localAsrPcmLocks = KeyedMutex<String>()
@@ -1083,12 +1094,54 @@ class PlaybackService : MediaSessionService() {
             }
     }
 
+    private fun persistSpeakerRecognitionState(sessionKey: String) {
+        val current = ui.value
+        if (current.key != sessionKey) return
+        SpeakerRecognitionTaskJournal.save(this, sessionKey, current.speakerRecognition)
+    }
+
+    private fun recordSpeakerCancellationResponse(taskToken: Long) {
+        if (speakerCancelTaskToken != taskToken) return
+        val cancelStartedAt = speakerCancelRequestedAtMs
+        if (cancelStartedAt > 0L) {
+            val cancelElapsedMs = (
+                android.os.SystemClock.elapsedRealtime() - cancelStartedAt
+            ).coerceAtLeast(0L)
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "SpeakerDiarization",
+                "人物识别取消响应时间",
+                diagnosticContext = mapOf(
+                    "取消响应耗时 ms" to cancelElapsedMs.toString(),
+                    "取消前阶段" to speakerCancelStageAtRequest,
+                    "取消前进度" to speakerCancelProgressAtRequest,
+                    "任务令牌" to taskToken.toString(),
+                ),
+            )
+        }
+        speakerCancelRequestedAtMs = 0L
+        speakerCancelTaskToken = null
+        speakerCancelStageAtRequest = ""
+        speakerCancelProgressAtRequest = "不定进度"
+    }
+
+    private fun clearSpeakerRecognitionJournal(sessionKey: String, taskToken: Long?) {
+        if (taskToken == null) return
+        SpeakerRecognitionTaskJournal.clear(this, sessionKey, taskToken)
+    }
+
     /** Cancel only the active diarization pass; voice-assignment work remains untouched. */
     fun cancelSpeakerRecognition() {
         val current = ui.value
         val job = speakerJob
         if (!current.speakerRecognition.isActive || job?.isActive != true || current.key.isBlank()) return
-        job.cancel(kotlinx.coroutines.CancellationException("用户取消人物识别"))
+        speakerCancelRequestedAtMs = android.os.SystemClock.elapsedRealtime()
+        speakerCancelTaskToken = current.speakerRecognition.taskToken
+        speakerCancelStageAtRequest = current.speakerRecognition.stage.name
+        speakerCancelProgressAtRequest =
+            current.speakerRecognition.progressPercent?.let { "$it%" } ?: "不定进度"
+        // Publish and persist CANCELLING before cancelling the job, so a fast completion callback
+        // cannot be overwritten by a late UI update that leaves the menu stuck in CANCELLING.
         updateUiForSession(current.key) { state ->
             if (state.key == current.key) {
                 state.copy(
@@ -1100,6 +1153,8 @@ class PlaybackService : MediaSessionService() {
                 )
             } else state
         }
+        persistSpeakerRecognitionState(current.key)
+        job.cancel(kotlinx.coroutines.CancellationException("用户取消人物识别"))
         android.util.Log.i("PlaybackService", "User canceled speaker diarization for the active playback session")
     }
 
@@ -3700,10 +3755,29 @@ class PlaybackService : MediaSessionService() {
             } else null
             else -> null
         }
+        val speakerCounterDetail = if (speakerRecognitionActive) {
+            val recognition = state.speakerRecognition
+            val completed = recognition.completedUnits
+            val total = recognition.totalUnits
+            if (
+                completed != null && total != null && total > 0L &&
+                recognition.progressItem == null &&
+                recognition.stage in setOf(
+                    SpeakerRecognitionStage.ANALYZING_AUDIO,
+                    SpeakerRecognitionStage.LINKING_SUBTITLES,
+                )
+            ) {
+                val unit = if (recognition.stage == SpeakerRecognitionStage.ANALYZING_AUDIO) "段" else "行"
+                "已完成 ${completed.coerceIn(0L, total)}/$total$unit"
+            } else null
+        } else null
+        val detailWithSpeakerCount = if (speakerCounterDetail != null) {
+            "$detail · $speakerCounterDetail"
+        } else detail
         val displayDetail = if (
             measuredPercent != null &&
-            !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detail)
-        ) "$detail · $measuredPercent%" else detail
+            !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detailWithSpeakerCount)
+        ) "$detailWithSpeakerCount · $measuredPercent%" else detailWithSpeakerCount
         val ongoing = state.isPlaying || preparationIncomplete || speakerRecognitionActive ||
             state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
         val hasProcessingActions = isProcessingPhase(state.phase)
@@ -3718,6 +3792,10 @@ class PlaybackService : MediaSessionService() {
             measuredPercent?.toString().orEmpty(),
             state.speakerRecognition.phase.name,
             state.speakerRecognition.stage.name,
+            state.speakerRecognition.completedUnits?.toString().orEmpty(),
+            state.speakerRecognition.totalUnits?.toString().orEmpty(),
+            state.speakerRecognition.progressItem.orEmpty(),
+            state.speakerRecognition.taskToken?.toString().orEmpty(),
             speakerRecognitionActive.toString(),
             state.isProcessingPaused.toString(),
             ongoing.toString(),
@@ -4263,9 +4341,24 @@ class PlaybackService : MediaSessionService() {
         // Cancel work before releasing services it may still be using. In particular, the
         // local ASR JNI recognizer must not be released while a synchronous decode call is active.
         cancelDubbingDrainAfterVideoEnd()
+        val speakerSnapshot = ui.value
+        if (
+            speakerSnapshot.speakerRecognition.isActive &&
+            speakerSnapshot.speakerRecognition.taskToken != null
+        ) {
+            SpeakerRecognitionTaskJournal.save(
+                this,
+                speakerSnapshot.key,
+                speakerSnapshot.speakerRecognition,
+            )
+        }
         val activePipeline = prepJob
         prepJob?.cancel()
-        speakerJob?.cancel()
+        // Keep the interrupted-task journal written above. The completion callback only clears
+        // user-cancelled tasks while the job still owns speakerJob; detach before service teardown.
+        val activeSpeakerJob = speakerJob
+        speakerJob = null
+        activeSpeakerJob?.cancel()
         qualityJob?.cancel()
         qualityRecoveryJob?.cancel()
         dubCollectJob?.cancel()
@@ -4951,6 +5044,8 @@ class PlaybackService : MediaSessionService() {
         val audioPrefs = getSharedPreferences("settings", MODE_PRIVATE)
         val originalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 1f).coerceIn(0f, 1f)
         val dubbingVolume = audioPrefs.getFloat(PREF_PLAYER_DUBBING_VOLUME, 1f).coerceIn(0f, 1f)
+        val interruptedSpeakerRecognition =
+            SpeakerRecognitionTaskJournal.restoreInterrupted(this, key)
         ui.value = PlayerUiState(
             phase = when {
                 restoreCompletedSnapshot -> Phase.READY
@@ -4969,6 +5064,7 @@ class PlaybackService : MediaSessionService() {
             },
             isProcessingPaused = false,
             key = key,
+            speakerRecognition = interruptedSpeakerRecognition ?: SpeakerRecognitionUiState(),
             progress = when {
                 restoreCompletedSnapshot -> ""
                 effectiveResumeState == null -> "解析中…"
@@ -13372,15 +13468,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         val pipelineGeneration = activePipelineGeneration
         val mutationGeneration = beginDubbingMutationGeneration()
+        speakerCancelRequestedAtMs = 0L
+        speakerCancelTaskToken = null
+        speakerCancelStageAtRequest = ""
+        speakerCancelProgressAtRequest = "不定进度"
         ui.update { state ->
             if (state.key == sessionKey) state.copy(
                 speakerRecognition = SpeakerRecognitionUiState(
                     phase = SpeakerRecognitionPhase.PREPARING,
                     stage = SpeakerRecognitionStage.PREPARING_AUDIO,
                     message = "正在准备音频…",
+                    taskToken = mutationGeneration,
                 ),
             ) else state
         }
+        persistSpeakerRecognitionState(sessionKey)
         val recognitionJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             val speakerTaskJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             pipelineExecutionMutex.withLock {
@@ -13453,6 +13555,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "正在初始化所选配音引擎…"
                             },
                             personCount = if (reuseSavedSpeakerTimeline) cachedPersonCount else 0,
+                            taskToken = mutationGeneration,
                         ),
                         progress = if (selectedTts == "system") {
                             "人物识别 · 正在检查手机可用的中文音色…"
@@ -13464,6 +13567,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         // available to history reuse and playback-session guards.
                     )
                 }
+                persistSpeakerRecognitionState(sessionKey)
 
                 // Initialize the selected engine before the expensive diarization step and before
                 // retiring the current dubbing engine. If TTS setup fails, playback remains intact.
@@ -13519,16 +13623,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     checkActive = { speakerDecodeJob?.ensureActive() },
                                     onProgressPercent = { percent ->
                                         updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                                            if (state.key == sessionKey) state.copy(
+                                            if (
+                                                state.key == sessionKey &&
+                                                state.speakerRecognition.phase != SpeakerRecognitionPhase.CANCELLING
+                                            ) state.copy(
                                                 progress = "人物识别 · 解码音频 $percent%",
                                                 speakerRecognition = state.speakerRecognition.copy(
                                                     phase = SpeakerRecognitionPhase.PREPARING,
                                                     stage = SpeakerRecognitionStage.AUDIO_DECODING,
                                                     message = "正在解码音频…",
                                                     progressPercent = percent.coerceIn(0, 100),
+                                                    taskToken = mutationGeneration,
                                                 ),
                                             ) else state
                                         }
+                                        persistSpeakerRecognitionState(sessionKey)
                                     },
                                 )
                             } finally {
@@ -13570,7 +13679,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             pcmFile,
                         ) { progressUpdate ->
                             updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                                if (state.key == sessionKey) {
+                                if (
+                                    state.key == sessionKey &&
+                                    state.speakerRecognition.phase != SpeakerRecognitionPhase.CANCELLING
+                                ) {
                                     val recognitionPhase = when (progressUpdate.stage) {
                                         SpeakerRecognitionStage.DOWNLOADING_MODELS ->
                                             SpeakerRecognitionPhase.DOWNLOADING_MODELS
@@ -13585,10 +13697,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                             stage = progressUpdate.stage,
                                             message = progressUpdate.message,
                                             progressPercent = progressUpdate.progressPercent,
+                                            completedUnits = progressUpdate.completedUnits,
+                                            totalUnits = progressUpdate.totalUnits,
+                                            progressItem = progressUpdate.progressItem,
+                                            taskToken = mutationGeneration,
                                         ),
                                     )
                                 } else state
                             }
+                            persistSpeakerRecognitionState(sessionKey)
                         }
                         val speakerDiarizeMs = (System.nanoTime() - speakerDiarizeStartedNs) / 1_000_000L
                         io.translatetube.local.util.AppLogStore.info(
@@ -13637,9 +13754,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             stage = SpeakerRecognitionStage.LINKING_SUBTITLES,
                             message = "正在关联人物与字幕…",
                             progressPercent = 0,
+                            completedUnits = 0L,
+                            totalUnits = originalLines.size.toLong(),
+                            taskToken = mutationGeneration,
                         ),
                     ) else state
                 }
+                persistSpeakerRecognitionState(sessionKey)
                 val cueAnchors = if (reuseSavedSpeakerTimeline) {
                     emptyList()
                 } else {
@@ -13722,10 +13843,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                         message = "正在关联人物与字幕…",
                                         progressPercent = percent,
                                         personCount = detectedSpeakerCount,
+                                        completedUnits = completedCueCount.toLong(),
+                                        totalUnits = totalCueCount.toLong(),
                                     ),
                                 )
                             } else current
                         }
+                        persistSpeakerRecognitionState(sessionKey)
                     }
                     updatedLine
                 }
@@ -13763,6 +13887,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 message = "已识别 ${detectedSpeakerCount} 位人物，正在更新人物音色…",
                                 progressPercent = null,
                                 personCount = detectedSpeakerCount,
+                                taskToken = mutationGeneration,
                             ),
                             phase = Phase.SYNTHESIZING,
                             totalLines = updated.size,
@@ -13773,6 +13898,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     } else state
                 }
+                persistSpeakerRecognitionState(sessionKey)
                 // Keep the configured engine fixed for this operation. The selected TTS was
                 // preflighted before diarization so construction failures cannot stop the current dub.
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
@@ -13849,10 +13975,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 stage = SpeakerRecognitionStage.APPLYING_VOICES,
                                 message = "识别完成 · ${detectedSpeakerCount} 位人物",
                                 personCount = detectedSpeakerCount,
+                                taskToken = mutationGeneration,
                             ),
                         )
                     } else state
                 }
+                clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 if (
                     speakerJob === speakerTaskJob &&
@@ -13865,9 +13993,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 phase = SpeakerRecognitionPhase.CANCELLED,
                                 stage = SpeakerRecognitionStage.PREPARING_AUDIO,
                                 message = "人物识别已取消",
+                                taskToken = mutationGeneration,
                             ),
                         ) else state
                     }
+                    clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
                 }
                 throw e
             } catch (e: Exception) {
@@ -13879,6 +14009,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
                         "故障阶段" to ui.value.phase.name,
                         "原字幕行数" to originalLines.size.toString(),
+                        "人物识别阶段" to ui.value.speakerRecognition.stage.name,
+                        "人物识别进度消息" to ui.value.speakerRecognition.message.take(160),
+                        "人物识别进度百分比" to (
+                            ui.value.speakerRecognition.progressPercent?.toString() ?: "不定进度"
+                        ),
+                        "人物识别进度项" to ui.value.speakerRecognition.progressItem.orEmpty(),
+                        "已完成单位" to (
+                            ui.value.speakerRecognition.completedUnits?.toString() ?: "未知"
+                        ),
+                        "总单位" to (
+                            ui.value.speakerRecognition.totalUnits?.toString() ?: "未知"
+                        ),
+                        "人物识别任务令牌" to (
+                            ui.value.speakerRecognition.taskToken?.toString() ?: "未知"
+                        ),
                         "识别到人物数量" to detectedSpeakerCount.toString(),
                         "配音引擎" to selectedTts,
                         "旧配音引擎是否已释放" to oldEngineRetired.toString(),
@@ -13898,10 +14043,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 message = "人物识别失败",
                                 personCount = detectedSpeakerCount,
                                 error = e.message ?: e.javaClass.simpleName,
+                                taskToken = mutationGeneration,
                             ),
                         )
                     } else state
                 }
+                clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
                 if (
                     oldEngineRetired &&
                     videoKey == sessionKey &&
@@ -13924,6 +14071,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
             } finally {
                 runCatching { pendingTts?.close() }
+                recordSpeakerCancellationResponse(mutationGeneration)
                 // A canceled diarization used to leave this progress marker behind. The UI
                 // treated the marker itself as an active job, so the menu stayed stuck forever.
                 if (
@@ -13940,6 +14088,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     phase = SpeakerRecognitionPhase.CANCELLED,
                                     stage = SpeakerRecognitionStage.PREPARING_AUDIO,
                                     message = "人物识别已结束",
+                                    taskToken = mutationGeneration,
                                 )
                             } else state.speakerRecognition
                             state.copy(
@@ -13948,6 +14097,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             )
                         } else state
                     }
+                    clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
                 }
             }
             }
@@ -13968,10 +14118,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 phase = SpeakerRecognitionPhase.CANCELLED,
                                 stage = SpeakerRecognitionStage.PREPARING_AUDIO,
                                 message = "人物识别已取消",
+                                taskToken = mutationGeneration,
                             ),
                         )
                     } else state
                 }
+                clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
+                recordSpeakerCancellationResponse(mutationGeneration)
             }
         }
         recognitionJob.start()
