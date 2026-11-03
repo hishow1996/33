@@ -6,7 +6,9 @@ import io.translatetube.local.subs.SubLine
 import io.translatetube.local.yt.SubtitleTrackOption
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 
@@ -463,25 +465,81 @@ internal object ReadySessionSnapshotStore {
     // These snapshots are required to resume a completed video (including user-imported
     // translated subtitles). cacheDir may be purged by Android at any time, so keep the bounded
     // snapshot store in filesDir and let remove()/clearAll()/prune() manage its lifetime.
+    @Synchronized
     private fun directory(context: Context): File {
         val appContext = context.applicationContext
         val persistentDirectory = File(appContext.filesDir, DIRECTORY_NAME).apply { mkdirs() }
 
-        // Migrate snapshots written by earlier versions under cacheDir. Without this migration,
-        // users updating the app would lose access to existing successful sessions on first launch.
+        // Migrate snapshots written by earlier versions under cacheDir. The source remains intact
+        // until the destination has been atomically written and structurally verified.
         val legacyDirectory = File(appContext.cacheDir, DIRECTORY_NAME)
-        if (legacyDirectory.isDirectory) {
+        if (legacyDirectory.isDirectory && persistentDirectory.isDirectory) {
             legacyDirectory.listFiles()?.forEach { legacyFile ->
-                if (!legacyFile.isFile) return@forEach
+                if (
+                    !legacyFile.isFile ||
+                    !legacyFile.name.startsWith("ready_") ||
+                    !legacyFile.name.endsWith(".json")
+                ) return@forEach
+
+                val legacyBytes = readSnapshotBytes(legacyFile) ?: return@forEach
+                if (!ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
+                        fileName = legacyFile.name,
+                        bytes = legacyBytes,
+                        expectedVersion = SNAPSHOT_VERSION,
+                        maxBytes = MAX_SNAPSHOT_BYTES,
+                        maxLines = MAX_SNAPSHOT_LINES,
+                    )
+                ) return@forEach
+
                 val persistentFile = File(persistentDirectory, legacyFile.name)
-                if (persistentFile.exists()) {
+                val existingBytes = readSnapshotBytes(persistentFile)
+                if (
+                    existingBytes != null &&
+                    ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
+                        fileName = persistentFile.name,
+                        bytes = existingBytes,
+                        expectedVersion = SNAPSHOT_VERSION,
+                        maxBytes = MAX_SNAPSHOT_BYTES,
+                        maxLines = MAX_SNAPSHOT_LINES,
+                    )
+                ) {
+                    // A valid durable copy already exists, so removing the duplicate is safe.
+                    runCatching { legacyFile.delete() }
+                    return@forEach
+                }
+
+                val atomic = AtomicFile(persistentFile)
+                var stream: FileOutputStream? = null
+                try {
+                    stream = atomic.startWrite()
+                    stream.write(legacyBytes)
+                    atomic.finishWrite(stream)
+                    stream = null
+                } catch (error: Exception) {
+                    val failedStream = stream
+                    if (failedStream != null) runCatching { atomic.failWrite(failedStream) }
+                    android.util.Log.w(
+                        "ReadySessionSnapshotStore",
+                        "Could not migrate a legacy ready-session snapshot; preserving the source copy",
+                        error,
+                    )
+                    return@forEach
+                }
+
+                val migratedBytes = readSnapshotBytes(persistentFile)
+                val migrationVerified = migratedBytes != null &&
+                    ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
+                        fileName = persistentFile.name,
+                        bytes = migratedBytes,
+                        expectedVersion = SNAPSHOT_VERSION,
+                        maxBytes = MAX_SNAPSHOT_BYTES,
+                        maxLines = MAX_SNAPSHOT_LINES,
+                    )
+                if (migrationVerified) {
                     runCatching { legacyFile.delete() }
                 } else {
-                    val copied = runCatching {
-                        legacyFile.copyTo(persistentFile, overwrite = false)
-                        true
-                    }.getOrDefault(false)
-                    if (copied) runCatching { legacyFile.delete() }
+                    // Keep the legacy source as the recovery copy if post-write verification fails.
+                    runCatching { atomic.delete() }
                 }
             }
             if (legacyDirectory.listFiles()?.isEmpty() == true) {
@@ -489,6 +547,39 @@ internal object ReadySessionSnapshotStore {
             }
         }
         return persistentDirectory
+    }
+
+    /** Read a bounded, stable snapshot file without trusting its on-disk length alone. */
+    private fun readSnapshotBytes(file: File): ByteArray? {
+        if (!file.isFile) return null
+        val expectedLength = file.length()
+        if (expectedLength !in 1L..MAX_SNAPSHOT_BYTES) return null
+        val expectedModified = file.lastModified()
+
+        return try {
+            val output = ByteArrayOutputStream(expectedLength.toInt())
+            FileInputStream(file).use { input ->
+                val buffer = ByteArray(16 * 1024)
+                var totalBytes = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (count == 0) continue
+                    totalBytes += count.toLong()
+                    if (totalBytes > MAX_SNAPSHOT_BYTES || totalBytes > expectedLength) return null
+                    output.write(buffer, 0, count)
+                }
+            }
+            val bytes = output.toByteArray()
+            if (
+                bytes.size.toLong() != expectedLength ||
+                !file.isFile ||
+                file.length() != expectedLength ||
+                file.lastModified() != expectedModified
+            ) null else bytes
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun filePrefix(videoKey: String): String = "ready_" + keyHash(videoKey) + "_"
