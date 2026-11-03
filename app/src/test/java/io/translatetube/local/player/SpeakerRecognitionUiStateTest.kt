@@ -39,7 +39,11 @@ class SpeakerRecognitionUiStateTest {
         val cancellableStages = listOf(
             SpeakerRecognitionStage.PREPARING_AUDIO,
             SpeakerRecognitionStage.AUDIO_DECODING,
+            SpeakerRecognitionStage.INITIALIZING_VOICE_ENGINE,
+            SpeakerRecognitionStage.CHECKING_MODELS,
             SpeakerRecognitionStage.DOWNLOADING_MODELS,
+            SpeakerRecognitionStage.EXTRACTING_MODELS,
+            SpeakerRecognitionStage.INITIALIZING_MODEL,
             SpeakerRecognitionStage.ANALYZING_AUDIO,
             SpeakerRecognitionStage.LINKING_SUBTITLES,
         )
