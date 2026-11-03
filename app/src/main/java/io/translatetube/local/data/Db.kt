@@ -93,13 +93,19 @@ interface SubtitleCacheDao {
     @Query("SELECT * FROM subtitle_cache WHERE cacheKey IN (:keys) ORDER BY updatedAt DESC LIMIT 1")
     suspend fun getLatestByCacheKeys(keys: List<String>): SubtitleCacheEntity?
 
-    /** Finds a source transcript saved by an older version with extra ASR settings in its cache key. */
+    /**
+     * Finds the newest completed source transcript saved with a legacy ASR key.
+     * Partial manifests and segment shards share this prefix but are not complete source timelines;
+     * including them here can make a resumed run treat its own checkpoint as a malformed transcript.
+     */
     @Query(
         "SELECT * FROM subtitle_cache " +
             "WHERE substr(cacheKey, 1, length(:keyPrefix)) = :keyPrefix " +
+            "AND instr(cacheKey, '|asr-progress-') = 0 " +
+            "AND instr(cacheKey, '|chunk') = 0 " +
             "ORDER BY updatedAt DESC LIMIT 1"
     )
-    suspend fun getLatestByCacheKeyPrefix(keyPrefix: String): SubtitleCacheEntity?
+    suspend fun getLatestCompletedByCacheKeyPrefix(keyPrefix: String): SubtitleCacheEntity?
 
     /** Finds prior downloaded YouTube captions even if their legacy key included an ASR engine. */
     @Query(

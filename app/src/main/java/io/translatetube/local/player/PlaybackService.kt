@@ -7368,8 +7368,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 var latestCompatible: io.translatetube.local.data.SubtitleCacheEntity? = null
                 for (prefix in asrSourceCacheLookupPrefixes) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    val candidate = db.subtitleCacheDao().getLatestByCacheKeyPrefix(prefix)
+                    val candidate = db.subtitleCacheDao().getLatestCompletedByCacheKeyPrefix(prefix)
                     if (candidate != null &&
+                        AsrTranscriptCacheLookupPolicy.isCompletedSourceTranscriptCacheKey(
+                            cacheKey = candidate.cacheKey,
+                            keyPrefix = prefix,
+                        ) &&
                         (latestCompatible == null || candidate.updatedAt > latestCompatible.updatedAt)
                     ) {
                         latestCompatible = candidate
