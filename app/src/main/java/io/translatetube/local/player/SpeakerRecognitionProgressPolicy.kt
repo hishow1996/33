@@ -34,10 +34,10 @@ data class SpeakerRecognitionProgressDisplay(
 object SpeakerRecognitionProgressPolicy {
 
     private val byteProgressPattern = Regex(
-        """\\d+(?:\\.\\d+)?\\s*(?:TB|GB|MB|KB|B)(?:\\s*/\\s*(?:预计约\\s*)?\\d+(?:\\.\\d+)?\\s*(?:TB|GB|MB|KB|B))?""",
+        """\d+(?:\.\d+)?\s*(?:TB|GB|MB|KB|B)(?:\s*/\s*(?:预计约\s*)?\d+(?:\.\d+)?\s*(?:TB|GB|MB|KB|B))?""",
         RegexOption.IGNORE_CASE,
     )
-    private val percentagePattern = Regex("""\\d+(?:\\.\\d+)?\\s*%""")
+    private val percentagePattern = Regex("""\d+(?:\.\d+)?\s*%""")
 
     /**
      * Removes details already shown beside/below the progress bar. This does not calculate or
@@ -48,18 +48,18 @@ object SpeakerRecognitionProgressPolicy {
         if (raw.isBlank()) return SpeakerRecognitionProgressDisplay("")
 
         val sizeDetail = byteProgressPattern.find(raw)?.value?.let { value ->
-            Regex("""(\\d+)\\.0(?=\\s*(?:TB|GB|MB|KB|B)\\b)""", RegexOption.IGNORE_CASE)
+            Regex("""(\d+)\.0(?=\s*(?:TB|GB|MB|KB|B)\b)""", RegexOption.IGNORE_CASE)
                 .replace(value) { match -> match.groupValues[1] }
-                .replace(Regex("""\\s*/\\s*"""), " / ")
-                .replace(Regex("""\\s+"""), " ")
+                .replace(Regex("""\s*/\s*"""), " / ")
+                .replace(Regex("""\s+"""), " ")
                 .trim()
         }
         val withoutSize = byteProgressPattern.replace(raw, "")
         val withoutPercentage = percentagePattern.replace(withoutSize, "")
         val status = withoutPercentage
-            .replace(Regex("""正在下载(?:…|\\.\\.\\.)?"""), "下载中")
-            .replace(Regex("""\\s*·\\s*"""), " · ")
-            .replace(Regex("""\\s+"""), " ")
+            .replace(Regex("""正在下载(?:…|\.\.\.)?"""), "下载中")
+            .replace(Regex("""\s*·\s*"""), " · ")
+            .replace(Regex("""\s+"""), " ")
             .trim()
             .trim(' ', '·', '•', '：', ':')
 
