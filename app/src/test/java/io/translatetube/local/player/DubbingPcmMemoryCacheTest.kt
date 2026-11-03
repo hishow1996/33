@@ -15,6 +15,15 @@ class DubbingPcmMemoryCacheTest {
     ) = DubbingPcmMemoryEntry(samples, sampleRate, identity)
 
     @Test
+    fun diskLruTimestampIsNotWrittenForEveryMemoryCacheHit() {
+        val interval = DubbingPcmMemoryCacheTouchPolicy.FILE_TOUCH_INTERVAL_MS
+        assertTrue(DubbingPcmMemoryCacheTouchPolicy.shouldTouch(0L, 10_000L))
+        assertFalse(DubbingPcmMemoryCacheTouchPolicy.shouldTouch(10_000L, 10_000L + interval - 1L))
+        assertTrue(DubbingPcmMemoryCacheTouchPolicy.shouldTouch(10_000L, 10_000L + interval))
+        assertTrue(DubbingPcmMemoryCacheTouchPolicy.shouldTouch(20_000L, 19_999L))
+    }
+
+    @Test
     fun evictsLeastRecentlyUsedPcmWhenByteBudgetIsExceeded() {
         val cache = DubbingPcmMemoryCache(maxBytes = 24L, maxEntries = 8)
         val oldest = entry(FloatArray(4) { 0.1f }, identity = "old.pcm")

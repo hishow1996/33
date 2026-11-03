@@ -1391,6 +1391,7 @@ class DubbingEngine(
                                 samples = boundedSamples,
                                 sampleRate = readyAudio.sampleRate,
                                 cacheIdentity = persistedCacheIdentity ?: cacheFile(idx, synthesisSpeed).name,
+                                lastDiskTouchMs = System.currentTimeMillis(),
                             )
                             mem.containsKey(idx)
                         } else {
@@ -2053,8 +2054,10 @@ class DubbingEngine(
     }
 
     /** Read only PCM synthesized for the currently active TTS/text/speaker/speed identity. */
-    private fun memoryAudio(idx: Int): DubbingPcmMemoryEntry? {
-        val activeIdentity = cacheFile(idx).name
+    private fun memoryAudio(
+        idx: Int,
+        activeIdentity: String = cacheFile(idx).name,
+    ): DubbingPcmMemoryEntry? {
         return synchronized(mem) {
             refreshPcmMemoryBudgetLocked()
             val entry = mem[idx] ?: return@synchronized null
@@ -2079,7 +2082,12 @@ class DubbingEngine(
             // A cache reader may finish just as this engine is retired. Never repopulate its
             // in-memory PCM LRU after release has begun.
             if (!released) {
-                mem[idx] = DubbingPcmMemoryEntry(samples, sampleRate, cacheIdentity)
+                mem[idx] = DubbingPcmMemoryEntry(
+                    samples = samples,
+                    sampleRate = sampleRate,
+                    cacheIdentity = cacheIdentity,
+                    lastDiskTouchMs = System.currentTimeMillis(),
+                )
             }
         }
     }
@@ -2154,6 +2162,30 @@ class DubbingEngine(
         }
     }
 
+    /**
+     * Keep disk-cache eviction metadata reasonably fresh without writing filesystem metadata on
+     * every RAM hit. The in-memory LRU still records each access immediately.
+     */
+    private fun touchMemoryCacheFile(
+        idx: Int,
+        file: File,
+        expectedEntry: DubbingPcmMemoryEntry,
+    ) {
+        val nowMs = System.currentTimeMillis()
+        val shouldTouch = synchronized(mem) {
+            val current = mem[idx]
+            if (current == null || current !== expectedEntry ||
+                !DubbingPcmMemoryCacheTouchPolicy.shouldTouch(current.lastDiskTouchMs, nowMs)
+            ) {
+                false
+            } else {
+                current.lastDiskTouchMs = nowMs
+                true
+            }
+        }
+        if (shouldTouch) touchCacheFile(file)
+    }
+
     /** true = valid audio, false = valid empty marker, null = missing or corrupt cache. */
     private fun cached(
         idx: Int,
@@ -2162,7 +2194,7 @@ class DubbingEngine(
         val file = cacheFile(idx)
         // Memory entries have already been checked against the active engine/text/speaker/speed
         // identity. A fresh in-memory result remains usable even if its disk write failed.
-        val inMemory = memoryAudio(idx)
+        val inMemory = memoryAudio(idx, file.name)
         if (!DubbingCacheFreshnessPolicy.canReadCache(
                 forceFreshSynthesis = forceRegeneratePcmForAttach,
                 wasWrittenByCurrentRun = file.name in freshlySynthesizedCacheFiles,
@@ -2312,7 +2344,7 @@ class DubbingEngine(
         if (!isReadCurrent()) return null
         val playIdx = resolveChunkIndex(idx)
         val f = cacheFile(playIdx)
-        val inMemory = memoryAudio(playIdx)
+        val inMemory = memoryAudio(playIdx, f.name)
         // Disk hits must belong to this forced run. A matching current memory entry is fresh
         // independently: it can be the only usable copy after a disk-write failure.
         if (!DubbingCacheFreshnessPolicy.canReadCache(
@@ -2331,7 +2363,7 @@ class DubbingEngine(
             // Media3's LRU evictor tracks actual cache touches. Keep our file-backed cache's
             // mtime aligned when playback hits memory so frequently reused PCM isn't evicted as
             // if it had not been used since the original synthesis.
-            touchCacheFile(f)
+            touchMemoryCacheFile(playIdx, f, inMemory)
             return inMemory.samples to inMemory.sampleRate
         }
         val cacheStamp = DubbingCacheFileStamp.capture(f)

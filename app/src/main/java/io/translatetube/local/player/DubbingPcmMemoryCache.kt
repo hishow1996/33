@@ -10,6 +10,8 @@ internal data class DubbingPcmMemoryEntry(
     val samples: FloatArray,
     val sampleRate: Int,
     val cacheIdentity: String,
+    /** Last disk mtime refresh; memory LRU handles frequent reads without filesystem writes. */
+    var lastDiskTouchMs: Long = 0L,
 )
 
 /** Fail closed when the active cache identity is missing or differs from the stored PCM identity. */
@@ -100,6 +102,16 @@ internal class DubbingPcmMemoryCache(
 
     private fun bytesFor(entry: DubbingPcmMemoryEntry): Long =
         entry.samples.size.toLong() * java.lang.Float.BYTES
+}
+
+/** Throttle disk mtime writes when the audio itself is already served from RAM. */
+internal object DubbingPcmMemoryCacheTouchPolicy {
+    const val FILE_TOUCH_INTERVAL_MS = 30_000L
+
+    fun shouldTouch(lastTouchedAtMs: Long, nowMs: Long): Boolean =
+        lastTouchedAtMs <= 0L ||
+            nowMs < lastTouchedAtMs ||
+            nowMs - lastTouchedAtMs >= FILE_TOUCH_INTERVAL_MS
 }
 
 /** Memory budgets for pre-synthesized dubbing PCM, selected by Android's app-heap class. */
