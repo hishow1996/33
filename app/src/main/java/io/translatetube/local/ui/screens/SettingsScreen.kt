@@ -16,7 +16,6 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -34,6 +33,8 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VolumeUp
@@ -44,12 +45,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.translatetube.local.data.AppDatabase
@@ -1091,75 +1086,6 @@ Section("视频源（yt-dlp）") {
 }
 
 @Composable
-private fun YouTubeParseSectionGlyph() {
-    Canvas(Modifier.size(22.dp)) {
-        val unit = size.minDimension / 24f
-        val videoBlue = Color(0xFF2878D7)
-        val searchBlue = Color(0xFF174F99)
-
-        // Video tile with a clear play mark.
-        drawRoundRect(
-            color = videoBlue,
-            topLeft = Offset(1.5f * unit, 4.5f * unit),
-            size = Size(16f * unit, 13f * unit),
-            cornerRadius = CornerRadius(3f * unit),
-        )
-        val playMark = Path().apply {
-            moveTo(7.4f * unit, 8f * unit)
-            lineTo(7.4f * unit, 14f * unit)
-            lineTo(12.1f * unit, 11f * unit)
-            close()
-        }
-        drawPath(path = playMark, color = Color.White)
-
-        // Search lens signals video recognition / parsing.
-        drawCircle(
-            color = Color.White,
-            radius = 3.15f * unit,
-            center = Offset(17.2f * unit, 14.4f * unit),
-        )
-        drawCircle(
-            color = searchBlue,
-            radius = 3.15f * unit,
-            center = Offset(17.2f * unit, 14.4f * unit),
-            style = Stroke(width = 1.8f * unit),
-        )
-        drawLine(
-            color = searchBlue,
-            start = Offset(19.5f * unit, 16.7f * unit),
-            end = Offset(22.1f * unit, 19.3f * unit),
-            strokeWidth = 2f * unit,
-            cap = StrokeCap.Round,
-        )
-    }
-}
-
-@Composable
-private fun TranscriptionSectionGlyph() {
-    Canvas(Modifier.size(22.dp)) {
-        val unit = size.minDimension / 24f
-        val centerY = 12f * unit
-        val bars = listOf(5f, 9f, 14f, 8f, 12f, 7f, 4f)
-        bars.forEachIndexed { index, height ->
-            val x = (3.2f + index * 2.85f) * unit
-            val halfHeight = height * 0.5f * unit
-            val barColor = if (index % 2 == 0) {
-                Color(0xFF2878D7)
-            } else {
-                Color(0xFF4A97DF)
-            }
-            drawLine(
-                color = barColor,
-                start = Offset(x, centerY - halfHeight),
-                end = Offset(x, centerY + halfHeight),
-                strokeWidth = 2.1f * unit,
-                cap = StrokeCap.Round,
-            )
-        }
-    }
-}
-
-@Composable
 private fun Section(
     title: String,
     onHeaderClick: (() -> Unit)? = null,
@@ -1176,6 +1102,8 @@ private fun Section(
         }
     }
     val glyph = when (title) {
+        "YouTube 解析" -> Icons.Filled.OndemandVideo
+        "转写引擎" -> Icons.Filled.GraphicEq
         "翻译引擎", "翻译设置" -> Icons.Filled.Translate
         "配音设置" -> Icons.Filled.VolumeUp
         "模型管理", "视频源（yt-dlp）" -> Icons.Filled.Download
@@ -1225,16 +1153,12 @@ private fun Section(
                         .background(sectionIconBackground),
                     contentAlignment = Alignment.Center,
                 ) {
-                    when (title) {
-                        "YouTube 解析" -> YouTubeParseSectionGlyph()
-                        "转写引擎" -> TranscriptionSectionGlyph()
-                        else -> Icon(
-                            imageVector = glyph,
-                            contentDescription = null,
-                            tint = BrandBright,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
+                    Icon(
+                        imageVector = glyph,
+                        contentDescription = null,
+                        tint = BrandBright,
+                        modifier = Modifier.size(22.dp),
+                    )
                 }
                 Spacer(Modifier.width(12.dp))
                 Text(
