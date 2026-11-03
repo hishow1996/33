@@ -6518,18 +6518,68 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            PlaybackOverlayIconButton(
-                icon = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                contentDescription = if (state.isPlaying) "暂停" else "播放",
-                touchSize = 60.dp,
-                iconSize = 44.dp,
-                enabled = controlsVisible,
-                onInteraction = recordInteraction,
-                onClick = {
-                    if (state.isPlaying) PlaybackService.instance?.pausePlayback()
-                    else PlaybackService.instance?.playPlayback()
-                },
-            )
+            val centerPlaybackButton: @Composable () -> Unit = {
+                PlaybackOverlayIconButton(
+                    icon = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (state.isPlaying) "暂停" else "播放",
+                    touchSize = 60.dp,
+                    iconSize = 44.dp,
+                    enabled = controlsVisible,
+                    onInteraction = recordInteraction,
+                    onClick = {
+                        if (state.isPlaying) PlaybackService.instance?.pausePlayback()
+                        else PlaybackService.instance?.playPlayback()
+                    },
+                )
+            }
+            if (isFullscreen) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(22.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PlaybackOverlayIconButton(
+                        icon = Icons.Filled.Replay10,
+                        contentDescription = "后退 10 秒",
+                        touchSize = 48.dp,
+                        iconSize = 30.dp,
+                        enabled = controlsVisible,
+                        onInteraction = recordInteraction,
+                        onClick = {
+                            val service = PlaybackService.instance
+                            val duration = (service?.duration() ?: 0L)
+                                .takeIf { it > 0L } ?: state.durationMs.coerceAtLeast(0L)
+                            val current = service?.position()?.coerceAtLeast(0L) ?: 0L
+                            val target = (current - 10_000L).coerceAtLeast(0L)
+                                .let { if (duration > 0L) it.coerceAtMost(duration) else it }
+                            service?.seek(target)
+                            if (duration > 0L) pos = target.toFloat() / duration.toFloat()
+                            seekRevision += 1
+                        },
+                    )
+                    centerPlaybackButton()
+                    PlaybackOverlayIconButton(
+                        icon = Icons.Filled.Forward10,
+                        contentDescription = "快进 10 秒",
+                        touchSize = 48.dp,
+                        iconSize = 30.dp,
+                        enabled = controlsVisible,
+                        onInteraction = recordInteraction,
+                        onClick = {
+                            val service = PlaybackService.instance
+                            val duration = (service?.duration() ?: 0L)
+                                .takeIf { it > 0L } ?: state.durationMs.coerceAtLeast(0L)
+                            val current = service?.position()?.coerceAtLeast(0L) ?: 0L
+                            val target = (current + 10_000L)
+                                .let { if (duration > 0L) it.coerceAtMost(duration) else it }
+                            service?.seek(target)
+                            if (duration > 0L) pos = target.toFloat() / duration.toFloat()
+                            seekRevision += 1
+                        },
+                    )
+                }
+            } else {
+                centerPlaybackButton()
+            }
         }
     }
 
