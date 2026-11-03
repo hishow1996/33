@@ -166,7 +166,7 @@ fun HomeScreen(
             }
             val taskTitle = if (hasLiveTask) {
                 when (playback.phase) {
-                    Phase.ERROR -> "查看处理失败的任务"
+                    Phase.ERROR -> "重试上次处理"
                     Phase.READY -> "继续观看这个视频"
                     Phase.TRANSLATING -> "继续视频翻译"
                     Phase.SYNTHESIZING -> "继续生成中文配音"
