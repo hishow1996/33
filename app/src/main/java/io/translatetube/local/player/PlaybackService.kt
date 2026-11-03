@@ -13741,7 +13741,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             ) else state
         }
         beginSpeakerRecognitionTaskJournal(sessionKey)
-        val recognitionJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY)
+        val recognitionJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             val speakerTaskJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             pipelineExecutionMutex.withLock {
             var pendingTts: TtsEngine? = null
