@@ -107,6 +107,42 @@ class TranslationCacheIdentityTest {
     }
 
     @Test
+    fun randomizedCredentialCiphertextDoesNotInvalidateUnchangedTranslationCache() {
+        val decrypted = mapOf(
+            "api-key-ciphertext-iv-a" to "same-api-key",
+            "api-key-ciphertext-iv-b" to "same-api-key",
+            "api-key-ciphertext-changed" to "new-api-key",
+            "extra-ciphertext-iv-a" to """{"appId":"same-app-id"}""",
+            "extra-ciphertext-iv-b" to """{"appId":"same-app-id"}""",
+            "extra-ciphertext-changed" to """{"appId":"new-app-id"}""",
+        )
+        val decrypt: (String) -> String = { stored -> decrypted[stored] ?: stored }
+
+        fun fingerprint(
+            storedApiKey: String = "api-key-ciphertext-iv-a",
+            storedExtra: String = "extra-ciphertext-iv-a",
+        ) = TranslationCacheIdentity.providerFingerprintFromStoredCredentials(
+            activeId = 42L,
+            providerKind = "api-profile",
+            type = "BAIDU_API",
+            baseUrl = "https://api.example/v1",
+            storedApiKey = storedApiKey,
+            model = "model-a",
+            region = "",
+            storedCredentialsJson = storedExtra,
+            decrypt = decrypt,
+        )
+
+        val original = fingerprint()
+        assertEquals(original, fingerprint(
+            storedApiKey = "api-key-ciphertext-iv-b",
+            storedExtra = "extra-ciphertext-iv-b",
+        ))
+        assertNotEquals(original, fingerprint(storedApiKey = "api-key-ciphertext-changed"))
+        assertNotEquals(original, fingerprint(storedExtra = "extra-ciphertext-changed"))
+    }
+
+    @Test
     fun providerFingerprintNeverContainsTheApiKey() {
         val secret = "private-api-key-never-store"
         val fingerprint = TranslationCacheIdentity.providerFingerprint(
