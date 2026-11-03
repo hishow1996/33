@@ -565,6 +565,12 @@ data class SpeakerRecognitionUiState(
             phase == SpeakerRecognitionPhase.APPLYING ||
             phase == SpeakerRecognitionPhase.CANCELLING
 
+    /** Cancellation is safe until the existing dubbing engine starts being replaced. */
+    val canCancel: Boolean
+        get() = isActive &&
+            phase != SpeakerRecognitionPhase.CANCELLING &&
+            stage != SpeakerRecognitionStage.APPLYING_VOICES
+
     /** The one stage currently being processed; later stages are intentionally not listed. */
     val stageTitle: String
         get() = when (phase) {
@@ -909,6 +915,8 @@ class PlaybackService : MediaSessionService() {
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
+    private val speakerRecognitionCancellationLock = Any()
+    @Volatile private var speakerRecognitionCommitTaskToken: Long? = null
     @Volatile private var speakerCancelRequestedAtMs = 0L
     @Volatile private var speakerCancelTaskToken: Long? = null
     @Volatile private var speakerCancelStageAtRequest = ""
@@ -1059,7 +1067,12 @@ class PlaybackService : MediaSessionService() {
 
     /** Only a user-triggered recognition pass can be canceled independently of the main pipeline. */
     val canCancelSpeakerRecognition: Boolean
-        get() = speakerJob?.isActive == true && ui.value.speakerRecognition.isActive
+        get() {
+            val recognition = ui.value.speakerRecognition
+            return speakerJob?.isActive == true &&
+                recognition.canCancel &&
+                recognition.taskToken != speakerRecognitionCommitTaskToken
+        }
 
     /** Return the detected people in first-appearance order for the playback tools panel. */
     fun getDetectedSpeakerPeople(): List<SpeakerPersonSummary> {
@@ -1134,30 +1147,40 @@ class PlaybackService : MediaSessionService() {
 
     /** Cancel only the active diarization pass; voice-assignment work remains untouched. */
     fun cancelSpeakerRecognition() {
-        val current = ui.value
-        val job = speakerJob
-        if (!current.speakerRecognition.isActive || job?.isActive != true || current.key.isBlank()) return
-        speakerCancelRequestedAtMs = android.os.SystemClock.elapsedRealtime()
-        speakerCancelTaskToken = current.speakerRecognition.taskToken
-        speakerCancelStageAtRequest = current.speakerRecognition.stage.name
-        speakerCancelProgressAtRequest =
-            current.speakerRecognition.progressPercent?.let { "$it%" } ?: "不定进度"
-        // Publish and persist CANCELLING before cancelling the job, so a fast completion callback
-        // cannot be overwritten by a late UI update that leaves the menu stuck in CANCELLING.
-        updateUiForSession(current.key) { state ->
-            if (state.key == current.key) {
-                state.copy(
-                    speakerRecognition = state.speakerRecognition.copy(
-                        phase = SpeakerRecognitionPhase.CANCELLING,
-                        message = "正在取消人物识别…",
-                        error = null,
-                    ),
-                )
-            } else state
+        synchronized(speakerRecognitionCancellationLock) {
+            val current = ui.value
+            val recognition = current.speakerRecognition
+            val job = speakerJob
+            val taskToken = recognition.taskToken
+            if (
+                !recognition.canCancel ||
+                taskToken == speakerRecognitionCommitTaskToken ||
+                job?.isActive != true ||
+                current.key.isBlank()
+            ) return
+
+            speakerCancelRequestedAtMs = android.os.SystemClock.elapsedRealtime()
+            speakerCancelTaskToken = taskToken
+            speakerCancelStageAtRequest = recognition.stage.name
+            speakerCancelProgressAtRequest =
+                recognition.progressPercent?.let { "$it%" } ?: "不定进度"
+            // Publish and persist CANCELLING before cancelling the job, so a fast completion callback
+            // cannot be overwritten by a late UI update that leaves the menu stuck in CANCELLING.
+            updateUiForSession(current.key) { state ->
+                if (state.key == current.key) {
+                    state.copy(
+                        speakerRecognition = state.speakerRecognition.copy(
+                            phase = SpeakerRecognitionPhase.CANCELLING,
+                            message = "正在取消人物识别…",
+                            error = null,
+                        ),
+                    )
+                } else state
+            }
+            persistSpeakerRecognitionState(current.key)
+            job.cancel(kotlinx.coroutines.CancellationException("用户取消人物识别"))
+            android.util.Log.i("PlaybackService", "User canceled speaker diarization for the active playback session")
         }
-        persistSpeakerRecognitionState(current.key)
-        job.cancel(kotlinx.coroutines.CancellationException("用户取消人物识别"))
-        android.util.Log.i("PlaybackService", "User canceled speaker diarization for the active playback session")
     }
 
     /**
@@ -13512,6 +13535,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         val pipelineGeneration = activePipelineGeneration
         val mutationGeneration = beginDubbingMutationGeneration()
+        synchronized(speakerRecognitionCancellationLock) {
+            speakerRecognitionCommitTaskToken = null
+        }
         speakerCancelRequestedAtMs = 0L
         speakerCancelTaskToken = null
         speakerCancelStageAtRequest = ""
@@ -13922,34 +13948,38 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 val distinctVoices = updated.map { it.speakerId }.distinct().size
-                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
-                    if (state.key == sessionKey) {
-                        state.copy(
-                            lines = updated,
-                            progress = "已区分人物，使用 ${distinctVoices} 种音色",
-                            speakerRecognition = SpeakerRecognitionUiState(
-                                phase = SpeakerRecognitionPhase.APPLYING,
-                                stage = SpeakerRecognitionStage.APPLYING_VOICES,
-                                message = "已识别 ${detectedSpeakerCount} 位人物，正在更新人物音色…",
-                                progressPercent = null,
-                                personCount = detectedSpeakerCount,
-                                taskToken = mutationGeneration,
-                            ),
-                            phase = Phase.SYNTHESIZING,
-                            totalLines = updated.size,
-                            preparedUntil = 0,
-                            preparedCount = 0,
-                            audioReadyCount = 0,
-                            currentLine = -1,
-                        )
-                    } else state
+                synchronized(speakerRecognitionCancellationLock) {
+                    // Cancellation and the irreversible engine swap share one gate. If cancel
+                    // wins first, the job is checked before retiring the currently audible dub.
+                    speakerTaskJob?.ensureActive()
+                    speakerRecognitionCommitTaskToken = mutationGeneration
+                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(
+                                lines = updated,
+                                progress = "已区分人物，使用 ${distinctVoices} 种音色",
+                                speakerRecognition = SpeakerRecognitionUiState(
+                                    phase = SpeakerRecognitionPhase.APPLYING,
+                                    stage = SpeakerRecognitionStage.APPLYING_VOICES,
+                                    message = "已识别 ${detectedSpeakerCount} 位人物，正在更新人物音色…",
+                                    progressPercent = null,
+                                    personCount = detectedSpeakerCount,
+                                    taskToken = mutationGeneration,
+                                ),
+                                phase = Phase.SYNTHESIZING,
+                                totalLines = updated.size,
+                                preparedUntil = 0,
+                                preparedCount = 0,
+                                audioReadyCount = 0,
+                                currentLine = -1,
+                            )
+                        } else state
+                    }
                 }
                 persistSpeakerRecognitionState(sessionKey)
                 // Keep the configured engine fixed for this operation. The selected TTS was
                 // preflighted before diarization so construction failures cannot stop the current dub.
-                if (videoKey != sessionKey || ui.value.key != sessionKey) {
-                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
-                }
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 val previousDubbing = retireCurrentDubbing()
                 oldEngineRetired = previousDubbing != null
                 awaitRetiredDubbingEngines()
@@ -14118,6 +14148,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             } finally {
                 runCatching { pendingTts?.close() }
                 recordSpeakerCancellationResponse(mutationGeneration)
+                synchronized(speakerRecognitionCancellationLock) {
+                    if (speakerRecognitionCommitTaskToken == mutationGeneration) {
+                        speakerRecognitionCommitTaskToken = null
+                    }
+                }
                 // A canceled diarization used to leave this progress marker behind. The UI
                 // treated the marker itself as an active job, so the menu stayed stuck forever.
                 if (
