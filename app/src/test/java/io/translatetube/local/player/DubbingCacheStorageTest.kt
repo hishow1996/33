@@ -74,6 +74,58 @@ class DubbingCacheStorageTest {
     }
 
     @Test
+    fun restoresValidLegacyPcmOverSameSizeCorruptDurableCache() {
+        val root = createTempDir(prefix = "dubbing-cache-recover-corrupt")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val legacyBytes = pcmCache(0.1f, -0.2f)
+            val corruptBytes = pcmCache(Float.NaN, -0.2f)
+            val source = File(legacy, "cue.pcm").apply { writeBytes(legacyBytes) }
+            val destination = File(durable, "cue.pcm").apply { writeBytes(corruptBytes) }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(1, count)
+            assertArrayEquals("valid legacy audio must repair the damaged durable copy", legacyBytes, destination.readBytes())
+            assertFalse("legacy copy is removed only after repair is verified", source.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun keepsValidDurablePcmWhenLegacyPayloadDiffersButIsAlsoValid() {
+        val root = createTempDir(prefix = "dubbing-cache-keep-valid-durable")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val legacyBytes = pcmCache(0.3f, -0.4f)
+            val durableBytes = pcmCache(0.1f, -0.2f)
+            val source = File(legacy, "cue.pcm").apply { writeBytes(legacyBytes) }
+            val destination = File(durable, "cue.pcm").apply { writeBytes(durableBytes) }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(0, count)
+            assertArrayEquals("a valid durable cache must not be overwritten", durableBytes, destination.readBytes())
+            assertFalse("redundant legacy payload can be removed", source.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private fun pcmCache(vararg samples: Float): ByteArray {
+        val bytes = java.io.ByteArrayOutputStream()
+        java.io.DataOutputStream(bytes).use { output ->
+            output.writeInt(16_000)
+            output.writeInt(samples.size)
+            samples.forEach(output::writeFloat)
+        }
+        return bytes.toByteArray()
+    }
+
+    @Test
     fun leavesLegacySourceUntouchedWhenDestinationCannotBeCreated() {
         val root = createTempDir(prefix = "dubbing-cache-unwritable")
         try {
