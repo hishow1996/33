@@ -46,18 +46,20 @@ private class NativeSpeakerRecognitionProgressCallback(
  */
 object SpeakerDiarizer {
     /** Bump whenever the diarization models or chunk-reconciliation rules change. */
-    const val MODEL_VERSION = "pyannote-3-0-3dspeaker-16k-sherpa-1.13.8-chunk-v3-2min"
+    const val MODEL_VERSION = "pyannote-3-0-3dspeaker-16k-sherpa-1.13.8-chunk-v4-30s"
 
     data class Segment(val startSec: Float, val endSec: Float, val speaker: Int, val confidence: Float)
 
     /**
-     * Bound synchronous native inference to a smaller window so cancellation is checked more
-     * often. A 2-minute 16 kHz FloatArray is about 7.68 MB; the existing overlap is retained to
-     * keep cross-window speaker identity reconciliation conservative.
-     * Native sherpa inference itself is synchronous and cannot be interrupted mid-window.
+     * Keep synchronous sherpa inference in short windows. The JNI call cannot be interrupted
+     * safely mid-window, so the hard 30-second cap bounds the time until cancellation is observed.
+     * A 30-second 16 kHz FloatArray is about 1.92 MB. A 10-second overlap preserves context for
+     * reconciling speaker identities across adjacent windows.
      */
-    internal const val DEFAULT_CHUNK_DURATION_MS = 2L * 60L * 1_000L
-    internal const val DEFAULT_OVERLAP_MS = 20L * 1_000L
+    internal const val MIN_CHUNK_DURATION_MS = 15L * 1_000L
+    internal const val DEFAULT_CHUNK_DURATION_MS = 30L * 1_000L
+    internal const val MAX_CHUNK_DURATION_MS = 30L * 1_000L
+    internal const val DEFAULT_OVERLAP_MS = 10L * 1_000L
 
     private const val SEGMENTATION_URL =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
@@ -457,7 +459,7 @@ object SpeakerDiarizer {
     /**
      * Analyze a complete decoded audio file in bounded windows.
      *
-     * Only one 2-minute FloatArray (about 7.68 MB) is resident at a time, reducing the longest
+     * Only one 30-second FloatArray (about 1.92 MB) is resident at a time, reducing the longest
      * non-interruptible native inference window. The native ONNX models and diarizer
      * instance are initialized once per file, then reused for every window. Adjacent windows
      * overlap so local speaker IDs can be reconciled without rereading the entire prior timeline.
@@ -477,7 +479,7 @@ object SpeakerDiarizer {
         }
 
         val rate = pcmFile.sampleRate.toLong()
-        val chunkSamples = (chunkDurationMs.coerceAtLeast(60_000L) * rate / 1_000L)
+        val chunkSamples = (chunkDurationMs.coerceIn(MIN_CHUNK_DURATION_MS, MAX_CHUNK_DURATION_MS) * rate / 1_000L)
             .coerceAtMost(Int.MAX_VALUE.toLong())
         val overlapSamples = (overlapMs.coerceAtLeast(1_000L) * rate / 1_000L)
             .coerceAtMost(chunkSamples / 3L)
@@ -626,6 +628,8 @@ object SpeakerDiarizer {
                             "视频播放负载是否活跃" to playbackLoadActive.toString(),
                             "音频时长（秒）" to audioSec.toInt().toString(),
                             "音频分段数" to totalChunks.toString(),
+                            "单段音频时长秒" to (chunkSamples / rate).toString(),
+                            "相邻分段重叠秒" to (overlapSamples / rate).toString(),
                             "模型初始化 ms" to initMs.toString(),
                             "模型内部进度回调是否可用" to session.supportsInferenceProgress.toString(),
                             "分段推理总 ms" to inferenceMs.toString(),
