@@ -1158,7 +1158,9 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
             "senseVoice" to ModelFiles.senseVoiceDir(context),
             "logs" to File(filesDir, "app_logs"),
             "crash" to File(filesDir, "crash"),
-        ),
+        ) + PiperModels.catalog.associate { definition ->
+            "piperModel:${definition.id}" to PiperModels.modelDir(context, definition.id)
+        },
         warnings = warnings,
     )
     val models = filesTree.totalFor("models")
@@ -1192,9 +1194,21 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
     val favorites = runCatching { db.videoDao().countFavorites() }.getOrElse {
         warnings += "收藏记录统计失败：${it.javaClass.simpleName}"; -1
     }
-    val piperCount = runCatching { PiperModels.installedIds(context).size }.getOrElse {
-        warnings += "Piper 模型状态读取失败：${it.javaClass.simpleName}"; -1
+    val installedPiperIds = runCatching { PiperModels.installedIds(context) }.getOrElse {
+        warnings += "Piper 模型状态读取失败：${it.javaClass.simpleName}"
+        null
     }
+    val piperCount = installedPiperIds?.size ?: -1
+    val piperModels = installedPiperIds?.let { installedIds ->
+        PiperModels.catalog.filter { it.id in installedIds }.map { definition ->
+            StoragePiperModel(
+                id = definition.id,
+                languageLabel = definition.langLabel,
+                voiceLabel = definition.voiceLabel,
+                bytes = filesTree.totalFor("piperModel:${definition.id}"),
+            )
+        }
+    }.orEmpty()
     val ttsReady = runCatching { ModelFiles.ttsReady(context) }.getOrDefault(false)
     val whisperReady = runCatching { ModelFiles.whisperReady(context) }.getOrDefault(false)
     val senseReady = runCatching { ModelFiles.senseVoiceReady(context) }.getOrDefault(false)
@@ -1253,6 +1267,7 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
         senseVoice = sense,
         piperBytes = piperBytes,
         piperCount = piperCount,
+        piperModels = piperModels,
         ttsReady = ttsReady,
         whisperReady = whisperReady,
         senseReady = senseReady,
