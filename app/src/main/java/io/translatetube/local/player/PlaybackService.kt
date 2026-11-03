@@ -7709,6 +7709,48 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
             }
 
+            // The stable ASR engine key supersedes older translation-cache keys that also
+            // contained language/credential/decoder settings. Reuse an old translation only after
+            // its original cue timeline is matched against the validated source transcript.
+            val canRestoreLegacyAsrTranslation =
+                cached == null &&
+                    !manualTranslationRequestedKeys.contains(key) &&
+                    sourceImportedLines.isNullOrEmpty() &&
+                    !restoredSourceLines.isNullOrEmpty() &&
+                    resolvedProcessingFlow in setOf(
+                        ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                        ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                        ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                    )
+            if (canRestoreLegacyAsrTranslation) {
+                val legacyTranslationPrefix = "$baseTranslationCacheKey|asr-$asrEngineCachePrefix"
+                val legacyTranslation = db.subtitleCacheDao()
+                    .getLatestByCacheKeyPrefix(legacyTranslationPrefix)
+                    ?.takeIf { entry ->
+                        isUsableTranslationCache(entry.linesJson) &&
+                            translationCacheMatchesSource(entry.linesJson, restoredSourceLines.orEmpty())
+                    }
+                if (legacyTranslation != null) {
+                    val migratedTranslation = legacyTranslation.copy(
+                        cacheKey = translationCacheKey,
+                        updatedAt = System.currentTimeMillis(),
+                        videoKey = key,
+                    )
+                    db.subtitleCacheDao().put(migratedTranslation)
+                    storedTranslationCache = migratedTranslation
+                    cached = migratedTranslation
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "已复用旧版同一转写引擎的字幕翻译缓存",
+                        diagnosticContext = mapOf(
+                            "原文字幕行数" to restoredSourceLines.size.toString(),
+                            "恢复策略" to "跳过重复翻译",
+                        ),
+                    )
+                }
+            }
+
             suspend fun runTranscriptionStage(): Boolean {
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
                 val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
