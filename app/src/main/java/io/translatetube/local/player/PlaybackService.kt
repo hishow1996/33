@@ -4671,7 +4671,7 @@ class PlaybackService : MediaSessionService() {
                 val refreshAfterCheckpointMiss =
                     checkpoint == null &&
                         videoId != null &&
-                        importedLines.isNullOrEmpty() &&
+                        (importedLines == null || importedLines.isEmpty()) &&
                         previousYouTubeProcessingFlow != null &&
                         ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
                             previousYouTubeProcessingFlow,
