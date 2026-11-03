@@ -18,6 +18,12 @@ enum class VideoPresentationMode {
 
 /** Pure decisions shared by playback lifecycle code and unit tests. */
 internal object VideoPresentationModePolicy {
+    fun resolve(activityVisible: Boolean, isFloating: Boolean): VideoPresentationMode = when {
+        isFloating -> VideoPresentationMode.FLOATING
+        activityVisible -> VideoPresentationMode.FOREGROUND
+        else -> VideoPresentationMode.BACKGROUND_AUDIO
+    }
+
     fun shouldMonitorVideo(mode: VideoPresentationMode): Boolean =
         mode != VideoPresentationMode.BACKGROUND_AUDIO
 
