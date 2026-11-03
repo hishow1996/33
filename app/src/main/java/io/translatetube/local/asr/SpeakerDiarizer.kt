@@ -11,6 +11,9 @@ import kotlinx.coroutines.withContext
 import io.translatetube.local.performance.DevicePerformanceManager
 import io.translatetube.local.performance.DevicePerformancePolicy
 import io.translatetube.local.player.SpeakerChunkIdentityPolicy
+import io.translatetube.local.player.SpeakerRecognitionProgressPolicy
+import io.translatetube.local.player.SpeakerRecognitionProgressUpdate
+import io.translatetube.local.player.SpeakerRecognitionStage
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -127,11 +130,16 @@ object SpeakerDiarizer {
         context: Context,
         ownerJob: Job?,
         checkActive: () -> Unit,
-        onProgress: (String) -> Unit,
+        onProgress: (SpeakerRecognitionProgressUpdate) -> Unit,
     ): ModelFiles {
         checkActive()
         checkSpeakerRuntimeAvailable()
-        onProgress("检查人物识别模型…")
+        onProgress(
+            SpeakerRecognitionProgressUpdate(
+                stage = SpeakerRecognitionStage.CHECKING_MODELS,
+                message = "正在检查人物识别模型…",
+            ),
+        )
         val dir = File(context.filesDir, "models/speaker")
         if (!dir.isDirectory && !dir.mkdirs()) {
             throw java.io.IOException("无法创建人物识别模型目录，请检查设备可用存储空间")
@@ -153,11 +161,17 @@ object SpeakerDiarizer {
                     maxBytes = 32L * 1024 * 1024,
                     checkActive = checkActive,
                     ownerJob = ownerJob,
-                    progressLabel = "下载人物分离模型",
+                    progressStage = SpeakerRecognitionStage.DOWNLOADING_MODELS,
+                    progressLabel = "正在下载人物分离模型",
                     onProgress = onProgress,
                 )
                 checkActive()
-                onProgress("正在解压人物分离模型…")
+                onProgress(
+                    SpeakerRecognitionProgressUpdate(
+                        stage = SpeakerRecognitionStage.EXTRACTING_MODELS,
+                        message = "正在解压人物分离模型…",
+                    ),
+                )
                 extractSegmentation(archive, segmentation, checkActive)
                 checkActive()
             } finally {
@@ -179,7 +193,8 @@ object SpeakerDiarizer {
                     maxBytes = 100L * 1024 * 1024,
                     checkActive = checkActive,
                     ownerJob = ownerJob,
-                    progressLabel = "下载人物声纹模型",
+                    progressStage = SpeakerRecognitionStage.DOWNLOADING_MODELS,
+                    progressLabel = "正在下载人物声纹模型",
                     onProgress = onProgress,
                 )
                 checkActive()
@@ -308,17 +323,27 @@ object SpeakerDiarizer {
     suspend fun diarize(
         context: Context,
         samples: FloatArray,
-        onProgress: (String) -> Unit = {},
+        onProgress: (SpeakerRecognitionProgressUpdate) -> Unit = {},
     ): List<Segment> = diarizeMutex.withLock {
         val ownerJob = currentCoroutineContext()[Job]
         val checkActive: () -> Unit = { ownerJob?.ensureActive() }
         withContext(Dispatchers.IO) {
             require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
             val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
-            onProgress("正在初始化人物识别模型…")
+            onProgress(
+                SpeakerRecognitionProgressUpdate(
+                    stage = SpeakerRecognitionStage.INITIALIZING_MODEL,
+                    message = "正在初始化人物识别模型…",
+                ),
+            )
             val session = createNativeSession(models, speakerThreads(context), checkActive)
             try {
-                onProgress("识别人物说话片段…")
+                onProgress(
+                    SpeakerRecognitionProgressUpdate(
+                        stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
+                        message = "正在分析人物声音…",
+                    ),
+                )
                 processWithNativeSession(session, samples, checkActive)
             } finally {
                 session.close()
@@ -339,7 +364,7 @@ object SpeakerDiarizer {
         pcmFile: AudioExtract.PcmFile,
         chunkDurationMs: Long = DEFAULT_CHUNK_DURATION_MS,
         overlapMs: Long = DEFAULT_OVERLAP_MS,
-        onProgress: (String) -> Unit = {},
+        onProgress: (SpeakerRecognitionProgressUpdate) -> Unit = {},
     ): List<Segment> = diarizeMutex.withLock {
         require(pcmFile.sampleRate == 16_000) {
             "人物识别需要 16 kHz PCM，当前采样率为 " + pcmFile.sampleRate + " Hz"
@@ -368,7 +393,12 @@ object SpeakerDiarizer {
 
         withContext(Dispatchers.IO) {
             val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
-            onProgress("正在初始化人物识别模型…")
+            onProgress(
+                SpeakerRecognitionProgressUpdate(
+                    stage = SpeakerRecognitionStage.INITIALIZING_MODEL,
+                    message = "正在初始化人物识别模型…",
+                ),
+            )
             val numThreads = speakerThreads(context)
             val playbackLoadActive = DevicePerformanceManager.isPlaybackLoadActive()
             val initStartedNs = System.nanoTime()
@@ -393,7 +423,12 @@ object SpeakerDiarizer {
                         val sampleCount = (chunkEndSample - chunkStartSample).toInt()
                         if (sampleCount <= 0) break
                         chunkIndex++
-                        onProgress("正在分析音频分段 " + chunkIndex + "/" + totalChunks + "…")
+                        onProgress(
+                            SpeakerRecognitionProgressPolicy.analysisChunkStarted(
+                                currentChunk = chunkIndex,
+                                totalChunks = totalChunks,
+                            ),
+                        )
                         val samples = reader.readFloatSamples(
                             startSample = chunkStartSample,
                             count = sampleCount,
@@ -443,7 +478,12 @@ object SpeakerDiarizer {
                         }
 
                         previousChunkEndSample = chunkEndSample
-                        onProgress("已分析音频分段 " + chunkIndex + "/" + totalChunks)
+                        onProgress(
+                            SpeakerRecognitionProgressPolicy.analysisChunkCompleted(
+                                completedChunks = chunkIndex,
+                                totalChunks = totalChunks,
+                            ),
+                        )
                         if (chunkEndSample >= pcmFile.sampleCount) break
                         chunkStartSample = (chunkEndSample - overlapSamples)
                             .coerceAtLeast(chunkStartSample + 1L)
@@ -492,10 +532,17 @@ object SpeakerDiarizer {
         maxBytes: Long,
         checkActive: () -> Unit,
         ownerJob: kotlinx.coroutines.Job?,
+        progressStage: SpeakerRecognitionStage,
         progressLabel: String,
-        onProgress: (String) -> Unit,
+        onProgress: (SpeakerRecognitionProgressUpdate) -> Unit,
     ) {
         checkActive()
+        onProgress(
+            SpeakerRecognitionProgressUpdate(
+                stage = progressStage,
+                message = "$progressLabel · 正在连接…",
+            ),
+        )
         val temp = File(destination.parentFile, destination.name + ".part")
         temp.delete()
         try {
@@ -525,13 +572,24 @@ object SpeakerDiarizer {
 
                             val percent = SpeakerModelDownloadPolicy.progressPercent(total, expectedBytes)
                             if (percent != null && percent != lastProgressPercent) {
-                                onProgress("$progressLabel · $percent%")
+                                onProgress(
+                                    SpeakerRecognitionProgressUpdate(
+                                        stage = progressStage,
+                                        message = progressLabel,
+                                        progressPercent = percent,
+                                    ),
+                                )
                                 lastProgressPercent = percent
                             } else if (
                                 percent == null &&
                                 total - lastUnknownLengthReportBytes >= 512L * 1024L
                             ) {
-                                onProgress("$progressLabel · 已下载 ${total / (1024L * 1024L)} MB")
+                                onProgress(
+                                    SpeakerRecognitionProgressUpdate(
+                                        stage = progressStage,
+                                        message = "$progressLabel · 已下载 ${total / (1024L * 1024L)} MB",
+                                    ),
+                                )
                                 lastUnknownLengthReportBytes = total
                             }
                         }
@@ -543,7 +601,13 @@ object SpeakerDiarizer {
                         "模型下载不完整或大小异常：响应声明 ${expectedBytes} 字节，实际收到 ${total} 字节"
                     )
                 }
-                onProgress("$progressLabel · 100%")
+                onProgress(
+                    SpeakerRecognitionProgressUpdate(
+                        stage = progressStage,
+                        message = progressLabel,
+                        progressPercent = 100,
+                    ),
+                )
             }
             AtomicFileInstaller.install(temp, destination)
         } catch (e: Exception) {

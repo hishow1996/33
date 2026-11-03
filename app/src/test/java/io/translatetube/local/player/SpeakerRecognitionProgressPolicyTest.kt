@@ -6,31 +6,39 @@ import org.junit.Test
 
 class SpeakerRecognitionProgressPolicyTest {
     @Test
-    fun parsesMeasuredModelDownloadProgress() {
-        assertEquals(37, SpeakerRecognitionProgressPolicy.fromMessage("下载人物声纹模型 · 37%"))
+    fun singleChunkUsesIndeterminateProgressWhileRunning() {
+        val update = SpeakerRecognitionProgressPolicy.analysisChunkStarted(1L, 1L)
+        assertEquals(SpeakerRecognitionStage.ANALYZING_AUDIO, update.stage)
+        assertNull(update.progressPercent)
+        assertEquals(0L, update.completedUnits)
+        assertEquals(1L, update.totalUnits)
     }
 
     @Test
-    fun activeChunkCountsOnlyEarlierCompletedChunks() {
-        assertEquals(12, SpeakerRecognitionProgressPolicy.fromMessage("正在分析音频分段 2/8…"))
+    fun multiChunkProgressUsesOnlyCompletedChunks() {
+        val update = SpeakerRecognitionProgressPolicy.analysisChunkStarted(2L, 5L)
+        assertEquals(20, update.progressPercent)
+        assertEquals(1L, update.completedUnits)
+        assertEquals(5L, update.totalUnits)
     }
 
     @Test
-    fun completedChunkAdvancesProgress() {
-        assertEquals(25, SpeakerRecognitionProgressPolicy.fromMessage("已分析音频分段 2/8"))
-        assertEquals(100, SpeakerRecognitionProgressPolicy.fromMessage("已分析音频分段 8/8"))
+    fun completedChunkAdvancesMeasuredProgress() {
+        val update = SpeakerRecognitionProgressPolicy.analysisChunkCompleted(2L, 5L)
+        assertEquals(40, update.progressPercent)
+        assertEquals("已完成音频分段 2/5", update.message)
     }
 
     @Test
-    fun unknownWorkDoesNotInventPercentage() {
-        assertNull(SpeakerRecognitionProgressPolicy.fromMessage("正在初始化人物识别模型…"))
+    fun completedSingleChunkReachesOneHundredPercent() {
+        assertEquals(100, SpeakerRecognitionProgressPolicy.analysisChunkCompleted(1L, 1L).progressPercent)
     }
 
     @Test
-    fun cueMappingProgressIsBoundedByTotal() {
-        assertEquals(0, SpeakerRecognitionProgressPolicy.percentForCount(0, 20))
-        assertEquals(55, SpeakerRecognitionProgressPolicy.percentForCount(11, 20))
-        assertEquals(100, SpeakerRecognitionProgressPolicy.percentForCount(24, 20))
-        assertNull(SpeakerRecognitionProgressPolicy.percentForCount(0, 0))
+    fun percentForCountIsBoundedAndRejectsUnknownTotal() {
+        assertEquals(0, SpeakerRecognitionProgressPolicy.percentForCount(0L, 20L))
+        assertEquals(55, SpeakerRecognitionProgressPolicy.percentForCount(11L, 20L))
+        assertEquals(100, SpeakerRecognitionProgressPolicy.percentForCount(24L, 20L))
+        assertNull(SpeakerRecognitionProgressPolicy.percentForCount(0L, 0L))
     }
 }

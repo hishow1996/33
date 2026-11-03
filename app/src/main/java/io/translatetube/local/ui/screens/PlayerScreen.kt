@@ -1007,10 +1007,20 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                     ) {
                                         val progressPercent = speakerRecognition.progressPercent
                                         if (progressPercent != null) {
-                                            LinearProgressIndicator(
-                                                progress = { progressPercent.coerceIn(0, 100) / 100f },
-                                                modifier = Modifier.weight(1f).height(4.dp),
-                                            )
+                                            key(speakerRecognition.stage) {
+                                                val animatedProgress by animateFloatAsState(
+                                                    targetValue = progressPercent.coerceIn(0, 100) / 100f,
+                                                    animationSpec = tween(
+                                                        durationMillis = 260,
+                                                        easing = FastOutSlowInEasing,
+                                                    ),
+                                                    label = "speakerRecognitionProgress",
+                                                )
+                                                LinearProgressIndicator(
+                                                    progress = { animatedProgress },
+                                                    modifier = Modifier.weight(1f).height(4.dp),
+                                                )
+                                            }
                                             Text(
                                                 "${progressPercent.coerceIn(0, 100)}%",
                                                 color = BrandBright,

@@ -34,17 +34,34 @@ class SpeakerRecognitionUiStateTest {
     }
 
     @Test
-    fun stageTitleShowsOnlyTheCurrentStage() {
-        assertEquals("音频准备", SpeakerRecognitionUiState(phase = SpeakerRecognitionPhase.PREPARING).stageTitle)
-        assertEquals("下载人物模型", SpeakerRecognitionUiState(phase = SpeakerRecognitionPhase.DOWNLOADING_MODELS).stageTitle)
-        assertEquals("人物声音分析", SpeakerRecognitionUiState(phase = SpeakerRecognitionPhase.ANALYZING).stageTitle)
-        assertEquals("关联字幕与人物", SpeakerRecognitionUiState(phase = SpeakerRecognitionPhase.APPLYING).stageTitle)
+    fun stageTitleUsesTypedStageInsteadOfMessageText() {
+        assertEquals(
+            "解压人物模型",
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.PREPARING,
+                stage = SpeakerRecognitionStage.EXTRACTING_MODELS,
+                message = "正在解压人物分离模型…",
+            ).stageTitle,
+        )
+        assertEquals(
+            "初始化识别引擎",
+            SpeakerRecognitionUiState(
+                phase = SpeakerRecognitionPhase.PREPARING,
+                stage = SpeakerRecognitionStage.INITIALIZING_MODEL,
+                message = "正在初始化人物识别模型…",
+            ).stageTitle,
+        )
         assertEquals(
             "应用人物音色",
             SpeakerRecognitionUiState(
                 phase = SpeakerRecognitionPhase.APPLYING,
-                message = "已识别 3 位人物，正在更新配音…",
+                stage = SpeakerRecognitionStage.APPLYING_VOICES,
+                message = "更新配音",
             ).stageTitle,
+        )
+        assertEquals(
+            "区分完成",
+            SpeakerRecognitionUiState(phase = SpeakerRecognitionPhase.SUCCEEDED).stageTitle,
         )
     }
 }
