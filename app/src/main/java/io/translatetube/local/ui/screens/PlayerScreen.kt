@@ -5683,20 +5683,105 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     }
 
     if (controlsVisible) {
-        Column(
-            Modifier.align(androidx.compose.ui.Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(Color(0xB8172033))
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            val seekThumbRadiusPx = with(LocalDensity.current) { 6.dp.toPx() }
-            Canvas(
+        val seekThumbRadiusPx = with(LocalDensity.current) { 6.dp.toPx() }
+
+        // Playback speed stays on the left edge, vertically centered.
+        Box(
             modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 14.dp),
+        ) {
+            IconButton(
+                onClick = { speedExpanded = true },
+                modifier = Modifier.size(44.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Speed,
+                    contentDescription = "播放倍速",
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = speedExpanded,
+                onDismissRequest = { speedExpanded = false },
+            ) {
+                speedOptions.forEach { value ->
+                    DropdownMenuItem(
+                        text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
+                        onClick = {
+                            speed = value
+                            PlaybackService.instance?.setSpeed(value)
+                            speedExpanded = false
+                        },
+                    )
+                }
+            }
+        }
+
+        // Quality is above picture-in-picture; the group is centered on the right side.
+        // A wider vertical gap keeps the two transparent icons visually distinct.
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(40.dp),
+        ) {
+            Box {
+                IconButton(
+                    onClick = { qualityExpanded = true },
+                    enabled = state.qualityOptions.isNotEmpty(),
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.HighQuality,
+                        contentDescription = "选择清晰度",
+                        tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = qualityExpanded,
+                    onDismissRequest = { qualityExpanded = false },
+                ) {
+                    state.qualityOptions.forEach { quality ->
+                        DropdownMenuItem(
+                            text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
+                            onClick = {
+                                qualityExpanded = false
+                                PlaybackService.instance?.selectQuality(quality)
+                            },
+                        )
+                    }
+                }
+            }
+
+            IconButton(
+                onClick = { if (isFloating) onExitFloat() else onStartFloat() },
+                modifier = Modifier.size(44.dp),
+            ) {
+                Icon(
+                    Icons.Filled.PictureInPictureAlt,
+                    contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
+                    tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+
+        // The seekbar is the only control along the bottom; no panel or button row behind it.
+        Canvas(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(24.dp)
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 8.dp)
+                .height(28.dp)
                 .pointerInput(state.key, state.durationMs) {
                     detectTapGestures { offset ->
-                        val duration = (PlaybackService.instance?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
+                        val duration = (PlaybackService.instance?.duration() ?: 0L)
+                            .takeIf { it > 0L } ?: state.durationMs
                         if (duration > 0L && size.width > 0) {
                             val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
                             pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
@@ -5715,7 +5800,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             }
                         },
                         onDragEnd = {
-                            val duration = (PlaybackService.instance?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
+                            val duration = (PlaybackService.instance?.duration() ?: 0L)
+                                .takeIf { it > 0L } ?: state.durationMs
                             if (duration > 0L) PlaybackService.instance?.seek((pos * duration).toLong())
                             scrubbing = false
                         },
@@ -5729,24 +5815,24 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     }
                 },
         ) {
-            val height = 2.dp.toPx()
+            val trackHeight = 2.dp.toPx()
             val centerY = size.height / 2f
             val thumbRadius = seekThumbRadiusPx
             val trackWidth = (size.width - 2f * thumbRadius).coerceAtLeast(0f)
             val thumbCenterX = thumbRadius + trackWidth * pos.coerceIn(0f, 1f)
-            val radius = CornerRadius(height / 2f, height / 2f)
+            val radius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
             drawRoundRect(
                 color = Color(0x66FFFFFF),
-                topLeft = Offset(thumbRadius, centerY - height / 2f),
-                size = Size(trackWidth, height),
+                topLeft = Offset(thumbRadius, centerY - trackHeight / 2f),
+                size = Size(trackWidth, trackHeight),
                 cornerRadius = radius,
             )
             val activeWidth = trackWidth * pos.coerceIn(0f, 1f)
             if (activeWidth > 0f) {
                 drawRoundRect(
                     color = Color(0xFF5890FF),
-                    topLeft = Offset(thumbRadius, centerY - height / 2f),
-                    size = Size(activeWidth, height),
+                    topLeft = Offset(thumbRadius, centerY - trackHeight / 2f),
+                    size = Size(activeWidth, trackHeight),
                     cornerRadius = radius,
                 )
             }
@@ -5756,66 +5842,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 center = Offset(thumbCenterX, centerY),
             )
         }
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-        ) {
-            Spacer(Modifier.weight(1f))
-            Box {
-                IconButton(onClick = { speedExpanded = true }, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Filled.Speed, contentDescription = "播放倍速", tint = Color.White, modifier = Modifier.size(21.dp))
-                }
-                DropdownMenu(expanded = speedExpanded, onDismissRequest = { speedExpanded = false }) {
-                    speedOptions.forEach { value ->
-                        DropdownMenuItem(
-                            text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
-                            onClick = {
-                                speed = value
-                                PlaybackService.instance?.setSpeed(value)
-                                speedExpanded = false
-                            },
-                        )
-                    }
-                }
-            }
-            IconButton(
-                onClick = { if (isFloating) onExitFloat() else onStartFloat() },
-                modifier = Modifier.size(36.dp),
-            ) {
-                Icon(
-                    Icons.Filled.PictureInPictureAlt,
-                    contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
-                    tint = if (isFloating) Color(0xFF9CBFFF) else Color.White,
-                    modifier = Modifier.size(21.dp),
-                )
-            }
-            Box {
-                IconButton(
-                    onClick = { qualityExpanded = true },
-                    enabled = state.qualityOptions.isNotEmpty(),
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        Icons.Filled.HighQuality,
-                        contentDescription = "选择清晰度",
-                        tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
-                        modifier = Modifier.size(21.dp),
-                    )
-                }
-                DropdownMenu(expanded = qualityExpanded, onDismissRequest = { qualityExpanded = false }) {
-                    state.qualityOptions.forEach { quality ->
-                        DropdownMenuItem(
-                            text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
-                            onClick = {
-                                qualityExpanded = false
-                                PlaybackService.instance?.selectQuality(quality)
-                            },
-                        )
-                    }
-                }
-            }
-        }
-    }
     }
 }
 
