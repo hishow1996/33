@@ -4380,7 +4380,14 @@ class PlaybackService : MediaSessionService() {
         runCatching { session?.release() }
         if (::pm.isInitialized) runCatching { pm.release() }
         playerReady = false
-        if (instance === this) instance = null
+        if (instance === this) {
+            // The companion StateFlow outlives this Service. Release subtitle and preview lists
+            // here so a stopped player cannot retain a large prior session in process memory.
+            clearSubtitleHighlightTimeline()
+            ui.value = PlayerUiState()
+            _playbackHint.value = null
+            instance = null
+        }
         super.onDestroy()
     }
 
@@ -4938,6 +4945,9 @@ class PlaybackService : MediaSessionService() {
             key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
+        // This service can live across many videos. Drop the prior session's interval arrays and
+        // source-list reference as soon as a new open request owns the playback pipeline.
+        clearSubtitleHighlightTimeline()
         forceFreshDubbingPipelineGeneration = if (regenerateDubbingThisRun) pipelineGeneration else 0L
         forceFreshTranslationPipelineGeneration =
             if (EngineRestartStagePolicy.requiresFreshTranslation(effectiveForceRegenerateFromStage)) {
@@ -5013,7 +5023,6 @@ class PlaybackService : MediaSessionService() {
             qualitySources = emptyList()
             qualityAudioUrl = ""
         }
-        lastLineIdx = Int.MIN_VALUE
         val configuredTts = DubbingConfigPreferencePolicy.normalizeEngineId(
             getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
         )
@@ -12716,6 +12725,18 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     }
 
     // ============ 时间轴驱动 ============
+    /**
+     * Drop both the interval index and its source-list identity. The source list may contain
+     * hundreds of thousands of subtitle rows, and the cached arrays can also be several MB.
+     * Called when a new session takes ownership and when the long-lived Service is destroyed.
+     */
+    private fun clearSubtitleHighlightTimeline() {
+        highlightTimelineSource = null
+        highlightTimeline = DubbingTimeline(emptyList())
+        highlightFirstSpokenLine = -1
+        lastLineIdx = Int.MIN_VALUE
+    }
+
     private fun subtitleHighlightLineAt(lines: List<SubLine>, positionMs: Long): Int {
         if (highlightTimelineSource !== lines) {
             highlightTimeline = DubbingTimeline(lines)
