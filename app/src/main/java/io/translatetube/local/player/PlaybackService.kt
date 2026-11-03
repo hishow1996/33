@@ -12497,7 +12497,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
     }
 
-private fun kokoroRuntimeReady(): Boolean = runCatching {
+    private fun kokoroRuntimeReady(): Boolean = runCatching {
         val files = io.translatetube.local.data.ModelFiles
         if (files.ttsCoreReady(this)) files.installBundledTtsSupportFiles(this)
         files.ttsReady(this)
