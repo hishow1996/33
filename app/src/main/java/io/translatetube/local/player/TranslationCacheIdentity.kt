@@ -41,6 +41,42 @@ internal object TranslationCacheIdentity {
         return sha256(canonical).take(PROVIDER_HASH_LENGTH)
     }
 
+    /**
+     * Build a provider identity from Room-stored credential fields.
+     *
+     * ApiProfile.apiKey and credentialsJson are AES-GCM ciphertexts. Since each encryption uses
+     * a fresh IV, hashing those stored values directly changes the cache key when an unchanged
+     * profile is saved again. Decrypt first, then hash only the canonical credential contents.
+     * Crypto.decrypt also preserves compatibility with older plaintext rows.
+     */
+    fun providerFingerprintFromStoredCredentials(
+        activeId: Long,
+        providerKind: String,
+        type: String = "",
+        baseUrl: String = "",
+        storedApiKey: String = "",
+        model: String = "",
+        region: String = "",
+        storedCredentialsJson: String = "",
+        decrypt: (String) -> String,
+    ): String {
+        fun plaintext(stored: String): String {
+            if (stored.isBlank()) return ""
+            return runCatching { decrypt(stored) }.getOrDefault("")
+        }
+
+        return providerFingerprint(
+            activeId = activeId,
+            providerKind = providerKind,
+            type = type,
+            baseUrl = baseUrl,
+            apiKey = plaintext(storedApiKey),
+            model = model,
+            region = region,
+            credentialsJson = plaintext(storedCredentialsJson),
+        )
+    }
+
     fun importedKey(
         key: String,
         activeId: Long,
