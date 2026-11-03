@@ -121,6 +121,8 @@ import io.translatetube.local.player.SelectedWebMediaMetadata
 import io.translatetube.local.player.PlaybackHint
 import io.translatetube.local.player.PlaybackHintAction
 import io.translatetube.local.player.PlayerRebuildCoordinator
+import io.translatetube.local.player.VideoPresentationMode
+import io.translatetube.local.player.VideoPresentationModePolicy
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.SpeakerRecognitionProgressPolicy
 import io.translatetube.local.player.SpeakerRecognitionUiState
@@ -730,10 +732,19 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
 
     // Rebind after a service/player recreation even when TextureView itself stayed attached.
     // Also re-submit the visibility state when a replacement service becomes ready.
-    LaunchedEffect(serviceGeneration, playbackScreenVisible) {
+    val videoPresentationMode = when {
+        isFloating -> VideoPresentationMode.FLOATING
+        playbackScreenVisible -> VideoPresentationMode.FOREGROUND
+        else -> VideoPresentationMode.BACKGROUND_AUDIO
+    }
+    LaunchedEffect(serviceGeneration, videoPresentationMode, isFullscreen) {
         val service = PlaybackService.instance ?: return@LaunchedEffect
-        service.setVideoUiVisible(playbackScreenVisible)
-        if (playbackScreenVisible) attachSurfaceWhenReady()
+        service.setVideoPresentationMode(videoPresentationMode)
+        if (VideoPresentationModePolicy.shouldRebindVideoSurface(videoPresentationMode)) {
+            // Fullscreen changes the TextureView's measured bounds. Posting after composition lets
+            // the attach helper observe the new size without tearing down a healthy Media3 output.
+            tv.post { attachSurfaceWhenReady() }
+        }
     }
 
     // 播放页屏幕常亮
