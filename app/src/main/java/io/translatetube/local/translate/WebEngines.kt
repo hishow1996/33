@@ -18,6 +18,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
@@ -334,7 +335,8 @@ class MicrosoftWebEngine : TranslationEngine {
 }
 
 private const val BAIDU_REQUEST_GAP_MS = 150L
-private const val BAIDU_PAGE_READY_TIMEOUT_MS = 30_000L
+/** 每个候选入口页的等待上限；全部候选都失败才报错。 */
+private const val BAIDU_PAGE_READY_TIMEOUT_MS = 15_000L
 private const val BAIDU_CALL_TIMEOUT_MS = 20_000L
 private val newlineRuns = Regex("""\s*\n\s*""")
 
@@ -350,9 +352,19 @@ private val newlineRuns = Regex("""\s*\n\s*""")
  * status:0 与 data[].dst 译文；真机 WebView 的环境更接近真实浏览器，理论上更稳。
  */
 private object BaiduWebViewHost {
-    private const val PAGE_URL = "https://fanyi.baidu.com/"
-    /** 桌面 Chrome UA：fanyi.baidu.com 只在桌面版页面暴露 v2FetchJSON，移动版没有。 */
-    private const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    /**
+     * 候选入口页，按顺序尝试，哪个先暴露 v2FetchJSON 就用哪个。
+     * 官网首页现在的主入口是 mtpe-individual/transText（文本翻译页），根路径可能被重定向到
+     * 其他功能页（如多模态翻译），那类页面不一定带文本翻译用的脚本，所以优先直达文本翻译页，
+     * 根路径作为兜底。
+     */
+    private val PAGE_URLS = listOf(
+        "https://fanyi.baidu.com/mtpe-individual/transText",
+        "https://fanyi.baidu.com/",
+    )
+    /** 上次成功就绪的入口页，reset() 时重载它。 */
+    @Volatile private var readyUrl: String = PAGE_URLS.first()
+    private const val FALLBACK_CHROME_MAJOR = 124
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mutex = Mutex()
     private val pending = ConcurrentHashMap<String, CancellableContinuation<String>>()
@@ -381,6 +393,21 @@ private object BaiduWebViewHost {
         }
     }
 
+    /**
+     * 桌面 Chrome UA，Chrome 大版本跟随本机 WebView 内核的真实版本：UA 声称的版本和真实内核
+     * 对不上（或明显过旧）时，页面的浏览器检测可能直接不给出翻译脚本。读不到就用兜底版本号。
+     */
+    private fun desktopUserAgent(context: android.content.Context): String {
+        val realMajor = runCatching {
+            Regex("""Chrome/(\d+)""")
+                .find(android.webkit.WebSettings.getDefaultUserAgent(context))
+                ?.groupValues?.get(1)?.toIntOrNull()
+        }.getOrNull()
+        val major = realMajor?.takeIf { it >= 110 } ?: FALLBACK_CHROME_MAJOR
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/$major.0.0.0 Safari/537.36"
+    }
+
     private fun createWebView(context: android.content.Context): WebView {
         val view = WebView(context.applicationContext)
         view.settings.javaScriptEnabled = true
@@ -391,7 +418,7 @@ private object BaiduWebViewHost {
         view.settings.loadsImagesAutomatically = false
         // 关键：必须用桌面 UA。fanyi.baidu.com 会按 UA 分发不同页面，
         // 移动版页面里没有 v2FetchJSON（真机 WebView 默认移动 UA 会一直超时）。
-        view.settings.userAgentString = DESKTOP_UA
+        view.settings.userAgentString = desktopUserAgent(context)
         CookieManager.getInstance().setAcceptCookie(true)
         view.addJavascriptInterface(Bridge(), "AndroidBaiduBridge")
         // 记录页面加载状态：DNS/SSL/HTTP 失败在这里暴露，probe 才能快速失败而不是空转 30 秒。
@@ -455,7 +482,7 @@ private object BaiduWebViewHost {
     suspend fun reset() {
         pageReady = false
         val view = webView ?: return
-        withContext(Dispatchers.Main) { view.loadUrl(PAGE_URL) }
+        withContext(Dispatchers.Main) { view.loadUrl(readyUrl) }
     }
 
     suspend fun ensureReady() {
@@ -463,44 +490,80 @@ private object BaiduWebViewHost {
         mutex.withLock {
             if (pageReady) return
             val appCtx = TranslateTubeApp.instance
-            lastLoadError = null
-            withContext(Dispatchers.Main) {
-                val view = webView ?: createWebView(appCtx)
-                // 先真实附着到前台 Activity 的窗口（华为等 ROM 对未附着 WebView 可能不执行 JS），再加载。
-                attachToHostWindow(view)
-                view.loadUrl(PAGE_URL)
-            }
-            // 轮询页面 bundle 加载完成（v2FetchJSON 由页面脚本定义）。
-            val deadline = System.currentTimeMillis() + BAIDU_PAGE_READY_TIMEOUT_MS
-            while (System.currentTimeMillis() < deadline) {
+            val failures = ArrayList<String>()
+            for (url in PAGE_URLS) {
                 currentCoroutineContext().ensureActive()
-                // 主帧加载失败（DNS/SSL/HTTP 错误）直接快速失败，不空转 30 秒。
-                lastLoadError?.let { error ->
-                    throw IllegalStateException("百度翻译页面加载失败：$error。请检查网络后重试")
+                lastLoadError = null
+                withContext(Dispatchers.Main) {
+                    val view = webView ?: createWebView(appCtx)
+                    // 先真实附着到前台 Activity 的窗口（华为等 ROM 对未附着 WebView 可能不执行 JS），再加载。
+                    attachToHostWindow(view)
+                    view.loadUrl(url)
                 }
-                val probe = eval("(typeof window.v2FetchJSON === 'function') ? 'ready' : 'no'")
-                if (probe.contains("ready")) {
-                    pageReady = true
-                    return
+                // 轮询页面 bundle 加载完成（v2FetchJSON 由页面脚本定义）。
+                val deadline = System.currentTimeMillis() + BAIDU_PAGE_READY_TIMEOUT_MS
+                var failure: String? = null
+                while (System.currentTimeMillis() < deadline) {
+                    currentCoroutineContext().ensureActive()
+                    // 主帧加载失败（DNS/SSL/HTTP 错误）当前入口直接放弃，不空转，换下一个入口。
+                    val loadError = lastLoadError
+                    if (loadError != null) {
+                        failure = "加载失败 $loadError"
+                        break
+                    }
+                    val probe = eval("(typeof window.v2FetchJSON === 'function') ? 'ready' : 'no'")
+                    if (probe.contains("ready")) {
+                        readyUrl = url
+                        pageReady = true
+                        return
+                    }
+                    delay(800L)
                 }
-                delay(800L)
+                // 当前入口失败：附带页面诊断（地址/标题/接口状态/相关全局名/WebView 版本），
+                // 便于真机排查是网络、老内核还是页面改版。
+                val reason = failure ?: "超时未出现 v2FetchJSON"
+                failures += "${url.removePrefix("https://")} → $reason（${pageDiagnostics()}）"
             }
-            // 超时则附带页面诊断（标题/接口状态/UA），便于真机排查是网络、老内核还是页面改版。
-            val diag = eval(
-                "(function(){return (document.title||'').slice(0,24)+' | v2='+typeof window.v2FetchJSON+"
-                    + "' | ua='+navigator.userAgent.slice(0,48);})()",
-            )
-            val loadHint = lastLoadError?.let { " | load=$it" }.orEmpty()
             throw IllegalStateException(
-                "百度翻译页面加载超时（页面状态: ${diag.trim('"')}$loadHint）。请检查网络后重试；若持续失败可换用微软/DeepL 翻译",
+                "百度翻译页面加载失败：" + failures.joinToString("；") +
+                    "。请检查网络后重试；若持续失败可换用微软/DeepL 翻译",
             )
         }
     }
 
-    /** 主线程 evaluateJavascript 并等待同步返回值（用于页面状态探测）。回调丢失时防挂死。 */
+    /** 页面当前状态的一行诊断，仅用于失败时写进报错信息。 */
+    private suspend fun pageDiagnostics(): String {
+        val page = eval(
+            "(function(){try{var keys=[];for(var k in window){" +
+                "if(/fetch|acs|trans|abc/i.test(k)&&keys.length<12)keys.push(k);}" +
+                "return (location.href||'').slice(0,90)+' | '+(document.title||'').slice(0,24)" +
+                "+' | v2='+typeof window.v2FetchJSON+' | keys='+keys.join(',');}" +
+                "catch(e){return 'diag-error:'+e;}})()",
+        ).trim('"')
+        val webViewVersion = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                WebView.getCurrentWebViewPackage()?.versionName
+            } else {
+                null
+            }
+        }.getOrNull()
+        // WebView 的设置读取要在创建它的主线程上做。
+        val ua = withContext(Dispatchers.Main) {
+            runCatching { webView?.settings?.userAgentString }.getOrNull()
+        }?.let { Regex("""Chrome/[\d.]+""").find(it)?.value }
+        return page.ifBlank { "页面无响应" } +
+            webViewVersion?.let { " | webview=$it" }.orEmpty() +
+            ua?.let { " | ua=$it" }.orEmpty()
+    }
+
+    /**
+     * 主线程 evaluateJavascript 并等待同步返回值（用于页面状态探测）。回调丢失时防挂死；
+     * 超时返回空串而不是抛 TimeoutCancellationException（它是 CancellationException，
+     * 会被上层当成"任务被取消"悄悄吞掉，表现为没有任何报错）。
+     */
     private suspend fun eval(script: String): String = withContext(Dispatchers.Main) {
-        withTimeout(8_000L) {
-            suspendCancellableCoroutine { cont ->
+        withTimeoutOrNull(8_000L) {
+            suspendCancellableCoroutine<String> { cont ->
                 val view = webView
                 if (view == null) {
                     cont.resume("")
@@ -510,7 +573,7 @@ private object BaiduWebViewHost {
                     if (cont.isActive) cont.resume(result.orEmpty())
                 }
             }
-        }
+        }.orEmpty()
     }
 
     suspend fun transapi(from: String, to: String, query: String): String {
