@@ -115,6 +115,43 @@ class DubbingCacheStorageTest {
         }
     }
 
+    @Test
+    fun removesOnlyStaleMigrationArtifactsEvenWhenLegacyDirectoryIsMissing() {
+        val root = createTempDir(prefix = "dubbing-cache-stale-migration")
+        try {
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val now = System.currentTimeMillis()
+            val staleTemp = File(durable, "cue.pcm.123.migration.tmp").apply {
+                writeText("abandoned temp")
+                setLastModified(now - 24L * 60L * 60L * 1_000L)
+            }
+            val staleBackup = File(durable, "cue.pcm.123.migration.bak").apply {
+                writeText("abandoned backup")
+                setLastModified(now - 24L * 60L * 60L * 1_000L)
+            }
+            val freshTemp = File(durable, "new-cue.pcm.456.migration.tmp").apply {
+                writeText("fresh work")
+                setLastModified(now)
+            }
+            val finalizedPcm = File(durable, "ready-cue.pcm").apply {
+                writeBytes(pcmCache(0.1f, -0.2f))
+            }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(
+                legacyDirectory = File(root, "cache/dub/missing-video"),
+                durableDirectory = durable,
+            )
+
+            assertEquals(0, count)
+            assertFalse("stale migration temp should be reclaimed", staleTemp.exists())
+            assertFalse("stale migration backup should be reclaimed", staleBackup.exists())
+            assertTrue("recent staging work must be preserved", freshTemp.isFile)
+            assertTrue("finalized PCM must never be treated as a migration artifact", finalizedPcm.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     private fun pcmCache(vararg samples: Float): ByteArray {
         val bytes = java.io.ByteArrayOutputStream()
         java.io.DataOutputStream(bytes).use { output ->
