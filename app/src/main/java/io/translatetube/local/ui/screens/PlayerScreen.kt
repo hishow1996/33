@@ -6228,6 +6228,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 audioManager,
                 maxMusicVolume,
                 isFullscreen,
+                controlsVisible,
                 qualityExpanded,
                 speedExpanded,
                 scrubbing,
@@ -6237,15 +6238,27 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         requireUnconsumed = false,
                         pass = PointerEventPass.Initial,
                     )
+                    val shortLandscapeControls = isFullscreen &&
+                        size.width.toFloat() > size.height.toFloat() * 1.15f &&
+                        size.height < with(this) { 280.dp.toPx() }
                     val seekbarSafeBottom = with(this) {
                         if (isFullscreen) 108.dp.toPx() else 44.dp.toPx()
                     }
-                    val rightControlSafeEdge = if (isFullscreen) {
-                        with(this) { 64.dp.toPx() }
+                    val rightControlSafeEdge = if (isFullscreen && controlsVisible) {
+                        with(this) {
+                            if (shortLandscapeControls) 164.dp.toPx() else 64.dp.toPx()
+                        }
                     } else 0f
+                    val rightControlSafeTop = if (shortLandscapeControls && controlsVisible) {
+                        with(this) { 104.dp.toPx() }
+                    } else 0f
+                    val startsInsideRightControls = isFullscreen &&
+                        controlsVisible &&
+                        down.position.x > size.width - rightControlSafeEdge &&
+                        (!shortLandscapeControls || down.position.y < rightControlSafeTop)
                     if (
                         down.position.x < size.width * 0.62f ||
-                        (isFullscreen && down.position.x > size.width - rightControlSafeEdge) ||
+                        startsInsideRightControls ||
                         down.position.y > size.height - seekbarSafeBottom ||
                         audioManager == null ||
                         maxMusicVolume <= 0 ||
@@ -6588,7 +6601,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .padding(horizontal = 16.dp)
                     .padding(end = 44.dp)
                     .padding(bottom = 3.dp)
-                    .height(36.dp)
+                    // Keep the visual track at the same bottom coordinate while providing a
+                    // taller touch target for accurate taps and drags.
+                    .height(48.dp)
                     .pointerInput(controlsVisible, state.key, state.durationMs) {
                         if (!controlsVisible) return@pointerInput
                         detectTapGestures { offset ->
