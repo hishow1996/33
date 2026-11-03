@@ -211,6 +211,13 @@ fun PlayerScreen(
             val previousSystemBarsBehavior = insetsController.systemBarsBehavior
             val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
             val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
+            val previousRootInsets = ViewCompat.getRootWindowInsets(decorView)
+            val wasStatusBarVisible = previousRootInsets?.isVisible(
+                WindowInsetsCompat.Type.statusBars()
+            ) ?: true
+            val wasNavigationBarVisible = previousRootInsets?.isVisible(
+                WindowInsetsCompat.Type.navigationBars()
+            ) ?: true
             val wasPortraitLayout = if (decorView.width > 0 && decorView.height > 0) {
                 decorView.height >= decorView.width
             } else {
@@ -299,13 +306,25 @@ fun PlayerScreen(
                     insetsController.systemBarsBehavior = previousSystemBarsBehavior
                     insetsController.isAppearanceLightStatusBars = previousLightStatusBars
                     insetsController.isAppearanceLightNavigationBars = previousLightNavigationBars
-                    insetsController.show(WindowInsetsCompat.Type.systemBars())
                     WindowCompat.setDecorFitsSystemWindows(window, true)
+                    if (wasStatusBarVisible) {
+                        insetsController.show(WindowInsetsCompat.Type.statusBars())
+                    } else {
+                        insetsController.hide(WindowInsetsCompat.Type.statusBars())
+                    }
+                    if (wasNavigationBarVisible) {
+                        insetsController.show(WindowInsetsCompat.Type.navigationBars())
+                    } else {
+                        insetsController.hide(WindowInsetsCompat.Type.navigationBars())
+                    }
                     activity.requestedOrientation = previousOrientation
                     // A freeform/tablet window may already have the original aspect ratio, so its
                     // size listener would never receive an orientation-changing layout pass.
                     if (hasRestoredOrientation(decorView.width, decorView.height)) {
                         decorView.removeOnLayoutChangeListener(insetRecoveryListener)
+                        pendingInsetRecoveryListeners.removeAll {
+                            it.first === decorView && it.second === insetRecoveryListener
+                        }
                     }
                     requestRestoredInsets()
 
