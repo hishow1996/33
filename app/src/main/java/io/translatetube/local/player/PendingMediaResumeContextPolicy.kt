@@ -5,6 +5,22 @@ package io.translatetube.local.player
  * The raw Cookie header is deliberately excluded; callers re-read it from WebView CookieManager.
  */
 internal object PendingMediaResumeContextPolicy {
+    /** Failed sessions must be restarted, not merely reattached to their stale ERROR UI. */
+    fun shouldReconnectToLiveTask(
+        livePhase: Phase,
+        liveKey: String,
+        requestedTaskKey: String,
+        savedSourceKey: String?,
+        savedActiveKey: String?,
+    ): Boolean {
+        if (livePhase == Phase.IDLE || livePhase == Phase.ERROR || liveKey.isBlank()) return false
+        val savedTaskMatchesLive = !savedSourceKey.isNullOrBlank() &&
+            !savedActiveKey.isNullOrBlank() &&
+            liveKey == savedActiveKey &&
+            (requestedTaskKey == savedSourceKey || requestedTaskKey == savedActiveKey)
+        return liveKey == requestedTaskKey || savedTaskMatchesLive
+    }
+
     fun pageReferrerForResume(
         sourceKey: String?,
         activeKey: String?,
