@@ -5413,15 +5413,6 @@ private fun CurrentSubtitleStrip(
                                     .heightIn(min = 42.dp, max = captionMaxHeight)
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(Color.Black.copy(alpha = 0.46f))
-                                    .then(
-                                        if (fullscreenCaptionAdjusting) {
-                                            Modifier.border(
-                                                width = 1.dp,
-                                                color = Color(0xCC9CBFFF),
-                                                shape = RoundedCornerShape(8.dp),
-                                            )
-                                        } else Modifier
-                                    )
                             } else {
                                 // Keep the inline current-caption area visually continuous
                                 // with the surrounding white subtitle list.
@@ -7081,11 +7072,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     modifier = Modifier.padding(horizontal = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text(
-                                        text = "字幕位置",
-                                        color = Color.White.copy(alpha = 0.88f),
-                                        fontSize = 10.sp,
-                                    )
                                     IconButton(
                                         onClick = { restoreFullscreenCaptionPosition() },
                                         modifier = Modifier.size(30.dp),
