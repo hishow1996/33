@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import kotlin.math.roundToInt
+
 /**
  * Pure positioning and timing policy for the shared subtitle list.
  *
