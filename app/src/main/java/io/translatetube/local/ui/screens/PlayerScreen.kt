@@ -1529,6 +1529,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     sessionKey = state.key,
                     currentLine = state.lines.getOrNull(state.currentLine),
                     captionOverride = state.captionOverride,
+                    modifier = Modifier.padding(horizontal = 8.dp),
                 )
             }
 
@@ -5416,7 +5417,13 @@ private fun CurrentSubtitleStrip(
                                 // with the surrounding white subtitle list.
                                 Modifier
                                     .height(50.dp)
-                                    .background(Color(0xFFF3F5F8))
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFFE8F0FC))
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color(0xFFCCDCF3),
+                                        shape = RoundedCornerShape(10.dp),
+                                    )
                             },
                         )
                         .padding(
