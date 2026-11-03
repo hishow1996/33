@@ -7688,6 +7688,8 @@ private fun SpeakerRecognitionProgressPanel(
                             maxLines = 1,
                         )
                     }
+                } else {
+                    Spacer(Modifier.width(44.dp))
                 }
             }
 
