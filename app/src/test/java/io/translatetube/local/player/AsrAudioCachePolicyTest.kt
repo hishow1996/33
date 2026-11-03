@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,6 +15,35 @@ class AsrAudioCachePolicyTest {
                 now - 24L * 60 * 60 * 1000L, now,
             )
         )
+    }
+
+    @Test
+    fun downloadedAudioCacheIsBoundedByBytesAndFileCount() {
+        assertFalse(
+            AsrAudioCachePolicy.exceedsBudget(
+                AsrAudioCachePolicy.MAX_CACHE_BYTES,
+                AsrAudioCachePolicy.MAX_CACHE_FILES,
+            ),
+        )
+        assertTrue(
+            AsrAudioCachePolicy.exceedsBudget(
+                AsrAudioCachePolicy.MAX_CACHE_BYTES + 1L,
+                AsrAudioCachePolicy.MAX_CACHE_FILES,
+            ),
+        )
+        assertTrue(
+            AsrAudioCachePolicy.exceedsBudget(
+                AsrAudioCachePolicy.MAX_CACHE_BYTES,
+                AsrAudioCachePolicy.MAX_CACHE_FILES + 1,
+            ),
+        )
+    }
+
+    @Test
+    fun cacheByteAccountingSaturatesInsteadOfOverflowing() {
+        assertEquals(30L, AsrAudioCachePolicy.addCacheBytes(10L, 20L))
+        assertEquals(Long.MAX_VALUE, AsrAudioCachePolicy.addCacheBytes(Long.MAX_VALUE - 2L, 10L))
+        assertEquals(Long.MAX_VALUE, AsrAudioCachePolicy.addCacheBytes(-1L, 1L))
     }
 
     @Test

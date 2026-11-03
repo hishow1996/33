@@ -11869,8 +11869,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val destinationPath = file.absolutePath.removeSuffix(".part")
             activeAsrAudioPaths.deleteIfUnleased(destinationPath) { file.delete() }
         }
-        val files = allFiles.filter { it.isFile && it.name.endsWith(".bin") }
-        // Enforce TTL without imposing a total cache byte budget.
+
+        // First expire stale/empty entries, then enforce a shared byte and file-count budget.
+        // Touching a cache on reuse updates its mtime, so oldest unused audio is evicted first.
+        var files = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".bin") }
+            .orEmpty()
         files.forEach { file ->
             val isKept = keep != null && file.absolutePath == keep.absolutePath
             val age = now - file.lastModified()
@@ -11880,6 +11884,26 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // The lease registry holds its monitor through deletion. A simultaneous reader
                 // either acquires first (and protects the file) or waits until deletion finishes.
                 activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+            }
+        }
+
+        files = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".bin") }
+            .orEmpty()
+        var totalBytes = files.fold(0L) { total, file ->
+            AsrAudioCachePolicy.addCacheBytes(total, file.length().coerceAtLeast(0L))
+        }
+        var fileCount = files.size
+        val oldestFirst = files
+            .filterNot { keep != null && it.absolutePath == keep.absolutePath }
+            .sortedBy { it.lastModified() }
+        for (file in oldestFirst) {
+            if (!AsrAudioCachePolicy.exceedsBudget(totalBytes, fileCount)) break
+            val bytes = file.length().coerceAtLeast(0L)
+            val deleted = activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+            if (deleted) {
+                totalBytes = (totalBytes - bytes).coerceAtLeast(0L)
+                fileCount = (fileCount - 1).coerceAtLeast(0)
             }
         }
     }
