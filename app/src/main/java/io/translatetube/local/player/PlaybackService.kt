@@ -1113,6 +1113,12 @@ class PlaybackService : MediaSessionService() {
             }
     }
 
+    private fun beginSpeakerRecognitionTaskJournal(sessionKey: String) {
+        val current = ui.value
+        if (current.key != sessionKey) return
+        SpeakerRecognitionTaskJournal.begin(this, sessionKey, current.speakerRecognition)
+    }
+
     private fun persistSpeakerRecognitionState(sessionKey: String) {
         val current = ui.value
         if (current.key != sessionKey) return
@@ -1456,25 +1462,12 @@ class PlaybackService : MediaSessionService() {
                     state.lines.none { needsSubtitleTranslation(it, state.sourceLang) } &&
                     isDubbingQueueFullyPreparedForCheckpoint(state)
             if (readyResultIsComplete) {
-                withContext(Dispatchers.IO) {
-                    if (
-                        videoKey == sessionKey &&
-                        activePipelineGeneration == pipelineGeneration &&
-                        activeProcessingCheckpointIdentityKey == identityKey
-                    ) {
-                        InProgressProcessingCheckpointStore.delete(
-                            this@PlaybackService,
-                            sessionKey,
-                            identityKey,
-                        )
-                    }
-                }
+                deleteInProgressCheckpointIfCurrent(sessionKey, pipelineGeneration, identityKey)
                 return@withLock
             }
 
-            // AtomicFile protects against torn files, while this generation/identity check and
-            // the shared mutex prevent an older canceled run from winning a race against a newer
-            // checkpoint or recreating one after the completed-session cleanup.
+            // Content fingerprints avoid recompressing and rewriting the same subtitle timeline
+            // when only playback counters, notification text or other transient UI fields change.
             val saved = withContext(Dispatchers.IO) {
                 if (
                     videoKey != sessionKey ||
@@ -1503,8 +1496,13 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
             }
+
             if (
-                saved == false &&
+                saved != null &&
+                InProgressProcessingCheckpointStoragePolicy.shouldReportSaveOutcome(
+                    saved.status,
+                    saved.reason,
+                ) &&
                 videoKey == sessionKey &&
                 activePipelineGeneration == pipelineGeneration &&
                 activeProcessingCheckpointIdentityKey == identityKey
@@ -1513,6 +1511,7 @@ class PlaybackService : MediaSessionService() {
                     this@PlaybackService,
                     "PlaybackCheckpoint",
                     "处理中间进度保存失败",
+                    saved.failure,
                     diagnosticContext = mapOf(
                         "视频来源" to when {
                             sessionKey.startsWith("remote:", ignoreCase = true) -> "网页视频"
@@ -1523,7 +1522,35 @@ class PlaybackService : MediaSessionService() {
                         "字幕行数" to state.lines.size.toString(),
                         "已准备配音行数" to state.preparedCount.toString(),
                         "配音总行数" to state.totalLines.toString(),
-                        "检查点大小限制 MB" to "24",
+                        "保存状态" to saved.status.name,
+                        "失败阶段" to saved.stage.orEmpty(),
+                        "失败原因" to saved.reason.orEmpty(),
+                        "未压缩大小字节" to saved.uncompressedBytes?.toString().orEmpty(),
+                        "压缩大小字节" to saved.compressedBytes?.toString().orEmpty(),
+                        "保存耗时 ms" to saved.elapsedMs.toString(),
+                        "检查点压缩大小限制 MB" to "24",
+                        "检查点解压大小限制 MB" to "64",
+                        "失败处理代数" to pipelineGeneration.toString(),
+                    ),
+                )
+            }
+
+            if (
+                saved != null &&
+                saved.cleanupFailure != null &&
+                videoKey == sessionKey &&
+                activePipelineGeneration == pipelineGeneration &&
+                activeProcessingCheckpointIdentityKey == identityKey
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackCheckpoint",
+                    "检查点已保存，但旧文件清理失败",
+                    saved.cleanupFailure,
+                    diagnosticContext = mapOf(
+                        "视频来源" to if (sessionKey.startsWith("youtube:", ignoreCase = true)) "YouTube" else
+                            if (sessionKey.startsWith("remote:", ignoreCase = true)) "网页视频" else "本地视频",
+                        "检查点状态" to saved.status.name,
                         "失败处理代数" to pipelineGeneration.toString(),
                     ),
                 )
@@ -2775,6 +2802,45 @@ class PlaybackService : MediaSessionService() {
         return engine.usesImmediateTimelinePlayback || state.preparedCount >= state.totalLines
     }
 
+    private suspend fun deleteInProgressCheckpointIfCurrent(
+        sessionKey: String,
+        pipelineGeneration: Long,
+        identityKey: String,
+    ): Boolean? {
+        val deleted = withContext(Dispatchers.IO) {
+            if (
+                videoKey != sessionKey ||
+                activePipelineGeneration != pipelineGeneration ||
+                activeProcessingCheckpointIdentityKey != identityKey
+            ) {
+                null
+            } else {
+                InProgressProcessingCheckpointStore.delete(
+                    this@PlaybackService,
+                    sessionKey,
+                    identityKey,
+                )
+            }
+        }
+        if (deleted == false) {
+            io.translatetube.local.util.AppLogStore.warning(
+                this,
+                "PlaybackCheckpoint",
+                "检查点清理失败，保留现有恢复数据",
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        sessionKey.startsWith("remote:", ignoreCase = true) -> "网页视频"
+                        sessionKey.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                        else -> "本地视频"
+                    },
+                    "清理阶段" to "完成后清理",
+                    "处理代数" to pipelineGeneration.toString(),
+                ),
+            )
+        }
+        return deleted
+    }
+
     private suspend fun clearInProgressCheckpointAfterDubbing(
         sessionKey: String,
         pipelineGeneration: Long,
@@ -2793,21 +2859,11 @@ class PlaybackService : MediaSessionService() {
                 !isDubbingQueueFullyPreparedForCheckpoint(state)
             ) return@withLock
 
-            val identityKey = activeProcessingCheckpointIdentityKey
-            withContext(Dispatchers.IO) {
-                // A new open/configuration restart may begin while the file operation is queued.
-                if (
-                    videoKey == sessionKey &&
-                    activePipelineGeneration == pipelineGeneration &&
-                    activeProcessingCheckpointIdentityKey == identityKey
-                ) {
-                    InProgressProcessingCheckpointStore.delete(
-                        this@PlaybackService,
-                        sessionKey,
-                        identityKey,
-                    )
-                }
-            }
+            deleteInProgressCheckpointIfCurrent(
+                sessionKey = sessionKey,
+                pipelineGeneration = pipelineGeneration,
+                identityKey = activeProcessingCheckpointIdentityKey,
+            )
         }
     }
 
@@ -4777,15 +4833,43 @@ class PlaybackService : MediaSessionService() {
             !refreshYouTubeSubtitleSource
         ) {
             scope.launch {
-                val checkpoint = withContext(Dispatchers.IO) {
-                    InProgressProcessingCheckpointStore.load(
+                val checkpointLoadResult = withContext(Dispatchers.IO) {
+                    InProgressProcessingCheckpointStore.loadWithResult(
                         this@PlaybackService,
                         key,
                         readySnapshotIdentityKey,
                     )
                 }
+                val checkpoint = checkpointLoadResult.checkpoint
                 if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
                     return@launch
+                }
+                if (
+                    checkpointLoadResult.status in setOf(
+                        InProgressCheckpointLoadStatus.FAILED,
+                        InProgressCheckpointLoadStatus.DISCARDED,
+                    )
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "PlaybackCheckpoint",
+                        "处理中间检查点无法恢复，已回退到来源缓存",
+                        checkpointLoadResult.failure,
+                        diagnosticContext = mapOf(
+                            "视频来源" to when {
+                                key.startsWith("remote:", ignoreCase = true) -> "网页视频"
+                                key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                                else -> "本地视频"
+                            },
+                            "恢复状态" to checkpointLoadResult.status.name,
+                            "失败阶段" to checkpointLoadResult.stage.orEmpty(),
+                            "恢复原因" to checkpointLoadResult.reason.orEmpty(),
+                            "文件大小字节" to checkpointLoadResult.fileBytes?.toString().orEmpty(),
+                            "解压大小字节" to checkpointLoadResult.uncompressedBytes?.toString().orEmpty(),
+                            "检查点年龄 ms" to checkpointLoadResult.ageMs?.toString().orEmpty(),
+                            "回退策略" to "复用已有来源缓存，按需重新处理",
+                        ),
+                    )
                 }
                 val checkpointUsesYouTubeSubtitleSelection =
                     checkpoint != null &&
@@ -13656,8 +13740,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ),
             ) else state
         }
-        persistSpeakerRecognitionState(sessionKey)
-        val recognitionJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+        beginSpeakerRecognitionTaskJournal(sessionKey)
+        val recognitionJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY)
             val speakerTaskJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             pipelineExecutionMutex.withLock {
             var pendingTts: TtsEngine? = null

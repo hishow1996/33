@@ -7,7 +7,8 @@ import java.security.MessageDigest
  * Privacy-safe per-session breadcrumb for a user-triggered speaker-recognition task.
  *
  * Native inference owns transient state and is not resumed after process death. This journal
- * restores an explicit INTERRUPTED state, never a false running indicator.
+ * restores an explicit INTERRUPTED state, never a false running indicator. A process-local token
+ * guard prevents a late callback from an older recognition pass overwriting a newer task.
  */
 internal object SpeakerRecognitionTaskJournal {
     private const val PREFS_NAME = "speaker_recognition_task_journal_v1"
@@ -22,8 +23,14 @@ internal object SpeakerRecognitionTaskJournal {
     private const val KEY_ITEM = "progress_item"
     private const val KEY_UPDATED_AT = "updated_at"
     private const val MAX_AGE_MS = 7L * 24L * 60L * 60L * 1_000L
+    private const val MAX_TRACKED_SESSIONS = 24
 
-    fun save(
+    // The map intentionally lives only for this process. A new process has no old native task
+    // callbacks, so its first begin() is allowed to replace the persisted interrupted token.
+    private val activeTokensByPrefix = linkedMapOf<String, Long>()
+
+    @Synchronized
+    fun begin(
         context: Context,
         sessionKey: String,
         state: SpeakerRecognitionUiState,
@@ -33,19 +40,27 @@ internal object SpeakerRecognitionTaskJournal {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         pruneExpired(prefs)
         val prefix = sessionPrefix(sessionKey)
-        prefs.edit()
-            .putLong(prefix + KEY_TASK_TOKEN, token)
-            .putBoolean(prefix + KEY_ACTIVE, true)
-            .putString(prefix + KEY_STAGE, state.stage.name)
-            .putString(prefix + KEY_MESSAGE, state.message.take(160))
-            .putInt(prefix + KEY_PERCENT, state.progressPercent ?: -1)
-            .putLong(prefix + KEY_COMPLETED, state.completedUnits ?: -1L)
-            .putLong(prefix + KEY_TOTAL, state.totalUnits ?: -1L)
-            .putString(prefix + KEY_ITEM, state.progressItem.orEmpty().take(80))
-            .putLong(prefix + KEY_UPDATED_AT, System.currentTimeMillis())
-            .apply()
+        activeTokensByPrefix[prefix] = token
+        trimTrackedSessions()
+        persistActiveState(prefs, prefix, token, state)
     }
 
+    @Synchronized
+    fun save(
+        context: Context,
+        sessionKey: String,
+        state: SpeakerRecognitionUiState,
+    ) {
+        val token = state.taskToken ?: return
+        if (sessionKey.isBlank() || token <= 0L || !state.isActive) return
+        val prefix = sessionPrefix(sessionKey)
+        val activeToken = activeTokensByPrefix[prefix]
+        if (!SpeakerRecognitionJournalTaskPolicy.acceptsUpdate(activeToken, token)) return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        persistActiveState(prefs, prefix, token, state)
+    }
+
+    @Synchronized
     fun restoreInterrupted(
         context: Context,
         sessionKey: String,
@@ -59,6 +74,7 @@ internal object SpeakerRecognitionTaskJournal {
         val updatedAt = prefs.getLong(prefix + KEY_UPDATED_AT, 0L)
         if (updatedAt <= 0L || updatedAt > now + 60_000L || now - updatedAt > MAX_AGE_MS) {
             clearPrefix(prefs, prefix)
+            activeTokensByPrefix.remove(prefix)
             return null
         }
 
@@ -92,9 +108,9 @@ internal object SpeakerRecognitionTaskJournal {
                 " · 上次进度 " + restoredPercent + "%"
             else -> ""
         }
-        val itemSummary = if (
-            progressItem != null && !oldMessage.contains(progressItem)
-        ) " · " + progressItem else ""
+        val itemSummary = if (progressItem != null && !oldMessage.contains(progressItem)) {
+            " · " + progressItem
+        } else ""
         val detail = if (oldMessage.isNotBlank()) " · " + oldMessage else ""
         val token = prefs.getLong(prefix + KEY_TASK_TOKEN, 0L).takeIf { it > 0L }
 
@@ -110,16 +126,48 @@ internal object SpeakerRecognitionTaskJournal {
         )
     }
 
+    @Synchronized
     fun clear(
         context: Context,
         sessionKey: String,
         taskToken: Long,
     ) {
         if (sessionKey.isBlank()) return
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val prefix = sessionPrefix(sessionKey)
+        val activeToken = activeTokensByPrefix[prefix]
+        if (activeToken != null && activeToken != taskToken) return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (prefs.getLong(prefix + KEY_TASK_TOKEN, 0L) == taskToken) {
             clearPrefix(prefs, prefix)
+        }
+        if (activeTokensByPrefix[prefix] == taskToken) {
+            activeTokensByPrefix.remove(prefix)
+        }
+    }
+
+    private fun persistActiveState(
+        prefs: android.content.SharedPreferences,
+        prefix: String,
+        token: Long,
+        state: SpeakerRecognitionUiState,
+    ) {
+        prefs.edit()
+            .putLong(prefix + KEY_TASK_TOKEN, token)
+            .putBoolean(prefix + KEY_ACTIVE, true)
+            .putString(prefix + KEY_STAGE, state.stage.name)
+            .putString(prefix + KEY_MESSAGE, state.message.take(160))
+            .putInt(prefix + KEY_PERCENT, state.progressPercent ?: -1)
+            .putLong(prefix + KEY_COMPLETED, state.completedUnits ?: -1L)
+            .putLong(prefix + KEY_TOTAL, state.totalUnits ?: -1L)
+            .putString(prefix + KEY_ITEM, state.progressItem.orEmpty().take(80))
+            .putLong(prefix + KEY_UPDATED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun trimTrackedSessions() {
+        while (activeTokensByPrefix.size > MAX_TRACKED_SESSIONS) {
+            val oldest = activeTokensByPrefix.keys.firstOrNull() ?: break
+            activeTokensByPrefix.remove(oldest)
         }
     }
 
@@ -129,7 +177,9 @@ internal object SpeakerRecognitionTaskJournal {
         updateKeys.forEach { updateKey ->
             val updatedAt = prefs.getLong(updateKey, 0L)
             if (updatedAt <= 0L || updatedAt > now + 60_000L || now - updatedAt > MAX_AGE_MS) {
-                clearPrefix(prefs, updateKey.removeSuffix(KEY_UPDATED_AT))
+                val prefix = updateKey.removeSuffix(KEY_UPDATED_AT)
+                clearPrefix(prefs, prefix)
+                activeTokensByPrefix.remove(prefix)
             }
         }
     }
