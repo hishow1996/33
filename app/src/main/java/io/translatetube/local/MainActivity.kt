@@ -273,6 +273,10 @@ class MainActivity : ComponentActivity() {
                 // replacing it at alpha=0 and restarting at alpha=0.01 creates a visible blank page.
                 // 所有页面使用固定尺寸的根容器，避免不同页面内容高度变化带动整页跳动。
                 var displayedScreen by remember { mutableStateOf(initialScreen) }
+                var playerFullscreen by remember { mutableStateOf(false) }
+                LaunchedEffect(displayedScreen) {
+                    if (displayedScreen != Screen.PLAYER) playerFullscreen = false
+                }
                 val pageMotion = remember { Animatable(1f) }
                 var hasInitializedScreenMotion by remember { mutableStateOf(false) }
                 LaunchedEffect(screen) {
@@ -394,19 +398,23 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 全局大屏适配：内容限宽居中（平板/折叠屏不拉伸变形）
+                // 普通页面限宽居中；播放器全屏时由主容器释放宽度和系统栏 Insets。
+                val isPlayerFullscreen = displayedScreen == Screen.PLAYER && playerFullscreen
                 // systemBarsPadding here gives every screen (including the WebView page) the same
                 // status/navigation-bar offset the decor view used to provide. Screens that add
                 // their own systemBarsPadding are not padded twice: Compose consumes insets that an
                 // ancestor already applied.
                 Box(
-                    Modifier.fillMaxSize().background(BgDark).systemBarsPadding(),
+                    Modifier.fillMaxSize().background(BgDark)
+                        .then(if (isPlayerFullscreen) Modifier else Modifier.systemBarsPadding()),
                     contentAlignment = Alignment.TopCenter,
                 ) {
                     Box(
                         Modifier
-                            .widthIn(max = 720.dp)
-                            .fillMaxSize()
+                            .then(
+                                if (isPlayerFullscreen) Modifier.fillMaxSize()
+                                else Modifier.widthIn(max = 720.dp).fillMaxSize(),
+                            )
                             .graphicsLayer {
                                 alpha = pageMotion.value
                             },
@@ -658,6 +666,7 @@ class MainActivity : ComponentActivity() {
                                 selectedWebMediaMetadata = req?.selectedWebMediaMetadata,
                                 requestToken = req?.ts ?: 0L,
                                 showPlayerWhileRestoringHistory = req?.showPlayerWhileRestoringHistory == true,
+                                onFullscreenChanged = { playerFullscreen = it },
                                 onBack = {
                                     screen = if (returnToWebAfterPlayer && !webDetectionUrl.isNullOrBlank()) {
                                         Screen.WEB

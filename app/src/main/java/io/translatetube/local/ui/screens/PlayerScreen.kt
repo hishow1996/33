@@ -177,6 +177,7 @@ fun PlayerScreen(
     selectedWebMediaMetadata: SelectedWebMediaMetadata? = null,
     requestToken: Long = 0L,
     showPlayerWhileRestoringHistory: Boolean = false,
+    onFullscreenChanged: (Boolean) -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val activity = remember(ctx) {
@@ -191,6 +192,9 @@ fun PlayerScreen(
         currentContext as? android.app.Activity
     }
     var isFullscreen by remember { mutableStateOf(false) }
+    LaunchedEffect(isFullscreen) {
+        onFullscreenChanged(isFullscreen)
+    }
     val fullscreenLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     // Invalidates delayed inset callbacks from a previous fullscreen toggle.
     val fullscreenWindowEpoch = remember { java.util.concurrent.atomic.AtomicLong(0L) }
