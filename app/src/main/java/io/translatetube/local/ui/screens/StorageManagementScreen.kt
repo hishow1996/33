@@ -1163,7 +1163,7 @@ private fun primaryValue(category: StorageCategory, data: StorageSnapshot?, scan
 private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnapshot {
     val warnings = mutableListOf<String>()
     fun measured(label: String, file: File): Long = runCatching { directorySize(file) }.getOrElse {
-        warnings += "${label 统计失败：${{it.javaClass.simpleName}"; -1L
+        warnings += "${label} 统计失败：${it.javaClass.simpleName}"; -1L
     }
 
     val filesDir = context.filesDir
@@ -1197,22 +1197,22 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
     val cache = runCatching {
         AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir)
     }.getOrElse {
-        warnings += "临时缓存统计失败：${{it.javaClass.simpleName}"; -1L
+        warnings += "临时缓存统计失败：${it.javaClass.simpleName}"; -1L
     }
     val subtitleCount = runCatching { db.subtitleCacheDao().countEntries() }.getOrElse {
-        warnings += "字幕缓存条数统计失败：${{it.javaClass.simpleName}"; -1
+        warnings += "字幕缓存条数统计失败：${it.javaClass.simpleName}"; -1
     }
     val subtitleBytes = runCatching { db.subtitleCacheDao().payloadBytes() }.getOrElse {
-        warnings += "字幕缓存内容统计失败：${{it.javaClass.simpleName}"; -1L
+        warnings += "字幕缓存内容统计失败：${it.javaClass.simpleName}"; -1L
     }
     val history = runCatching { db.videoDao().countAll() }.getOrElse {
-        warnings += "视频历史统计失败：${{it.javaClass.simpleName}"; -1
+        warnings += "视频历史统计失败：${it.javaClass.simpleName}"; -1
     }
     val favorites = runCatching { db.videoDao().countFavorites() }.getOrElse {
-        warnings += "收藏记录统计失败：${{it.javaClass.simpleName}"; -1
+        warnings += "收藏记录统计失败：${it.javaClass.simpleName}"; -1
     }
     val piperCount = runCatching { PiperModels.installedIds(context).size }.getOrElse {
-        warnings += "Piper 模型状态读取失败：${{it.javaClass.simpleName}"; -1
+        warnings += "Piper 模型状态读取失败：${it.javaClass.simpleName}"; -1
     }
     val ttsReady = runCatching { ModelFiles.ttsReady(context) }.getOrDefault(false)
     val whisperReady = runCatching { ModelFiles.whisperReady(context) }.getOrDefault(false)
@@ -1230,13 +1230,13 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
             entries.fold(0L) { total, file -> addSaturated(total, file.length()) }
         }
     }.getOrElse {
-        warnings += "数据库文件统计失败：${{it.javaClass.simpleName}"; -1L
+        warnings += "数据库文件统计失败：${it.javaClass.simpleName}"; -1L
     }
     val logCount = runCatching { AppLogStore.readRecent(context, 800).size }.getOrElse {
-        warnings += "日志条数统计失败：${{it.javaClass.simpleName}"; -1
+        warnings += "日志条数统计失败：${it.javaClass.simpleName}"; -1
     }
     val storageStats = runCatching { StatFs(filesDir.absolutePath) }.getOrElse {
-        warnings += "应用所在分区空间统计失败：${{it.javaClass.simpleName}"
+        warnings += "应用所在分区空间统计失败：${it.javaClass.simpleName}"
         null
     }
     val availableBytes = storageStats?.let {
@@ -1307,7 +1307,7 @@ private fun scanDirectoryTreeOnce(
     }
     root.walkTopDown()
         .onFail { failedFile, error ->
-            warnings += "目录 ${{failedFile.name} 读取失败：${{error.javaClass.simpleName}"
+            warnings += "目录 ${failedFile.name} 读取失败：${error.javaClass.simpleName}"
         }
         .forEach { file ->
             if (!file.isFile) return@forEach
