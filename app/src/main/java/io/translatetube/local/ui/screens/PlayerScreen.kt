@@ -5756,7 +5756,13 @@ private fun PlaybackOverlayIconButton(
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            tint @Composable
+            tint = tint,
+            modifier = Modifier.size(iconSize).shadow(2.dp, CircleShape, clip = false),
+        )
+    }
+}
+
+@Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
     playbackHint: PlaybackHint?,
@@ -5902,8 +5908,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val displayedProgress = if (scrubbing) pos.coerceIn(0f, 1f) else animatedProgress
     val displayedBufferedProgress = if (scrubbing) bufferedPos else animatedBufferedProgress
 
-    // This parent observes every player-surface touch before child controls. It only
-    // consumes a clearly vertical gesture that begins on the right side; taps and seeks pass through.
+    // Observe player-surface touches before child controls. Only a clear vertical gesture
+    // starting on the right side is consumed; normal taps and horizontal seeks pass through.
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -5914,9 +5920,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         pass = PointerEventPass.Initial,
                     )
                     val seekbarSafeBottom = with(this) { 44.dp.toPx() }
-                    val startsOnRight = down.position.x >= size.width * 0.62f
-                    val startsAboveSeekbar = down.position.y <= size.height - seekbarSafeBottom
-                    if (!startsOnRight || !startsAboveSeekbar || audioManager == null || maxMusicVolume <= 0) {
+                    if (
+                        down.position.x < size.width * 0.62f ||
+                        down.position.y > size.height - seekbarSafeBottom ||
+                        audioManager == null ||
+                        maxMusicVolume <= 0
+                    ) {
                         return@awaitEachGesture
                     }
 
@@ -5939,15 +5948,17 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             if (!claimedVolumeGesture) {
                                 val movedX = abs(deltaX)
                                 val movedY = abs(deltaY)
-                                if (movedX > viewConfiguration.touchSlop ||
+                                if (
+                                    movedX > viewConfiguration.touchSlop ||
                                     movedY > viewConfiguration.touchSlop
                                 ) {
-                                    if (movedY > movedX * 1.2f) {
-                                        claimedVolumeGesture = true
-                                        volumeGestureActive = true
-                                        volumeProgress = initialVolume.toFloat() / maxMusicVolume.toFloat()
-                                    } else if (movedX > movedY * 1.2f) {
-                                        break
+                                    when {
+                                        movedY > movedX * 1.2f -> {
+                                            claimedVolumeGesture = true
+                                            volumeGestureActive = true
+                                            volumeProgress = initialVolume.toFloat() / maxMusicVolume.toFloat()
+                                        }
+                                        movedX > movedY * 1.2f -> break
                                     }
                                 }
                             }
@@ -5977,7 +5988,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         }
                     } finally {
                         if (claimedVolumeGesture) {
-                            // No fade-out delay: release/cancel removes the indicator on the next frame.
+                            // No timeout or fade: the indicator disappears as soon as the finger lifts.
                             volumeGestureActive = false
                         }
                     }
@@ -6294,12 +6305,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             .background(Color(0xFF5890FF)),
                     )
                 }
-            }
-        }
-    }
-}dius,
-                    center = Offset(thumbCenterX, centerY),
-                )
             }
         }
     }
