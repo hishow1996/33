@@ -24,6 +24,22 @@ import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
 /**
+ * Named and kept callback implementation: sherpa-onnx JNI resolves the specialized
+ * invoke(int, int, long): Integer method by signature at runtime.
+ */
+@androidx.annotation.Keep
+private class NativeSpeakerRecognitionProgressCallback(
+    private val onProgress: (Long, Long) -> Unit,
+) : Function3<Int, Int, Long, Int> {
+    @Suppress("UNUSED_PARAMETER")
+    override fun invoke(p1: Int, p2: Int, p3: Long): Int {
+        // JNI ignores this callback return value; do not throw cancellation across JNI.
+        runCatching { onProgress(p1.toLong(), p2.toLong()) }
+        return 0
+    }
+}
+
+/**
  * Optional local speaker diarization using the OfflineSpeakerDiarization API bundled in
  * sherpa-onnx. Reflection keeps the app compilable with older AARs; if its JNI/API is too old,
  * the UI reports that the bundled runtime must be updated instead of crashing playback.
@@ -93,17 +109,7 @@ object SpeakerDiarizer {
                 onInferenceProgress != null
             ) {
                 val callback: Any = if (callbackType.name == "kotlin.jvm.functions.Function3") {
-                    // A Kotlin lambda exposes both the erased Function3 bridge and the typed
-                    // invoke(int, int, long): Integer method required by sherpa-onnx JNI.
-                    val kotlinCallback: (Int, Int, Long) -> Int = { processed, total, _ ->
-                        // JNI callback return values are ignored by this sherpa API. Do not throw
-                        // CancellationException across JNI; check cancellation after native return.
-                        runCatching {
-                            onInferenceProgress(processed.toLong(), total.toLong())
-                        }
-                        0
-                    }
-                    kotlinCallback
+                    NativeSpeakerRecognitionProgressCallback(onInferenceProgress)
                 } else {
                     val callbackLoader = callbackType.classLoader ?: instance.javaClass.classLoader
                     java.lang.reflect.Proxy.newProxyInstance(
