@@ -1,64 +1,53 @@
 package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AsrTranscriptCacheIdentityTest {
     private fun key(
         provider: String = "local",
         model: String = "whisper-base",
-        language: String = "auto",
-        config: String = "0123456789abcdef01234567",
-        modelFingerprint: String = "",
-    ) = AsrTranscriptCacheIdentity.key(
-        provider, model, language, config, modelFingerprint,
-    )
+    ) = AsrTranscriptCacheIdentity.key(provider, model)
 
     @Test
-    fun identicalEffectiveConfigurationProducesStableIdentity() {
+    fun sameSelectedEngineAlwaysProducesTheSameTranscriptCacheIdentity() {
         assertEquals(key(), key())
+        assertEquals(
+            AsrTranscriptCacheIdentity.key("cartesia", "ignored-local-model"),
+            AsrTranscriptCacheIdentity.key("cartesia", "another-local-model"),
+        )
     }
 
     @Test
-    fun changingLocalModelOrProviderSeparatesTranscriptCaches() {
+    fun changingProviderOrSelectedLocalModelSeparatesTranscriptCaches() {
         assertNotEquals(key(), key(model = "sensevoice"))
         assertNotEquals(key(), key(provider = "elevenlabs"))
-    }
-
-    @Test
-    fun changingCloudLanguageOrTranscriptionConfigurationSeparatesCaches() {
-        val baseline = key(provider = "cartesia", language = "en")
-        assertNotEquals(baseline, key(provider = "cartesia", language = "ja"))
         assertNotEquals(
-            baseline,
-            key(provider = "cartesia", language = "en", config = "fedcba9876543210fedcba98"),
+            AsrTranscriptCacheIdentity.key("cartesia", "unused"),
+            AsrTranscriptCacheIdentity.key("kawa", "unused"),
         )
     }
 
     @Test
-    fun localModelFileUpdateChangesTranscriptCacheIdentity() {
-        assertNotEquals(
-            key(modelFingerprint = "model-files-version-a"),
-            key(modelFingerprint = "model-files-version-b"),
+    fun legacyCachePrefixMatchesKeysWithOldConfigurationSuffixes() {
+        val prefix = AsrTranscriptCacheIdentity.enginePrefix("local", "whisper-base")
+        assertTrue("local-whisper-base-auto-cfg-0123456789abcdef01234567".startsWith(prefix))
+        assertTrue("local-whisper-base-engine-v1".startsWith(prefix))
+        assertTrue(
+            AsrTranscriptCacheIdentity.enginePrefix("cartesia", "unused")
+                .let { "cartesia-cloud-en-cfg-old-digest".startsWith(it) },
         )
     }
 
     @Test
-    fun cloudCacheIdentityDoesNotDependOnLocalModelFiles() {
+    fun cacheIdentityContainsOnlyTheSelectedEngineAndNoCredentials() {
+        val identity = AsrTranscriptCacheIdentity.key("kawa", "private-api-secret-not-a-cache-identity")
+        assertEquals("kawa-cloud-engine-v1", identity)
         assertEquals(
-            key(provider = "cartesia", language = "en", modelFingerprint = ""),
-            key(provider = "cartesia", language = "en", modelFingerprint = "local-files-version"),
+            "local-whisper-base-engine-v1",
+            AsrTranscriptCacheIdentity.key("local", "whisper-base"),
         )
-    }
-
-    @Test
-    fun rawCredentialsAreNeverCopiedIntoTheCacheIdentity() {
-        val secret = "private-api-secret-not-a-fingerprint"
-        val identity = key(provider = "kawa", config = secret)
-        assertFalse(identity.contains(secret))
-        assertFalse(identity.contains("private-api-secret"))
-        assertEquals(24, identity.substringAfter("-cfg-").length)
     }
 }

@@ -1,36 +1,38 @@
 package io.translatetube.local.player
 
-import java.security.MessageDigest
 import java.util.Locale
 
 /**
  * Stable identity for ASR transcript and subtitle caches.
  *
- * The config fingerprint is a one-way digest of transcription-related preferences. Persist only
- * this digest, never raw API credentials or endpoint configuration, in cache keys.
+ * A completed transcript belongs to the selected recognition engine. Mutable credentials,
+ * endpoint settings, language hints and decoder tuning do not create a new engine and therefore
+ * do not split the cache. The engine version marker leaves room for a deliberate cache-format
+ * change while the prefix remains compatible with older, more detailed cache keys.
  */
 internal object AsrTranscriptCacheIdentity {
-    private val configFingerprintPattern = Regex("^[0-9a-f]{24}$")
-
+    @Suppress("UNUSED_PARAMETER")
     fun key(
         provider: String,
         localModelId: String,
-        language: String,
-        configFingerprint: String,
+        language: String = "auto",
+        configFingerprint: String = "",
         modelFingerprint: String = "",
+    ): String = enginePrefix(provider, localModelId) + "engine-v1"
+
+    /**
+     * Prefix shared by current and legacy keys from the same selected engine.
+     *
+     * Older app versions appended language and a configuration digest to this prefix. Looking up
+     * by this prefix lets the current version migrate those source transcripts without rerunning ASR.
+     */
+    fun enginePrefix(
+        provider: String,
+        localModelId: String,
     ): String {
         val normalizedProvider = token(provider)
         val model = if (normalizedProvider == "local") token(localModelId) else "cloud"
-        val languagePart = if (normalizedProvider == "local") "auto" else token(language).ifBlank { "auto" }
-        val effectiveConfig = if (normalizedProvider == "local") {
-            "$configFingerprint\nmodel=$modelFingerprint"
-        } else {
-            configFingerprint
-        }
-        val configPart = effectiveConfig.lowercase(Locale.ROOT)
-            .takeIf { configFingerprintPattern.matches(it) }
-            ?: sha256(effectiveConfig).take(24)
-        return "$normalizedProvider-$model-$languagePart-cfg-$configPart"
+        return "$normalizedProvider-$model-"
     }
 
     private fun token(value: String): String =
@@ -40,11 +42,4 @@ internal object AsrTranscriptCacheIdentity {
             .trim('_')
             .take(40)
             .ifBlank { "unknown" }
-
-    private fun sha256(value: String): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(value.toByteArray(Charsets.UTF_8))
-            .joinToString("") { byte ->
-                (byte.toInt() and 0xff).toString(16).padStart(2, '0')
-            }
 }

@@ -93,6 +93,14 @@ interface SubtitleCacheDao {
     @Query("SELECT * FROM subtitle_cache WHERE cacheKey IN (:keys) ORDER BY updatedAt DESC LIMIT 1")
     suspend fun getLatestByCacheKeys(keys: List<String>): SubtitleCacheEntity?
 
+    /** Finds a source transcript saved by an older version with extra ASR settings in its cache key. */
+    @Query(
+        "SELECT * FROM subtitle_cache " +
+            "WHERE substr(cacheKey, 1, length(:keyPrefix)) = :keyPrefix " +
+            "ORDER BY updatedAt DESC LIMIT 1"
+    )
+    suspend fun getLatestByCacheKeyPrefix(keyPrefix: String): SubtitleCacheEntity?
+
     /** Finds prior downloaded YouTube captions even if their legacy key included an ASR engine. */
     @Query(
         "SELECT * FROM subtitle_cache " +
