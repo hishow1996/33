@@ -5914,111 +5914,108 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val displayedProgress = if (scrubbing) pos.coerceIn(0f, 1f) else animatedProgress
     val displayedBufferedProgress = if (scrubbing) bufferedPos else animatedBufferedProgress
 
-    // Observe player-surface touches before child controls. Only a clear vertical gesture
-    // starting on the right side is consumed; normal taps and horizontal seeks pass through.
+    // Keep volume swipes and playback taps on one full-surface pointer chain.
+    // This prevents a later full-size sibling layer from intercepting the volume gesture.
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(state.key, audioManager, maxMusicVolume) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(
-                        requireUnconsumed = false,
-                        pass = PointerEventPass.Initial,
-                    )
-                    val seekbarSafeBottom = with(this) { 44.dp.toPx() }
-                    if (
-                        down.position.x < size.width * 0.62f ||
-                        down.position.y > size.height - seekbarSafeBottom ||
-                        audioManager == null ||
-                        maxMusicVolume <= 0
-                    ) {
-                        return@awaitEachGesture
-                    }
-
-                    val startX = down.position.x
-                    val startY = down.position.y
-                    val initialVolume = runCatching {
-                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    }.getOrDefault(0).coerceIn(0, maxMusicVolume)
-                    // Keep the same physical travel distance on short landscape windows;
-                    // otherwise a short swipe can jump several volume steps at once.
-                    val dragRangePx = maxOf(
-                        size.height * 0.58f,
-                        with(this) { 240.dp.toPx() },
-                    ).coerceAtLeast(1f)
-                    var claimedVolumeGesture = false
-                    var lastRequestedVolume = initialVolume
-
-                    try {
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            val deltaX = change.position.x - startX
-                            val deltaY = change.position.y - startY
-
-                            if (!claimedVolumeGesture) {
-                                val movedX = abs(deltaX)
-                                val movedY = abs(deltaY)
+                            awaitEachGesture {
+                                val down = awaitFirstDown(
+                                    requireUnconsumed = false,
+                                    pass = PointerEventPass.Initial,
+                                )
+                                val seekbarSafeBottom = with(this) { 44.dp.toPx() }
                                 if (
-                                    movedX > viewConfiguration.touchSlop ||
-                                    movedY > viewConfiguration.touchSlop
+                                    down.position.x < size.width * 0.62f ||
+                                    down.position.y > size.height - seekbarSafeBottom ||
+                                    audioManager == null ||
+                                    maxMusicVolume <= 0
                                 ) {
-                                    when {
-                                        movedY > movedX * 1.2f -> {
-                                            claimedVolumeGesture = true
-                                            volumeGestureActive = true
-                                            volumeProgress = initialVolume.toFloat() / maxMusicVolume.toFloat()
+                                    return@awaitEachGesture
+                                }
+            
+                                val startX = down.position.x
+                                val startY = down.position.y
+                                val initialVolume = runCatching {
+                                    audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                }.getOrDefault(0).coerceIn(0, maxMusicVolume)
+                                // Keep the same physical travel distance on short landscape windows;
+                                // otherwise a short swipe can jump several volume steps at once.
+                                val dragRangePx = maxOf(
+                                    size.height * 0.58f,
+                                    with(this) { 240.dp.toPx() },
+                                ).coerceAtLeast(1f)
+                                var claimedVolumeGesture = false
+                                var lastRequestedVolume = initialVolume
+            
+                                try {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                        val deltaX = change.position.x - startX
+                                        val deltaY = change.position.y - startY
+            
+                                        if (!claimedVolumeGesture) {
+                                            val movedX = abs(deltaX)
+                                            val movedY = abs(deltaY)
+                                            if (
+                                                movedX > viewConfiguration.touchSlop ||
+                                                movedY > viewConfiguration.touchSlop
+                                            ) {
+                                                when {
+                                                    movedY > movedX * 1.2f -> {
+                                                        claimedVolumeGesture = true
+                                                        volumeGestureActive = true
+                                                        volumeProgress = initialVolume.toFloat() / maxMusicVolume.toFloat()
+                                                    }
+                                                    movedX > movedY * 1.2f -> break
+                                                }
+                                            }
                                         }
-                                        movedX > movedY * 1.2f -> break
+            
+                                        if (claimedVolumeGesture) {
+                                            change.consume()
+                                            val nextVolume = (
+                                                initialVolume.toFloat() -
+                                                    deltaY / dragRangePx * maxMusicVolume.toFloat()
+                                                ).roundToInt().coerceIn(0, maxMusicVolume)
+                                            if (nextVolume != lastRequestedVolume) {
+                                                val actualVolume = runCatching {
+                                                    audioManager.setStreamVolume(
+                                                        AudioManager.STREAM_MUSIC,
+                                                        nextVolume,
+                                                        0,
+                                                    )
+                                                    // Read back the system value so the indicator follows
+                                                    // any device-side volume cap instead of assuming success.
+                                                    audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                                }.getOrNull()
+                                                lastRequestedVolume = nextVolume
+                                                if (actualVolume != null) {
+                                                    volumeProgress = actualVolume
+                                                        .coerceIn(0, maxMusicVolume)
+                                                        .toFloat() / maxMusicVolume.toFloat()
+                                                }
+                                            }
+                                        }
+            
+                                        if (!change.pressed) break
+                                    }
+                                } finally {
+                                    if (claimedVolumeGesture) {
+                                        // No timeout or fade: the indicator disappears as soon as the finger lifts.
+                                        volumeGestureActive = false
                                     }
                                 }
                             }
-
-                            if (claimedVolumeGesture) {
-                                change.consume()
-                                val nextVolume = (
-                                    initialVolume.toFloat() -
-                                        deltaY / dragRangePx * maxMusicVolume.toFloat()
-                                    ).roundToInt().coerceIn(0, maxMusicVolume)
-                                if (nextVolume != lastRequestedVolume) {
-                                    val actualVolume = runCatching {
-                                        audioManager.setStreamVolume(
-                                            AudioManager.STREAM_MUSIC,
-                                            nextVolume,
-                                            0,
-                                        )
-                                        // Read back the system value so the indicator follows
-                                        // any device-side volume cap instead of assuming success.
-                                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                    }.getOrNull()
-                                    lastRequestedVolume = nextVolume
-                                    if (actualVolume != null) {
-                                        volumeProgress = actualVolume
-                                            .coerceIn(0, maxMusicVolume)
-                                            .toFloat() / maxMusicVolume.toFloat()
-                                    }
-                                }
-                            }
-
-                            if (!change.pressed) break
                         }
-                    } finally {
-                        if (claimedVolumeGesture) {
-                            // No timeout or fade: the indicator disappears as soon as the finger lifts.
-                            volumeGestureActive = false
+            .pointerInput(state.key, state.isPlaying, controlsVisible) {
+                        detectTapGestures {
+                            recordInteraction()
+                            controlsVisible = if (!state.isPlaying) true else !controlsVisible
                         }
-                    }
-                }
-            },
-    ) {
-    // Tapping the picture toggles controls during playback; pause always keeps them visible.
-    Box(
-        Modifier.fillMaxSize().pointerInput(state.key, state.isPlaying, controlsVisible) {
-            detectTapGestures {
-                recordInteraction()
-                controlsVisible = if (!state.isPlaying) true else !controlsVisible
-            }
-        }
+                    },
     )
 
     val showCenterPlaybackControl = !state.isBuffering && playbackHint == null &&
