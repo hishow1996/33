@@ -195,11 +195,11 @@ fun PlayerScreen(
             val previousOrientation = activity.requestedOrientation
             val window = activity.window
             val decorView = window.decorView
-            // Keep the exact pre-fullscreen system UI state. Replacing it with a hard-coded
-            // decorFits=true state can leave edge-to-edge/layout flags behind after rotation.
-            val previousSystemUiVisibility = decorView.systemUiVisibility
             val insetsController = WindowInsetsControllerCompat(window, decorView)
             val previousSystemBarsBehavior = insetsController.systemBarsBehavior
+            val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
+            val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
+            val wasPortraitLayout = decorView.height >= decorView.width
 
             fun applyFullscreenWindowMode() {
                 WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -208,6 +208,14 @@ fun PlayerScreen(
                 insetsController.hide(WindowInsetsCompat.Type.systemBars())
                 activity.requestedOrientation =
                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+
+            fun requestRestoredInsets() {
+                if (activity.isFinishing || activity.isDestroyed) return
+                decorView.requestLayout()
+                ViewCompat.requestApplyInsets(decorView)
+                val content = decorView.findViewById<android.view.View>(android.R.id.content)
+                ViewCompat.requestApplyInsets(content)
             }
 
             applyFullscreenWindowMode()
@@ -219,25 +227,50 @@ fun PlayerScreen(
             fullscreenLifecycleOwner.lifecycle.addObserver(fullscreenLifecycleObserver)
             onDispose {
                 fullscreenLifecycleOwner.lifecycle.removeObserver(fullscreenLifecycleObserver)
-                // Restore orientation first so the next inset dispatch uses the portrait dimensions.
-                runCatching { activity.requestedOrientation = previousOrientation }
-                runCatching {
-                    WindowCompat.setDecorFitsSystemWindows(window, true)
-                    insetsController.systemBarsBehavior = previousSystemBarsBehavior
-                    insetsController.show(WindowInsetsCompat.Type.systemBars())
-                    // Restore the original layout/status-bar flags rather than assuming the
-                    // activity always entered fullscreen with the same decor configuration.
-                    decorView.systemUiVisibility = previousSystemUiVisibility
-                    ViewCompat.requestApplyInsets(decorView)
-                    // A second dispatch after the orientation/layout pass prevents stale
-                    // landscape insets from being reused by the portrait Compose root.
-                    decorView.post {
-                        if (!activity.isFinishing && !activity.isDestroyed) {
-                            ViewCompat.requestApplyInsets(decorView)
-                            val content = decorView.findViewById<android.view.View>(android.R.id.content)
-                            ViewCompat.requestApplyInsets(content)
-                        }
+
+                // Wait for the actual window bounds to return to their pre-fullscreen orientation.
+                // A single post() can run while the decor is still measured at landscape size.
+                val insetRecoveryListener = object : android.view.View.OnLayoutChangeListener {
+                    override fun onLayoutChange(
+                        view: android.view.View,
+                        left: Int,
+                        top: Int,
+                        right: Int,
+                        bottom: Int,
+                        oldLeft: Int,
+                        oldTop: Int,
+                        oldRight: Int,
+                        oldBottom: Int,
+                    ) {
+                        val width = right - left
+                        val height = bottom - top
+                        if (width <= 0 || height <= 0) return
+                        val restoredOrientation = if (wasPortraitLayout) height >= width else width >= height
+                        if (!restoredOrientation) return
+
+                        decorView.removeOnLayoutChangeListener(this)
+                        decorView.post { requestRestoredInsets() }
                     }
+                }
+                decorView.addOnLayoutChangeListener(insetRecoveryListener)
+
+                // Restore only the window properties changed by fullscreen. Do not write back the
+                // entire systemUiVisibility bitmask: it overlaps with decorFits flags and can
+                // undo WindowCompat's portrait insets configuration.
+                runCatching {
+                    insetsController.systemBarsBehavior = previousSystemBarsBehavior
+                    insetsController.isAppearanceLightStatusBars = previousLightStatusBars
+                    insetsController.isAppearanceLightNavigationBars = previousLightNavigationBars
+                    insetsController.show(WindowInsetsCompat.Type.systemBars())
+                    WindowCompat.setDecorFitsSystemWindows(window, true)
+                    activity.requestedOrientation = previousOrientation
+                    requestRestoredInsets()
+
+                    // Keep a fallback dispatch for devices where the pre-fullscreen and fullscreen
+                    // bounds share the same orientation (for example, tablet or freeform windows).
+                    decorView.post { requestRestoredInsets() }
+                }.onFailure {
+                    decorView.removeOnLayoutChangeListener(insetRecoveryListener)
                 }
             }
         } else {
