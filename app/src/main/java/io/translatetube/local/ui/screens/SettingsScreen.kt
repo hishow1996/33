@@ -1824,9 +1824,8 @@ private fun ModelRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    if (state.totalMB > 0L) {
+                    if (state.indeterminate) {
                         CircularProgressIndicator(
-                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
                             modifier = Modifier.size(36.dp),
                             color = BrandBright,
                             trackColor = Color(0xFFE5EAF0),
@@ -1834,31 +1833,27 @@ private fun ModelRow(
                         )
                     } else {
                         CircularProgressIndicator(
+                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
                             modifier = Modifier.size(36.dp),
                             color = BrandBright,
                             trackColor = Color(0xFFE5EAF0),
                             strokeWidth = 3.dp,
                         )
                     }
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            if (state.totalBytes > 0L) {
-                                "下载中 ${state.progress}% · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
-                            } else {
-                                "下载中 · 已下载 ${formatExactModelMB(state.downloadedBytes)}"
-                            },
-                            color = BrandBright,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        if (!compactStatus) {
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                state.stageMessage ?: "下载完成后自动安装",
-                                color = SubText,
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
+                    val taskLabel = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在下载模型"
+                    val detail = when {
+                        state.totalBytes > 0L ->
+                            "$taskLabel · ${state.progress.coerceIn(0, 99)}% · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
+                        state.downloadedBytes > 0L ->
+                            "$taskLabel · 已下载 ${formatExactModelMB(state.downloadedBytes)}"
+                        else -> taskLabel
                     }
+                    Text(
+                        detail,
+                        color = BrandBright,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
             state.status == io.translatetube.local.data.ModelStatus.EXTRACTING -> {
@@ -1867,32 +1862,29 @@ private fun ModelRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    CircularProgressIndicator(
-                        progress = { (state.progress / 100f).coerceIn(0f, 1f) },
-                        modifier = Modifier.size(36.dp),
-                        color = BrandBright,
-                        trackColor = Color(0xFFE5EAF0),
-                        strokeWidth = 3.dp,
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            if (state.progress >= 95) {
-                                state.stageMessage ?: "正在检查模型…"
-                            } else {
-                                "解压安装 ${state.progress.coerceIn(0, 94)}%"
-                            },
+                    if (state.indeterminate) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(36.dp),
                             color = BrandBright,
-                            style = MaterialTheme.typography.bodySmall,
+                            trackColor = Color(0xFFE5EAF0),
+                            strokeWidth = 3.dp,
                         )
-                        if (!compactStatus) {
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                state.stageMessage ?: "正在安装模型…",
-                                color = SubText,
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
+                    } else {
+                        CircularProgressIndicator(
+                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier.size(36.dp),
+                            color = BrandBright,
+                            trackColor = Color(0xFFE5EAF0),
+                            strokeWidth = 3.dp,
+                        )
                     }
+                    val taskLabel = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在处理模型"
+                    Text(
+                        if (state.indeterminate) taskLabel else "$taskLabel · ${state.progress.coerceIn(0, 99)}%",
+                        color = BrandBright,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
             state.status == io.translatetube.local.data.ModelStatus.FAILED -> {

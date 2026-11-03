@@ -26,6 +26,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.FilterInputStream
 
 /** 模型种类：TTS=配音（Kokoro）、ASR=转写（Whisper）——完全独立，可分别下载 */
 enum class ModelKind { TTS, ASR }
@@ -34,7 +35,7 @@ enum class ModelStatus { NOT_DOWNLOADED, DOWNLOADING, EXTRACTING, READY, FAILED 
 
 data class ModelState(
     val status: ModelStatus = ModelStatus.NOT_DOWNLOADED,
-    val progress: Int = 0,          // 0-100（下载阶段）
+    val progress: Int = 0,          // 0-100（当前可量化阶段）
     val downloadedMB: Long = 0,
     val totalMB: Long = 0,
     /** Exact byte counts from the active HTTP response; zero means the source has not reported them. */
@@ -42,7 +43,27 @@ data class ModelState(
     val totalBytes: Long = 0L,
     val error: String? = null,
     val stageMessage: String? = null,
+    /** True when the active stage has no trustworthy percentage to report. */
+    val indeterminate: Boolean = false,
 )
+
+/** Counts compressed archive bytes consumed by the decoder instead of estimated expanded bytes. */
+private class CountingInputStream(input: java.io.InputStream) : FilterInputStream(input) {
+    var bytesRead: Long = 0L
+        private set
+
+    override fun read(): Int {
+        val value = super.read()
+        if (value >= 0) bytesRead++
+        return value
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        val count = super.read(buffer, offset, length)
+        if (count > 0) bytesRead += count
+        return count
+    }
+}
 
 /** 模型文件就绪判定与路径（engine 加载的单一事实来源） */
 object ModelFiles {
@@ -872,7 +893,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 "安装目录可用空间 MB" to ((destDir.parentFile ?: ctx.filesDir).usableSpace / (1024L * 1024L)).toString(),
             ),
         )
-        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0)
+        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0, indeterminate = true)
         val parentDir = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         // Prefer live source metadata for storage preflight. These constants are used only
         // as a safety fallback if the source does not expose its exact Content-Length.
@@ -943,7 +964,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             val attemptLabel = sourceAttempts.indexOf(sourceIndex to url) + 1
             state.value = ModelState(
                 status = if (reuseExistingPackage) ModelStatus.EXTRACTING else ModelStatus.DOWNLOADING,
-                progress = if (reuseExistingPackage) 99 else 0,
+                progress = 0,
+                indeterminate = true,
                 downloadedMB = existingPartBytes / 1_048_576L,
                 totalMB = if (reuseExistingPackage) (pkg.length() + 1_048_575L) / 1_048_576L else 0L,
                 downloadedBytes = existingPartBytes,
@@ -1004,6 +1026,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                 downloadedBytes = got,
                                 totalBytes = total.coerceAtLeast(0L),
                                 stageMessage = "正在下载模型包（支持断点续传）…",
+                                indeterminate = total <= 0L,
                             )
                         },
                     )
@@ -1012,11 +1035,15 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
                 }
                 awaitDownloadsResumed()
-                state.value = state.value.copy(progress = 99, stageMessage = "正在校验模型压缩包…")
-                // Verify the TTS and SenseVoice archives against official release SHA-256 digests.
-                // The current Whisper archive does not publish an asset digest.
-                // TTS/SenseVoice checksums were verified by the resumable downloader.
+                // Whisper does not publish an archive digest, so do not show a fake checksum stage.
+                // TTS and SenseVoice publish verified digests and expose the real check separately.
                 if (expectedArchiveSha256 != null) {
+                    state.value = state.value.copy(
+                        status = ModelStatus.EXTRACTING,
+                        progress = 0,
+                        indeterminate = true,
+                        stageMessage = "正在校验模型压缩包…",
+                    )
                     val actual = downloadedArchiveSha256
                         ?: throw java.io.IOException("模型压缩包未能完成 SHA-256 校验")
                     if (!actual.equals(expectedArchiveSha256, ignoreCase = true)) {
@@ -1030,7 +1057,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 state.value = state.value.copy(
                     status = ModelStatus.EXTRACTING,
                     progress = 0,
-                    stageMessage = "正在解压并安装模型…",
+                    indeterminate = false,
+                    stageMessage = "正在解压模型…",
                 )
                 val extractionStartedAtMs = android.os.SystemClock.elapsedRealtime()
                 val extractedModelBytes = withContext(Dispatchers.IO) {
@@ -1041,30 +1069,27 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         pkg = pkg,
                         destDir = destDir,
                         checkActive = { awaitDownloadsResumedBlocking(extractionJob) },
-                        onProgress = { extractedBytes ->
+                        onProgress = { extractedBytes, archiveBytesRead, archiveTotalBytes ->
                             val handledMB = extractedBytes / (1024L * 1024L)
-                            val expectedExtractedBytes = (
-                                when {
-                                    kind == ModelKind.TTS -> 207L
-                                    ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) -> 228L
-                                    else -> 160L
-                                }
-                            ) * ModelStoragePreflightPolicy.MIB
-                            // Reserve the final 5% for validation and atomic publication. The
-                            // expanded archive can differ from its estimate; do not let the
-                            // estimate leave extraction visually stuck at 99%.
-                            val extractionProgress = (
-                                extractedBytes * 100L / expectedExtractedBytes
-                            ).toInt().coerceIn(0, 94)
+                            // Follow actual compressed bytes consumed by the decoder. The old
+                            // fixed expanded-size estimate capped Whisper at 94%.
+                            val extractionProgress = if (archiveTotalBytes > 0L) {
+                                (archiveBytesRead.toDouble() * 100.0 / archiveTotalBytes.toDouble())
+                                    .toInt().coerceIn(0, 99)
+                            } else {
+                                0
+                            }
                             state.value = state.value.copy(
                                 progress = extractionProgress,
-                                stageMessage = "正在解压并安装模型（已处理 ${handledMB} MB）",
+                                indeterminate = false,
+                                stageMessage = "正在解压模型（已处理 ${handledMB} MB）",
                             )
                         },
-                        onStage = { message, progress ->
+                        onStage = { message, _ ->
                             state.value = state.value.copy(
                                 status = ModelStatus.EXTRACTING,
-                                progress = progress,
+                                progress = 0,
+                                indeterminate = true,
                                 stageMessage = message,
                             )
                         },
@@ -1084,6 +1109,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     // VAD is its own download stage; expose progress instead of leaving the UI
                     // stuck on "installing" while a network request is running.
                     val vad = File(ModelFiles.asrDir(ctx), "silero_vad.onnx")
+                    val vadStageStartedAtMs = android.os.SystemClock.elapsedRealtime()
+                    state.value = state.value.copy(
+                        status = ModelStatus.EXTRACTING,
+                        progress = 0,
+                        indeterminate = true,
+                        stageMessage = "正在检查语音检测模型…",
+                    )
                     if (!ModelFiles.isValidVadModel(vad)) {
                         val vadUrls = listOf(
                             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
@@ -1094,6 +1126,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                 status = ModelStatus.DOWNLOADING,
                                 progress = 0,
                                 totalMB = 1,
+                                indeterminate = false,
                                 stageMessage = if (ResumableModelArchiveDownloader.partFileFor(vad, url).length() > 0L) "正在续传语音检测模型…" else if (index == 0) "正在下载语音检测模型…" else "正在切换语音检测模型下载源…",
                             )
                             try {
@@ -1110,9 +1143,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                             totalMB = if (total > 0L) ((total + 1_048_575L) / 1_048_576L) else 1L,
                                             downloadedBytes = got,
                                             totalBytes = total.coerceAtLeast(0L),
+                                            indeterminate = false,
                                             stageMessage = "正在下载语音检测模型…",
                                         )
                                     },
+                                )
+                                state.value = state.value.copy(
+                                    status = ModelStatus.EXTRACTING,
+                                    progress = 0,
+                                    indeterminate = true,
+                                    stageMessage = "正在校验语音检测模型…",
                                 )
                                 if (ModelFiles.isValidVadModel(vad)) break
                             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1143,10 +1183,19 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         )
                         return
                     }
+                    logModelInfo(
+                        "语音检测 VAD 附属模型检查与准备完成",
+                        modelKindDetails(kind) + mapOf(
+                            "VAD 文件" to vad.name,
+                            "VAD 完整性" to ModelFiles.isValidVadModel(vad).toString(),
+                            "VAD 阶段耗时 ms" to (android.os.SystemClock.elapsedRealtime() - vadStageStartedAtMs).coerceAtLeast(0L).toString(),
+                        ),
+                    )
                 }
                 state.value = state.value.copy(
                     status = ModelStatus.EXTRACTING,
-                    progress = 99,
+                    progress = 0,
+                    indeterminate = true,
                     stageMessage = "正在确认模型可用性…",
                 )
                 val validationStartedAtMs = android.os.SystemClock.elapsedRealtime()
@@ -1164,6 +1213,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     progress = 100,
                     stageMessage = null,
                     error = null,
+                    indeterminate = false,
                 )
                 Log.i("ModelDL", "$kind 就绪")
                 logModelInfo(
@@ -1188,7 +1238,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             } catch (e: kotlinx.coroutines.CancellationException) {
                 return
             } catch (e: Exception) {
-                if (reuseExistingPackage || state.value.status == ModelStatus.EXTRACTING) pkg.delete()
+                val failedStage = state.value.stageMessage.orEmpty()
+                if (state.value.status == ModelStatus.EXTRACTING && !failedStage.contains("语音检测")) {
+                    pkg.delete()
+                }
                 lastError = e.message ?: e.javaClass.simpleName
                 if (sourceIndex == 0) {
                     primarySourceWasSlow = e is SlowDownloadSourceException
@@ -1249,6 +1302,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 status = ModelStatus.DOWNLOADING,
                 progress = 0,
                 totalMB = 1,
+                indeterminate = false,
                 stageMessage = if (ResumableModelArchiveDownloader.partFileFor(vad, url).length() > 0L) "正在续传语音检测模型…" else if (index == 0) "正在补下载语音检测模型…" else "正在切换语音检测模型下载源…",
             )
             try {
@@ -1262,9 +1316,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             progress = if (expected > 0L) (got * 100L / expected).toInt().coerceIn(0, 99) else 0,
                             downloadedMB = got / (1024L * 1024L),
                             totalMB = 1,
+                            downloadedBytes = got,
+                            totalBytes = total.takeIf { it > 0L } ?: expected,
+                            indeterminate = false,
                             stageMessage = "正在下载语音检测模型…",
                         )
                     },
+                )
+                state.value = state.value.copy(
+                    status = ModelStatus.EXTRACTING,
+                    progress = 0,
+                    indeterminate = true,
+                    stageMessage = "正在校验语音检测模型…",
                 )
                 if (!ModelFiles.asrReady(ctx)) throw java.io.IOException("VAD 模型校验失败")
                 state.value = ModelState(
@@ -1272,6 +1335,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     progress = 100,
                     downloadedMB = (vad.length() + 1_048_575L) / 1_048_576L,
                     totalMB = 1,
+                    indeterminate = false,
                 )
                 logModelInfo(
                     "VAD 附属模型补下载成功",
@@ -1389,7 +1453,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         pkg: File,
         destDir: File,
         checkActive: () -> Unit = {},
-        onProgress: ((Long) -> Unit)? = null,
+        onProgress: ((extractedBytes: Long, archiveBytesRead: Long, archiveTotalBytes: Long) -> Unit)? = null,
         onStage: ((message: String, progress: Int) -> Unit)? = null,
     ): Long {
         checkActive()
@@ -1451,7 +1515,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val rootPath = staging.canonicalFile.path + File.separator
         val maxExtractedBytes = 1024L * 1024 * 1024
         var extractedBytes = 0L
-        val progressStep = 8L * 1024 * 1024
+        val archiveTotalBytes = pkg.length().coerceAtLeast(1L)
+        val progressStep = (archiveTotalBytes / 100L).coerceAtLeast(1L * 1024L * 1024L)
         var nextProgressAt = progressStep
 
         // Reuse a large extraction buffer for the whole archive; BZip2 reads bits in small
@@ -1461,11 +1526,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         var archiveRootName: String? = null
         var archiveEntryCount = 0
         try {
-            TarArchiveInputStream(
-                BZip2CompressorInputStream(
-                    BufferedInputStream(FileInputStream(pkg), 256 * 1024)
-                )
-            ).use { tar ->
+            val archiveInput = CountingInputStream(
+                BufferedInputStream(FileInputStream(pkg), 256 * 1024),
+            )
+            TarArchiveInputStream(BZip2CompressorInputStream(archiveInput)).use { tar ->
                 while (true) {
                     checkActive()
                     val entry = tar.nextTarEntry ?: break
@@ -1528,15 +1592,24 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                 throw java.io.IOException("解压后的模型超过大小限制")
                             }
                             out.write(extractionBuffer, 0, count)
-                            if (extractedBytes >= nextProgressAt) {
-                                onProgress?.invoke(extractedBytes)
-                                nextProgressAt = (extractedBytes / progressStep + 1L) * progressStep
+                            if (archiveInput.bytesRead >= nextProgressAt) {
+                                onProgress?.invoke(
+                                    extractedBytes,
+                                    archiveInput.bytesRead.coerceAtMost(archiveTotalBytes),
+                                    archiveTotalBytes,
+                                )
+                                nextProgressAt = (archiveInput.bytesRead / progressStep + 1L) * progressStep
                             }
                         }
                         if (fileBytes != entry.size) throw java.io.IOException("模型文件长度校验失败")
                     }
                 }
             }
+            onProgress?.invoke(
+                extractedBytes,
+                archiveInput.bytesRead.coerceAtMost(archiveTotalBytes),
+                archiveTotalBytes,
+            )
 
             checkActive()
             onStage?.invoke("正在校验模型文件…", 95)

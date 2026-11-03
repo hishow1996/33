@@ -133,15 +133,16 @@ class ModelDownloadForegroundService : Service() {
                         indeterminate = true,
                     )
                     ttsActive && tts.status == ModelStatus.DOWNLOADING -> ModelNotificationContent(
-                        title = "正在下载配音模型",
+                        title = "正在准备配音模型",
                         detail = statusText(tts),
-                        progress = tts.progress.coerceIn(0, 99).takeIf { tts.totalMB > 0L },
-                        indeterminate = tts.totalMB <= 0L,
+                        progress = tts.progress.coerceIn(0, 99).takeUnless { tts.indeterminate },
+                        indeterminate = tts.indeterminate,
                     )
                     ttsActive && tts.status == ModelStatus.EXTRACTING -> ModelNotificationContent(
-                        title = "正在安装配音模型",
-                        detail = "解压安装 ${tts.progress.coerceIn(0, 99)}% · ${statusText(tts)}",
-                        progress = tts.progress.coerceIn(0, 99),
+                        title = "正在处理配音模型",
+                        detail = statusText(tts),
+                        progress = tts.progress.coerceIn(0, 99).takeUnless { tts.indeterminate },
+                        indeterminate = tts.indeterminate,
                     )
                     ttsActive -> ModelNotificationContent(
                         title = "正在安装配音模型",
@@ -149,15 +150,16 @@ class ModelDownloadForegroundService : Service() {
                         indeterminate = true,
                     )
                     asrActive && asr.status == ModelStatus.DOWNLOADING -> ModelNotificationContent(
-                        title = "正在下载转写模型",
+                        title = "正在准备转写模型",
                         detail = statusText(asr),
-                        progress = asr.progress.coerceIn(0, 99).takeIf { asr.totalMB > 0L },
-                        indeterminate = asr.totalMB <= 0L,
+                        progress = asr.progress.coerceIn(0, 99).takeUnless { asr.indeterminate },
+                        indeterminate = asr.indeterminate,
                     )
                     asrActive && asr.status == ModelStatus.EXTRACTING -> ModelNotificationContent(
-                        title = "正在安装转写模型",
-                        detail = "解压安装 ${asr.progress.coerceIn(0, 99)}% · ${statusText(asr)}",
-                        progress = asr.progress.coerceIn(0, 99),
+                        title = "正在处理转写模型",
+                        detail = statusText(asr),
+                        progress = asr.progress.coerceIn(0, 99).takeUnless { asr.indeterminate },
+                        indeterminate = asr.indeterminate,
                     )
                     asrActive -> ModelNotificationContent(
                         title = "正在安装转写模型",
@@ -266,16 +268,17 @@ class ModelDownloadForegroundService : Service() {
 
     private fun statusText(state: ModelState): String = when (state.status) {
         ModelStatus.DOWNLOADING -> {
-            if (state.totalMB > 0L) {
-                "下载中 ${state.progress.coerceIn(0, 99)}% · ${state.downloadedMB}/${state.totalMB} MB"
+            val stage = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在下载模型"
+            if (state.totalBytes > 0L) {
+                "$stage · ${state.progress.coerceIn(0, 99)}% · ${state.downloadedMB}/${state.totalMB} MB"
             } else {
-                "正在下载 · 已下载 ${state.downloadedMB} MB（文件总大小未知）"
+                "$stage · 已下载 ${state.downloadedMB} MB"
             }
         }
-        ModelStatus.EXTRACTING -> state.stageMessage
-            ?.takeIf { it.isNotBlank() }
-            ?.removePrefix("正在")
-            ?: "解压并安装中"
+        ModelStatus.EXTRACTING -> {
+            val stage = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在处理模型"
+            if (state.indeterminate) stage else "$stage · ${state.progress.coerceIn(0, 99)}%"
+        }
         ModelStatus.READY -> "已完成"
         ModelStatus.FAILED -> state.error?.take(90) ?: "下载失败"
         ModelStatus.NOT_DOWNLOADED -> "等待中"
