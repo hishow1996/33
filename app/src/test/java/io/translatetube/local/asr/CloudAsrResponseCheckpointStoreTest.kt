@@ -123,6 +123,37 @@ class CloudAsrResponseCheckpointStoreTest {
     }
 
     @Test
+    fun cleanupBoundsCacheAndPreservesTheCurrentResponseFile() {
+        val directory = createTempDir(prefix = "cloud-asr-capacity")
+        try {
+            val now = 20_000_000_000L
+            val files = (0..CloudAsrResponseCheckpointStore.MAX_CACHED_FILES).map { index ->
+                File(directory, "cloud-asr-elevenlabs-cache-$index.bin").apply {
+                    writeBytes(byteArrayOf(index.toByte()))
+                    setLastModified(now - (CloudAsrResponseCheckpointStore.MAX_CACHED_FILES - index).toLong())
+                }
+            }
+            val keep = files.first()
+            val removed = CloudAsrResponseCheckpointStore.cleanupStale(
+                directory = directory,
+                nowMs = now,
+                keepFile = keep,
+            )
+            assertEquals(1, removed)
+            assertTrue(keep.exists())
+            assertFalse(files[1].exists())
+            assertTrue(files.last().exists())
+            assertTrue(
+                directory.listFiles()!!.count {
+                    it.isFile && it.name.startsWith("cloud-asr-") && it.name.endsWith(".bin")
+                } <= CloudAsrResponseCheckpointStore.MAX_CACHED_FILES
+            )
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun audioFingerprintCanBeCancelledBeforeHashCompletes() {
         val (directory, audio) = setup("cloud-asr-cancel")
         try {
