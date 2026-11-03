@@ -2173,7 +2173,7 @@ class PlaybackService : MediaSessionService() {
             var lastProgress = ""
             var lastWriteAtMs = 0L
             ui.collect { state ->
-                if (state.key.isBlank() || state.phase == Phase.IDLE) return@collect
+                if (state.key.isBlank() || state.phase == Phase.IDLE || state.key != videoKey || activePipelineGeneration == 0L) return@collect
                 val phaseChanged = state.key != lastKey || state.phase != lastPhase
                 val progress = state.progress.ifBlank { state.error.orEmpty() }.trim().take(180)
                 val progressChanged = progress != lastProgress
