@@ -5298,10 +5298,11 @@ private fun CurrentSubtitleStrip(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(Color.Black.copy(alpha = 0.46f))
                             } else {
+                                // Keep the inline current-caption area visually continuous
+                                // with the surrounding white subtitle list.
                                 Modifier
                                     .height(50.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFFE8EFFF))
+                                    .background(Color.White)
                             },
                         )
                         .padding(
@@ -7152,11 +7153,6 @@ private fun SubtitleListRow(
             active && it.isNotBlank() && !it.equals(chineseText.trim(), ignoreCase = true)
         }.orEmpty()
     }
-    val rowBackground by animateColorAsState(
-        targetValue = if (active) Color(0xFFF1F5FC) else Color.Transparent,
-        animationSpec = tween(130, easing = FastOutSlowInEasing),
-        label = "subtitleRowBackground_${line.index}",
-    )
     val textColor by animateColorAsState(
         targetValue = if (active) BrandBright else SubText,
         animationSpec = tween(130, easing = FastOutSlowInEasing),
@@ -7166,7 +7162,6 @@ private fun SubtitleListRow(
     Column(
         Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(rowBackground)
             .clickable(
                 enabled = canSeek && line.startMs >= 0L && line.endMs > line.startMs,
             ) { onSeek(line.startMs) }
