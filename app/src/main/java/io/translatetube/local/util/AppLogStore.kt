@@ -1010,8 +1010,8 @@ object AppLogStore {
 
     private fun extractExceptionClass(message: String, details: String): String {
         val source = details + "\n" + message
-        val rootFrame = Regex("""(?m)^\\s*#0\\s+([A-Za-z0-9_.$]+)""").find(source)
-            ?.groupValues?.getOrNull(1)
+        val rootFrame = Regex("""(?m)^\s*#\d+\s+([A-Za-z0-9_.$]+)""")
+            .findAll(source).lastOrNull()?.groupValues?.getOrNull(1)
         val namedException = Regex(
             """(?<![A-Za-z0-9_.$])([A-Za-z0-9_.$]*(?:Exception|Error|Throwable))(?![A-Za-z0-9_.$])""",
         ).find(source)?.groupValues?.getOrNull(1)
@@ -1023,20 +1023,20 @@ object AppLogStore {
         details: String,
     ): String {
         val keyPattern = Regex(
-            """(?i)(diagnostic|operation|correlation|trace|request).*id|翻译诊断\\s*id|操作\\s*id|请求\\s*id""",
+            """(?i)(diagnostic|operation|correlation|trace|request).*id|翻译诊断\s*id|操作\s*id|请求\s*id""",
         )
         val contextValue = diagnosticContext.entries.firstOrNull {
             keyPattern.containsMatchIn(it.key)
         }?.value?.takeIf { it.isNotBlank() }
         val detailValue = Regex(
-            """(?i)(?:翻译诊断\\s*ID|诊断\\s*ID|operation[_ ]?id|correlation[_ ]?id|trace[_ ]?id|request[_ ]?id|请求\\s*ID)\\s*[:=：]\\s*([A-Za-z0-9_.:-]{6,120})""",
+            """(?i)(?:翻译诊断\s*ID|诊断\s*ID|operation[_ ]?id|correlation[_ ]?id|trace[_ ]?id|request[_ ]?id|请求\s*ID)\s*[:=：]\s*([A-Za-z0-9_.:-]{6,120})""",
         ).find(details)?.groupValues?.getOrNull(1)
         return (contextValue ?: detailValue).orEmpty().take(120)
     }
 
     private fun extractHttpStatusCode(message: String, details: String): Int {
         val source = message + "\n" + details
-        return Regex("""(?i)\\bHTTP(?:\\s*状态码)?\\s*[:：=]?\\s*(\\d{3})\\b""")
+        return Regex("""(?i)\bHTTP(?:\s*状态码)?\s*[:：=]?\s*(\d{3})\b""")
             .find(source)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?.takeIf { it in 100..599 } ?: 0
     }
