@@ -3,10 +3,9 @@ package io.translatetube.local.subs
 /**
  * Conservative script-based language hint for imported subtitle files.
  *
- * It intentionally returns "auto" when Latin-script text cannot be distinguished safely. Online
- * Google translation and LLM providers can detect the source language from the text; guessing
- * "English" for every non-Chinese subtitle silently mis-translates Japanese, Korean, and many
- * other imported tracks.
+ * It returns "auto" when Latin-script text cannot be distinguished safely, and also when
+ * Han-only text cannot distinguish Chinese from Japanese written without kana. The playback
+ * pipeline then uses on-device language identification or an explicit source-language selection.
  */
 object SubtitleLanguageDetector {
     private val scriptPatterns = listOf(
@@ -140,12 +139,13 @@ object SubtitleLanguageDetector {
     internal fun isHanDominantAmbiguous(text: String): Boolean {
         val sample = text.take(12_000)
         if (sample.isBlank()) return false
-        val hasKanaOrHangul = sample.any {
-            Character.UnicodeScript.of(it.code) in setOf(
-                Character.UnicodeScript.HIRAGANA,
-                Character.UnicodeScript.KATAKANA,
-                Character.UnicodeScript.HANGUL,
-            )
+        val hasKanaOrHangul = sample.any { char ->
+            char in '\u3040'..'\u30FF' ||
+                char in '\u31F0'..'\u31FF' ||
+                char in '\uFF66'..'\uFF9D' ||
+                char in '\u1100'..'\u11FF' ||
+                char in '\u3130'..'\u318F' ||
+                char in '\uAC00'..'\uD7AF'
         }
         if (hasKanaOrHangul) return false
         val hanCount = sample.count { it in '\u4E00'..'\u9FFF' }
