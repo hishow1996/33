@@ -93,7 +93,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 2_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/v7"))
+        assertTrue(report.contains("report_schema: elephant-app-log/v8"))
         assertTrue(report.contains("最近最多 800 条"))
         assertTrue(report.contains("优先检查的故障事件"))
         assertTrue(report.contains("完整事件时间线（JSONL"))
@@ -125,6 +125,8 @@ class AppLogAiReportTest {
         assertTrue(report.contains("缺失证据="))
         assertTrue(report.contains("diagnosticCoverage"))
         assertTrue(report.contains("aiDiagnosis"))
+        assertTrue(report.contains("recentEventTrailScope"))
+        assertTrue(report.contains("diagnosticContextBudget"))
     }
 
     @Test
@@ -200,7 +202,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v5"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v6"))
         assertTrue(report.contains("failure-2"))
         assertTrue(report.contains("start-1"))
         assertTrue(report.contains("rootCauseMessage"))
@@ -220,6 +222,8 @@ class AppLogAiReportTest {
         assertTrue(report.contains("诊断证据覆盖率"))
         assertTrue(report.contains("diagnosticCoverage"))
         assertTrue(report.contains("aiDiagnosis"))
+        assertTrue(report.contains("recentEventTrailScope"))
+        assertTrue(report.contains("diagnosticContextBudget"))
     }
 
 }
