@@ -752,7 +752,7 @@ object CloudTranscription {
                 }
                 retriesUsed++
                 val waitMs = 750L shl (retriesUsed - 1)
-                onProgress(
+                publishProgress(
                     "$providerName 云端服务暂时异常，${waitMs} 毫秒后自动重试（" +
                         "$retriesUsed/$MAX_CLOUD_SUBMISSION_RETRIES）…"
                 )
