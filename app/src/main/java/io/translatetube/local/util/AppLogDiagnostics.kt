@@ -354,6 +354,36 @@ object AppLogDiagnostics {
             val captureStatus = record.diagnosticContext["异常对象采集状态"]
                 ?.takeIf { it.isNotBlank() }
                 ?: "旧版日志未记录异常对象采集状态"
+            val businessOutcomeOnly = hasAny(
+                "没有确认可直接播放",
+                "未发现可播放",
+                "候选源",
+                "需要有效提取码",
+                "不符合解析器支持条件",
+                "没有返回可枚举条目",
+                "请求完成，但没有",
+                "未启动 yt-dlp",
+                "原生解析失败，回退",
+                "no playable source",
+                "empty result",
+            )
+            if (businessOutcomeOnly) {
+                return result(
+                    "业务状态未达成（未抛出异常）",
+                    if (callSite == "未记录日志调用位置") "业务结果已记录，判定位置缺失" else "业务结果与判定位置已记录",
+                    "这条记录描述的是业务检查/解析/校验结果未达到目标；没有 Throwable 不等于程序抛出异常。当前证据应从调用位置对应的返回值、判定条件、候选数量和服务端状态判断是登录/权限限制、资源不存在、DRM/格式不支持，还是应用自身遗漏处理。",
+                    listOf(
+                        record.message.take(240),
+                        callSite,
+                        captureStatus,
+                    ),
+                    listOf(
+                        "打开日志调用位置对应的方法，检查导致该业务状态的返回值和 if/else 判定条件，不要为了补堆栈而人为抛异常。",
+                        "记录实际返回状态、候选/条目数量、失败原因枚举、HTTP 状态、请求阶段和耗时；保持 Cookie、令牌和完整签名 URL 脱敏。",
+                        "区分用户需要补充信息、网站限制/DRM、远端资源不可用与应用解析缺陷，不能把所有“未成功”都归因于网络。",
+                    ),
+                )
+            }
             return result(
                 "失败事件缺少异常对象",
                 if (callSite == "未记录日志调用位置") "调用位置和异常根因均缺失" else "日志调用位置已记录，根因待补充",
