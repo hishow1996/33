@@ -28,8 +28,6 @@ object AppLogTitleResolver {
                 "通知崩溃"
             normalizedTag.contains("dubbingmixer") ->
                 "配音混流"
-            normalizedTag.contains("dubbingfallback") ->
-                "配音回退"
             normalizedTag.contains("dubbingtimeline") ||
                 (normalizedTag.contains("dubbing") && hasAny("时间轴", "时间槽", "同步", "超出时间")) ->
                 "配音时间轴"
@@ -161,18 +159,6 @@ object AppLogTitleResolver {
 
     private fun summarizeKnownEvent(tag: String, message: String): String? {
         val normalizedTag = tag.lowercase(Locale.ROOT)
-        if (normalizedTag.contains("dubbingfallback")) {
-            val numberedFallback = Regex(
-                "播放第\\s*(\\d+)\\s*/\\s*(\\d+)\\s*句时未检测到可播放中文配音.*已恢复原声",
-            ).find(message)
-            if (numberedFallback != null) {
-                return "第 " + numberedFallback.groupValues[1] + "/" +
-                    numberedFallback.groupValues[2] + " 句无可用配音，已恢复原声"
-            }
-            if (message.contains("未检测到可播放中文配音") && message.contains("恢复原声")) {
-                return "未检测到可用中文配音，已恢复原声"
-            }
-        }
         if ((normalizedTag.contains("webaudio") || normalizedTag.contains("videosource")) &&
             message.contains("检测到网页独立音轨")
         ) {
