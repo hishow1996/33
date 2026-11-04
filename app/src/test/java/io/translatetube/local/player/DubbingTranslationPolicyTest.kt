@@ -20,7 +20,8 @@ class DubbingTranslationPolicyTest {
 
     @Test
     fun preservesLiteralChineseSubtitlesThatResembleProgressLabels() {
-        assertEquals("正在翻译", DubbingTranslationPolicy.usableText("正在翻译", "正在翻译"))
+        assertEquals("正在翻译", DubbingTranslationPolicy.usableText("正在翻译", "正在翻译", "zh"))
+        assertNull(DubbingTranslationPolicy.usableText("正在翻译", "正在翻译", "auto"))
     }
 
     @Test
@@ -64,8 +65,17 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
-    fun autoLanguageStillUsesPerCueDetectionForImportedBilingualSubtitle() {
-        assertEquals("正在翻译", DubbingTranslationPolicy.usableText("正在翻译", null, "auto"))
+    fun unknownHanOnlySourceRequiresLanguageConfirmationOrARealTranslation() {
+        val result = DubbingTranslationPolicy.resolveText("東京", "東京", "auto")
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().contains("无法确认是中文还是日语"))
+
+        val missing = DubbingTranslationPolicy.resolveText("你好", null, "auto")
+        assertNull(missing.text)
+        assertTrue(missing.reason.orEmpty().contains("确认源语言"))
+
+        assertEquals("你好", DubbingTranslationPolicy.usableText("你好", null, "zh"))
+        assertEquals("您好", DubbingTranslationPolicy.usableText("你好", "您好", "auto"))
     }
 
     @Test
