@@ -688,9 +688,8 @@ class DubbingEngine(
                         val blankTranslation = cue.zh.isNullOrBlank()
                         when {
                             blankTranslation -> {
-                                // A cue explicitly assigned to original audio has no Chinese text
-                                // to synthesize. Remove any stale PCM and resolve it as a silent
-                                // dubbing cue; never enqueue an impossible empty-text TTS request.
+                                // A blank cue has no speech content. Remove stale PCM and keep
+                                // the timeline marker without sending an empty-text TTS request.
                                 if (cacheHasAudio == true) {
                                     deleteCacheIfUnchanged(file, cacheInspection.stamp)
                                 }
@@ -1670,7 +1669,7 @@ class DubbingEngine(
             } catch (memoryError: OutOfMemoryError) {
                 // An unhandled OOM in this service-scope worker would terminate the whole app.
                 // Stop this engine's queue, release cached PCM references and tell the service to
-                // retire the native TTS runtime; the source video can continue on its original audio.
+                // retire the native TTS runtime; the playback service reports the error and pauses.
                 if (!released) {
                     val memoryCacheEntryCountBeforeOom = synchronized(mem) { mem.size }
                     val pendingCountBeforeOom = pending.totalSize()
@@ -2378,7 +2377,7 @@ class DubbingEngine(
             // A newer seek/session owns the player now; do not delete or requeue a cache on its behalf.
             if (!isReadCurrent()) return null
             // Cache files can disappear after attach() validates them. Treat this as recoverable
-            // pending work, not a permanent silent cue; keep source audio audible while regenerating.
+            // pending work and queue regeneration instead of marking the cue permanently silent.
             deleteCacheIfUnchanged(f, cacheStamp)
             markCuePending(playIdx)
             queueSynthesisRetry(playIdx)
