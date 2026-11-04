@@ -6257,6 +6257,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     }
     val latestFullscreenCaptionCenterX by rememberUpdatedState(fullscreenCaptionCenterX)
     val latestFullscreenCaptionCenterY by rememberUpdatedState(fullscreenCaptionCenterY)
+    val latestFullscreenCaptionSize by rememberUpdatedState(fullscreenCaptionSize)
     // Gesture handlers read current UI state without restarting an active pointer coroutine.
     val latestControlsVisible by rememberUpdatedState(controlsVisible)
     val latestQualityExpanded by rememberUpdatedState(qualityExpanded)
@@ -6447,9 +6448,22 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     } else 0f
                     val startsInsideRightControls = controlsAreVisible &&
                         down.position.x > size.width - rightControlSafeEdge
-                    val startsInsideFullscreenCaption = captionIsVisible && isFullscreen &&
-                        abs(down.position.x - size.width * latestFullscreenCaptionCenterX) <= size.width * 0.43f &&
-                        abs(down.position.y - size.height * latestFullscreenCaptionCenterY) <= with(this) { 64.dp.toPx() }
+                    val captionSize = latestFullscreenCaptionSize
+                    val captionTouchPadding = with(this) { 8.dp.toPx() }
+                    val startsInsideFullscreenCaption = captionIsVisible && isFullscreen && (
+                        if (captionSize.width > 0 && captionSize.height > 0) {
+                            abs(down.position.x - size.width * latestFullscreenCaptionCenterX) <=
+                                captionSize.width / 2f + captionTouchPadding &&
+                                abs(down.position.y - size.height * latestFullscreenCaptionCenterY) <=
+                                captionSize.height / 2f + captionTouchPadding
+                        } else {
+                            // Before the first layout measurement, keep a conservative exclusion
+                            // so a touch on the caption cannot be claimed as a volume swipe.
+                            abs(down.position.x - size.width * latestFullscreenCaptionCenterX) <= size.width * 0.43f &&
+                                abs(down.position.y - size.height * latestFullscreenCaptionCenterY) <=
+                                    with(this) { 64.dp.toPx() }
+                        }
+                    )
                     if (
                         down.position.x < size.width * 0.62f ||
                         startsInsideRightControls ||
@@ -7120,6 +7134,31 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             .onSizeChanged { measuredSize ->
                                 if (measuredSize != fullscreenCaptionSize) {
                                     fullscreenCaptionSize = measuredSize
+
+                                    // Keep the visible caption center stable when a new subtitle
+                                    // changes its measured size. Clamp only when the new bounds
+                                    // would cross the screen edge.
+                                    val halfWidthFraction = (
+                                        measuredSize.width / (2f * containerWidthPx)
+                                    ).coerceIn(0f, 0.5f)
+                                    val halfHeightFraction = (
+                                        (measuredSize.height / 2f + verticalSafePx) /
+                                            containerHeightPx
+                                    ).coerceIn(0f, 0.5f)
+                                    val clampedCenterX = fullscreenCaptionCenterX.coerceIn(
+                                        halfWidthFraction,
+                                        1f - halfWidthFraction,
+                                    )
+                                    val clampedCenterY = fullscreenCaptionCenterY.coerceIn(
+                                        halfHeightFraction,
+                                        1f - halfHeightFraction,
+                                    )
+                                    if (clampedCenterX != fullscreenCaptionCenterX) {
+                                        fullscreenCaptionCenterX = clampedCenterX
+                                    }
+                                    if (clampedCenterY != fullscreenCaptionCenterY) {
+                                        fullscreenCaptionCenterY = clampedCenterY
+                                    }
                                 }
                             }
                             .pointerInput(state.key) {
