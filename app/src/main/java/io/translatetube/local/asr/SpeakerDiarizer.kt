@@ -516,6 +516,23 @@ object SpeakerDiarizer {
         overlapMs: Long = DEFAULT_OVERLAP_MS,
         onProgress: (SpeakerRecognitionProgressUpdate) -> Unit = {},
     ): List<Segment> = diarizeMutex.withLock {
+        var currentStage = "校验 PCM 音频输入"
+        var latestProgress = "等待开始"
+        var currentChunkIndex = 0L
+        var completedChunks = 0L
+        var totalChunkCount = 0L
+        var completedSegmentCount = 0
+        var modelThreads = 0
+        var modelInitializationMs: Long? = null
+        var modelFiles: ModelFiles? = null
+        var chunkSampleCount = 0L
+        var overlapSampleCount = 0L
+        fun publishProgress(update: SpeakerRecognitionProgressUpdate) {
+            currentStage = update.stage.name
+            latestProgress = update.message.take(240)
+            onProgress(update)
+        }
+        try {
         require(pcmFile.sampleRate == 16_000) {
             "人物识别需要 16 kHz PCM，当前采样率为 " + pcmFile.sampleRate + " Hz"
         }
@@ -538,23 +555,32 @@ object SpeakerDiarizer {
         } else {
             (pcmFile.sampleCount - chunkSamples + strideSamples - 1L) / strideSamples + 1L
         }
+        chunkSampleCount = chunkSamples
+        overlapSampleCount = overlapSamples
+        totalChunkCount = totalChunks
         val ownerJob = currentCoroutineContext()[Job]
         val checkActive: () -> Unit = { ownerJob?.ensureActive() }
 
         withContext(Dispatchers.IO) {
-            val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
-            onProgress(
+            currentStage = "准备人物识别模型文件"
+            val models = prepareModelFiles(context, ownerJob, checkActive, ::publishProgress)
+            modelFiles = models
+            publishProgress(
                 SpeakerRecognitionProgressUpdate(
                     stage = SpeakerRecognitionStage.INITIALIZING_MODEL,
                     message = "正在初始化人物识别模型…",
                 ),
             )
             val numThreads = speakerThreads(context)
+            modelThreads = numThreads
             val playbackLoadActive = DevicePerformanceManager.isPlaybackLoadActive()
             val initStartedNs = System.nanoTime()
+            currentStage = "初始化人物识别 ONNX 模型会话"
             val session = createNativeSession(models, numThreads, checkActive)
             val initMs = (System.nanoTime() - initStartedNs) / 1_000_000L
+            modelInitializationMs = initMs
             val inferenceStartedNs = System.nanoTime()
+            currentStage = "按 PCM 分段执行人物推理"
             try {
                 val merged = ArrayList<SpeakerChunkIdentityPolicy.Segment>()
                 var previousWindowSegments = emptyList<SpeakerChunkIdentityPolicy.Segment>()
@@ -573,7 +599,9 @@ object SpeakerDiarizer {
                         val sampleCount = (chunkEndSample - chunkStartSample).toInt()
                         if (sampleCount <= 0) break
                         chunkIndex++
-                        onProgress(
+                        currentChunkIndex = chunkIndex
+                        currentStage = "人物推理第 $chunkIndex/$totalChunks 段"
+                        publishProgress(
                             SpeakerRecognitionProgressPolicy.analysisChunkStarted(
                                 currentChunk = chunkIndex,
                                 totalChunks = totalChunks,
@@ -600,7 +628,7 @@ object SpeakerDiarizer {
                                 // JNI may invoke this once per voice segment. Publish only when
                                 // the visible percentage changes, keeping UI and disk writes bounded.
                                 if (percent != null && percent != lastInferenceProgressPercent) {
-                                    onProgress(update)
+                                    publishProgress(update)
                                     lastInferenceProgressPercent = percent
                                 }
                             }
@@ -647,7 +675,10 @@ object SpeakerDiarizer {
                         }
 
                         previousChunkEndSample = chunkEndSample
-                        onProgress(
+                        completedChunks = chunkIndex
+                        completedSegmentCount = merged.size
+                        currentStage = "完成第 $chunkIndex/$totalChunks 段人物推理"
+                        publishProgress(
                             SpeakerRecognitionProgressPolicy.analysisChunkCompleted(
                                 completedChunks = chunkIndex,
                                 totalChunks = totalChunks,
@@ -693,6 +724,48 @@ object SpeakerDiarizer {
             } finally {
                 session.close()
             }
+        }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    context.applicationContext,
+                    "SpeakerDiarizer",
+                    "人物识别 PCM 文件分段处理失败",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "诊断事件类型" to "SPEAKER_DIARIZATION_FAILURE",
+                        "失败子阶段" to currentStage,
+                        "最近人物识别进度" to latestProgress,
+                        "人物识别模型版本" to MODEL_VERSION,
+                        "PCM 文件是否存在" to pcmFile.file.isFile.toString(),
+                        "PCM 文件字节数" to pcmFile.file.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不可用" },
+                        "PCM 采样率 Hz" to pcmFile.sampleRate.toString(),
+                        "PCM 声道数" to "1",
+                        "PCM 样本数" to pcmFile.sampleCount.toString(),
+                        "PCM 音频时长 ms" to pcmFile.durationMs.toString(),
+                        "分段窗口时长 ms" to chunkDurationMs.toString(),
+                        "分段重叠时长 ms" to overlapMs.toString(),
+                        "每段 PCM 样本数" to chunkSampleCount.toString(),
+                        "分段重叠样本数" to overlapSampleCount.toString(),
+                        "计划总分段数" to totalChunkCount.toString(),
+                        "当前分段序号" to currentChunkIndex.toString(),
+                        "已完成分段数" to completedChunks.toString(),
+                        "已识别说话片段数" to completedSegmentCount.toString(),
+                        "模型线程数" to modelThreads.takeIf { it > 0 }?.toString().orEmpty().ifBlank { "模型初始化前失败" },
+                        "模型初始化耗时 ms" to modelInitializationMs?.toString().orEmpty().ifBlank { "尚未完成" },
+                        "分离模型文件是否存在" to (modelFiles?.segmentation?.isFile?.toString() ?: "未准备"),
+                        "分离模型文件字节数" to modelFiles?.segmentation?.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "未准备" },
+                        "说话人嵌入模型文件是否存在" to (modelFiles?.embedding?.isFile?.toString() ?: "未准备"),
+                        "说话人嵌入模型文件字节数" to modelFiles?.embedding?.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "未准备" },
+                        "视频播放负载是否活跃" to DevicePerformanceManager.isPlaybackLoadActive().toString(),
+                    ),
+                )
+            }.onFailure { loggingFailure ->
+                Log.w("SpeakerDiarizer", "Could not persist PCM speaker diarization failure", loggingFailure)
+            }
+            throw failure
         }
     }
 
