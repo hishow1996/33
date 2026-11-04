@@ -697,6 +697,14 @@ class SystemTts(
         val tmp = java.io.File.createTempFile("tts_", ".wav", contextCacheDir())
         val utteranceId = "system-tts-" + System.nanoTime()
         val completed = java.util.concurrent.CountDownLatch(1)
+        var failureStage = "创建系统 TTS 合成请求"
+        var selectedVoiceName = defaultChineseVoice?.name.orEmpty().ifBlank { "未知" }
+        var selectedSpeedForLog = Float.NaN
+        var callbackFailureForLog: String? = null
+        var decodedSampleRateForLog = 0
+        var decodedSampleCountForLog = 0
+        var normalizedSampleRateForLog = 0
+        var normalizedSampleCountForLog = 0
         try {
             val tts = synchronized(lifecycleLock) {
                 if (closed) throw IllegalStateException("系统 TTS 实例已经关闭")
@@ -714,6 +722,8 @@ class SystemTts(
             val voices = chineseVoiceCatalog
             val voiceIndex = SystemTtsSpeakerVoicePolicy.indexForSpeaker(speakerId, voices.size)
             val targetVoice = voices.getOrNull(voiceIndex) ?: defaultVoice
+            selectedVoiceName = targetVoice.name
+            failureStage = "切换系统中文音色"
             if (tts.voice?.name != targetVoice.name) {
                 val voiceResult = tts.setVoice(targetVoice)
                 if (voiceResult != TextToSpeech.SUCCESS) {
@@ -721,9 +731,12 @@ class SystemTts(
                 }
             }
             val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
+            selectedSpeedForLog = safeSpeed
+            failureStage = "设置系统 TTS 语速"
             if (tts.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 无法设置配音语速（" + safeSpeed + "×）")
             }
+            failureStage = "提交系统 TTS WAV 合成请求"
             val result = tts.synthesizeToFile(normalizedText, android.os.Bundle(), tmp, utteranceId)
             if (result != TextToSpeech.SUCCESS) {
                 android.util.Log.e(
@@ -733,6 +746,7 @@ class SystemTts(
                 throw IllegalStateException("系统 TTS 拒绝了本次合成（状态码 $result）")
             }
             val timeoutMs = SystemTtsTimeoutPolicy.timeoutMs(normalizedText, safeSpeed)
+            failureStage = "等待系统 TTS 合成回调"
             val timeoutDeadlineNanos = System.nanoTime() +
                 java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs)
             try {
@@ -770,21 +784,28 @@ class SystemTts(
             checkActive()
             if (closed) throw IllegalStateException("系统 TTS 已关闭，本次合成已取消")
             activeFailure?.let { failure ->
+                callbackFailureForLog = failure
                 throw IllegalStateException(failure)
             }
+            failureStage = "解码系统 TTS 输出 WAV"
             val checkTtsActive = {
                 checkActive()
                 if (closed) throw java.util.concurrent.CancellationException("系统 TTS 已关闭，本次合成已取消")
             }
             val audio = SystemTtsWavDecoder.decode(tmp, checkTtsActive)
+            decodedSampleRateForLog = audio.sampleRate
+            decodedSampleCountForLog = audio.samples.size
             checkTtsActive()
             if (audio.samples.isEmpty()) {
                 throw IllegalStateException("系统 TTS 已返回，但生成的 WAV 没有可播放音频")
             }
+            failureStage = "标准化系统 TTS PCM 输出"
             val normalized = SystemTtsOutputAudioPolicy.prepareForPlayback(
                 audio,
                 checkActive = checkTtsActive,
             )
+            normalizedSampleRateForLog = normalized.sampleRate
+            normalizedSampleCountForLog = normalized.samples.size
             val mediaVolume = runCatching {
                 (appCtx.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager)
                     ?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
@@ -808,11 +829,45 @@ class SystemTts(
             )
             throw cancelled
         } catch (error: Exception) {
+            val elapsedMs = if (activeSynthesisStartedAtNanos > 0L) {
+                (System.nanoTime() - activeSynthesisStartedAtNanos).coerceAtLeast(0L) / 1_000_000L
+            } else 0L
             android.util.Log.e(
                 "SystemTts",
-                "WAV synthesis failed: chars=${normalizedText.length} detail=${error.message ?: error.javaClass.simpleName}",
+                "WAV synthesis failed: stage=$failureStage chars=${normalizedText.length} detail=${error.message ?: error.javaClass.simpleName}",
                 error,
             )
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    appCtx,
+                    "SystemTTS",
+                    "系统 TTS 配音合成失败：$failureStage",
+                    error,
+                    diagnosticContext = mapOf(
+                        "失败阶段" to failureStage,
+                        "系统 TTS 引擎包名" to runCatching { ttsRef.get()?.defaultEngine }.getOrNull().orEmpty().ifBlank { "未知" },
+                        "播放模式" to playbackMode.name,
+                        "人物音色索引" to speakerId.toString(),
+                        "实际选用的系统音色" to selectedVoiceName,
+                        "当前语速" to selectedSpeedForLog.toString(),
+                        "当前文本字符数" to normalizedText.length.toString(),
+                        "当前字幕正文是否写入日志" to "否",
+                        "WAV 临时文件是否存在" to tmp.exists().toString(),
+                        "WAV 临时文件大小 bytes" to tmp.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                        "系统 TTS 回调失败原因" to callbackFailureForLog.orEmpty().ifBlank { "无" },
+                        "WAV 解码采样率 Hz" to decodedSampleRateForLog.toString(),
+                        "WAV 解码 PCM 样本数" to decodedSampleCountForLog.toString(),
+                        "标准化后采样率 Hz" to normalizedSampleRateForLog.toString(),
+                        "标准化后 PCM 样本数" to normalizedSampleCountForLog.toString(),
+                        "系统 TTS 超时策略 ms" to if (selectedSpeedForLog.isFinite()) {
+                            SystemTtsTimeoutPolicy.timeoutMs(normalizedText, selectedSpeedForLog).toString()
+                        } else "未计算",
+                        "当前合成耗时 ms" to elapsedMs.toString(),
+                        "异常类型" to error.javaClass.name,
+                        "异常摘要" to (error.message ?: "无异常消息").take(360),
+                    ),
+                )
+            }
             throw error
         } finally {
             synchronized(lifecycleLock) {
