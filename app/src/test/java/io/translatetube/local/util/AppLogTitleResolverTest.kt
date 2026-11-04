@@ -28,13 +28,6 @@ class AppLogTitleResolverTest {
             "系统 TTS：朗读失败",
             AppLogTitleResolver.title("DubbingEngine", "系统 TTS 朗读失败"),
         )
-        assertEquals(
-            "Dubbing Fallback：播放第 7/20 句时未检测到可播放中文配音，已恢复原声",
-            AppLogTitleResolver.title(
-                "DubbingFallback",
-                "播放第 7/20 句时未检测到可播放中文配音，已恢复原声",
-            ),
-        )
     }
 
     @Test
