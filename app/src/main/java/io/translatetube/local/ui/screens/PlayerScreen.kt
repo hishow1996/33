@@ -6192,6 +6192,17 @@ private fun FullscreenQuickToggle(
     }
 }
 
+private data class FullscreenCaptionDragMetrics(
+    val containerWidthPx: Float,
+    val containerHeightPx: Float,
+    val captionWidthPx: Float,
+    val captionHeightPx: Float,
+    val minLeftPx: Float,
+    val maxLeftPx: Float,
+    val minTopPx: Float,
+    val maxTopPx: Float,
+)
+
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     state: PlayerUiState,
@@ -7076,9 +7087,21 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val leftPx = (
                         containerWidthPx * fullscreenCaptionCenterX - captionWidthPx / 2f
                     ).coerceIn(minLeftPx, maxLeftPx)
-                    val topPx = (
-                        containerHeightPx * fullscreenCaptionCenterY - captionHeightPx / 2f
-                    ).coerceIn(minTopPx, maxTopPx)
+                    // Keep the pointer-input coroutine alive for the entire playback session.
+                    // Subtitle text changes can resize this lane; the gesture must use the latest
+                    // geometry without being cancelled and restarted while the finger is down.
+                    val latestCaptionDragMetrics = rememberUpdatedState(
+                        FullscreenCaptionDragMetrics(
+                            containerWidthPx = containerWidthPx,
+                            containerHeightPx = containerHeightPx,
+                            captionWidthPx = captionWidthPx,
+                            captionHeightPx = captionHeightPx,
+                            minLeftPx = minLeftPx,
+                            maxLeftPx = maxLeftPx,
+                            minTopPx = minTopPx,
+                            maxTopPx = maxTopPx,
+                        ),
+                    )
 
                     Box(
                         modifier = Modifier
@@ -7092,15 +7115,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     fullscreenCaptionSize = measuredSize
                                 }
                             }
-                            .pointerInput(
-                                state.key,
-                                maxWidth,
-                                maxHeight,
-                                captionLaneMaxWidth,
-                                captionLaneMaxHeight,
-                                captionWidthPx,
-                                captionHeightPx,
-                            ) {
+                            .pointerInput(state.key) {
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = {
                                         fullscreenCaptionAdjusting = true
@@ -7122,19 +7137,26 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     },
                                 ) { change, dragAmount ->
                                     change.consume()
+                                    val metrics = latestCaptionDragMetrics.value
                                     val currentLeft = (
-                                        containerWidthPx * fullscreenCaptionCenterX - captionWidthPx / 2f
-                                    ).coerceIn(minLeftPx, maxLeftPx)
+                                        metrics.containerWidthPx * fullscreenCaptionCenterX -
+                                            metrics.captionWidthPx / 2f
+                                    ).coerceIn(metrics.minLeftPx, metrics.maxLeftPx)
                                     val currentTop = (
-                                        containerHeightPx * fullscreenCaptionCenterY - captionHeightPx / 2f
-                                    ).coerceIn(minTopPx, maxTopPx)
-                                    val nextLeft = (currentLeft + dragAmount.x).coerceIn(minLeftPx, maxLeftPx)
-                                    val nextTop = (currentTop + dragAmount.y).coerceIn(minTopPx, maxTopPx)
+                                        metrics.containerHeightPx * fullscreenCaptionCenterY -
+                                            metrics.captionHeightPx / 2f
+                                    ).coerceIn(metrics.minTopPx, metrics.maxTopPx)
+                                    val nextLeft = (currentLeft + dragAmount.x)
+                                        .coerceIn(metrics.minLeftPx, metrics.maxLeftPx)
+                                    val nextTop = (currentTop + dragAmount.y)
+                                        .coerceIn(metrics.minTopPx, metrics.maxTopPx)
                                     fullscreenCaptionCenterX = (
-                                        (nextLeft + captionWidthPx / 2f) / containerWidthPx
+                                        (nextLeft + metrics.captionWidthPx / 2f) /
+                                            metrics.containerWidthPx
                                     ).coerceIn(0f, 1f)
                                     fullscreenCaptionCenterY = (
-                                        (nextTop + captionHeightPx / 2f) / containerHeightPx
+                                        (nextTop + metrics.captionHeightPx / 2f) /
+                                            metrics.containerHeightPx
                                     ).coerceIn(0f, 1f)
                                 }
                             },
