@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
