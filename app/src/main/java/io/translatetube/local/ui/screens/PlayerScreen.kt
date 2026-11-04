@@ -7087,6 +7087,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val leftPx = (
                         containerWidthPx * fullscreenCaptionCenterX - captionWidthPx / 2f
                     ).coerceIn(minLeftPx, maxLeftPx)
+                    val topPx = (
+                        containerHeightPx * fullscreenCaptionCenterY - captionHeightPx / 2f
+                    ).coerceIn(minTopPx, maxTopPx)
                     // Keep the pointer-input coroutine alive for the entire playback session.
                     // Subtitle text changes can resize this lane; the gesture must use the latest
                     // geometry without being cancelled and restarted while the finger is down.
