@@ -270,6 +270,42 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             )
         }
 
+        if (!writerHealth.isHealthy) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFFFF1F0))
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                Icon(
+                    Icons.Filled.WarningAmber,
+                    contentDescription = null,
+                    tint = Color(0xFFB42318),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "日志保存异常 · 累计失败 ${writerHealth.failedWriteCount} 次",
+                        color = Color(0xFFB42318),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (writerHealth.lastFailureDescription.isNotBlank()) {
+                        Text(
+                            writerHealth.lastFailureDescription,
+                            color = Color(0xFF7A271A),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
