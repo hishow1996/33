@@ -100,6 +100,10 @@ internal fun isEmptyAssistantContentResponse(error: Throwable): Boolean {
  * Authentication, quota, transport and server errors must keep their normal error path.
  */
 internal fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean {
+    // A wrapped socket/HTTP failure must never be mistaken for recoverable model formatting.
+    // Let the request retry policy handle transport and temporary provider failures instead.
+    if (isRetryableTranslationFailure(error)) return false
+
     val message = error.message.orEmpty()
     val normalized = message.lowercase(java.util.Locale.ROOT)
     val malformedTranslation = message.contains("重复返回字幕编号") ||
