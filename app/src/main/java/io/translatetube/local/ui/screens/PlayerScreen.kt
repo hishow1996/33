@@ -2708,22 +2708,7 @@ private fun VideoParsingPage(
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        val isCompactTranslationSummary = displayPhase == Phase.TRANSLATING &&
-                            !state.manualTranslationModeEnabled &&
-                            !state.manualTranslationWaiting &&
-                            state.totalLines > 0
-                        Text(
-                            highlightOriginalAudioFallback(detail),
-                            color = Color(0xFF71819B),
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = if (isCompactTranslationSummary) 9.sp else 11.sp,
-                                lineHeight = if (isCompactTranslationSummary) 13.sp else 16.sp,
-                                fontFeatureSettings = if (isCompactTranslationSummary) "tnum" else null,
-                            ),
-                            maxLines = if (isCompactTranslationSummary) 1 else 2,
-                            softWrap = !isCompactTranslationSummary,
-                            overflow = if (isCompactTranslationSummary) TextOverflow.Clip else TextOverflow.Ellipsis,
-                        )
+
                     }
                     Column(
                         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
@@ -2782,6 +2767,27 @@ private fun VideoParsingPage(
                             )
                         }
                     }
+                }
+                val isTranslationSummary = displayPhase == Phase.TRANSLATING &&
+                    !state.manualTranslationModeEnabled &&
+                    !state.manualTranslationWaiting &&
+                    state.totalLines > 0
+                if (detail.isNotBlank()) {
+                    Text(
+                        highlightOriginalAudioFallback(detail),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        color = Color(0xFF71819B),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontSize = if (isTranslationSummary && screenConfig.screenWidthDp < 360) 9.sp else 10.sp,
+                            lineHeight = 13.sp,
+                            fontFeatureSettings = if (isTranslationSummary) "tnum" else null,
+                        ),
+                        maxLines = if (isTranslationSummary) 1 else 2,
+                        softWrap = !isTranslationSummary,
+                        overflow = if (isTranslationSummary) TextOverflow.Clip else TextOverflow.Ellipsis,
+                    )
                 }
                 Spacer(Modifier.height(if (compactLayout) 8.dp else 10.dp))
                 Row(
