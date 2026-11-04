@@ -15,7 +15,7 @@ internal object AppLogDiagnosticContextPolicy {
     const val MAX_FIELDS = 80
     const val MAX_VALUE_CHARS = 2_000
     private const val METADATA_FIELD_COUNT = 6
-    private const val MAX_REPORTED_KEYS = 24
+    private const val MAX_REPORTED_KEYS = 16
 
     fun bound(
         input: Map<String, String>,
