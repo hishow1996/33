@@ -493,6 +493,11 @@ object CloudTranscription {
             "cartesia" -> "Cartesia"
             else -> "Kawa"
         }
+        var latestProgress = ""
+        fun publishProgress(message: String) {
+            latestProgress = message.replace(Regex("\\s+"), " ").take(240)
+            onProgress(message)
+        }
         val audioDiagnostics = linkedMapOf(
             "诊断事件类型" to "CLOUD_TRANSCRIPTION_FAILURE",
             "转写服务商" to providerName,
@@ -522,7 +527,7 @@ object CloudTranscription {
                         "失败子阶段" to stage,
                         "请求文件当前是否存在" to wavFile.isFile.toString(),
                         "请求文件当前大小字节" to wavFile.takeIf { it.isFile }?.length()?.toString().orEmpty(),
-                    ) + extra,
+                    ) + mapOf("最近转写进度" to latestProgress.ifBlank { "未提供" }) + extra,
                 )
             }.onFailure { loggingFailure ->
                 android.util.Log.w("CloudTranscription", "Unable to persist cloud ASR diagnostic", loggingFailure)
@@ -537,7 +542,7 @@ object CloudTranscription {
                     durationMs = durationMs,
                     checkActive = checkActive,
                     ownerJob = ownerJob,
-                    onProgress = onProgress,
+                    onProgress = ::publishProgress,
                     checkpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() },
                 )
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -573,6 +578,22 @@ object CloudTranscription {
                     directory = directory,
                     keepFile = responseCheckpointFile,
                 )
+            }.onFailure { failure ->
+                logContext?.let { context ->
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            context.applicationContext,
+                            "CloudTranscription",
+                            "清理过期云端转写响应检查点失败；本次请求继续执行",
+                            failure,
+                            diagnosticContext = audioDiagnostics + mapOf(
+                                "失败子阶段" to "清理过期响应检查点",
+                                "恢复检查点目录是否存在" to directory.exists().toString(),
+                                "恢复检查点目录是否可写" to directory.canWrite().toString(),
+                            ),
+                        )
+                    }
+                }
             }
             val stableSubmissionGuardIdentity = submissionGuardIdentity
                 ?.takeIf { it.isNotBlank() } ?: stableCheckpointIdentity
@@ -585,7 +606,7 @@ object CloudTranscription {
             )
             if (savedResponse != null) {
                 runCatching { CloudAsrSubmissionGuardStore.clear(requireNotNull(submissionGuardFile)) }
-                onProgress("已恢复上次云端转写结果，正在整理字幕…")
+                publishProgress("已恢复上次云端转写结果，正在整理字幕…")
                 return try {
                     parseProviderResponse(savedResponse, durationMs, checkActive)
                 } catch (failure: Exception) {
@@ -599,11 +620,21 @@ object CloudTranscription {
             if (CloudAsrSubmissionGuardStore.hasPendingSubmission(requireNotNull(submissionGuardFile)) &&
                 !allowUncertainRetry
             ) {
-                throw CloudAsrSubmissionUncertainException(providerName)
+                val uncertain = CloudAsrSubmissionUncertainException(providerName)
+                recordCloudFailure(
+                    "历史提交状态确认",
+                    uncertain,
+                    mapOf(
+                        "提交保护状态" to "存在上次请求状态不确定的标记",
+                        "是否允许自动重提" to "否",
+                        "停止原因" to "需要用户明确确认后才能重新提交，避免重复扣费或重复任务",
+                    ),
+                )
+                throw uncertain
             }
             // On explicit approval the old marker stays until refreshed immediately before POST.
         }
-        onProgress("正在上传音频并提交 $providerName 转写任务…")
+        publishProgress("正在上传音频并提交 $providerName 转写任务…")
         val form = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart(
@@ -732,7 +763,7 @@ object CloudTranscription {
 
         checkActive()
         val completedResponseText = responseText ?: throw IOException("云端转写没有返回响应")
-        onProgress("$providerName 云端已返回结果，正在保存恢复点…")
+        publishProgress("$providerName 云端已返回结果，正在保存恢复点…")
         var durableResponseSaved = false
         if (responseCheckpointFile != null && responseAudioDigest != null &&
             stableCheckpointIdentity != null
@@ -749,7 +780,7 @@ object CloudTranscription {
                 )
                 if (durableResponseSaved) {
                     submissionGuardFile?.let { runCatching { CloudAsrSubmissionGuardStore.clear(it) } }
-                    onProgress("$providerName 转写结果已保存，正在整理词级时间戳…")
+                    publishProgress("$providerName 转写结果已保存，正在整理词级时间戳…")
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
