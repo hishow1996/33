@@ -6220,7 +6220,8 @@ private data class FullscreenCaptionDragMetrics(
     val minTopPx: Float,
     val maxTopPx: Float,
     val bottomLocked: Boolean,
-    val bottomSnapThresholdPx: Float,
+    val bottomSnapEnterThresholdPx: Float,
+    val bottomSnapExitThresholdPx: Float,
 )
 
 @Composable
@@ -6269,16 +6270,39 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val fullscreenCaptionPrefs = remember(context) {
         context.applicationContext.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
     }
-    var fullscreenCaptionCenterX by remember(fullscreenCaptionPrefs) {
-        mutableStateOf(fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_x_v1", 0.5f).coerceIn(0f, 1f))
+    val fullscreenCaptionSourceKey = VideoProcessingFlowPolicy.sourceKind(state.key)
+        .name.lowercase(java.util.Locale.ROOT)
+    val fullscreenCaptionPreferencePrefix = "player_fullscreen_caption_${fullscreenCaptionSourceKey}_"
+    val fullscreenCaptionCenterXPreferenceKey = "${fullscreenCaptionPreferencePrefix}center_x_v1"
+    val fullscreenCaptionCenterYPreferenceKey = "${fullscreenCaptionPreferencePrefix}center_y_v1"
+    val fullscreenCaptionBottomLockedPreferenceKey = "${fullscreenCaptionPreferencePrefix}bottom_locked_v1"
+    var fullscreenCaptionCenterX by remember(fullscreenCaptionPrefs, fullscreenCaptionSourceKey) {
+        mutableStateOf(
+            fullscreenCaptionPrefs.getFloat(
+                fullscreenCaptionCenterXPreferenceKey,
+                fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_x_v1", 0.5f),
+            ).coerceIn(0f, 1f),
+        )
     }
-    var fullscreenCaptionCenterY by remember(fullscreenCaptionPrefs) {
-        mutableStateOf(fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_y_v1", 0.82f).coerceIn(0f, 1f))
+    var fullscreenCaptionCenterY by remember(fullscreenCaptionPrefs, fullscreenCaptionSourceKey) {
+        mutableStateOf(
+            fullscreenCaptionPrefs.getFloat(
+                fullscreenCaptionCenterYPreferenceKey,
+                fullscreenCaptionPrefs.getFloat("player_fullscreen_caption_center_y_v1", 0.82f),
+            ).coerceIn(0f, 1f),
+        )
     }
     // A bottom-anchored caption follows its measured height instead of keeping a stale center point.
-    var fullscreenCaptionBottomLocked by remember(fullscreenCaptionPrefs) {
-        mutableStateOf(fullscreenCaptionPrefs.getBoolean("player_fullscreen_caption_bottom_locked_v1", false))
+    var fullscreenCaptionBottomLocked by remember(fullscreenCaptionPrefs, fullscreenCaptionSourceKey) {
+        mutableStateOf(
+            fullscreenCaptionPrefs.getBoolean(
+                fullscreenCaptionBottomLockedPreferenceKey,
+                fullscreenCaptionPrefs.getBoolean("player_fullscreen_caption_bottom_locked_v1", false),
+            ),
+        )
     }
+    // Vertical finger travel is accumulated while locked so a deliberate upward drag can unlock it.
+    var fullscreenCaptionDragTravelY by remember(state.key) { mutableStateOf(0f) }
     val latestFullscreenCaptionCenterX by rememberUpdatedState(fullscreenCaptionCenterX)
     val latestFullscreenCaptionCenterY by rememberUpdatedState(fullscreenCaptionCenterY)
     val latestFullscreenCaptionSize by rememberUpdatedState(fullscreenCaptionSize)
@@ -6291,9 +6315,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val latestIsPlaying by rememberUpdatedState(state.isPlaying)
     fun persistFullscreenCaptionPosition() {
         fullscreenCaptionPrefs.edit()
-            .putFloat("player_fullscreen_caption_center_x_v1", fullscreenCaptionCenterX)
-            .putFloat("player_fullscreen_caption_center_y_v1", fullscreenCaptionCenterY)
-            .putBoolean("player_fullscreen_caption_bottom_locked_v1", fullscreenCaptionBottomLocked)
+            .putFloat(fullscreenCaptionCenterXPreferenceKey, fullscreenCaptionCenterX)
+            .putFloat(fullscreenCaptionCenterYPreferenceKey, fullscreenCaptionCenterY)
+            .putBoolean(fullscreenCaptionBottomLockedPreferenceKey, fullscreenCaptionBottomLocked)
             .apply()
     }
     // Persist the last accepted position even if the playback screen is disposed
@@ -7136,7 +7160,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val leftPx = (
                         containerWidthPx * fullscreenCaptionCenterX - captionWidthPx / 2f
                     ).coerceIn(minLeftPx, maxLeftPx)
-                    val bottomSnapThresholdPx = with(density) { 10.dp.toPx() }
+                    // Enter snapping near the edge, but require a larger upward travel to unlock.
+                    val bottomSnapEnterThresholdPx = with(density) { 14.dp.toPx() }
+                    val bottomSnapExitThresholdPx = with(density) { 26.dp.toPx() }
                     val topPx = if (fullscreenCaptionBottomLocked) {
                         maxTopPx
                     } else {
@@ -7158,7 +7184,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             minTopPx = minTopPx,
                             maxTopPx = maxTopPx,
                             bottomLocked = fullscreenCaptionBottomLocked,
-                            bottomSnapThresholdPx = bottomSnapThresholdPx,
+                            bottomSnapEnterThresholdPx = bottomSnapEnterThresholdPx,
+                            bottomSnapExitThresholdPx = bottomSnapExitThresholdPx,
                         ),
                     )
                     // Re-clamp whenever either the viewport or the measured caption changes.
@@ -7214,13 +7241,20 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             .widthIn(max = captionLaneMaxWidth)
                             .heightIn(max = captionLaneMaxHeight)
                             .onSizeChanged { measuredSize ->
-                                if (measuredSize != fullscreenCaptionSize) {
+                                // Keep the last real dimensions through blank subtitle gaps or a
+                                // temporary subtitle hide; the next cue can reuse the exact geometry.
+                                if (
+                                    measuredSize.width > 0 &&
+                                    measuredSize.height > 0 &&
+                                    measuredSize != fullscreenCaptionSize
+                                ) {
                                     fullscreenCaptionSize = measuredSize
                                 }
                             }
                             .pointerInput(state.key) {
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = {
+                                        fullscreenCaptionDragTravelY = 0f
                                         fullscreenCaptionAdjusting = true
                                         fullscreenCaptionDragging = true
                                         controlsVisible = true
@@ -7255,20 +7289,47 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     }
                                     val nextLeft = (currentLeft + dragAmount.x)
                                         .coerceIn(metrics.minLeftPx, metrics.maxLeftPx)
-                                    val nextTop = (currentTop + dragAmount.y)
-                                        .coerceIn(metrics.minTopPx, metrics.maxTopPx)
-                                    val shouldLockToBottom =
-                                        nextTop >= metrics.maxTopPx - metrics.bottomSnapThresholdPx
-                                    fullscreenCaptionBottomLocked = shouldLockToBottom
-                                    val acceptedTop = if (shouldLockToBottom) metrics.maxTopPx else nextTop
                                     fullscreenCaptionCenterX = (
                                         (nextLeft + metrics.captionWidthPx / 2f) /
                                             metrics.containerWidthPx
                                     ).coerceIn(0f, 1f)
-                                    fullscreenCaptionCenterY = (
-                                        (acceptedTop + metrics.captionHeightPx / 2f) /
-                                            metrics.containerHeightPx
-                                    ).coerceIn(0f, 1f)
+                                    if (metrics.bottomLocked) {
+                                        // Do not unlock on tiny finger jitter. Measure the full
+                                        // upward travel from the moment this gesture began.
+                                        fullscreenCaptionDragTravelY += dragAmount.y
+                                        if (
+                                            fullscreenCaptionDragTravelY <=
+                                            -metrics.bottomSnapExitThresholdPx
+                                        ) {
+                                            fullscreenCaptionBottomLocked = false
+                                            val unlockedTop = (
+                                                metrics.maxTopPx + fullscreenCaptionDragTravelY
+                                            ).coerceIn(metrics.minTopPx, metrics.maxTopPx)
+                                            fullscreenCaptionCenterY = (
+                                                (unlockedTop + metrics.captionHeightPx / 2f) /
+                                                    metrics.containerHeightPx
+                                            ).coerceIn(0f, 1f)
+                                            fullscreenCaptionDragTravelY = 0f
+                                        }
+                                    } else {
+                                        val nextTop = (currentTop + dragAmount.y)
+                                            .coerceIn(metrics.minTopPx, metrics.maxTopPx)
+                                        val shouldLockToBottom =
+                                            nextTop >= metrics.maxTopPx - metrics.bottomSnapEnterThresholdPx
+                                        if (shouldLockToBottom) {
+                                            fullscreenCaptionBottomLocked = true
+                                            fullscreenCaptionDragTravelY = 0f
+                                            fullscreenCaptionCenterY = (
+                                                (metrics.maxTopPx + metrics.captionHeightPx / 2f) /
+                                                    metrics.containerHeightPx
+                                            ).coerceIn(0f, 1f)
+                                        } else {
+                                            fullscreenCaptionCenterY = (
+                                                (nextTop + metrics.captionHeightPx / 2f) /
+                                                    metrics.containerHeightPx
+                                            ).coerceIn(0f, 1f)
+                                        }
+                                    }
                                 }
                             },
                         contentAlignment = Alignment.Center,
