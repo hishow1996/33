@@ -176,4 +176,29 @@ class TranslationBatchFallbackPolicyTest {
         )
     }
 
+
+    @Test
+    fun neverFallsBackAfterAnyMisalignedProviderResponse() {
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 1,
+                batchSize = 10,
+                hasUsableTranslation = true,
+                sourceEchoAsUntranslatedFallback = true,
+                isLocalTranslationEngine = true,
+                responseIntegrityVerified = false,
+            )
+        )
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 1,
+                batchSize = 10,
+                hasUsableTranslation = true,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = false,
+                isApiLanguageModelEngine = true,
+                responseIntegrityVerified = false,
+            )
+        )
+    }
 }
