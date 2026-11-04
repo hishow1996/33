@@ -42,7 +42,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 修复诊断报告\n")
-            append("report_schema: elephant-app-log/v7\n")
+            append("report_schema: elephant-app-log/v8\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -75,6 +75,7 @@ internal object AppLogAiReport {
             append("- 已有明确恢复记录的故障编号：").append(recovered.size).append('\n')
             append("- 日志写入器当前状态：").append(if (writerHealth.isHealthy) "正常" else "异常").append('\n')
             append("- 日志写入失败累计次数：").append(writerHealth.failedWriteCount).append('\n')
+            append("- 近期操作轨迹策略：优先按 operationId 隔离；缺失时仅使用同线程最近 2 分钟的事件。\n")
             if (!writerHealth.isHealthy) {
                 append("- 最近一次写入失败：")
                     .append(AppLogStore.redactForExport(writerHealth.lastFailureDescription))
@@ -178,7 +179,7 @@ internal object AppLogAiReport {
                 }
                 val json = JSONObject()
                     .put("schemaVersion", event.schemaVersion)
-                    .put("reportSchemaVersion", 7)
+                    .put("reportSchemaVersion", 8)
                     .put("index", index + 1)
                     .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + (index + 1) })
                     .put("sessionId", event.sessionId.ifBlank { "legacy/unknown" })
@@ -218,6 +219,10 @@ internal object AppLogAiReport {
                         event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
                     )
                     .put("httpStatusCode", event.httpStatusCode)
+                    .put("recentEventTrailScope", AppLogStore.redactForExport(
+                        event.diagnosticContext["近期操作轨迹关联方式"].orEmpty(),
+                    ))
+                    .put("diagnosticContextBudget", diagnosticContextBudgetJson(event))
                     .put("processingStage", event.diagnosticContext["当前处理阶段"].orEmpty())
                     .put("processingUiPhase", event.diagnosticContext["当前 UI 阶段"].orEmpty())
                     .put("processingProgress", AppLogStore.redactForExport(event.diagnosticContext["当前处理步骤"].orEmpty()))
@@ -256,6 +261,7 @@ internal object AppLogAiReport {
             append("10. 先查看每条异常的 diagnosticCoverage，按模块缺失清单定位真实失败分支补采证据；覆盖率只衡量日志采集情况，不代表根因判断准确率。\n")
             append("11. 缺失字段必须明确标记为未采集，并定位源码补采；不得根据相邻事件或默认值推测实际状态。\n")
             append("12. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
+            append("13. 检查 recentEventTrailScope 和 diagnosticContextBudget；轨迹范围为同线程时，不能推断它与其他线程/任务相关；字段省略或截断时，先注明证据不完整，再定位补采点。\n")
             append("\n隐私说明：导出前再次执行凭据脱敏；分享前仍应检查字幕片段、文件名和业务内容是否包含个人信息。\n")
         }
     }
@@ -306,6 +312,10 @@ internal object AppLogAiReport {
                 event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
             )
             .put("httpStatusCode", event.httpStatusCode)
+            .put("recentEventTrailScope", AppLogStore.redactForExport(
+                event.diagnosticContext["近期操作轨迹关联方式"].orEmpty(),
+            ))
+            .put("diagnosticContextBudget", diagnosticContextBudgetJson(event))
             .put("processingStage", event.diagnosticContext["当前处理阶段"].orEmpty())
             .put("processingUiPhase", event.diagnosticContext["当前 UI 阶段"].orEmpty())
             .put("processingProgress", AppLogStore.redactForExport(event.diagnosticContext["当前处理步骤"].orEmpty()))
@@ -333,7 +343,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 单条故障修复包\n")
-            append("report_schema: elephant-app-log/incident-v5\n")
+            append("report_schema: elephant-app-log/incident-v6\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -385,6 +395,7 @@ internal object AppLogAiReport {
                     .append("；").append(AppLogStore.redactForExport(relation.evidence)).append('\n')
             }
             append("因果判断约束：更早/更晚只说明时间顺序；只有 resolvesIssueKey 与选中 issueKey 匹配才记录为按故障签名匹配的恢复；它不代表恢复了唯一单次故障实例。相同 issueKey 仅代表故障签名相同。\n")
+            append("近期操作轨迹只按同一 operationId 关联；缺少 operationId 时只按同线程最近 2 分钟关联。若诊断字段省略数/截断数大于 0，必须先列出缺失字段，不得把缺失证据当作真实状态。\n")
 
             append("\n## 4. 关联事件时间线（JSONL，按时间升序）\n")
             append("事件按同一 operationId 优先关联；没有操作 ID 时，仅收录同一 sessionId 的相邻事件。不同进程会话不会混合。\n")
@@ -404,6 +415,19 @@ internal object AppLogAiReport {
         }
     }
 
+
+
+    private fun diagnosticContextBudgetJson(record: AppLogRecord): Any {
+        val context = record.diagnosticContext
+        val total = context["日志诊断字段总数"]?.toIntOrNull() ?: return JSONObject.NULL
+        return JSONObject()
+            .put("totalFields", total)
+            .put("retainedFields", context["日志诊断字段已保留数"]?.toIntOrNull() ?: JSONObject.NULL)
+            .put("omittedFields", context["日志诊断字段省略数"]?.toIntOrNull() ?: JSONObject.NULL)
+            .put("omittedFieldKeys", AppLogStore.redactForExport(context["日志诊断字段省略项（最多16项）"].orEmpty()))
+            .put("truncatedFields", context["日志诊断字段截断数"]?.toIntOrNull() ?: JSONObject.NULL)
+            .put("truncatedFieldKeys", AppLogStore.redactForExport(context["日志诊断字段截断项（最多16项）"].orEmpty()))
+    }
 
     private fun diagnosticCoverageJson(record: AppLogRecord): JSONObject {
         val coverage = AppLogDiagnosticCoveragePolicy.analyze(record)
