@@ -151,6 +151,10 @@ private class TranslationRecoveryBudget {
     private var attempts = 0
     private var isolatedCueFailures = 0
 
+    /** Shared by every split/retry: malformed response alignment must never become audio fallback. */
+    var hadUnalignedResponse: Boolean = false
+        private set
+
     /** True while this batch may still hand an unusable single cue back to the caller. */
     fun tolerateIsolatedCueFailure(): Boolean {
         if (isolatedCueFailures >= MAX_ISOLATED_CUE_FAILURES_PER_BATCH) return false
@@ -185,9 +189,19 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
-    return translateBatchWithAdaptiveRecoveryInternal(
-        lines, context, isAcceptableTranslation, retrySingle, translate, TranslationRecoveryBudget(),
+    val budget = TranslationRecoveryBudget()
+    val result = translateBatchWithAdaptiveRecoveryInternal(
+        lines, context, isAcceptableTranslation, retrySingle, translate, budget,
     )
+    if (budget.hadUnalignedResponse && lines.indices.any { index ->
+            lines[index].isNotBlank() && !isAcceptableTranslation(lines[index], result.getOrNull(index).orEmpty())
+        }
+    ) {
+        throw IllegalStateException(
+            "翻译服务响应曾出现行数不匹配或编号/格式不完整；拆分重试后仍有字幕未通过校验，已禁止原声兜底。"
+        )
+    }
+    return result
 }
 
 private suspend fun translateBatchWithAdaptiveRecoveryInternal(
@@ -204,7 +218,12 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     } catch (error: IllegalStateException) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         if (!isRecoverableTranslationFormatError(error)) throw error
+        budget.hadUnalignedResponse = true
         null
+    }
+
+    if (response != null && response.size != lines.size) {
+        budget.hadUnalignedResponse = true
     }
 
     if (response != null && response.size == lines.size) {
