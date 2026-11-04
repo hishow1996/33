@@ -4771,6 +4771,7 @@ private fun CompactStageMetadataRow(
             ) {
                 Text(
                     label,
+                    modifier = Modifier.width(48.dp),
                     color = Color(0xFF8794A8),
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontSize = 9.sp,
@@ -4812,6 +4813,7 @@ private fun CompactStageMetadataLine(
     ) {
         Text(
             item.first,
+            modifier = Modifier.width(48.dp),
             color = Color(0xFF8794A8),
             style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = 9.sp,
