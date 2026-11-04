@@ -6463,6 +6463,8 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         zh = cue.translationText,
                     )
                 })
+                val importedSourceLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
+                    .detectFromCues(translatedLines.asSequence().map { it.text }.asIterable())
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "apply original audio preference")
                 updateUiForSession(sessionKey, pipelineGeneration) {
@@ -6477,7 +6479,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         preparedUntil = 0,
                         preparedCount = 0,
                         audioReadyCount = 0,
-                        sourceLang = "zh",
+                        sourceLang = importedSourceLanguage,
                         error = null,
                         noModelHint = null,
                             waitingForTranscriptionEngine = false,
@@ -6583,7 +6585,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         preparedUntil = d.preparedUntil.value,
                         preparedCount = d.preparedCount.value,
                         audioReadyCount = d.audioReadyCount.value,
-                        sourceLang = "zh",
+                        sourceLang = importedSourceLanguage,
                     )
                 }
 
@@ -9658,11 +9660,12 @@ updateUiForSession(key, pipelineGeneration) {
                         // active translation engine again. Keep the imported zh text and timestamps.
                         translatedLines = io.translatetube.local.subs.ImportedSubtitlePolicy
                             .preserveImportedTranslations(translatedLines)
-                        srcLang = "zh"
+                        srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
+                            .detectFromCues(translatedLines.asSequence().map { it.text }.asIterable())
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
                                 phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
-                                sourceLang = "zh",
+                                sourceLang = srcLang,
                                 translatedLineCount = translatedLines.count { line -> !line.zh.isNullOrBlank() },
                                 progress = if (restoreCompletedSnapshot) "" else "复用已导入译文，正在准备配音…",
                             )
