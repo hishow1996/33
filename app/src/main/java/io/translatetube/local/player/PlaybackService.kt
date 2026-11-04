@@ -13719,7 +13719,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     updateUiForCurrentDubbingEngine(d, st.key) { state ->
                         if (state.dubbingStatus.startsWith("配音生成偏慢")) state
                         else state.copy(
-                            dubbingStatus = "配音生成偏慢，正在优先准备后续字幕；未就绪片段按原声开关设置处理",
+                            dubbingStatus = "配音生成偏慢，正在优先准备后续字幕",
                         )
                     }
                 }
