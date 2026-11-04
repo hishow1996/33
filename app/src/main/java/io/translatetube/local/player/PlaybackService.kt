@@ -13199,8 +13199,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val current = ui.value
             if (current.key != sessionKey || !isCurrentDubbingEngine(engine, sessionKey)) return@launch
             safelySetOriginalVolume(
-                if (current.originalVolume <= 0f) 0f else current.originalVolume,
-                "配音失败后保持视频暂停并保留原声音量设置",
+                if (current.originalVolume <= 0f) 0f else 1f,
+                "配音失败后保持视频暂停并恢复用户原声音量设置",
             )
             ui.update { state ->
                 if (state.key == sessionKey && dubbing === engine) {
@@ -13208,6 +13208,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         isPlaying = false,
                         currentLine = -1,
                         activeDubbingLine = -1,
+                        dubbingCuePending = false,
                         dubbingHasErrors = true,
                         dubbingStatus = "${state.ttsEngineName.ifBlank { "配音引擎" }}合成失败，视频已暂停",
                     )
@@ -13441,14 +13442,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     }
 
     /**
-     * Preserve the user's original-audio gain independently of whether Chinese speech has started.
-     * Playback ticks may reapply this gain throughout a cue; only the user's own mute setting
-     * should silence the source track while dubbing is playing.
+     * Preserve the user's original-audio gain, except while the active Chinese cue is waiting
+     * for playable dubbing audio. Restore the configured mix as soon as the Chinese voice starts.
      */
     private fun syncOriginalVolumeWithDubbing(
         engine: DubbingEngine,
         observedState: PlayerUiState,
         source: String,
+        dubbingCuePending: Boolean = false,
     ) {
         // A player tick can carry a stale snapshot for one frame after a slider/mode/session change.
         // Use current settings and decline ownership changes rather than restoring stale source gain.
@@ -13466,6 +13467,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             dubbingVolume = latest.dubbingVolume,
             dubbingEnabled = latest.dubbingOn,
             dubbingStarted = speechStarted,
+            dubbingCuePending = dubbingCuePending,
         )
         safelySetOriginalVolume(sourceGain, source)
     }
@@ -13878,14 +13880,35 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             } else if (queuedHead != null) {
                 // Live System TTS stays serialized; generated PCM playback is scheduled by bus timestamps.
                 var catchUpIndex = queuedHead
-                while (catchUpIndex != null && d.isPrepared(catchUpIndex) && d.isSilent(catchUpIndex)) {
-                    removeDubbingCatchUpCue(st.key, catchUpIndex)
-                    catchUpIndex = peekDubbingCatchUpCue(st.key)
+                val failedSilentCatchUpIndex = DubbingCatchUpQueuePolicy.preparedSilentHead(
+                    queueHead = catchUpIndex,
+                    isPrepared = d::isPrepared,
+                    isSilent = d::isSilent,
+                )
+                if (failedSilentCatchUpIndex != null) {
+                    d.logSilentCueError(failedSilentCatchUpIndex)
+                    val hint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName)
+                    ui.update { state ->
+                        if (state.key == st.key) {
+                            state.copy(
+                                noModelHint = state.noModelHint ?: hint,
+                                activeDubbingLine = -1,
+                                dubbingCuePending = false,
+                            )
+                        } else state
+                    }
+                    pausePlaybackAfterDubbingFailure(
+                        d,
+                        st.key,
+                        "补播队列第 ${failedSilentCatchUpIndex + 1} 句没有可播放的中文配音",
+                    )
+                    return
                 }
                 if (catchUpIndex != null) {
                     val catchUpLine = st.lines.getOrNull(catchUpIndex)
                     if (catchUpLine == null || !DubbingTimeline.isPlayableCue(catchUpLine)) {
                         removeDubbingCatchUpCue(st.key, catchUpIndex)
+                        catchUpIndex = peekDubbingCatchUpCue(st.key)
                     } else if (d.currentLineIdx() != catchUpIndex) {
                         if (d.isPrepared(catchUpIndex)) {
                             d.playAt(
@@ -13911,7 +13934,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }
                     }
                 }
-                syncOriginalVolumeWithDubbing(d, st, "catch-up dubbing playback")
+                syncOriginalVolumeWithDubbing(
+                    d,
+                    st,
+                    "catch-up dubbing playback",
+                    dubbingCuePending = catchUpIndex != null || dubLine >= 0,
+                )
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 d.logSilentCueError(dubLine)
                 val hint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName)
@@ -13954,7 +13982,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     // Voice and source use independent gains; both may remain audible at the same time.
                     d.updateVolume(st.dubbingVolume)
                 }
-                syncOriginalVolumeWithDubbing(d, st, "dubbing cue playback")
+                syncOriginalVolumeWithDubbing(
+                    d,
+                    st,
+                    "dubbing cue playback",
+                    dubbingCuePending = dubLine >= 0,
+                )
             } else if (dubLine >= 0) {
                 // If generation is falling behind real time, continuously enlarge the look-ahead
                 // priority window so the single TTS worker prepares more upcoming cues first.
@@ -13977,7 +14010,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
                 if (d.currentLineIdx() >= 0) d.stop()
-                safelySetOriginalVolume(1f, "preserve original audio preference")
+                syncOriginalVolumeWithDubbing(
+                    d,
+                    st,
+                    "waiting for Chinese dubbing",
+                    dubbingCuePending = true,
+                )
             } else {
                 // Outside a dubbed cue, keep the original track as the only audio source.
                 if (d.currentLineIdx() >= 0) d.stop()
