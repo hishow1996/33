@@ -33,6 +33,10 @@ class AppLogAiReportTest {
                     "翻译引擎" to "测试翻译引擎",
                     "字幕总行数" to "50",
                     "已获得有效译文行数" to "16",
+                    "日志调用位置采集状态" to "已定位到应用内调用帧",
+                    "日志调用位置" to "io.translatetube.local.translate.TranslationEngine.translateBatch(TranslationEngine.kt:214)",
+                    "日志调用链（最多8帧）" to "io.translatetube.local.translate.TranslationEngine.translateBatch(TranslationEngine.kt:214)",
+                    "异常对象采集状态" to "已提供 Throwable",
                 ),
                 httpStatusCode = 429,
                 exceptionSnapshot = AppLogExceptionSnapshot(
@@ -76,6 +80,10 @@ class AppLogAiReportTest {
                     "当前处理步骤" to "正在整理语音时间轴",
                     "处理流程" to "AUTO",
                     "转写引擎" to "Whisper",
+                    "日志调用位置采集状态" to "已定位到应用内调用帧",
+                    "日志调用位置" to "io.translatetube.local.playback.PlaybackPipeline.start(PlaybackPipeline.kt:55)",
+                    "日志调用链（最多8帧）" to "io.translatetube.local.playback.PlaybackPipeline.start(PlaybackPipeline.kt:55)",
+                    "异常对象采集状态" to "普通事件未提供 Throwable",
                 ),
                 eventId = "event-1",
                 sessionId = "session-a",
@@ -93,7 +101,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 2_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/v8"))
+        assertTrue(report.contains("report_schema: elephant-app-log/v9"))
         assertTrue(report.contains("最近最多 800 条"))
         assertTrue(report.contains("优先检查的故障事件"))
         assertTrue(report.contains("完整事件时间线（JSONL"))
@@ -102,6 +110,10 @@ class AppLogAiReportTest {
         assertTrue(report.contains("\"errorClass\":\"java.net.SocketTimeoutException\""))
         assertTrue(report.contains("\"rootCauseMessage\":\"connect timed out\""))
         assertTrue(report.contains("\"firstAppStackFrame\":\"io.translatetube.local.translate.TranslationEngine.translate(TranslationEngine.kt:88)\""))
+        assertTrue(report.contains("\"logCallSite\":\"io.translatetube.local.translate.TranslationEngine.translateBatch(TranslationEngine.kt:214)\""))
+        assertTrue(report.contains("\"logCallSiteStatus\":\"已定位到应用内调用帧\""))
+        assertTrue(report.contains("\"exceptionCaptureStatus\":\"已提供 Throwable\""))
+        assertTrue(report.contains("日志调用位置="))
         assertTrue(report.contains("\"HTTP 状态码\":\"429\""))
         assertTrue(report.contains("\"请求阶段\":\"提交\""))
         assertTrue(report.contains("AI 分类=HTTP 429：请求频率受限"))
@@ -142,7 +154,8 @@ class AppLogAiReportTest {
         assertTrue(report.contains("legacy/unknown"))
         assertTrue(report.contains("legacy-1000-1"))
         assertTrue(report.contains("\"schemaVersion\":1"))
-        assertTrue(report.contains("\"reportSchemaVersion\":8"))
+        assertTrue(report.contains("\"reportSchemaVersion\":9"))
+        assertTrue(report.contains("\"logCallSiteStatus\":\"旧版日志未记录\""))
         assertFalse(report.contains("undefined"))
     }
     @Test
@@ -162,7 +175,14 @@ class AppLogAiReportTest {
             errorClass = "java.net.SocketTimeoutException",
             rootCauseMessage = "read timed out",
             firstAppStackFrame = "io.translatetube.local.translate.TranslationEngine.run(TranslationEngine.kt:120)",
-            diagnosticContext = mapOf("HTTP 状态码" to "504", "请求阶段" to "读取响应"),
+            diagnosticContext = mapOf(
+                "HTTP 状态码" to "504",
+                "请求阶段" to "读取响应",
+                "日志调用位置采集状态" to "已定位到应用内调用帧",
+                "日志调用位置" to "io.translatetube.local.translate.TranslationEngine.run(TranslationEngine.kt:120)",
+                "日志调用链（最多8帧）" to "io.translatetube.local.translate.TranslationEngine.run(TranslationEngine.kt:120)",
+                "异常对象采集状态" to "已提供 Throwable",
+            ),
             httpStatusCode = 504,
             exceptionSnapshot = AppLogExceptionSnapshot(
                 type = "java.io.IOException",
@@ -202,11 +222,14 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v6"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v7"))
         assertTrue(report.contains("failure-2"))
         assertTrue(report.contains("start-1"))
         assertTrue(report.contains("rootCauseMessage"))
         assertTrue(report.contains("firstAppStackFrame"))
+        assertTrue(report.contains("logCallSite"))
+        assertTrue(report.contains("logCallChain"))
+        assertTrue(report.contains("exceptionCaptureStatus"))
         assertTrue(report.contains("exceptionSnapshot"))
         assertTrue(report.contains("\"type\":\"java.net.SocketTimeoutException\""))
         assertTrue(report.contains("diagnosticContext"))
