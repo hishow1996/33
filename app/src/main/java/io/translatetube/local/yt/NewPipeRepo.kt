@@ -225,7 +225,7 @@ object NewPipeRepo {
             408 -> "服务端请求超时"
             410 -> "媒体或字幕链接已过期/失效"
             429 -> "请求过于频繁或触发限流"
-            in 500..599 -> "YouTube 或上游服务端错误"
+            status != null && status in 500..599 -> "YouTube 或上游服务端错误"
             null -> "未取得 HTTP 响应，检查 DNS、连接、TLS 或超时"
             else -> "HTTP 请求未成功"
         }
