@@ -42,7 +42,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 修复诊断报告\n")
-            append("report_schema: elephant-app-log/v8\n")
+            append("report_schema: elephant-app-log/v9\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -144,6 +144,8 @@ internal object AppLogAiReport {
                         .append("；异常=").append(event.errorClass.ifBlank { "未记录" })
                         .append("；根因=").append(event.rootCauseMessage.ifBlank { "未提取" })
                         .append("；首个应用栈帧=").append(event.firstAppStackFrame.ifBlank { "未记录" })
+                        .append("；日志调用位置=").append(AppLogStore.redactForExport(event.diagnosticContext["日志调用位置"].orEmpty().ifBlank { "未记录/旧版日志" }))
+                        .append("；异常对象采集状态=").append(AppLogStore.redactForExport(event.diagnosticContext["异常对象采集状态"].orEmpty().ifBlank { "旧版日志未记录" }))
                         .append("；AI 分类=").append(diagnosis.category)
                         .append("；置信度=").append(diagnosis.confidence)
                         .append("；AI 判断=").append(AppLogStore.redactForExport(diagnosis.finding))
@@ -179,7 +181,7 @@ internal object AppLogAiReport {
                 }
                 val json = JSONObject()
                     .put("schemaVersion", event.schemaVersion)
-                    .put("reportSchemaVersion", 8)
+                    .put("reportSchemaVersion", 9)
                     .put("index", index + 1)
                     .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + (index + 1) })
                     .put("sessionId", event.sessionId.ifBlank { "legacy/unknown" })
@@ -214,6 +216,22 @@ internal object AppLogAiReport {
                     .put("errorClass", AppLogStore.redactForExport(event.errorClass))
                     .put("rootCauseMessage", AppLogStore.redactForExport(event.rootCauseMessage))
                     .put("firstAppStackFrame", AppLogStore.redactForExport(event.firstAppStackFrame))
+                    .put(
+                        "logCallSiteStatus",
+                        AppLogStore.redactForExport(event.diagnosticContext["日志调用位置采集状态"].orEmpty().ifBlank { "旧版日志未记录" }),
+                    )
+                    .put(
+                        "logCallSite",
+                        AppLogStore.redactForExport(event.diagnosticContext["日志调用位置"].orEmpty().ifBlank { "旧版日志未记录" }),
+                    )
+                    .put(
+                        "logCallChain",
+                        AppLogStore.redactForExport(event.diagnosticContext["日志调用链（最多8帧）"].orEmpty().ifBlank { "旧版日志未记录" }),
+                    )
+                    .put(
+                        "exceptionCaptureStatus",
+                        AppLogStore.redactForExport(event.diagnosticContext["异常对象采集状态"].orEmpty().ifBlank { "旧版日志未记录" }),
+                    )
                     .put(
                         "exceptionSnapshot",
                         event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
@@ -262,6 +280,8 @@ internal object AppLogAiReport {
             append("11. 缺失字段必须明确标记为未采集，并定位源码补采；不得根据相邻事件或默认值推测实际状态。\n")
             append("12. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
             append("13. 检查 recentEventTrailScope 和 diagnosticContextBudget；轨迹范围为同线程时，不能推断它与其他线程/任务相关；字段省略或截断时，先注明证据不完整，再定位补采点。\n")
+            append("14. 对没有 Throwable 的失败日志，优先用 logCallSite/logCallChain 定位记录失败状态的源码分支；它只代表日志调用位置，不代表异常真正抛出位置。若 exceptionCaptureStatus 表明未提供 Throwable，明确写出堆栈证据缺口，并检查该分支是否应记录具体异常对象、返回值和失败原因。\n")
+            append("15. 对 INFO/WARN/ERROR/FATAL 事件都要检查事件元数据、调用位置和上下文；普通 INFO 是任务过程证据，不能因其级别较低而忽略。")
             append("\n隐私说明：导出前再次执行凭据脱敏；分享前仍应检查字幕片段、文件名和业务内容是否包含个人信息。\n")
         }
     }
@@ -308,6 +328,22 @@ internal object AppLogAiReport {
             .put("rootCauseMessage", AppLogStore.redactForExport(event.rootCauseMessage))
             .put("firstAppStackFrame", AppLogStore.redactForExport(event.firstAppStackFrame))
             .put(
+                "logCallSiteStatus",
+                AppLogStore.redactForExport(event.diagnosticContext["日志调用位置采集状态"].orEmpty().ifBlank { "旧版日志未记录" }),
+            )
+            .put(
+                "logCallSite",
+                AppLogStore.redactForExport(event.diagnosticContext["日志调用位置"].orEmpty().ifBlank { "旧版日志未记录" }),
+            )
+            .put(
+                "logCallChain",
+                AppLogStore.redactForExport(event.diagnosticContext["日志调用链（最多8帧）"].orEmpty().ifBlank { "旧版日志未记录" }),
+            )
+            .put(
+                "exceptionCaptureStatus",
+                AppLogStore.redactForExport(event.diagnosticContext["异常对象采集状态"].orEmpty().ifBlank { "旧版日志未记录" }),
+            )
+            .put(
                 "exceptionSnapshot",
                 event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
             )
@@ -343,7 +379,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 单条故障修复包\n")
-            append("report_schema: elephant-app-log/incident-v6\n")
+            append("report_schema: elephant-app-log/incident-v7\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
