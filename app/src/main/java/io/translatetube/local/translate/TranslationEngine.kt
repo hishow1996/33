@@ -21,7 +21,7 @@ interface TranslationEngine {
         }
     }
 
-    /** 批量翻译；失败抛异常（上层重试/降级） */
+    /** 批量翻译；失败抛异常，由上层按明确策略记录原因并决定重试或停止，不以原声替代译文。 */
     suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String>
 
     /** Release engine-owned native/model resources when a translation task finishes. */

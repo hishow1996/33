@@ -10,6 +10,8 @@ internal data class TranslationRowRejection(
     val sourceCharCount: Int,
     val rawOutputCharCount: Int,
     val diagnosticReason: String? = null,
+    /** Bounded local-only excerpt of rejected model output for diagnosis; never a full response. */
+    val rawOutputPreview: String? = null,
 )
 
 /**
@@ -101,6 +103,7 @@ internal data class TranslationBatchResult(
                                         reasonCode = reason,
                                         sourceCharCount = sourceText?.length ?: 0,
                                         rawOutputCharCount = rawValue?.length ?: 0,
+                                        rawOutputPreview = rawValue?.let { TranslationFailureDiagnosticPolicy.safeSnippet(it, 120) },
                                         diagnosticReason = when {
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
                                             unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
@@ -127,6 +130,7 @@ internal data class TranslationBatchResult(
                                         reasonCode = reason,
                                         sourceCharCount = sourceText?.length ?: 0,
                                         rawOutputCharCount = rawValue?.length ?: 0,
+                                        rawOutputPreview = rawValue?.let { TranslationFailureDiagnosticPolicy.safeSnippet(it, 120) },
                                         diagnosticReason = when {
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
                                             unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"

@@ -10455,6 +10455,95 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         activeIdOverride: Long? = null,
         pipelineGeneration: Long? = null,
     ): List<SubLine> {
+        val startedAtNanos = System.nanoTime()
+        try {
+            return translateLinesInternal(
+                key = key,
+                lines = lines,
+                srcLang = srcLang,
+                cacheKeyOverride = cacheKeyOverride,
+                activeIdOverride = activeIdOverride,
+                pipelineGeneration = pipelineGeneration,
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            // Network and exhausted-row failures already emit specialized records in the batch
+            // loop. This wrapper covers engine initialization, local model/language preflight,
+            // cache validation and final speechability checks that happen outside that catch.
+            if (failure !is TranslationFailureException) {
+                val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+                val selectedId = activeIdOverride ?: prefs.getLong("active_api_id", -1L)
+                val current = ui.value.takeIf { it.key == key }
+                val profile = runCatching {
+                    withContext(Dispatchers.IO) {
+                        AppDatabase.get(this@PlaybackService).apiProfileDao().enabled()
+                            .firstOrNull { it.id == selectedId }
+                    }
+                }.getOrNull()
+                val sourceLanguage = current?.sourceLang?.ifBlank { srcLang } ?: srcLang
+                val invalidIndices = lines.indices.filter { index ->
+                    val line = lines[index]
+                    line.text.isNotBlank() &&
+                        DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage).isNullOrBlank()
+                }
+                val category = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.classify(failure)
+                val rows = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.describeSubtitleRows(
+                    lines = lines,
+                    indices = invalidIndices,
+                    maxRows = 8,
+                )
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.error(
+                            this@PlaybackService,
+                            "Translation",
+                            "翻译阶段在引擎初始化、语言预检或结果校验环节异常终止",
+                            failure,
+                            diagnosticContext = mapOf(
+                                "诊断事件类型" to "TRANSLATION_STAGE_UNHANDLED_FAILURE",
+                                "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
+                                "视频标识摘要" to java.security.MessageDigest.getInstance("SHA-256")
+                                    .digest(key.toByteArray(Charsets.UTF_8))
+                                    .take(6).joinToString("") { "%02x".format(it.toInt() and 0xff) },
+                                "当前 UI 阶段" to (current?.phase?.name ?: "状态已切换"),
+                                "当前 UI 进度" to current?.progress.orEmpty().take(160),
+                                "翻译引擎名称" to current?.engineName.orEmpty().ifBlank { "初始化前未确定" },
+                                "翻译引擎配置 ID" to selectedId.toString(),
+                                "翻译服务商名称" to profile?.name.orEmpty().ifBlank { "内置/本地/未解析" },
+                                "模型 ID" to profile?.model.orEmpty().ifBlank { "未提供" },
+                                "源语言代码" to sourceLanguage,
+                                "目标语言代码" to "zh",
+                                "输入字幕总行数" to lines.size.toString(),
+                                "当前有效译文行数" to lines.count { !it.zh.isNullOrBlank() }.toString(),
+                                "待翻译或校验未通过行数" to invalidIndices.size.toString(),
+                                "问题字幕行号（从1开始）" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.summarizeIndices(invalidIndices),
+                                "问题字幕样本（原文/已有译文短片段，仅保存在本机日志）" to rows,
+                                "异常分类" to category,
+                                "可识别 HTTP 状态码" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.httpStatus(failure),
+                                "异常根因链" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.causeChain(failure),
+                                "建议 AI 优先检查" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.recommendedChecks(category),
+                                "累计耗时 ms" to (((System.nanoTime() - startedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
+                                "处理结果" to "翻译阶段报错并停止；未将缺失译文标记为成功，也未切换原声兜底",
+                                "配置与隐私" to "仅主动记录服务商名称/模型 ID/摘要和最多 8 条字幕短片段；不主动采集 API Key 或完整请求体，异常堆栈由日志层脱敏",
+                                "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                            ),
+                        )
+                    }
+                }
+            }
+            throw failure
+        }
+    }
+
+    private suspend fun translateLinesInternal(
+        key: String,
+        lines: List<SubLine>,
+        srcLang: String,
+        cacheKeyOverride: String? = null,
+        activeIdOverride: Long? = null,
+        pipelineGeneration: Long? = null,
+    ): List<SubLine> {
         val translationStartedAtNanos = System.nanoTime()
         val earlyExternalTranslation = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
         if (earlyExternalTranslation != null) {
@@ -10702,6 +10791,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 var lastRejectedRows = emptyList<io.translatetube.local.translate.TranslationRowRejection>()
                 var lastRequestRowCount = 0
                 var lastResponseRowCount = 0
+                var lastResponsePreview = "无"
+                val attemptHistory = ArrayList<String>(3)
                 // An unrepaired malformed/short/long response makes this batch fail.
                 var hadResponseCountMismatch = false
 
@@ -10723,7 +10814,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }
                         val sourceLine = updatedLines.getOrNull(row.sourceIndex)
                         val timeRange = sourceLine?.let { "，时间轴 ${it.startMs}..${it.endMs} ms" }.orEmpty()
-                        "${row.sourceIndex + 1}行 [${row.reasonCode}]：$reason（原文 ${row.sourceCharCount} 字符，返回 ${row.rawOutputCharCount} 字符$timeRange）"
+                        val sourcePreview = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.safeSnippet(sourceLine?.text)
+                        val outputPreview = row.rawOutputPreview?.takeIf { it.isNotBlank() }
+                            ?.let { "；模型原始返回片段=$it" }.orEmpty()
+                        "${row.sourceIndex + 1}行 [${row.reasonCode}]：$reason（原文 ${row.sourceCharCount} 字符，返回 ${row.rawOutputCharCount} 字符$timeRange；原文片段=$sourcePreview$outputPreview）"
                     }
                     val omitted = rows.size - minOf(rows.size, 20)
                     return shown + if (omitted > 0) "；另有 $omitted 行未展开" else ""
@@ -10767,6 +10861,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     }
                     // 请求可能要几十秒：用户这时启用外部翻译，就放弃等待这一批，立刻进入"等待外部译文"。
+                    val requestStartedAtNanos = System.nanoTime()
                     val racedBatch = try {
                         runUntilInterrupted(
                             manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
@@ -10777,18 +10872,44 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
+                        val requestDurationMs = ((System.nanoTime() - requestStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L
+                        val errorCategory = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.classify(e)
+                        val httpStatus = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.httpStatus(e)
                         io.translatetube.local.util.AppLogStore.error(
                             this@PlaybackService,
                             "Translation",
                             "字幕翻译请求失败",
                             e,
                             diagnosticContext = mapOf(
+                                "诊断事件类型" to "TRANSLATION_REQUEST_FAILURE",
+                                "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
+                                "翻译引擎名称" to engineName,
                                 "翻译引擎 ID" to engine?.id.orEmpty(),
+                                "翻译引擎实现类" to engine?.javaClass?.name.orEmpty(),
+                                "翻译配置 ID" to activeId.toString(),
                                 "翻译服务商名称" to active?.name.orEmpty().ifBlank { "本地/Google" },
                                 "模型 ID" to active?.model.orEmpty().ifBlank { "未提供" },
                                 "源语言代码" to src,
                                 "目标语言代码" to tgt,
+                                "当前批次进度" to "${batchIndex + 1}/${translationBatches.size}",
+                                "请求调用方式" to "translateWithContext",
                                 "本次翻译批次大小" to batch.size.toString(),
+                                "请求总字符数" to batch.sumOf { it.length }.toString(),
+                                "请求最长单行字符数" to (batch.maxOfOrNull { it.length } ?: 0).toString(),
+                                "请求最短单行字符数" to (batch.minOfOrNull { it.length } ?: 0).toString(),
+                                "前文上下文行数" to (retryContext?.first?.size ?: 0).toString(),
+                                "后文提示行数" to lookaheadSource.size.toString(),
+                                "本批字幕原文样本（最多8条短片段，仅保存在本机日志）" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.describeSubtitleRows(
+                                    lines = updatedLines,
+                                    indices = unresolvedIndices,
+                                    maxRows = 8,
+                                ),
+                                "本次请求耗时 ms" to requestDurationMs.toString(),
+                                "错误分类" to errorCategory,
+                                "HTTP 状态码" to httpStatus,
+                                "AI 建议优先检查" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.recommendedChecks(errorCategory),
+                                "本次异常后的处理" to "该请求异常路径立即终止当前翻译任务；不会把本批标记成功，不会自动改用原声",
+                                "本批完整字幕行号（从1开始）" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.summarizeIndices(unresolvedIndices),
                                 "本批起始字幕索引（0-based）" to unresolvedIndices.firstOrNull().toString(),
                                 "本批结束字幕索引（0-based）" to unresolvedIndices.lastOrNull().toString(),
                                 "本批字幕时间范围" to unresolvedIndices.take(40).joinToString("；") { index ->
@@ -10796,21 +10917,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "${index + 1}行：${row?.startMs ?: -1}..${row?.endMs ?: -1} ms"
                                 },
                                 "当前重试次数（0表示首次请求）" to attempt.toString(),
-                                "处理结果" to "请求失败，按引擎策略重试；耗尽后停止翻译",
+                                "处理结果" to "请求异常，按当前实现立即停止此翻译任务（此异常路径未执行行级重试）",
                                 "异常类型链" to generateSequence(e) { it.cause }
                                     .take(8)
                                     .joinToString(" -> ") { it.javaClass.simpleName },
-                                "异常原因链" to generateSequence(e) { it.cause }
-                                    .take(8)
-                                    .joinToString(" -> ") { it.message.orEmpty().take(240) }
-                                    .take(2_000),
+                                "异常原因链" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.causeChain(e),
                                 "已成功翻译行数" to completed.toString(),
-                                "当前任务键类型" to when {
-                                    ui.value.key.startsWith("youtube:") -> "YouTube"
-                                    ui.value.key.startsWith("remote:") -> "网页视频/远程媒体"
-                                    ui.value.key.startsWith("local:") -> "本地视频"
-                                    else -> "其他"
-                                },
+                                "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                                "当前任务键类型" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
                             ),
                         )
                         android.util.Log.e(
@@ -10877,6 +10991,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     lastRejectedRows = parsedBatch.rejectedRows
                     lastRequestRowCount = attemptedIndices.size
                     lastResponseRowCount = batchTranslations.size
+                    lastResponsePreview = batchTranslations.take(8).mapIndexed { index, output ->
+                        "${index + 1}: " + io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.safeSnippet(output, 100)
+                    }.joinToString(" || ").ifBlank { "无" }
+                    val requestDurationMs = ((System.nanoTime() - requestStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L
+                    attemptHistory += "尝试 ${attempt + 1}: 请求 ${attemptedIndices.size} 行，返回 ${batchTranslations.size} 行，有效 ${parsedBatch.translations.size} 行，缺失 ${parsedBatch.missingIndices.size} 行，耗时 ${requestDurationMs} ms；缺失行=" +
+                        io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.summarizeIndices(parsedBatch.missingIndices)
                     if (batchTranslations.size != attemptedIndices.size) hadResponseCountMismatch = true
 
                     // Publish only validated Chinese output. Invalid, blank and source-echo rows
@@ -10910,7 +11030,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
                     if (parsedBatch.rejectedRows.isNotEmpty()) {
                         withContext(Dispatchers.IO) {
-                            io.translatetube.local.util.AppLogStore.info(
+                            io.translatetube.local.util.AppLogStore.warning(
                                 this@PlaybackService,
                                 "Translation",
                                 "模型译文存在未通过校验的字幕行，正在重试",
@@ -10926,14 +11046,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "当前已重试次数" to attempt.toString(),
                                     "失败字幕索引（0-based）" to parsedBatch.rejectedRows.joinToString(",") { it.sourceIndex.toString() },
                                     "失败字幕行号（从1开始）" to parsedBatch.rejectedRows.joinToString(",") { (it.sourceIndex + 1).toString() },
-                                    "逐行失败原因" to describeRejectedTranslationRows(parsedBatch.rejectedRows),
+                                    "逐行失败原因及模型原始返回片段" to describeRejectedTranslationRows(parsedBatch.rejectedRows),
                                     "本轮失败行数" to parsedBatch.rejectedRows.size.toString(),
-                                    "视频来源" to when {
-                                        key.startsWith("youtube:") -> "YouTube"
-                                        key.startsWith("remote:") -> "网页视频/远程媒体"
-                                        key.startsWith("local:") -> "本地视频"
-                                        else -> "导入字幕/其他"
-                                    },
+                                    "尝试序号（含首次）" to (attempt + 1).toString(),
+                                    "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
+                                    "翻译配置 ID" to activeId.toString(),
+                                    "翻译服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
+                                    "翻译引擎实现类" to engine?.javaClass?.name.orEmpty(),
                                     "处理代数" to (pipelineGeneration ?: -1L).toString(),
                                 ),
                             )
@@ -10971,6 +11090,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "翻译引擎名称" to engineName,
                                 "翻译引擎 ID" to (engine?.id ?: "未知"),
                                 "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                                "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
+                                "翻译配置 ID" to activeId.toString(),
+                                "翻译引擎实现类" to engine?.javaClass?.name.orEmpty(),
+                                "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
                                 "源语言代码" to src,
                                 "目标语言代码" to tgt,
                                 "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
@@ -10978,11 +11101,26 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "是否曾出现响应数量不匹配" to hadResponseCountMismatch.toString(),
                                 "最后一次请求字幕行数" to lastRequestRowCount.toString(),
                                 "最后一次接口返回行数" to lastResponseRowCount.toString(),
-                                "处理结果" to "停止翻译，不进入配音阶段",
+                                "处理结果" to "停止翻译，不进入配音阶段；不使用原声兜底",
                                 "字幕总行数" to lines.size.toString(),
                                 "最终缺失字幕索引（0-based）" to missingRows,
-                                "最终缺失字幕行号（从1开始）" to unresolvedIndices.joinToString(",") { (it + 1).toString() },
-                                "最终逐行失败原因" to describeRejectedTranslationRows(finalRejections),
+                                "最终缺失字幕行号（从1开始）" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.summarizeIndices(unresolvedIndices),
+                                "最终逐行失败原因及原文/模型返回片段" to describeRejectedTranslationRows(finalRejections),
+                                "最终失败字幕样本（最多8条，仅本机日志）" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.describeSubtitleRows(
+                                    lines = updatedLines,
+                                    indices = unresolvedIndices,
+                                    translatedByIndex = finalRejections.associate { it.sourceIndex to it.rawOutputPreview },
+                                    reasonByIndex = finalRejections.associate { it.sourceIndex to it.reasonCode + "；" + it.diagnosticReason.orEmpty() },
+                                    maxRows = 8,
+                                ),
+                                "最后一次模型原始响应前8行（条数不匹配时不可按位置对应）" to lastResponsePreview,
+                                "逐次请求与响应统计" to attemptHistory.joinToString(" || ").take(4_000).ifBlank { "没有收到完整模型响应" },
+                                "最终失败分类" to if (hadResponseCountMismatch) "RESPONSE_ROW_COUNT_MISMATCH" else "TRANSLATION_QUALITY_REJECTED",
+                                "AI 建议优先检查" to if (hadResponseCountMismatch) {
+                                    "检查模型返回格式解析器、批次数组拆分、SSE/JSON 响应读取，以及响应条数和请求字幕条数的对应关系。"
+                                } else {
+                                    "检查源语言检测、模型提示词、中文目标语言判定、原文回显判断和不可朗读文本过滤；结合逐行原文/返回片段复现。"
+                                },
                                 "是否有其他行获得有效译文" to (resolvedBatch.values.any { it.isNotBlank() }).toString(),
                             ),
                         )
