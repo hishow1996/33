@@ -5424,7 +5424,7 @@ private fun CurrentSubtitleStrip(
                                     .wrapContentWidth()
                                     .heightIn(min = 42.dp, max = captionMaxHeight)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(Color.Black.copy(alpha = 0.66f))
+                                    .background(Color.Black.copy(alpha = 0.72f))
                             } else {
                                 // Keep the inline current-caption area visually continuous
                                 // with the surrounding white subtitle list.
