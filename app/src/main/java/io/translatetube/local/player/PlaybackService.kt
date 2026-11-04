@@ -13646,7 +13646,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 io.translatetube.local.tts.PiperTts(this, modelId)
             }
             "edge" -> io.translatetube.local.tts.EdgeTts(this)
-            "google" -> io.translatetube.local.tts.GoogleTts()
+            "google" -> io.translatetube.local.tts.GoogleTts(this)
             "gemini" -> io.translatetube.local.tts.GeminiTts(this)
             else -> throw IllegalStateException("未知配音引擎「$selected」，请在设置中重新选择")
         }
