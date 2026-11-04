@@ -1,9 +1,8 @@
 package io.translatetube.local.player
 
-/** 点播放被拦住时给用户看的原因；[offersOriginalOnly] 为 true 时界面提供"仅播放原声"按钮。 */
+/** 点播放被拦住时给用户看的原因。 */
 internal data class PlaybackBlockedHint(
     val message: String,
-    val offersOriginalOnly: Boolean,
 )
 
 /**
@@ -28,20 +27,16 @@ internal object PlaybackBlockedHintPolicy {
         return when {
             waitingForTranscriptionEngine -> PlaybackBlockedHint(
                 "视频暂时不能播放：转写引擎还没准备好。请先在设置里下载或选择转写引擎。",
-                offersOriginalOnly = false,
             )
             dubbingOn && waitingForDubbingEngine -> PlaybackBlockedHint(
-                "$engine 还在准备中，准备好后自动播放。也可选择「仅播放原声」直接观看。",
-                offersOriginalOnly = true,
+                "$engine 还在准备中，准备好后自动播放。请检查配音引擎设置。",
             )
             dubbingOn && dubbingHasErrors -> PlaybackBlockedHint(
                 "配音语音失败：" + (detail ?: "所选配音引擎无法生成语音") +
-                    "。可以检查配音引擎后重试，或选择「仅播放原声」直接观看。",
-                offersOriginalOnly = true,
+                    "。请检查配音引擎设置后重试。",
             )
             dubbingOn && phaseIsError -> PlaybackBlockedHint(
                 "处理过程出错，视频暂不能播放" + (detail?.let { "：$it" } ?: "") + "。请先重试处理。",
-                offersOriginalOnly = false,
             )
             else -> null
         }
