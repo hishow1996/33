@@ -118,21 +118,8 @@ private object ReadyHistorySessionConfigStore {
                 key.contains("transcription", ignoreCase = true) ||
                 key.contains("transcribe", ignoreCase = true) ||
                 key.contains("speech_recognition", ignoreCase = true) ||
-                // Online API profiles and built-in/local translation model choices.
-                key.startsWith("free_gemini_") ||
-                key.startsWith("free_deepseek_") ||
-                key.startsWith("mlkit_") ||
-                key.startsWith("opus_") ||
-                key.startsWith("small100_") ||
-                key.startsWith("single_pair_") ||
-                key.startsWith("local_translation_") ||
-                key.startsWith("online_translation_") ||
-                key.startsWith("cloud_translation_") ||
-                key.startsWith("local_translate_") ||
-                key.startsWith("online_translate_") ||
-                key.startsWith("cloud_translate_") ||
-                key.contains("translate", ignoreCase = true) ||
-                key.contains("translation", ignoreCase = true) ||
+                // Share translation-key classification with the fingerprint domain below.
+                TranslationConfigPreferencePolicy.isTranslationPreferenceKey(key) ||
                 // Voice engine, provider, model and voice-selection settings.
                 key.startsWith("tts_") ||
                 key.startsWith("edge_tts_") ||
@@ -362,22 +349,7 @@ private object ReadyHistorySessionConfigStore {
                     key.contains("transcribe", ignoreCase = true) ||
                     key.contains("speech_recognition", ignoreCase = true)
             EngineConfigDomain.TRANSLATION ->
-                key == "active_api_id" ||
-                    key.startsWith("free_gemini_") ||
-                    key.startsWith("free_deepseek_") ||
-                    // Local model identity and manual/automatic language-mode options affect output.
-                    key.startsWith("mlkit_") ||
-                    key.startsWith("opus_") ||
-                    key.startsWith("small100_") ||
-                    key.startsWith("single_pair_") ||
-                    key.startsWith("local_translation_") ||
-                    key.startsWith("online_translation_") ||
-                    key.startsWith("cloud_translation_") ||
-                    key.startsWith("local_translate_") ||
-                    key.startsWith("online_translate_") ||
-                    key.startsWith("cloud_translate_") ||
-                    key.contains("translate", ignoreCase = true) ||
-                    key.contains("translation", ignoreCase = true)
+                TranslationConfigPreferencePolicy.isTranslationPreferenceKey(key)
             EngineConfigDomain.DUBBING ->
                 DubbingConfigPreferencePolicy.isDubbingPreferenceKey(key)
         }

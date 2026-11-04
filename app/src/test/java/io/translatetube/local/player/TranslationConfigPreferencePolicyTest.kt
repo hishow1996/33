@@ -112,6 +112,23 @@ class TranslationConfigPreferencePolicyTest {
     }
 
     @Test
+    @Test
+    fun historyFingerprintClassificationIncludesEveryLocalTranslatorNamespace() {
+        listOf(
+            "free_gemini_model",
+            "free_deepseek_model",
+            "mlkit_manual_source_language",
+            "opus_manual_source_language",
+            "small100_source_language",
+            "single_pair_source_language",
+            "hymt_source_language",
+        ).forEach { key ->
+            assertTrue("$key must be recognized as a translation setting",
+                TranslationConfigPreferencePolicy.isTranslationPreferenceKey(key))
+        }
+        assertFalse(TranslationConfigPreferencePolicy.isTranslationPreferenceKey("piper_model"))
+    }
+
     fun unknownTranslationPreferencesRemainRelevantForCompatibility() {
         assertTrue(
             TranslationConfigPreferencePolicy.isRelevantForActiveEngine(

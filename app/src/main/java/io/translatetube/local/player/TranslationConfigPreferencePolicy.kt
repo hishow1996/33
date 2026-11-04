@@ -12,6 +12,31 @@ import io.translatetube.local.translate.EngineFactory
 internal object TranslationConfigPreferencePolicy {
     const val ACTIVE_PROFILE_FINGERPRINT_KEY = "translation_active_api_profile_fingerprint"
 
+    /**
+     * Classifies every persisted translator setting so history restart detection and the
+     * translation-domain fingerprint cannot drift apart. Keep model-specific namespaces here,
+     * including HYMT's source-language and mode preferences.
+     */
+    fun isTranslationPreferenceKey(key: String): Boolean =
+        key == "active_api_id" ||
+            key == "translation_source_language" ||
+            key == ACTIVE_PROFILE_FINGERPRINT_KEY ||
+            key.startsWith("free_gemini_") ||
+            key.startsWith("free_deepseek_") ||
+            key.startsWith("mlkit_") ||
+            key.startsWith("opus_") ||
+            key.startsWith("small100_") ||
+            key.startsWith("single_pair_") ||
+            key.startsWith("hymt_") ||
+            key.startsWith("local_translation_") ||
+            key.startsWith("online_translation_") ||
+            key.startsWith("cloud_translation_") ||
+            key.startsWith("local_translate_") ||
+            key.startsWith("online_translate_") ||
+            key.startsWith("cloud_translate_") ||
+            key.contains("translate", ignoreCase = true) ||
+            key.contains("translation", ignoreCase = true)
+
     fun isRelevantForActiveEngine(
         key: String,
         activeTranslationId: Long,
