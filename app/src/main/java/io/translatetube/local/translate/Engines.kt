@@ -319,9 +319,8 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
             return listOf(retryCandidate)
         }
         if (budget.tolerateIsolatedCueFailure()) {
-            // Hand the unusable text (or blank) back instead of failing the whole video. The
-            // caller sees it as a missing row, retries it once and may keep that single cue on
-            // its original audio when the rest of the batch translated normally.
+            // Return the unusable result as an unresolved row. The caller retries it
+            // in the active batch and fails the translation stage if it remains unusable.
             return listOf(retryCandidate.orEmpty())
         }
         val failureReason = when {
