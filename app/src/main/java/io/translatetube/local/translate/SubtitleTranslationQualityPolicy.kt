@@ -163,7 +163,7 @@ internal object SubtitleTranslationQualityPolicy {
         "goodmorning", "goodafternoon", "goodevening", "goodnight",
         "thankyou", "thanksalot", "howareyou", "nicetomeetyou",
         "seeyou", "takecare", "welldone", "comeon", "letsgo",
-        "goodluck", "happbirthday", "haveaniceday", "whatsup",
+        "goodluck", "happybirthday", "haveaniceday", "whatsup",
     )
 
     /** 原文里没有任何可朗读内容（只有 ♪、…、- 之类的符号）：不需要翻译，也不会有配音。 */
