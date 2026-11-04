@@ -8987,7 +8987,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         "PCM 采样率 Hz" to "16000",
                         "PCM 声道数" to "1",
                         "PCM 位深 bits" to "16",
-                        "PCM 采样点数" to ((pcmFile.file.length().coerceAtLeast(44L) - 44L) / 2L).toString(),
+                        "PCM 采样点数" to pcmFile.sampleCount.toString(),
                         "转写服务商 ID" to asrProvider,
                         "转写语言参数" to cloudLanguage,
                         "本地转写模型 ID" to localAsrModelId.ifBlank { "未选择/未使用" },
@@ -10083,8 +10083,8 @@ updateUiForSession(key, pipelineGeneration) {
                 currentStageDiagnostics.putAll(
                     mapOf(
                         "诊断事件类型" to "PLAYBACK_ASSEMBLY_STAGE",
-                        "当前处理阶段" to Phase.SYNTHESIZING.name,
-                        "当前处理子步骤" to "装配播放器媒体源、初始化配音并准备可播放队列",
+                        "当前处理阶段" to "PLAYBACK_ASSEMBLY",
+                        "当前处理子步骤" to "装配播放器媒体源；尚未进入配音引擎初始化",
                         "视频来源" to when {
                             videoId != null -> "YouTube"
                             remoteMediaUrl != null -> "网页视频/远程媒体"
@@ -10165,12 +10165,28 @@ updateUiForSession(key, pipelineGeneration) {
 
                 // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
                 dubbingStageEntered = true
+                currentStageDiagnostics.putAll(
+                    mapOf(
+                        "当前处理阶段" to Phase.SYNTHESIZING.name,
+                        "当前处理子步骤" to "初始化设置中明确选择的配音引擎",
+                        "当前字幕总行数" to finalLines.size.toString(),
+                        "当前有效译文行数" to finalLines.count { !it.zh.isNullOrBlank() }.toString(),
+                        "配音是否启用" to ui.value.dubbingOn.toString(),
+                    ),
+                )
                 if (finalLines.isNotEmpty()) {
                     val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
                         getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
                     )
                     val selectedTtsName = ttsDisplayName(selectedTts)
                     updateUiForSession(key, pipelineGeneration) { it.copy(ttsEngineName = selectedTtsName) }
+                    currentStageDiagnostics.putAll(
+                        mapOf(
+                            "配音引擎 ID" to selectedTts,
+                            "配音引擎名称" to selectedTtsName,
+                            "配音引擎配置状态" to "已读取设置并开始检查可用性",
+                        ),
+                    )
 
                     val selectedEngineReady = when (selectedTts) {
                         "system" -> true
