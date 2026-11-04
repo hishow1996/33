@@ -11374,12 +11374,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (unresolvedIndices.isNotEmpty()) {
                     val finalRejections = lastRejectedRows.filter { it.sourceIndex in unresolvedIndices }
                     val missingRows = unresolvedIndices.joinToString(",")
+                    val failureDetail = if (hadResponseCountMismatch) {
+                        "翻译接口响应数量曾与请求不一致；已重试和拆分恢复，但仍有字幕未通过校验。为避免把网络/接口异常伪装成成功，本批次已禁止原声兜底。"
+                    } else {
+                        "字幕翻译多次重试后仍有行未通过校验。"
+                    }
                     withContext(Dispatchers.IO) {
                         io.translatetube.local.util.AppLogStore.error(
                             this@PlaybackService,
                             "Translation",
-                            "字幕翻译多次重试后仍有行未通过校验",
-                            IllegalStateException("Missing subtitle translation rows: $missingRows"),
+                            if (hadResponseCountMismatch) {
+                                "字幕翻译接口响应数量异常：已禁止原声兜底"
+                            } else {
+                                "字幕翻译多次重试后仍有行未通过校验"
+                            },
+                            IllegalStateException(failureDetail),
                             diagnosticContext = mapOf(
                                 "翻译引擎名称" to engineName,
                                 "翻译引擎 ID" to (engine?.id ?: "未知"),
@@ -11388,6 +11397,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "目标语言代码" to tgt,
                                 "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
                                 "当前批次重试请求次数（含首次）" to attempt.toString(),
+                                "是否曾出现响应数量不匹配" to hadResponseCountMismatch.toString(),
+                                "最后一次请求字幕行数" to lastRequestRowCount.toString(),
+                                "最后一次接口返回行数" to lastResponseRowCount.toString(),
+                                "原声兜底策略" to if (hadResponseCountMismatch) {
+                                    "禁止：本批次曾出现响应数量不匹配"
+                                } else {
+                                    "未使用：剩余字幕未通过翻译校验"
+                                },
                                 "字幕总行数" to lines.size.toString(),
                                 "最终缺失字幕索引（0-based）" to missingRows,
                                 "最终缺失字幕行号（从1开始）" to unresolvedIndices.joinToString(",") { (it + 1).toString() },
@@ -11397,8 +11414,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     }
                     throw TranslationFailureException(
-                        "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。",
-                        IllegalStateException("Missing subtitle translation rows: $missingRows"),
+                        if (hadResponseCountMismatch) {
+                            "翻译接口响应数量异常：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文，已禁止原声兜底。请检查网络和翻译服务后重试。"
+                        } else {
+                            "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。"
+                        },
+                        IllegalStateException(failureDetail + " 缺失字幕索引：$missingRows"),
                     )
                 }
 
