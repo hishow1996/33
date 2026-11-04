@@ -3816,7 +3816,24 @@ class DubbingEngine(
                             }.getOrDefault("读取失败"),
                         ),
                     )
-                    runCatching { markCuePrepared(idx, hasAudio = false) }
+                    val failureStillOwnsCue = synchronized(playbackControlLock) {
+                        val ownsCurrentRequest = !released &&
+                            playbackGeneration.get() == generation &&
+                            _currentLine.value == idx &&
+                            isCacheConfigurationCurrent(cacheGenerationAtRequest) &&
+                            outputBus.generationToken() == busGenerationAtRequest
+                        if (ownsCurrentRequest) {
+                            val detail = error.message ?: error.javaClass.simpleName
+                            silentCueReasonsByIndex[idx] = "PCM 挂载混流总线失败：$detail"
+                            markCuePrepared(idx, hasAudio = false)
+                        }
+                        ownsCurrentRequest
+                    }
+                    if (failureStillOwnsCue) {
+                        reportSynthesisError(
+                            "第 ${idx + 1} 句中文配音 PCM 挂载混流总线失败：${error.message ?: error.javaClass.simpleName}"
+                        )
+                    }
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -3892,7 +3909,7 @@ class DubbingEngine(
         val merged = chunkTextByFirst[first]?.takeIf { it.isNotBlank() } ?: return null
         val isMergedChunk = chunkRedirect.containsValue(first)
         if (!isMergedChunk || !isPrepared(first) || isSilent(first)) return null
-        // 合并文本里空译文行会退回原文，只有两行都有可用译文时才让字幕条跟随。
+        // 任一合并行缺少有效中文译文时，不覆盖字幕原有显示。
         val partners = chunkRedirect.filterValues { it == first }.keys
         if (lines.getOrNull(first)?.zh.isNullOrBlank() || partners.any { lines.getOrNull(it)?.zh.isNullOrBlank() }) return null
         return merged
