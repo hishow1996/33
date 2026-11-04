@@ -5425,7 +5425,7 @@ private fun CurrentSubtitleStrip(
                                     .wrapContentWidth()
                                     .heightIn(min = 42.dp, max = captionMaxHeight)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(Color.Black.copy(alpha = 0.46f))
+                                    .background(Color.Black.copy(alpha = 0.30f))
                             } else {
                                 // Keep the inline current-caption area visually continuous
                                 // with the surrounding white subtitle list.
@@ -5457,6 +5457,13 @@ private fun CurrentSubtitleStrip(
                         Text(
                             text = translated,
                             color = if (fullscreen) Color.White else BrandBright,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                shadow = androidx.compose.ui.graphics.Shadow(
+                                    color = Color.Black.copy(alpha = 0.92f),
+                                    offset = Offset(0f, 1.5f),
+                                    blurRadius = 2.5f,
+                                ),
+                            ),
                             fontSize = if (fullscreen) fullscreenChineseSize else 15.sp,
                             lineHeight = if (fullscreen) fullscreenChineseLineHeight else 18.sp,
                             fontWeight = FontWeight.Medium,
@@ -5474,6 +5481,13 @@ private fun CurrentSubtitleStrip(
                         Text(
                             text = source,
                             color = Color(0xFFE1E5EC),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                shadow = androidx.compose.ui.graphics.Shadow(
+                                    color = Color.Black.copy(alpha = 0.88f),
+                                    offset = Offset(0f, 1.5f),
+                                    blurRadius = 2.5f,
+                                ),
+                            ),
                             fontSize = fullscreenOriginalSize,
                             lineHeight = fullscreenOriginalLineHeight,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
