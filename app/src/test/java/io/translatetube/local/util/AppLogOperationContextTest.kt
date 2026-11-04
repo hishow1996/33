@@ -46,6 +46,65 @@ class AppLogOperationContextTest {
     }
 
     @Test
+    fun supplementalStageEvidenceSurvivesLiveUiSnapshotRefreshes() {
+        val operation = AppLogOperationContext(
+            operationId = "pipeline-run-321",
+            mediaSource = "本地视频",
+            videoSessionFingerprint = "video-fp-stage",
+            pipelineGeneration = 23L,
+        )
+        operation.updateSnapshot(
+            mapOf(
+                "当前处理阶段" to "DOWNLOADING_AUDIO",
+                "当前处理步骤" to "正在定位音轨",
+                "字幕总行数" to "0",
+            ),
+        )
+        operation.updateSupplementalSnapshot(
+            mapOf(
+                "当前处理阶段" to "TRANSCRIBING",
+                "当前处理子步骤" to "16 kHz PCM 已准备，开始分段识别",
+                "PCM 音频时长 ms" to "125000",
+                "PCM 采样点数" to "2000000",
+            ),
+        )
+
+        // A later UI tick refreshes the ordinary snapshot. It must not erase technical
+        // evidence gathered by the ASR stage.
+        operation.updateSnapshot(
+            mapOf(
+                "当前 UI 阶段" to "TRANSCRIBING",
+                "当前处理步骤" to "转写中 3/8 段",
+                "转写已完成分段" to "3",
+                "转写总分段" to "8",
+            ),
+        )
+
+        val fields = operation.diagnosticFields()
+        assertEquals("TRANSCRIBING", fields["当前处理阶段"])
+        assertEquals("转写中 3/8 段", fields["当前处理步骤"])
+        assertEquals("16 kHz PCM 已准备，开始分段识别", fields["当前处理子步骤"])
+        assertEquals("125000", fields["PCM 音频时长 ms"])
+        assertEquals("2000000", fields["PCM 采样点数"])
+        assertEquals("3", fields["转写已完成分段"])
+        assertEquals("8", fields["转写总分段"])
+    }
+
+    @Test
+    fun clearingSupplementalSnapshotRemovesPreviousStageEvidence() {
+        val operation = AppLogOperationContext(
+            operationId = "pipeline-run-654",
+            mediaSource = "YouTube",
+            videoSessionFingerprint = "video-fp-next-stage",
+            pipelineGeneration = 24L,
+        )
+        operation.updateSupplementalSnapshot(mapOf("PCM 音频时长 ms" to "125000"))
+        operation.updateSupplementalSnapshot(emptyMap())
+
+        assertTrue(!operation.diagnosticFields().containsKey("PCM 音频时长 ms"))
+    }
+
+    @Test
     fun pipelineOperationIdTakesPrecedenceOverNestedTranslationId() {
         val operationId = AppLogStore.extractOperationId(
             diagnosticContext = mapOf(
