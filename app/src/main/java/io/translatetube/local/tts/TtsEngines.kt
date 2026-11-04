@@ -227,7 +227,9 @@ class SystemTts(
     private val lifecycleLock = Any()
 
     init {
+        var initializationStatus = Int.MIN_VALUE
         val tts = TextToSpeech(appCtx) { status ->
+            initializationStatus = status
             ok = status == TextToSpeech.SUCCESS
             ready.countDown()
         }
@@ -237,18 +239,55 @@ class SystemTts(
             runCatching { tts.stop() }
             runCatching { tts.shutdown() }
         }
+        fun logInitializationFailure(
+            stage: String,
+            failure: Throwable? = null,
+            extra: Map<String, String> = emptyMap(),
+        ) {
+            val voices = runCatching { tts.voices.orEmpty() }.getOrDefault(emptyList())
+            val chineseVoices = voices.filter { it.locale.language.equals("zh", ignoreCase = true) }
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    appCtx,
+                    "SystemTTS",
+                    "系统 TTS 初始化失败：$stage",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "失败阶段" to stage,
+                        "播放模式" to playbackMode.name,
+                        "系统 TTS 引擎包名" to runCatching { tts.defaultEngine }.getOrNull().orEmpty().ifBlank { "未知" },
+                        "Android SDK" to android.os.Build.VERSION.SDK_INT.toString(),
+                        "Android 版本" to android.os.Build.VERSION.RELEASE.orEmpty(),
+                        "系统默认语言" to Locale.getDefault().toLanguageTag(),
+                        "系统 TTS 初始化回调状态码" to initializationStatus.toString(),
+                        "系统 TTS 是否初始化成功" to ok.toString(),
+                        "系统已安装语音总数" to voices.size.toString(),
+                        "系统中文音色数量" to chineseVoices.size.toString(),
+                        "系统中文音色名称" to chineseVoices.take(16).joinToString(",") { it.name }.ifBlank { "无" },
+                        "当前选择的中文音色" to defaultChineseVoice?.name.orEmpty().ifBlank { "尚未选择" },
+                        "失败时是否已释放 TTS 实例" to (ttsRef.get() !== tts).toString(),
+                    ) + extra,
+                )
+            }
+        }
         val initialized = try {
             ready.await(15, java.util.concurrent.TimeUnit.SECONDS)
         } catch (interrupted: InterruptedException) {
+            logInitializationFailure("等待系统初始化回调时被中断", interrupted, mapOf("等待时长上限 ms" to "15000"))
             disposeFailedEngine()
             Thread.currentThread().interrupt()
             throw IllegalStateException("等待手机系统 TTS 初始化时被中断", interrupted)
         }
         if (!initialized) {
+            logInitializationFailure(
+                "初始化回调超时",
+                extra = mapOf("等待时长上限 ms" to "15000", "是否收到初始化回调" to "否"),
+            )
             disposeFailedEngine()
             throw IllegalStateException("手机系统 TTS 初始化超时（15 秒），请检查默认文字转语音服务")
         }
         if (!ok) {
+            logInitializationFailure("系统 TTS 初始化回调返回失败")
             disposeFailedEngine()
             throw IllegalStateException("手机系统文字转语音服务启动失败，请检查系统 TTS 引擎")
         }
@@ -257,6 +296,16 @@ class SystemTts(
         if (languageResult < TextToSpeech.LANG_AVAILABLE) {
             // This mode must remain the selected system TTS engine. Do not silently switch
             // to another locale or another engine when Chinese voice data is missing.
+            logInitializationFailure(
+                "系统 TTS 不支持简体中文或缺少中文语音数据",
+                extra = mapOf(
+                    "请求语言" to Locale.SIMPLIFIED_CHINESE.toLanguageTag(),
+                    "setLanguage 返回码" to languageResult.toString(),
+                    "LANG_AVAILABLE 最低值" to TextToSpeech.LANG_AVAILABLE.toString(),
+                    "LANG_COUNTRY_AVAILABLE 值" to TextToSpeech.LANG_COUNTRY_AVAILABLE.toString(),
+                    "LANG_COUNTRY_VAR_AVAILABLE 值" to TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE.toString(),
+                ),
+            )
             disposeFailedEngine()
             throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据")
         }
@@ -279,6 +328,14 @@ class SystemTts(
             availableChineseVoices,
         ) { it.name }
         if (defaultVoice == null) {
+            logInitializationFailure(
+                "系统 TTS 初始化成功，但没有可用中文音色",
+                extra = mapOf(
+                    "中文音色候选数量" to availableChineseVoices.size.toString(),
+                    "配置的音色是否存在" to configuredVoiceName.isNullOrBlank().not().toString(),
+                    "当前系统音色语言" to tts.voice?.locale?.toLanguageTag().orEmpty().ifBlank { "未知" },
+                ),
+            )
             disposeFailedEngine()
             throw IllegalStateException("系统 TTS 没有可用的中文音色")
         }
@@ -287,12 +344,38 @@ class SystemTts(
         if (tts.voice?.name != defaultVoice.name) {
             val voiceResult = tts.setVoice(defaultVoice)
             if (voiceResult != TextToSpeech.SUCCESS) {
+                logInitializationFailure(
+                    "无法切换到用户选定的中文音色",
+                    extra = mapOf(
+                        "目标音色名称" to defaultVoice.name,
+                        "目标音色语言" to defaultVoice.locale.toLanguageTag(),
+                        "setVoice 返回码" to voiceResult.toString(),
+                    ),
+                )
                 disposeFailedEngine()
                 throw IllegalStateException("系统 TTS 无法切换到可用中文音色：${defaultVoice.name}")
             }
         }
         defaultChineseVoice = defaultVoice
         chineseVoiceCatalog = catalogue
+        runCatching {
+            io.translatetube.local.util.AppLogStore.info(
+                appCtx,
+                "SystemTTS",
+                "系统 TTS 初始化完成",
+                diagnosticContext = mapOf(
+                    "播放模式" to playbackMode.name,
+                    "系统 TTS 引擎包名" to runCatching { tts.defaultEngine }.getOrNull().orEmpty().ifBlank { "未知" },
+                    "系统 TTS 初始化回调状态码" to initializationStatus.toString(),
+                    "请求语言" to Locale.SIMPLIFIED_CHINESE.toLanguageTag(),
+                    "当前默认中文音色" to defaultVoice.name,
+                    "当前默认音色语言" to defaultVoice.locale.toLanguageTag(),
+                    "中文音色数量" to catalogue.size.toString(),
+                    "可用中文音色" to catalogue.take(16).joinToString(",") { it.name },
+                    "是否支持多人物音色输出" to SystemTtsSpeakerVoicePolicy.speakerIdAffectsOutput(catalogue.size).toString(),
+                ),
+            )
+        }
         // The player UI must list the same ordered catalogue that synth() indexes. This avoids
         // pretending that the Kokoro 0-53 palette maps 1:1 to OEM-provided system voices.
         appCtx.getSharedPreferences("settings", Context.MODE_PRIVATE)
