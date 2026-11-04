@@ -58,6 +58,34 @@ class DubbingSourceVolumePolicyTest {
     }
 
     @Test
+    fun explicitOriginalAudioChoiceOverridesTemporaryPendingCueMute() {
+        assertEquals(
+            1f,
+            DubbingSourceVolumePolicy.sourceGain(
+                originalVolume = 0.7f,
+                dubbingVolume = 1f,
+                dubbingEnabled = true,
+                dubbingStarted = false,
+                dubbingCuePending = true,
+                manualOriginalAudioOverride = true,
+            ),
+            0f,
+        )
+        assertEquals(
+            0f,
+            DubbingSourceVolumePolicy.sourceGain(
+                originalVolume = 0.7f,
+                dubbingVolume = 1f,
+                dubbingEnabled = true,
+                dubbingStarted = false,
+                dubbingCuePending = true,
+                manualOriginalAudioOverride = false,
+            ),
+            0f,
+        )
+    }
+
+    @Test
     fun originalMutePreferenceAlwaysWins() {
         assertEquals(0f, DubbingSourceVolumePolicy.sourceGain(0f, 1f, true, false), 0f)
         assertEquals(0f, DubbingSourceVolumePolicy.sourceGain(0f, 1f, true, true), 0f)
