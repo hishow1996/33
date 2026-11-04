@@ -161,6 +161,12 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun onlyAnUnchangedProperNameIsExemptFromChineseTargetLanguageChecks() {
+        assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch("Elon Musk", "Elon Musk", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch("Elon Musk", "David Beckham", "en", "zh-CN"))
+    }
+
+    @Test
     fun doesNotMarkChineseSourceCaptionsAsMissingTranslations() {
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("正在翻译", "正在翻译", "zh-Hans"))
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("你好", "你好", "cmn"))
@@ -230,22 +236,18 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
-    fun acceptsConfirmedShortNamesButNotWordsWithKnownChineseInterjectionTranslations() {
-        assertTrue(
-            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
-                "John", "John", "en", "zh-CN",
-            ),
-        )
-        assertTrue(
-            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
-                "Sarah", "Sara", "en", "zh-CN",
-            ),
-        )
-        assertFalse(
-            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
-                "Hello", "Hello", "en", "zh-CN",
-            ),
-        )
+    fun acceptsConfirmedShortNamesOnlyWhenWordCountAndSpellingStillMatch() {
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("John", "John", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah", "Sara", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah Smith", "Sara Smith", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("J. K. Rowling", "J. K. Rowling", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("John", "David", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah", "David", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("John Smith", "John David", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("John Smith", "John", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Goodbye", "Goodbye", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Wait", "Wait", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Hello", "Hello", "en", "zh-CN"))
     }
 
     @Test

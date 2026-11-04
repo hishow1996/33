@@ -125,30 +125,32 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
-    fun restoresConfirmedShortNamesButStillRejectsHelloReturnedUnchanged() {
+    fun restoresConfirmedShortNamesButRejectsWordEchoesAndWrongNameSubstitutions() {
         val source = listOf(
             io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "John"),
             io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "Hello"),
             io.translatetube.local.subs.SubLine(2, 2_000L, 3_000L, "Sarah"),
             io.translatetube.local.subs.SubLine(3, 3_000L, 4_000L, "Taxi"),
+            io.translatetube.local.subs.SubLine(4, 4_000L, 5_000L, "Goodbye"),
+            io.translatetube.local.subs.SubLine(5, 5_000L, 6_000L, "John"),
+            io.translatetube.local.subs.SubLine(6, 6_000L, 7_000L, "Elon Musk"),
         )
-        val cached = listOf(
-            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "John", "John"),
-            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Hello", "Hello"),
-            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "Sarah", "Sara"),
-            SubtitleCacheValidationPolicy.CachedTranslationRow(3_000L, 4_000L, "Taxi", "Taxi"),
-        )
-
         val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
             source,
-            cached,
+            listOf(
+                SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "John", "John"),
+                SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Hello", "Hello"),
+                SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "Sarah", "Sara"),
+                SubtitleCacheValidationPolicy.CachedTranslationRow(3_000L, 4_000L, "Taxi", "Taxi"),
+                SubtitleCacheValidationPolicy.CachedTranslationRow(4_000L, 5_000L, "Goodbye", "Goodbye"),
+                SubtitleCacheValidationPolicy.CachedTranslationRow(5_000L, 6_000L, "John", "David"),
+                SubtitleCacheValidationPolicy.CachedTranslationRow(6_000L, 7_000L, "Elon Musk", "David Beckham"),
+            ),
             sourceLanguage = "en",
-            targetLanguage = "zh-CN",
         ) ?: throw AssertionError("Expected valid translations and confirmed short names to restore")
 
-        assertEquals(listOf("John", null, "Sara", "Taxi"), restored.map { it.zh })
+        assertEquals(listOf("John", null, "Sara", "Taxi", null, null, null), restored.map { it.zh })
     }
-
     @Test
     fun treatsCachedSourceLanguageParaphrasesAsMissingForChineseTarget() {
         val source = listOf(

@@ -65,29 +65,28 @@ internal object DubbingTranslationPolicy {
                 "译文只有标点、符号或表情，没有可朗读内容",
             )
         }
-        // 人名/品牌/外来词这类短行翻译后仍是拉丁字母写法：没有可翻内容，作为有效译文保留，
-        // 不能让一行本来就不用翻译的字幕卡住整个视频的翻译和配音。
-        if (SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
-                sourceText, cleaned, detectedSource,
+        if (!SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                sourceText = sourceText,
+                translatedText = cleaned,
+                sourceLanguage = detectedSource,
+                targetLanguage = "zh",
+                acceptShortUnchanged = true,
             )
         ) {
-            return DubbingTranslationResolution(cleaned)
-        }
-        if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {
-            return DubbingTranslationResolution(
-                null,
-                if (ambiguousHanSource) {
-                    "原字幕仅含汉字，无法确认是中文还是日语；拒绝把原文直接当成中文配音，请确认源语言或提供中文译文"
-                } else {
-                    "译文与原文相同，未生成中文译文"
-                },
-            )
-        }
-        if (SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
-                sourceText, cleaned, detectedSource, "zh",
-            )
-        ) {
-            return DubbingTranslationResolution(null, "译文未达到中文目标语言")
+            if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {
+                return DubbingTranslationResolution(
+                    null,
+                    if (ambiguousHanSource) {
+                        "原字幕仅含汉字，无法确认是中文还是日语；拒绝把原文直接当成中文配音，请确认源语言或提供中文译文"
+                    } else {
+                        "译文与原文相同，未生成中文译文"
+                    },
+                )
+            }
+            if (SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(sourceText, cleaned, detectedSource, "zh")) {
+                return DubbingTranslationResolution(null, "译文未达到中文目标语言")
+            }
+            return DubbingTranslationResolution(null, "译文未通过中文字幕质量校验")
         }
         return DubbingTranslationResolution(cleaned)
     }

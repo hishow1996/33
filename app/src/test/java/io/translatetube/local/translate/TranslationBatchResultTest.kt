@@ -263,6 +263,21 @@ class TranslationBatchResultTest {
     }
 
     @Test
+    fun retryOnlyConfirmsShortNamesWhenTheReturnedSpellingStillMatches() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(0, 1, 2, 3),
+            rawTranslations = listOf("John", "Sara", "David", "David Beckham"),
+            sourceTexts = mapOf(0 to "John", 1 to "Sarah", 2 to "John", 3 to "Elon Musk"),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+            acceptShortUnchanged = true,
+        )
+
+        assertEquals(mapOf(0 to "John", 1 to "Sara"), result.translations)
+        assertEquals(listOf(2, 3), result.missingIndices)
+    }
+
+    @Test
     fun ordinarySentenceEchoIsStillRejectedAndNonEnglishSourceIsNotSubstituted() {
         val sentence = TranslationBatchResult.from(
             listOf(1),

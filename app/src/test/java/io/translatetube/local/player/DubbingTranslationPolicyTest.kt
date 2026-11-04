@@ -161,6 +161,10 @@ class DubbingTranslationPolicyTest {
         assertEquals("Taxi", DubbingTranslationPolicy.usableText("Taxi", "Taxi", "en"))
         // A known interjection must use its Chinese equivalent, not the short-name exception.
         assertNull(DubbingTranslationPolicy.usableText("Hello", "Hello", "en"))
+        assertNull(DubbingTranslationPolicy.usableText("Goodbye", "Goodbye", "en"))
+        assertNull(DubbingTranslationPolicy.usableText("John", "David", "en"))
+        assertNull(DubbingTranslationPolicy.usableText("Elon Musk", "David Beckham", "en"))
+        assertEquals("Sara", DubbingTranslationPolicy.usableText("Sarah", "Sara", "en"))
         // Whole sentences returned unchanged remain a failed translation.
         assertNull(DubbingTranslationPolicy.usableText("Thank you.", "Thank you.", "en"))
         assertNull(DubbingTranslationPolicy.usableText("Where are you?", "Where are you?", "en"))

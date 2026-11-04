@@ -27,22 +27,14 @@ internal object SubtitleCacheValidationPolicy {
         targetLanguage: String,
     ): String? {
         val cleaned = SubtitleParsers.cleanTranslatedText(cached) ?: return null
-        if (SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(sourceText, cleaned)) {
-            return null
-        }
-        val sourceEcho = SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, sourceLanguage)
-        val targetMismatch = SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
-            sourceText, cleaned, sourceLanguage, targetLanguage,
-        )
-        // The live retry path accepts a narrow set of unchanged short names/brands after a retry.
-        // Cache restoration must apply that exact exception, otherwise the same confirmed name
-        // becomes missing on every reopen. Ordinary words such as Hello remain rejected because
-        // their known Chinese interjection equivalent is handled before the short-name exception.
-        val acceptedShortTerm = (sourceEcho || targetMismatch) &&
-            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
-                sourceText, cleaned, sourceLanguage, targetLanguage,
+        if (!SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                sourceText = sourceText,
+                translatedText = cleaned,
+                sourceLanguage = sourceLanguage,
+                targetLanguage = targetLanguage,
+                acceptShortUnchanged = true,
             )
-        if ((sourceEcho || targetMismatch) && !acceptedShortTerm) return null
+        ) return null
         return cleaned
     }
 

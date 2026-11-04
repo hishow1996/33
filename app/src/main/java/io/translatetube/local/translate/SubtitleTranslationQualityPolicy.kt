@@ -2,6 +2,7 @@ package io.translatetube.local.translate
 
 import java.text.Normalizer
 import java.util.Locale
+import io.translatetube.local.tts.TtsTextPolicy
 
 /** Shared validation for live translation batches and restored subtitle caches. */
 internal object SubtitleTranslationQualityPolicy {
@@ -31,12 +32,9 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     /**
-     * 短字幕（人名、地名、品牌、外来词，如 "Sarah." / "Taxi" / "Tom Hanks?"）译文可以和原文相同，
-     * 也可能只是换了拉丁字母写法（Sarah → Sara）。这类行没有可翻的内容，模型/引擎反复返回也不会变；
-     * 普通整句原样返回才是翻译失败。
-     *
-     * 只在重试之后才使用：第一次返回时仍按失败处理，让引擎有机会真的翻成中文。
-     * 条件很窄：目标是中文、原文和译文都是 1~3 个纯拉丁字母词，且多词时每个词都首字母大写。
+     * 短字幕（人名、地名、品牌、外来词）只有在原译词数一致、逐词拼写相同或仅有一个轻微字符差异时，
+     * 才能作为无需翻译的保留项。这样可接受 Sarah → Sara，但不会把 John → David 误判成人名。
+     * 首次翻译仍严格要求中文；仅在重试、缓存恢复和最终配音校验中启用此例外。
      */
     fun isAcceptableShortUntranslatedCue(
         sourceText: String?,
@@ -47,34 +45,109 @@ internal object SubtitleTranslationQualityPolicy {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         if (!SourceLanguagePolicy.isChinese(targetLanguage)) return false
         if (SourceLanguagePolicy.isChinese(SourceLanguagePolicy.normalizeTag(sourceLanguage))) return false
-        // A short word with a known Chinese interjection equivalent must not be cached as an
-        // untranslated proper name (for example Hello -> Hello instead of Hello -> 你好).
-        if (SubtitleInterjectionPolicy.chineseFor(sourceText, sourceLanguage, targetLanguage) != null) {
-            return false
-        }
+        if (SubtitleInterjectionPolicy.chineseFor(sourceText, sourceLanguage, targetLanguage) != null) return false
+
         val source = sourceText.trim()
         val translated = translatedText.trim()
         if (source.length > 40 || translated.length > 48) return false
-        if (!translated.any { it.isLetterOrDigit() }) return false
         val sourceTokens = shortLatinTokens(source) ?: return false
         val translatedTokens = shortLatinTokens(translated) ?: return false
-        if (sourceTokens.size > 1 && !sourceTokens.all { it.first().isUpperCase() }) return false
-        return translatedTokens.isNotEmpty()
+        if (sourceTokens.size != translatedTokens.size) return false
+        if (sourceTokens.size > 1 && !hasTitleCasedWords(source)) return false
+        if (sourceTokens.size == 1 && sourceTokens.single() in commonShortWords) return false
+
+        return sourceTokens.indices.all { index ->
+            hasSameOrNearSpelling(sourceTokens[index], translatedTokens[index])
+        }
     }
 
-    /** 1~3 个词、每个词都由拉丁字母（可含 ' . - ’）组成时返回词列表，否则返回 null。 */
+    /** 1~3 个拉丁词；只允许姓名标点及行尾标点，数字和其他文字系统不放行。 */
     private fun shortLatinTokens(value: String): List<String>? {
-        val tokens = value.trim().trim('"', '\'', '“', '”', '‘', '’').split(Regex("\\s+")).filter { it.isNotEmpty() }
-        if (tokens.isEmpty() || tokens.size > 3) return null
-        val cleaned = tokens.map { token -> token.trim { !it.isLetter() } }
-        if (cleaned.any { it.length < 2 }) return null
-        if (cleaned.any { token ->
-                token.any { it.isLetter() && Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN } ||
-                    token.any { it.isDigit() }
-            }
-        ) return null
-        return cleaned
+        val rawTokens = value.trim().trim('"', '\'', '“', '”', '‘', '’')
+            .split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (rawTokens.isEmpty() || rawTokens.size > 3) return null
+        return rawTokens.map { token ->
+            val letters = token.filter { it.isLetter() }
+            val dottedInitial = letters.length == 1 && token.trim().endsWith(".") && letters.first().isUpperCase()
+            if (letters.length < 2 && !dottedInitial) return null
+            if (token.any { it.isDigit() || (!it.isLetter() && it !in ".'’-,!?") }) return null
+            if (letters.any { Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN }) return null
+            letters.lowercase(Locale.ROOT)
+        }
     }
+
+    private fun hasTitleCasedWords(value: String): Boolean =
+        value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { token ->
+            token.firstOrNull { it.isLetter() }?.isUpperCase() == true
+        }
+
+    /** Same spelling, or one insertion/deletion/substitution on a sufficiently long name token. */
+    private fun hasSameOrNearSpelling(source: String, translated: String): Boolean {
+        if (source == translated) return true
+        if (source.length < 5 || translated.length < 4) return false
+        if (kotlin.math.abs(source.length - translated.length) > 1) return false
+        if (source.first() != translated.first()) return false
+        val shorter = minOf(source.length, translated.length)
+        val longer = maxOf(source.length, translated.length)
+        if (shorter * 5 < longer * 4) return false
+
+        var sourceIndex = 0
+        var translatedIndex = 0
+        var edits = 0
+        while (sourceIndex < source.length && translatedIndex < translated.length) {
+            if (source[sourceIndex] == translated[translatedIndex]) {
+                sourceIndex++
+                translatedIndex++
+                continue
+            }
+            edits++
+            if (edits > 1) return false
+            when {
+                source.length > translated.length -> sourceIndex++
+                translated.length > source.length -> translatedIndex++
+                else -> {
+                    sourceIndex++
+                    translatedIndex++
+                }
+            }
+        }
+        if (sourceIndex < source.length || translatedIndex < translated.length) edits++
+        return edits <= 1
+    }
+
+    private fun diagnosticShortSpellingMatch(source: String, translated: String): Boolean {
+        val sourceTokens = shortLatinTokens(source) ?: return false
+        val translatedTokens = shortLatinTokens(translated) ?: return false
+        return sourceTokens.size == translatedTokens.size && sourceTokens.indices.all { index ->
+            hasSameOrNearSpelling(sourceTokens[index], translatedTokens[index])
+        }
+    }
+
+    /** Shared acceptance check for cache recovery, retry context and the final dubbing guard. */
+    fun isUsableChineseTranslation(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String = "zh",
+        acceptShortUnchanged: Boolean = false,
+    ): Boolean {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
+        if (!TtsTextPolicy.hasSpeakableContent(translatedText)) return false
+        if (isPunctuationOnlyTranslation(sourceText, translatedText)) return false
+        val sourceEcho = isSourceEcho(sourceText, translatedText, sourceLanguage)
+        val targetMismatch = isTargetLanguageMismatch(sourceText, translatedText, sourceLanguage, targetLanguage)
+        if (!sourceEcho && !targetMismatch) return true
+        return acceptShortUnchanged && isAcceptableShortUntranslatedCue(
+            sourceText, translatedText, sourceLanguage, targetLanguage,
+        )
+    }
+
+    private val commonShortWords = setOf(
+        "again", "always", "because", "bye", "come", "goodbye", "help", "here", "how",
+        "later", "listen", "look", "maybe", "never", "no", "now", "please", "really",
+        "right", "sorry", "stop", "thanks", "thank", "there", "wait", "welcome", "what",
+        "when", "where", "who", "why", "yes",
+    )
 
     /** 原文里没有任何可朗读内容（只有 ♪、…、- 之类的符号）：不需要翻译，也不会有配音。 */
     fun hasNothingToSpeak(sourceText: String?): Boolean =
@@ -82,7 +155,7 @@ internal object SubtitleTranslationQualityPolicy {
 
     /**
      * Detect a likely wrong-language response for Chinese subtitle output.
-     * Names, abbreviations, URLs, numbers and symbol-only cues may legitimately have no Han text.
+     * Names, abbreviations, URLs and numbers may remain without Han text only when unchanged.
      * Japanese kana or Korean Hangul dominating a result is rejected even when a few Han
      * characters happen to be present.
      */
@@ -132,7 +205,9 @@ internal object SubtitleTranslationQualityPolicy {
         val nonTranslatable = isNonTranslatableCue(sourceText)
         val sourceEcho = isSourceEcho(sourceText, output, sourceLanguage)
         val punctuationOnly = isPunctuationOnlyTranslation(sourceText, output)
-        val speakable = io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(output)
+        val speakable = TtsTextPolicy.hasSpeakableContent(output)
+        val shortSpellingMatch = diagnosticShortSpellingMatch(sourceText, output)
+        val shortCueAccepted = isAcceptableShortUntranslatedCue(sourceText, output, sourceLanguage, targetLanguage)
         return buildString {
             append("sourceLanguage=").append(sourceLanguage.ifBlank { "auto" })
             append("; targetLanguage=").append(targetLanguage)
@@ -147,6 +222,8 @@ internal object SubtitleTranslationQualityPolicy {
             append("; nonTranslatableSourceCue=").append(nonTranslatable)
             append("; punctuationOnlyOutput=").append(punctuationOnly)
             append("; speakable=").append(speakable)
+            append("; shortTokenSpellingCompatible=").append(shortSpellingMatch)
+            append("; shortUntranslatedCueAccepted=").append(shortCueAccepted)
             append("; targetLanguageMismatch=").append(mismatch != null)
             append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
         }
@@ -161,7 +238,9 @@ internal object SubtitleTranslationQualityPolicy {
     ): String? {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
         if (!SourceLanguagePolicy.isChinese(targetLanguage)) return null
-        if (SourceLanguagePolicy.isChinese(sourceLanguage) || isNonTranslatableCue(sourceText)) return null
+        if (SourceLanguagePolicy.isChinese(sourceLanguage)) return null
+        // Names, abbreviations and numbers may remain Latin only when the model kept the same term.
+        if (isNonTranslatableCue(sourceText) && normalize(sourceText) == normalize(translatedText)) return null
         if (isPunctuationOnlyTranslation(sourceText, translatedText)) {
             return "模型只返回标点/符号，未返回可翻译文字"
         }
