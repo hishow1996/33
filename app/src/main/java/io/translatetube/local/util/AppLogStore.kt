@@ -48,6 +48,12 @@ data class AppLogRecord(
     /** Monotonic clock value, only comparable within one process. */
     val elapsedRealtimeMs: Long = 0L,
     val schemaVersion: Int = 1,
+    /** Parsed root-cause message, kept separately so AI does not need to parse the stack text. */
+    val rootCauseMessage: String = "",
+    /** First stack frame inside this app; useful as the starting point for source inspection. */
+    val firstAppStackFrame: String = "",
+    /** Original structured key/value evidence supplied by the failing operation. */
+    val diagnosticContext: Map<String, String> = emptyMap(),
 )
 
 data class AppLogWriterHealth(
@@ -541,11 +547,25 @@ object AppLogStore {
                 append("#").append(index + 1).append(' ')
                     .append(formatTime(record.timestampMs))
                     .append(" [").append(record.level).append("] ")
-                    .append(AppLogTitleResolver.title(record.tag, record.message))
-                    .append(" [模块：").append(record.tag).append("]\n")
-                if (record.thread.isNotBlank()) append("线程：").append(record.thread).append('\n')
+                    .append(redact(AppLogTitleResolver.title(record.tag, record.message)))
+                    .append(" [模块：").append(redact(record.tag)).append("]\n")
+                append("事件 ID：").append(redact(record.eventId.ifBlank { "旧版日志未记录" })).append('\n')
+                append("进程会话：").append(redact(record.sessionId.ifBlank { "旧版日志未记录" })).append('\n')
+                append("事件序号：").append(record.sequence.takeIf { it > 0 } ?: "未知").append('\n')
+                append("操作关联 ID：").append(redact(record.operationId.ifBlank { "未记录" })).append('\n')
+                append("异常类型：").append(redact(record.errorClass.ifBlank { "未记录" })).append('\n')
+                append("根因消息：").append(redact(record.rootCauseMessage).ifBlank { "未提取" }).append('\n')
+                append("首个应用代码栈帧：").append(redact(record.firstAppStackFrame).ifBlank { "未记录" }).append('\n')
+                append("HTTP 状态码：").append(record.httpStatusCode.takeIf { it > 0 } ?: "未知").append('\n')
+                if (record.diagnosticContext.isNotEmpty()) {
+                    append("结构化诊断字段：\n")
+                    record.diagnosticContext.toSortedMap().forEach { (key, value) ->
+                        append("- ").append(redact(key)).append("：").append(redact(value)).append('\n')
+                    }
+                }
+                if (record.thread.isNotBlank()) append("线程：").append(redact(record.thread)).append('\n')
                 if (record.issueKey.isNotBlank()) append("故障编号：").append(record.issueKey).append('\n')
-                if (record.details.isNotBlank()) append(record.details.trimEnd()).append('\n')
+                if (record.details.isNotBlank()) append(redact(record.details.trimEnd())).append('\n')
                 append("-".repeat(64)).append('\n')
             }
             append("AI 分析要求：先按时间顺序还原任务，再区分网络/HTTP、响应格式解析、字幕行对齐、译文质量校验和应用自身异常；指出具体证据、最可能责任模块、待核对文件/方法及验证方案。不得把推测写成已证实根因。\n")
@@ -556,6 +576,71 @@ object AppLogStore {
         val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
         return AppLogAiReport.render(
             records = readRecent(context, MAX_READ_RECORDS),
+            exportedAt = exportedAt,
+            appVersion = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"),
+            device = Build.MANUFACTURER + " " + Build.MODEL,
+            androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+            writerHealth = writerHealth(),
+        )
+    }
+
+    /**
+     * Create a small, self-contained AI repair package for one selected failure.
+     * Prefer exact operation correlation; otherwise include only nearby events from the same
+     * process session. This avoids mixing unrelated work from other sessions.
+     */
+    fun exportIncidentText(context: Context, target: AppLogRecord): String {
+        val all = readRecent(context, MAX_READ_RECORDS).sortedWith(
+            compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence },
+        )
+        val selected = all.firstOrNull { record ->
+            if (target.eventId.isNotBlank()) {
+                record.eventId == target.eventId
+            } else {
+                record.timestampMs == target.timestampMs &&
+                    record.tag == target.tag &&
+                    record.message == target.message
+            }
+        } ?: target
+
+        fun isSelected(record: AppLogRecord): Boolean =
+            if (selected.eventId.isNotBlank()) record.eventId == selected.eventId
+            else record.timestampMs == selected.timestampMs &&
+                record.tag == selected.tag && record.message == selected.message
+
+        val related = all.filter { record ->
+            if (isSelected(record)) {
+                true
+            } else if (
+                selected.issueKey.isNotBlank() &&
+                record.resolvesIssueKey == selected.issueKey
+            ) {
+                // A later, explicit success event is relevant even if it belongs to a newer session.
+                true
+            } else if (
+                selected.sessionId.isBlank() ||
+                record.sessionId != selected.sessionId
+            ) {
+                false
+            } else if (selected.operationId.isNotBlank()) {
+                record.operationId == selected.operationId
+            } else {
+                val deltaMs = kotlin.math.abs(record.timestampMs - selected.timestampMs)
+                deltaMs <= 120_000L &&
+                    (selected.sequence == 0L || record.sequence == 0L ||
+                        kotlin.math.abs(record.sequence - selected.sequence) <= 40L)
+            }
+        }
+        val bounded = (related + selected)
+            .distinctBy { it.eventId.ifBlank { it.timestampMs.toString() + ":" + it.tag + ":" + it.message } }
+            .sortedBy { kotlin.math.abs(it.timestampMs - selected.timestampMs) }
+            .take(80)
+            .sortedWith(compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence })
+
+        val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        return AppLogAiReport.renderIncident(
+            records = bounded,
+            target = selected,
             exportedAt = exportedAt,
             appVersion = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"),
             device = Build.MANUFACTURER + " " + Build.MODEL,
@@ -589,6 +674,8 @@ object AppLogStore {
         }
         val legacy = File(File(context.filesDir, "crash"), "last_exception.txt")
         if (legacy.exists() && !legacy.delete()) success = false
+        // Do not let pre-clear operations leak into the next error's "recent activity" context.
+        recentEvents.clear()
         success
     }
 
@@ -657,11 +744,18 @@ object AppLogStore {
                 val category = runCatching {
                     AppLogTitleResolver.featureLabel(safeTag, safeMessage)
                 }.getOrDefault("未分类日志")
+                val safeContext = diagnosticContext.entries
+                    .take(64)
+                    .associate { entry ->
+                        redact(entry.key).take(100) to redact(entry.value).take(2_000)
+                    }
                 val errorClass = extractExceptionClass(safeMessage, safeDetails)
-                val operationId = extractOperationId(diagnosticContext, safeDetails)
-                val httpStatusCode = extractHttpStatusCode(safeMessage, safeDetails)
+                val rootCauseMessage = extractRootCauseMessage(safeDetails)
+                val firstAppStackFrame = extractFirstAppStackFrame(safeDetails)
+                val operationId = extractOperationId(safeContext, safeDetails)
+                val httpStatusCode = extractHttpStatusCode(safeMessage, safeDetails, safeContext)
                 val row = JSONObject()
-                    .put("schemaVersion", 2)
+                    .put("schemaVersion", 3)
                     .put("eventId", eventId)
                     .put("sessionId", sessionId)
                     .put("sequence", sequence)
@@ -675,7 +769,15 @@ object AppLogStore {
                     .put("message", safeMessage)
                     .put("operationId", redact(operationId).take(120))
                     .put("errorClass", redact(errorClass).take(240))
+                    .put("rootCauseMessage", redact(rootCauseMessage).take(1_200))
+                    .put("firstAppStackFrame", redact(firstAppStackFrame).take(600))
                     .put("httpStatusCode", httpStatusCode)
+                    .put(
+                        "diagnosticContext",
+                        JSONObject().apply {
+                            safeContext.toSortedMap().forEach { (key, value) -> put(key, value) }
+                        },
+                    )
                     .put("details", safeDetails)
                     .put("thread", redact(threadName).take(120))
                     .put("issueKey", effectiveIssueKey.take(100))
@@ -879,6 +981,15 @@ object AppLogStore {
         val tag = json.optString("tag", "App")
         val message = json.optString("message", "")
         val details = json.optString("details", "")
+        val diagnosticContext = json.optJSONObject("diagnosticContext")?.let { contextJson ->
+            linkedMapOf<String, String>().apply {
+                val keys = contextJson.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    put(key, contextJson.optString(key, ""))
+                }
+            }
+        }.orEmpty()
         AppLogRecord(
             timestampMs = json.optLong("timestampMs", 0L),
             level = level,
@@ -907,6 +1018,13 @@ object AppLogStore {
             threadId = json.optLong("threadId", 0L),
             elapsedRealtimeMs = json.optLong("elapsedRealtimeMs", 0L),
             schemaVersion = json.optInt("schemaVersion", 1),
+            rootCauseMessage = json.optString("rootCauseMessage", "").ifBlank {
+                extractRootCauseMessage(details)
+            },
+            firstAppStackFrame = json.optString("firstAppStackFrame", "").ifBlank {
+                extractFirstAppStackFrame(details)
+            },
+            diagnosticContext = diagnosticContext,
         ).takeIf { it.timestampMs > 0L && (it.message.isNotBlank() || it.details.isNotBlank()) }
     }.getOrNull()
 
@@ -1008,6 +1126,25 @@ object AppLogStore {
         }
     }
 
+    private fun extractRootCauseMessage(details: String): String =
+        Regex("""(?m)^#\d+\s+[A-Za-z0-9_.$]+(?::\s*(.*))?$""")
+            .findAll(details)
+            .lastOrNull()
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.take(1_200)
+            .orEmpty()
+
+    private fun extractFirstAppStackFrame(details: String): String =
+        Regex("""(?m)^\s*at\s+(io\.translatetube\.local\.[A-Za-z0-9_.$]+\([^)]*\))""")
+            .find(details)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.take(600)
+            .orEmpty()
+
     private fun extractExceptionClass(message: String, details: String): String {
         val source = details + "\n" + message
         val rootFrame = Regex("""(?m)^\s*#\d+\s+([A-Za-z0-9_.$]+)""")
@@ -1023,21 +1160,39 @@ object AppLogStore {
         details: String,
     ): String {
         val keyPattern = Regex(
-            """(?i)(diagnostic|operation|correlation|trace|request).*id|翻译诊断\s*id|操作\s*id|请求\s*id""",
+            """(?i)(diagnostic|operation|correlation|trace|request|task|job|flow).*id|翻译诊断\s*id|操作\s*id|请求\s*id|任务\s*id|关联\s*id""",
         )
         val contextValue = diagnosticContext.entries.firstOrNull {
             keyPattern.containsMatchIn(it.key)
         }?.value?.takeIf { it.isNotBlank() }
         val detailValue = Regex(
-            """(?i)(?:翻译诊断\s*ID|诊断\s*ID|operation[_ ]?id|correlation[_ ]?id|trace[_ ]?id|request[_ ]?id|请求\s*ID)\s*[:=：]\s*([A-Za-z0-9_.:-]{6,120})""",
+            """(?i)(?:翻译诊断\s*ID|诊断\s*ID|operation[_ ]?id|correlation[_ ]?id|trace[_ ]?id|request[_ ]?id|task[_ ]?id|job[_ ]?id|flow[_ ]?id|请求\s*ID|任务\s*ID|关联\s*ID)\s*[:=：]\s*([A-Za-z0-9_.:-]{6,120})""",
         ).find(details)?.groupValues?.getOrNull(1)
         return (contextValue ?: detailValue).orEmpty().take(120)
     }
 
-    private fun extractHttpStatusCode(message: String, details: String): Int {
+    private fun extractHttpStatusCode(
+        message: String,
+        details: String,
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ): Int {
+        val contextStatus = diagnosticContext.entries.firstOrNull { (key, _) ->
+            key.contains("状态码") ||
+                (key.contains("http", ignoreCase = true) &&
+                    (key.contains("status", ignoreCase = true) || key.contains("code", ignoreCase = true))) ||
+                (key.contains("status", ignoreCase = true) && key.contains("code", ignoreCase = true))
+        }?.value?.let { value ->
+            Regex("""(?<!\d)([1-5]\d{2})(?!\d)""")
+                .find(value)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }?.takeIf { it in 100..599 }
+
+        if (contextStatus != null) return contextStatus
+
         val source = message + "\n" + details
-        return Regex("""(?i)\bHTTP(?:\s*状态码)?\s*[:：=]?\s*(\d{3})\b""")
-            .find(source)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val match = Regex("""(?i)\bHTTP(?:/\d(?:\.\d)?|\s*状态码)?\s*[:：=]?\s*(\d{3})\b""")
+            .find(source)
+            ?: Regex("""(?i)状态码\s*[:：=]\s*(\d{3})\b""").find(source)
+        return match?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?.takeIf { it in 100..599 } ?: 0
     }
 

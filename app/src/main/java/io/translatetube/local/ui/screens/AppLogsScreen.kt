@@ -137,6 +137,15 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 record.message.contains(query, ignoreCase = true) ||
                 record.details.contains(query, ignoreCase = true) ||
                 record.thread.contains(query, ignoreCase = true) ||
+                record.eventId.contains(query, ignoreCase = true) ||
+                record.sessionId.contains(query, ignoreCase = true) ||
+                record.operationId.contains(query, ignoreCase = true) ||
+                record.errorClass.contains(query, ignoreCase = true) ||
+                record.rootCauseMessage.contains(query, ignoreCase = true) ||
+                record.firstAppStackFrame.contains(query, ignoreCase = true) ||
+                record.diagnosticContext.any { (key, value) ->
+                    key.contains(query, ignoreCase = true) || value.contains(query, ignoreCase = true)
+                } ||
                 record.issueKey.contains(query, ignoreCase = true) ||
                 record.resolvesIssueKey.contains(query, ignoreCase = true) ||
                 diagnosis.finding.contains(query, ignoreCase = true) ||
@@ -654,16 +663,27 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     ) { Text("关闭") }
                     Button(
                         modifier = Modifier.weight(1f),
+                        enabled = !exporting,
                         onClick = {
-                            val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            clipboard.setPrimaryClip(
-                                android.content.ClipData.newPlainText(
-                                    "应用日志",
-                                    "${AppLogStore.formatTime(record.timestampMs)} [${record.level}] ${AppLogTitleResolver.title(record.tag, record.message)}\n原始模块：${record.tag}\n线程：${record.thread}\n故障编号：${record.issueKey}\n${record.details}",
-                                ),
-                            )
-                            message = "日志详情已复制"
-                            selectedRecord = null
+                            scope.launch {
+                                exporting = true
+                                val result = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        AppLogStore.exportIncidentText(ctx.applicationContext, record)
+                                    }
+                                }
+                                result.onSuccess { report ->
+                                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        android.content.ClipData.newPlainText("AI 单条故障修复包", report),
+                                    )
+                                    message = "AI 修复包已复制"
+                                    selectedRecord = null
+                                }.onFailure { failure ->
+                                    message = "AI 修复包生成失败：${failure.message ?: "未知错误"}"
+                                }
+                                exporting = false
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = BrandBright,
@@ -673,7 +693,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     ) {
                         Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("复制详情")
+                        Text(if (exporting) "正在整理…" else "复制 AI 修复包")
                     }
                 }
             }

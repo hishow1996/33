@@ -22,6 +22,9 @@ object AppLogDiagnostics {
             append(record.tag).append('\n')
             append(record.message).append('\n')
             append(record.errorClass).append('\n')
+            record.diagnosticContext.toSortedMap().forEach { (key, value) ->
+                append(key).append('：').append(value).append('\n')
+            }
             if (record.httpStatusCode in 100..599) {
                 append("HTTP 状态码：").append(record.httpStatusCode).append('\n')
             }
@@ -377,6 +380,14 @@ object AppLogDiagnostics {
     }
 
     private fun evidence(record: AppLogRecord, terms: List<String>): String {
+        record.diagnosticContext.toSortedMap().forEach { (key, value) ->
+            if (terms.any {
+                    key.contains(it, ignoreCase = true) || value.contains(it, ignoreCase = true)
+                }
+            ) {
+                return (key + "：" + value).trim().take(360)
+            }
+        }
         for (line in focusedDetails(record.details).lineSequence()) {
             if (terms.any { line.contains(it, ignoreCase = true) }) {
                 return line.trim().take(360)

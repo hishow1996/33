@@ -86,4 +86,26 @@ class AppLogDiagnosticsTest {
         assertEquals("证据不足", diagnosis.confidence)
         assertTrue(diagnosis.nextSteps.isNotEmpty())
     }
+    @Test
+    fun structuredHttpContextIsUsedForClassificationAndEvidence() {
+        val diagnosis = AppLogDiagnostics.analyze(
+            record(
+                "CloudTranscription",
+                "云端转写失败",
+                "请求未成功，但没有把状态码拼入文本。",
+            ).copy(
+                diagnosticContext = mapOf(
+                    "HTTP 状态码" to "429",
+                    "请求阶段" to "提交转写任务",
+                    "重试次数" to "2",
+                ),
+                httpStatusCode = 429,
+            ),
+        )
+
+        assertEquals("HTTP 429：请求频率受限", diagnosis.category)
+        assertTrue(diagnosis.evidence.contains("HTTP 状态码：429"))
+        assertTrue(diagnosis.nextSteps.any { it.contains("Retry-After") })
+    }
+
 }
