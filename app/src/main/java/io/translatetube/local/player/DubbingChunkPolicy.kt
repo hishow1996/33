@@ -64,12 +64,15 @@ internal object DubbingChunkPolicy {
         while (i < lines.size) {
             val line = lines[i]
             if (!DubbingTimeline.isPlayableCue(line)) {
-                // 不可播行单独成块（合成层会写空标记，原声顶上），保持索引对齐
+                // 不可播行只写入空时间轴标记，保持索引对齐，不生成音频
                 chunks += Chunk(i, listOf(i), "", line.startMs, line.endMs)
                 i++
                 continue
             }
-            val text = line.zh?.trim().orEmpty().ifBlank { line.text.trim() }
+            val text = line.zh?.trim().orEmpty()
+            require(text.isNotBlank()) {
+                "第 ${i + 1} 行缺少有效中文译文，无法生成中文配音"
+            }
             val windowEnd = line.endMs
             val est = estimateSpeechMs(text)
             val singleWindow = windowEnd - line.startMs
@@ -83,7 +86,10 @@ internal object DubbingChunkPolicy {
                 (next.startMs - line.endMs) < MAX_BORROW_MS
 
             if (est > singleWindow && mergeCandidate) {
-                val nextText = next!!.zh?.trim().orEmpty().ifBlank { next.text.trim() }
+                val nextText = next!!.zh?.trim().orEmpty()
+                require(nextText.isNotBlank()) {
+                    "第 ${i + 2} 行缺少有效中文译文，无法合并生成中文配音"
+                }
                 val mergedText = joinLines(text, nextText)
                 val mergedWindowEnd = next.endMs
                 val mergedEst = estimateSpeechMs(mergedText)
