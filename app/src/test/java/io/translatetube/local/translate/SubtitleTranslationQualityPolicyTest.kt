@@ -241,6 +241,10 @@ class SubtitleTranslationQualityPolicyTest {
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah", "Sara", "en", "zh-CN"))
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah Smith", "Sara Smith", "en", "zh-CN"))
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("J. K. Rowling", "J. K. Rowling", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("(John):", "“John”", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("[Sarah]", "(Sara)", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Good Morning", "Good Morning", "en", "zh-CN"))
+        assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("THANK YOU", "THANK YOU", "en", "zh-CN"))
         assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("John", "David", "en", "zh-CN"))
         assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah", "David", "en", "zh-CN"))
         assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("John Smith", "John David", "en", "zh-CN"))
@@ -252,8 +256,18 @@ class SubtitleTranslationQualityPolicyTest {
 
     @Test
     fun ordinaryWordsAndPhrasesReturnedUnchangedAreStillFailedTranslations() {
-        listOf("Hello", "Thank you very much", "I think so.", "Good morning everyone").forEach {
+        listOf("Hello", "Thank you very much", "I think so.", "Good morning everyone", "Good Morning", "THANK YOU").forEach {
             assertTrue("'$it'", SubtitleTranslationQualityPolicy.isSourceEcho(it, it, "en"))
+            assertFalse(
+                "'$it' must not be accepted as an untranslated name",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    sourceText = it,
+                    translatedText = it,
+                    sourceLanguage = "en",
+                    targetLanguage = "zh-CN",
+                    acceptShortUnchanged = true,
+                ),
+            )
         }
     }
 }
