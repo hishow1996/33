@@ -13668,16 +13668,20 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 syncOriginalVolumeWithDubbing(d, st, "catch-up dubbing playback")
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 d.logSilentCueError(dubLine)
-                if (d.currentLineIdx() >= 0) d.stop()
+                val hint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName)
                 ui.update { state ->
                     if (state.key == st.key) {
                         state.copy(
-                            noModelHint = state.noModelHint
-                                ?: io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName),
+                            noModelHint = state.noModelHint ?: hint,
                             activeDubbingLine = -1,
                         )
                     } else state
                 }
+                pausePlaybackAfterDubbingFailure(
+                    d,
+                    st.key,
+                    "第 ${dubLine + 1} 句没有可播放的中文配音",
+                )
             } else if (dubLine >= 0 && d.isPrepared(dubLine)) {
                 if (!pm.player.isPlaying) {
                     // seekTo() emits an immediate tick: don't start speech while video is paused.
@@ -14465,15 +14469,22 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     activeDubbingMutationGeneration == mutationGeneration
                 ) {
                     withContext(Dispatchers.Main) {
-                        // Check again on the player thread: a new pipeline or speaker mutation
-                        // may start while this coroutine is being dispatched to Main.
+                        // The previous TTS engine is already retired and replacement failed.
+                        // Pause rather than continuing with the source track as an automatic fallback.
                         if (
                             videoKey == sessionKey &&
                             ui.value.key == sessionKey &&
                             activePipelineGeneration == pipelineGeneration &&
                             activeDubbingMutationGeneration == mutationGeneration
                         ) {
-                            safelySetOriginalVolume(1f, "preserve original audio preference")
+                            pm.pause()
+                            updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                                state.copy(
+                                    phase = Phase.ERROR,
+                                    dubbingHasErrors = true,
+                                    noModelHint = "配音引擎重新装配失败，旧引擎已释放，视频已暂停。请检查配音引擎后重试。",
+                                )
+                            }
                         }
                     }
                 }
@@ -14785,15 +14796,22 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     activeDubbingMutationGeneration == mutationGeneration
                 ) {
                     withContext(Dispatchers.Main) {
-                        // Check again on the player thread: a new pipeline or speaker mutation
-                        // may start while this coroutine is being dispatched to Main.
+                        // The previous TTS engine is already retired and replacement failed.
+                        // Pause rather than continuing with the source track as an automatic fallback.
                         if (
                             videoKey == sessionKey &&
                             ui.value.key == sessionKey &&
                             activePipelineGeneration == pipelineGeneration &&
                             activeDubbingMutationGeneration == mutationGeneration
                         ) {
-                            safelySetOriginalVolume(1f, "preserve original audio preference")
+                            pm.pause()
+                            updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                                state.copy(
+                                    phase = Phase.ERROR,
+                                    dubbingHasErrors = true,
+                                    noModelHint = "配音引擎重新装配失败，旧引擎已释放，视频已暂停。请检查配音引擎后重试。",
+                                )
+                            }
                         }
                     }
                 }
