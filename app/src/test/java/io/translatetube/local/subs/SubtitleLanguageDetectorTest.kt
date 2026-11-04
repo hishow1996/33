@@ -91,6 +91,14 @@ class SubtitleLanguageDetectorTest {
         assertEquals(true, SubtitleLanguageDetector.isHanDominantAmbiguous("東京映画館"))
         assertEquals(false, SubtitleLanguageDetector.isHanDominantAmbiguous("こんにちは、今日の動画へようこそ。"))
         assertEquals(false, SubtitleLanguageDetector.isHanDominantAmbiguous("Hello, welcome back."))
+        assertEquals(
+            true,
+            SubtitleLanguageDetector.isHanDominantAmbiguousFromCues(listOf("東京", "映画館")),
+        )
+        assertEquals(
+            false,
+            SubtitleLanguageDetector.isHanDominantAmbiguousFromCues(listOf("こんにちは", "東京")),
+        )
     }
 
 
