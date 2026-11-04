@@ -81,16 +81,34 @@ object SimpleDownloader : Downloader() {
             else -> b.get()
         }
         val ownerJob = extractorOwnerJob.get()
-        return executeCancellableHttpCall(
-            call = newPipeHttpClient.newCall(b.build()),
-            ownerJob = ownerJob,
-        ) { resp ->
-            // A 429 page is HTML, not extractor JSON; without this the extractor reports an
-            // unrelated parse error and the real cause (rate limit / challenge) is lost.
-            if (resp.code == 429) {
-                throw IOException("YouTube 返回 HTTP 429：请求过于频繁或需要验证")
-            }
-            val responseBody = resp.body
+        val request = b.build()
+        val requestStartedAtNanos = System.nanoTime()
+        var responseFailureLogged = false
+        return try {
+            executeCancellableHttpCall(
+                call = newPipeHttpClient.newCall(request),
+                ownerJob = ownerJob,
+            ) { resp ->
+                // Preserve the real HTTP cause before NewPipe turns an error page into a generic
+                // extractor/JSON failure. Never record query parameters or credential values.
+                if (!resp.isSuccessful) {
+                    val httpFailure = IOException(
+                        "YouTube 返回 HTTP ${resp.code}${resp.message.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}",
+                    )
+                    responseFailureLogged = true
+                    NewPipeRepo.recordDownloaderHttpFailure(
+                        resp.request,
+                        httpFailure,
+                        ((System.nanoTime() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L),
+                        resp,
+                    )
+                    // A 429 page is HTML, not extractor JSON; without this the extractor reports an
+                    // unrelated parse error and the real cause (rate limit / challenge) is lost.
+                    if (resp.code == 429) {
+                        throw IOException("YouTube 返回 HTTP 429：请求过于频繁或需要验证")
+                    }
+                }
+                val responseBody = resp.body
             val responseText = if (responseBody == null) {
                 ""
             } else {
@@ -109,10 +127,22 @@ object SimpleDownloader : Downloader() {
                     Charsets.UTF_8,
                 )
             }
-            Response(
-                resp.code, resp.message, resp.headers.toMultimap(),
-                responseText, resp.request.url.toString()
-            )
+                Response(
+                    resp.code, resp.message, resp.headers.toMultimap(),
+                    responseText, resp.request.url.toString()
+                )
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (!responseFailureLogged) {
+                NewPipeRepo.recordDownloaderHttpFailure(
+                    request,
+                    failure,
+                    ((System.nanoTime() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L),
+                )
+            }
+            throw failure
         }
     }
 }
@@ -179,6 +209,62 @@ object NewPipeRepo {
             }
         }
     }
+
+    /** Persist HTTP-level evidence before extractor parsing can obscure the server response. */
+    internal fun recordDownloaderHttpFailure(
+        request: okhttp3.Request,
+        failure: Throwable,
+        elapsedMs: Long,
+        response: okhttp3.Response? = null,
+    ) {
+        val status = response?.code
+        val statusMeaning = when (status) {
+            401 -> "身份验证失败"
+            403 -> "无权限、风控挑战或地区/账号限制"
+            404 -> "资源或请求路径不存在/已失效"
+            408 -> "服务端请求超时"
+            410 -> "媒体或字幕链接已过期/失效"
+            429 -> "请求过于频繁或触发限流"
+            in 500..599 -> "YouTube 或上游服务端错误"
+            null -> "未取得 HTTP 响应，检查 DNS、连接、TLS 或超时"
+            else -> "HTTP 请求未成功"
+        }
+        val responseHeaders = listOf(
+            "x-request-id",
+            "x-youtube-request-id",
+            "x-goog-request-id",
+            "x-guploader-uploadid",
+            "x-cloud-trace-context",
+        ).mapNotNull { name ->
+            response?.header(name)?.takeIf { it.isNotBlank() }?.let { "$name=$it" }
+        }.joinToString("; ").ifBlank { "未提供" }
+        logWarning(
+            if (response == null) "YouTube Extractor 网络请求失败" else "YouTube Extractor 收到非成功 HTTP 响应",
+            failure,
+            mapOf(
+                "请求方法" to request.method,
+                "请求主机" to request.url.host,
+                "请求路径（不含查询参数）" to request.url.encodedPath.take(180),
+                "请求是否带查询参数" to (request.url.encodedQuery != null).toString(),
+                "请求是否携带 Cookie" to (request.header("Cookie") != null).toString(),
+                "请求是否携带 Authorization" to (request.header("Authorization") != null).toString(),
+                "请求体 Content-Type" to request.body?.contentType()?.toString().orEmpty().ifBlank { "无" },
+                "HTTP 状态码" to (status?.toString() ?: "未收到响应"),
+                "HTTP 原因短语" to response?.message.orEmpty().ifBlank { "无" }.take(160),
+                "HTTP 协议" to response?.protocol?.toString().orEmpty().ifBlank { "未知" },
+                "服务端说明" to statusMeaning,
+                "响应 Content-Type" to response?.header("Content-Type").orEmpty().ifBlank { "未提供" },
+                "响应声明字节数" to (response?.body?.contentLength()?.toString() ?: "未知"),
+                "响应 Retry-After" to response?.header("Retry-After").orEmpty().ifBlank { "未提供" },
+                "响应请求追踪 ID" to responseHeaders,
+                "响应 Server" to response?.header("Server").orEmpty().ifBlank { "未提供" },
+                "请求耗时 ms" to elapsedMs.coerceAtLeast(0L).toString(),
+                "完整 URL 查询参数是否写入日志" to "否",
+                "Cookie、Authorization 与查询参数值是否写入日志" to "否",
+            ),
+        )
+    }
+
     /** Every invalidation prevents any older in-flight fetch from repopulating the cache. */
     private var infoCacheGeneration = 0L
 
