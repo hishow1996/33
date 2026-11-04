@@ -5,9 +5,10 @@ import org.junit.Test
 
 class SubtitleLanguageDetectorTest {
     @Test
-    fun detectsChineseAndJapaneseSeparately() {
-        assertEquals("zh", SubtitleLanguageDetector.detect("你好，欢迎观看今天的视频。"))
+    fun detectsKanaJapaneseAndKeepsHanOnlyTextAmbiguous() {
+        assertEquals("auto", SubtitleLanguageDetector.detect("你好，欢迎观看今天的视频。"))
         assertEquals("ja", SubtitleLanguageDetector.detect("こんにちは、今日の動画へようこそ。"))
+        assertEquals("auto", SubtitleLanguageDetector.detect("東京映画館"))
     }
 
     @Test
@@ -42,7 +43,7 @@ class SubtitleLanguageDetectorTest {
             "auto",
             SubtitleLanguageDetector.detect("Bonjour, bienvenue. This clip briefly mentions 中国."),
         )
-        assertEquals("zh", SubtitleLanguageDetector.detect("你好，欢迎观看今天的视频。"))
+        assertEquals("auto", SubtitleLanguageDetector.detect("你好，欢迎观看今天的视频。"))
     }
 
     @Test
@@ -61,10 +62,18 @@ class SubtitleLanguageDetectorTest {
     }
 
     @Test
-    fun transcriptScriptCanCorrectAnIncorrectProviderLanguageHint() {
+    fun providerHintsCannotResolveHanOnlyChineseJapaneseAmbiguity() {
         assertEquals(
-            "zh",
+            "auto",
             SubtitleLanguageDetector.resolveTranscriptionLanguage("en", "你好，欢迎观看今天的视频。"),
+        )
+        assertEquals(
+            "auto",
+            SubtitleLanguageDetector.resolveTranscriptionLanguage("zh-CN", "東京映画館"),
+        )
+        assertEquals(
+            "ja",
+            SubtitleLanguageDetector.resolveTranscriptionLanguage("zh-CN", "こんにちは、今日の動画へようこそ。"),
         )
         assertEquals(
             "en",
@@ -74,6 +83,14 @@ class SubtitleLanguageDetectorTest {
             "auto",
             SubtitleLanguageDetector.resolveTranscriptionLanguage("zh-CN", "Bonjour, bienvenue dans cette vidéo."),
         )
+    }
+
+    @Test
+    fun identifiesHanOnlyCaptionsAsAmbiguousUntilARealLanguageHintIsAvailable() {
+        assertEquals(true, SubtitleLanguageDetector.isHanDominantAmbiguous("你好，欢迎观看今天的视频。"))
+        assertEquals(true, SubtitleLanguageDetector.isHanDominantAmbiguous("東京映画館"))
+        assertEquals(false, SubtitleLanguageDetector.isHanDominantAmbiguous("こんにちは、今日の動画へようこそ。"))
+        assertEquals(false, SubtitleLanguageDetector.isHanDominantAmbiguous("Hello, welcome back."))
     }
 
 
