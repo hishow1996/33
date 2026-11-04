@@ -248,6 +248,37 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun wrappedShortNamesSurviveCacheWriteAndRestoreWithoutBeingQueuedAgain() {
+        val source = listOf(SubLine(0, 0L, 1_000L, "(John):"))
+        val sanitized = source.map {
+            SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(it.copy(zh = "“John”"), "en")
+        }
+        assertEquals(listOf("“John”"), sanitized.map { it.zh })
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source,
+            listOf(
+                SubtitleCacheValidationPolicy.CachedTranslationRow(
+                    0L, 1_000L, "(John):", "“John”",
+                ),
+            ),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected a confirmed short-name cache row to restore")
+
+        assertEquals("“John”", restored.single().zh)
+        // This is the same guard used by PlaybackService.needsSubtitleTranslation().
+        assertEquals(
+            "“John”",
+            DubbingTranslationPolicy.usableText(
+                restored.single().text,
+                restored.single().zh,
+                "en",
+            ),
+        )
+    }
+
+    @Test
     fun cacheIsRecoverableOnlyWhenAtLeastOneRowHasAValidTranslation() {
         val invalidOnly = listOf(
             SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "John", "David"),
