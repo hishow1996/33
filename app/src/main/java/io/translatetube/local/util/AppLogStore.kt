@@ -821,8 +821,8 @@ object AppLogStore {
                     "当前实际配音字幕索引",
                     "近期操作轨迹关联方式",
                 )
-                // Keep common operation/stage evidence even when a specialised failure branch
-                // contributes many keys. Otherwise take(64) may silently drop the stage snapshot.
+                // Prefer task/stage evidence before optional request fields. The budget policy
+                // reserves explicit omission/truncation counters instead of silently dropping keys.
                 val contextBudget = AppLogDiagnosticContextPolicy.bound(
                     input = contextWithTrailScope,
                     priorityKeys = diagnosticPriorityKeys,
