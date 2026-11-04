@@ -153,8 +153,7 @@ internal object SubtitleTranslationQualityPolicy {
 
     /**
      * 专有名词、缩写、型号、签证类别（"H-1B"、"NASA"、"COVID-19"、"iPhone 15"、"Elon Musk"）本来就不翻译，
-     * 翻译结果与原文相同是正确的，不能当成"没翻译"而让这一句没有中文配音、只能回退原声。
-     * 只放行很短的词条：普通句子/单词原样返回仍按翻译失败处理。
+     * 翻译结果与原文相同可以作为有效中文配音文本；普通句子/单词原样返回仍按翻译失败处理。
      */
     private fun isTermLikeCue(value: String): Boolean {
         // Compatibility forms (for example full-width Latin letters/digits) must reach the

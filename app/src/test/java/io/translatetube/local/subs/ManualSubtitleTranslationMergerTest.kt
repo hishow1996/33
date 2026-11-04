@@ -1,6 +1,7 @@
 package io.translatetube.local.subs
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ManualSubtitleTranslationMergerTest {
@@ -55,4 +56,23 @@ class ManualSubtitleTranslationMergerTest {
             ),
         )
     }
+
+    @Test
+    fun rejectsASeventyPercentExternalTranslationInsteadOfPassingMissingRowsToDubbing() {
+        val original = (0 until 10).map { index ->
+            SubLine(index, index * 3_000L, index * 3_000L + 1_000L, "Source line $index")
+        }
+        val translated = original.take(7).map { line ->
+            SubLine(line.index, line.startMs, line.endMs, "译文" + (line.index + 1))
+        }
+
+        val error = runCatching {
+            ManualSubtitleTranslationMerger.merge(original, translated)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message.orEmpty().contains("缺少 3/10"))
+        assertTrue(error?.message.orEmpty().contains("第 8、9、10 行"))
+    }
+
 }

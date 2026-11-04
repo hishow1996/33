@@ -108,4 +108,14 @@ class DubbingTranslationPolicyTest {
         assertEquals(1, prepared.size)
         assertNull(prepared.single().zh)
     }
+
+    @Test
+    fun rejectsTranslationsThatContainNoSpeakableCharacters() {
+        val result = DubbingTranslationPolicy.resolveText("Hello world", "……", "en")
+        assertNull(result.text)
+        assertEquals("译文只有标点、符号或表情，没有可朗读内容", result.reason)
+
+        assertNull(DubbingTranslationPolicy.usableText("♪♪", "♪♪", "zh-Hans"))
+    }
+
 }

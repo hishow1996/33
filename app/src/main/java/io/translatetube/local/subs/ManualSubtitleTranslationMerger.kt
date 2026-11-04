@@ -1,7 +1,6 @@
 package io.translatetube.local.subs
 
 import kotlin.math.abs
-import kotlin.math.ceil
 
 /**
  * Matches an externally translated SRT/VTT track back to the original transcript timeline.
@@ -10,7 +9,6 @@ import kotlin.math.ceil
 internal object ManualSubtitleTranslationMerger {
     private const val MAX_START_DRIFT_MS = 1_000L
     private const val MAX_END_DRIFT_MS = 2_500L
-    private const val MINIMUM_MATCH_RATIO = 0.70
 
     fun merge(original: List<SubLine>, translated: List<SubLine>): List<SubLine> {
         require(original.isNotEmpty()) { "当前没有可匹配的原文字幕" }
@@ -20,7 +18,6 @@ internal object ManualSubtitleTranslationMerger {
         require(candidates.isNotEmpty()) { "导入文件中没有有效的带时间轴译文" }
 
         val used = BooleanArray(candidates.size)
-        var matched = 0
         val merged = original.mapIndexed { index, source ->
             var bestIndex = -1
             var bestScore = Long.MAX_VALUE
@@ -46,7 +43,6 @@ internal object ManualSubtitleTranslationMerger {
                     .translationText
                     .trim()
                 if (text.isNotEmpty()) {
-                    matched++
                     source.copy(index = index, zh = text)
                 } else {
                     source.copy(index = index, zh = null)
@@ -54,10 +50,14 @@ internal object ManualSubtitleTranslationMerger {
             }
         }
 
-        val minimumMatches = ceil(original.size * MINIMUM_MATCH_RATIO).toInt().coerceAtLeast(1)
-        require(matched >= minimumMatches) {
-            "译文与原文时间轴匹配不足（匹配 " + matched + "/" + original.size +
-                " 条）。请使用原文字幕文件翻译，并尽量保留每条字幕的时间戳。"
+        val missingIndices = merged.indices.filter { merged[it].zh.isNullOrBlank() }
+        require(missingIndices.isEmpty()) {
+            val shown = missingIndices.take(20).joinToString("、") { (it + 1).toString() }
+            val remaining = missingIndices.size - minOf(missingIndices.size, 20)
+            "外部译文不完整：缺少 " + missingIndices.size + "/" + original.size +
+                " 条字幕（第 " + shown +
+                (if (remaining > 0) " 行，另有 " + remaining + " 行未展开" else " 行") +
+                "）。请补齐缺失译文并保留原字幕时间戳；未完成前不会进入配音。"
         }
         return merged
     }

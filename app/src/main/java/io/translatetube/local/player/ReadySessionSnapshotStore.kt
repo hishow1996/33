@@ -359,7 +359,12 @@ internal object ReadySessionSnapshotStore {
                 val startMs = row.optLong("s", -1L)
                 val endMs = row.optLong("e", -1L)
                 val text = row.optString("t")
-                if (startMs < 0L || endMs <= startMs || text.isBlank()) return@runCatching null
+                if (
+                    startMs < 0L ||
+                    endMs <= startMs ||
+                    text.isBlank() ||
+                    row.optBoolean("oa", false)
+                ) return@runCatching null
                 val rawTranslation = row.opt("zh")
                 val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) null
                     else rawTranslation.toString().takeIf { it.isNotBlank() }
@@ -497,7 +502,19 @@ internal object ReadySessionSnapshotStore {
                         maxBytes = MAX_SNAPSHOT_BYTES,
                         maxLines = MAX_SNAPSHOT_LINES,
                     )
-                ) return@forEach
+                ) {
+                    if (ReadySessionSnapshotMigrationPolicy.isKnownLegacyFallbackSnapshot(
+                            fileName = legacyFile.name,
+                            bytes = legacyBytes,
+                            expectedVersion = SNAPSHOT_VERSION,
+                            maxBytes = MAX_SNAPSHOT_BYTES,
+                            maxLines = MAX_SNAPSHOT_LINES,
+                        )
+                    ) {
+                        runCatching { AtomicFile(legacyFile).delete() }
+                    }
+                    return@forEach
+                }
 
                 val persistentFile = File(persistentDirectory, legacyFile.name)
                 val existingBytes = readSnapshotBytes(persistentFile)

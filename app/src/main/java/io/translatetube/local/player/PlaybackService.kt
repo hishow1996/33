@@ -6183,6 +6183,10 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 val source = manualTranslationSources[sessionKey]
                     ?: throw IllegalStateException("原文字幕等待状态已失效，请重新启动该流程")
                 val merged = io.translatetube.local.subs.ManualSubtitleTranslationMerger.merge(source, translated)
+                val validatedMerged = DubbingTranslationPolicy.prepareLinesForDubbing(
+                    merged,
+                    ui.value.sourceLang.ifBlank { "auto" },
+                )
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (manualTranslationWaiters[sessionKey] !== waiter || waiter.isCompleted) {
                     throw kotlinx.coroutines.CancellationException("外部翻译导入任务已过期")
@@ -6206,7 +6210,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 if (manualTranslationWaiters[sessionKey] !== waiter) {
                     throw kotlinx.coroutines.CancellationException("外部翻译等待任务已被替换")
                 }
-                if (!waiter.complete(merged)) {
+                if (!waiter.complete(validatedMerged)) {
                     throw IllegalStateException("当前字幕等待任务已结束，请重新启用外部翻译模式")
                 }
                 updateUiForSession(sessionKey, pipelineGeneration) {
@@ -6455,7 +6459,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 }.filter { it.startMs >= 0L && it.endMs > it.startMs }
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
-                val translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
+                var translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
                     val cue = io.translatetube.local.subs.ImportedSubtitlePolicy.splitBilingualCue(line.text)
                     line.copy(
                         index = index,
@@ -6465,6 +6469,10 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 })
                 val importedSourceLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
                     .detectFromCues(translatedLines.asSequence().map { it.text }.asIterable())
+                translatedLines = DubbingTranslationPolicy.prepareLinesForDubbing(
+                    translatedLines,
+                    importedSourceLanguage,
+                )
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "apply original audio preference")
                 updateUiForSession(sessionKey, pipelineGeneration) {
@@ -7328,13 +7336,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
      */
     private fun needsSubtitleTranslation(line: SubLine, srcLang: String): Boolean {
         if (line.text.isBlank()) return false
-        val translated = SubtitleParsers.cleanTranslatedText(line.zh)
-        if (translated.isNullOrBlank()) return true
-        if (isChineseLanguage(srcLang)) return false
-        return io.translatetube.local.translate.SubtitleTranslationQualityPolicy
-            .isSourceEcho(line.text, translated, srcLang) ||
-            io.translatetube.local.translate.SubtitleTranslationQualityPolicy
-                .isTargetLanguageMismatch(line.text, translated, srcLang, "zh")
+        // Use the same quality + speechability gate as dubbing preflight, so bad cache rows
+        // are marked unfinished in stage 4 rather than surviving until stage 5.
+        return DubbingTranslationPolicy.usableText(line.text, line.zh, srcLang).isNullOrBlank()
     }
 
     /** Reject corrupt timelines and progress/status placeholders before restoring translated rows. */
@@ -10454,6 +10458,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val translationStartedAtNanos = System.nanoTime()
         val earlyExternalTranslation = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
         if (earlyExternalTranslation != null) {
+            val validatedExternalTranslation =
+                DubbingTranslationPolicy.prepareLinesForDubbing(earlyExternalTranslation, srcLang)
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.info(
                     this@PlaybackService,
@@ -10461,14 +10467,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "外部翻译字幕已准备完成，跳过自动翻译批次",
                     diagnosticContext = mapOf(
                         "输入字幕行数" to lines.size.toString(),
-                        "输出字幕行数" to earlyExternalTranslation.size.toString(),
+                        "输出字幕行数" to validatedExternalTranslation.size.toString(),
                         "源语言代码" to srcLang,
                         "目标语言代码" to "zh",
                         "流程" to "导入外部译文并沿用原时间轴",
                     ),
                 )
             }
-            return earlyExternalTranslation
+            return validatedExternalTranslation
         }
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -11136,7 +11142,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     ),
                 )
             }
-            return updatedLines
+            return DubbingTranslationPolicy.prepareLinesForDubbing(updatedLines, srcLang)
         } finally {
             // Release native resources on success, failure, or cancellation, keeping memory bounded.
             runCatching { engine?.close() }
@@ -13041,25 +13047,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
             }
         }
-        engine.onFallbackRequested = { _, detail ->
-            if (engine.currentTtsName != "系统TTS" || !isCurrentDubbingEngine(engine, sessionKey)) {
-                false
-            } else {
-                // Return false so DubbingEngine marks this cue unavailable. Keep the user's
-                // explicitly selected System TTS engine and pause video instead of switching engines.
-                updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
-                    state.copy(
-                        dubbingStatus = "系统 TTS 合成失败，保持当前引擎",
-                        noModelHint = "系统 TTS 合成失败：$detail。应用不会自动切换到本地模型，也不会要求下载 Kokoro/Piper。视频已暂停；请检查手机设置中的文字转语音服务、中文语音数据和可用音色后重新处理。",
-                        dubbingHasErrors = true,
-                        activeDubbingLine = -1,
-                    )
-                }
-                pausePlaybackAfterDubbingFailure(engine, sessionKey, "系统 TTS 合成失败：${detail.take(180)}")
-                false
-            }
-        }
-
         engine.onSynthesisError = { detail ->
             val activeName = engine.currentTtsName.ifBlank { tts.name }
             val systemTtsSelected = activeName.contains("系统TTS")

@@ -425,7 +425,7 @@ internal object InProgressProcessingCheckpointStore {
             return discarded("engine_fingerprint_missing", storedBytes.size, jsonBytes.size)
         }
 
-        val restored = decodeState(videoKey, stateObject)
+        val restored = decodeState(videoKey, stateObject, version)
         if (restored == null) {
             discard(file)
             return discarded("state_validation_failed", storedBytes.size, jsonBytes.size)
@@ -567,7 +567,7 @@ internal object InProgressProcessingCheckpointStore {
             .put("processingFlow", state.processingFlow.name)
     }
 
-    private fun decodeState(videoKey: String, obj: JSONObject): PlayerUiState? = runCatching {
+    private fun decodeState(videoKey: String, obj: JSONObject, checkpointVersion: Int): PlayerUiState? = runCatching {
         val rows = obj.optJSONArray("lines") ?: return null
         if (rows.length() !in 1..MAX_LINES) return null
 
@@ -581,11 +581,12 @@ internal object InProgressProcessingCheckpointStore {
             if (start < 0L || end <= start || original.isBlank() || start < previousStartMs) return null
             previousStartMs = start
             val rawTranslation = row.opt("zh")
-            val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) {
-                null
-            } else {
-                rawTranslation.toString().takeIf { it.isNotBlank() }
-            }
+            val translation = InProgressCheckpointLegacyCompatibilityPolicy.restoreTranslation(
+                version = checkpointVersion,
+                rawTranslation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) null
+                    else rawTranslation.toString(),
+                legacyOriginalAudioFallback = row.optBoolean("oa", false),
+            )
             lines += SubLine(index, start, end, original, translation, row.optInt("sp", -1))
         }
 
@@ -712,15 +713,25 @@ internal object InProgressProcessingCheckpointStore {
             updateField(line.startMs.toString())
             updateField(line.endMs.toString())
             updateField(line.text)
-            updateField(line.zh?.takeIf { it.isNotBlank() })
-            if (version == 7) {
-                // Reproduce the version-7 digest from the serialized legacy flag only. The flag
-                // is intentionally not restored into SubLine and cannot count as a translation.
-                val legacyFallback = legacyLineRows
-                    ?.optJSONObject(index)
-                    ?.optBoolean("oa", false)
-                    ?: false
-                updateField(legacyFallback.toString())
+            val legacyRow = if (
+                InProgressCheckpointLegacyCompatibilityPolicy.includesLegacyOriginalAudioFlag(version)
+            ) {
+                legacyLineRows?.optJSONObject(index)
+            } else {
+                null
+            }
+            // Reproduce the old V7 digest from the serialized row before its legacy fallback
+            // marker is removed from the restored runtime state.
+            val translationForFingerprint = if (legacyRow != null) {
+                val raw = legacyRow.opt("zh")
+                if (raw == null || raw == JSONObject.NULL) null
+                else raw.toString().takeIf { it.isNotBlank() }
+            } else {
+                line.zh?.takeIf { it.isNotBlank() }
+            }
+            updateField(translationForFingerprint)
+            if (legacyRow != null) {
+                updateField(legacyRow.optBoolean("oa", false).toString())
             }
             updateField(line.speakerId.toString())
         }

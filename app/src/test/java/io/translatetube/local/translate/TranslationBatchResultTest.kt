@@ -264,4 +264,20 @@ class TranslationBatchResultTest {
         assertEquals("嗯", SubtitleInterjectionPolicy.chineseFor("Hmmmm", "en", "zh"))
         assertEquals(null, SubtitleInterjectionPolicy.chineseFor("Hmm", "en", "ja"))
     }
+
+    @Test
+    fun rejectsSymbolOnlyTranslationsThatCannotBeSpoken() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(2, 5),
+            rawTranslations = listOf("……", "♪♪"),
+            sourceTexts = mapOf(2 to "Please wait.", 5 to "♪♪"),
+            sourceLanguage = "zh-Hans",
+            targetLanguage = "zh-CN",
+        )
+
+        assertTrue(result.translations.isEmpty())
+        assertEquals(listOf(2, 5), result.missingIndices)
+        assertTrue(result.rejectedRows.any { it.reasonCode == "UNSPEAKABLE_TRANSLATION" })
+    }
+
 }

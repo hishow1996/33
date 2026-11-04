@@ -142,4 +142,32 @@ class ReadySessionSnapshotMigrationPolicyTest {
         if (identity != null && identity != keyHash) root.put("identityHash", identity)
         return fileName to root.toString().toByteArray(Charsets.UTF_8)
     }
+
+    @Test
+    fun rejectsLegacyOriginalAudioFallbackRowsEvenWhenChineseTranslationWasSaved() {
+        val (fileName, bytes) = snapshot(
+            hasChineseTranslation = true,
+            legacyOriginalAudioFallback = true,
+        )
+
+        assertFalse(
+            ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
+                fileName = fileName,
+                bytes = bytes,
+                expectedVersion = 1,
+                maxBytes = 1024L,
+                maxLines = 10,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotMigrationPolicy.isKnownLegacyFallbackSnapshot(
+                fileName = fileName,
+                bytes = bytes,
+                expectedVersion = 1,
+                maxBytes = 1024L,
+                maxLines = 10,
+            ),
+        )
+    }
+
 }

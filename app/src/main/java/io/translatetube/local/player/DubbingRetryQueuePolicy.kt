@@ -34,7 +34,6 @@ internal object DubbingRetryQueuePolicy {
         hasReusableAudio: Boolean,
         workerActive: Boolean,
         released: Boolean,
-        fallbackRequested: Boolean,
         alreadyQueued: Boolean,
         deterministicFailure: Boolean = false,
     ): Boolean =
@@ -44,6 +43,5 @@ internal object DubbingRetryQueuePolicy {
             !hasReusableAudio &&
             workerActive &&
             !released &&
-            !fallbackRequested &&
             !alreadyQueued
 }

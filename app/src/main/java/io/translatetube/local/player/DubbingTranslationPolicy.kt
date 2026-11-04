@@ -30,7 +30,11 @@ internal object DubbingTranslationPolicy {
         val chineseSource = io.translatetube.local.translate.SourceLanguagePolicy.isChinese(detectedSource)
         if (chineseSource) {
             // Preserve literal Chinese captions even if their text resembles a UI progress label.
-            return DubbingTranslationResolution(sourceText.trim())
+            val literal = sourceText.trim()
+            if (!io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(literal)) {
+                return DubbingTranslationResolution(null, "原文字幕只有标点、符号或表情，没有可朗读内容")
+            }
+            return DubbingTranslationResolution(literal)
         }
         if (translatedText.isNullOrBlank()) {
             return DubbingTranslationResolution(null, "翻译结果为空或只有空白字符")
@@ -44,6 +48,12 @@ internal object DubbingTranslationPolicy {
             return DubbingTranslationResolution(
                 null,
                 "原始译文非空，但清理占位内容/非字幕文本后为空",
+            )
+        }
+        if (!io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(cleaned)) {
+            return DubbingTranslationResolution(
+                null,
+                "译文只有标点、符号或表情，没有可朗读内容",
             )
         }
         if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {

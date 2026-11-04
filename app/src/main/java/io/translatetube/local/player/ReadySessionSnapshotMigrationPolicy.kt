@@ -52,7 +52,8 @@ internal object ReadySessionSnapshotMigrationPolicy {
                     text.isBlank() ||
                     translation == null ||
                     translation == JSONObject.NULL ||
-                    translation.toString().isBlank()
+                    translation.toString().isBlank() ||
+                    row.optBoolean("oa", false)
                 ) {
                     return@runCatching false
                 }
@@ -60,4 +61,55 @@ internal object ReadySessionSnapshotMigrationPolicy {
             true
         }.getOrDefault(false)
     }
+
+    /**
+     * True only for a structurally recognizable old snapshot that cannot be restored because
+     * it contains an original-audio fallback row or a missing/blank Chinese translation.
+     * Corrupt, oversized, wrong-version and mismatched files are preserved for manual recovery.
+     */
+    fun isKnownLegacyFallbackSnapshot(
+        fileName: String,
+        bytes: ByteArray,
+        expectedVersion: Int,
+        maxBytes: Long,
+        maxLines: Int,
+    ): Boolean {
+        if (fileName.isBlank() || bytes.isEmpty() || bytes.size.toLong() > maxBytes) return false
+        return runCatching {
+            val root = JSONObject(String(bytes, Charsets.UTF_8))
+            if (root.optInt("version", -1) != expectedVersion) return@runCatching false
+            val keyHash = root.optString("keyHash")
+            if (!keyHashPattern.matches(keyHash)) return@runCatching false
+            val identityHash = root.optString("identityHash", keyHash).ifBlank { keyHash }
+            if (!keyHashPattern.matches(identityHash)) return@runCatching false
+            val fingerprint = root.optString("fingerprint")
+            if (!fingerprintPattern.matches(fingerprint)) return@runCatching false
+            val ignoreTranscription = root.optBoolean("ignoreTranscription", false)
+            val identityPart = if (identityHash == keyHash) "" else identityHash + "_"
+            val suffix = if (ignoreTranscription) "_ignore_asr.json" else "_include_asr.json"
+            if (fileName != "ready_" + keyHash + "_" + identityPart + fingerprint + suffix) {
+                return@runCatching false
+            }
+            val state = root.optJSONObject("state") ?: return@runCatching false
+            val lines = state.optJSONArray("lines") ?: return@runCatching false
+            if (lines.length() !in 1..maxLines) return@runCatching false
+            var obsolete = false
+            for (index in 0 until lines.length()) {
+                val row = lines.optJSONObject(index) ?: return@runCatching false
+                val startMs = row.optLong("s", Long.MIN_VALUE)
+                val endMs = row.optLong("e", Long.MIN_VALUE)
+                val text = row.optString("t")
+                if (startMs < 0L || endMs <= startMs || text.isBlank()) return@runCatching false
+                val translation = row.opt("zh")
+                if (
+                    row.optBoolean("oa", false) ||
+                    translation == null ||
+                    translation == JSONObject.NULL ||
+                    translation.toString().isBlank()
+                ) obsolete = true
+            }
+            obsolete
+        }.getOrDefault(false)
+    }
+
 }

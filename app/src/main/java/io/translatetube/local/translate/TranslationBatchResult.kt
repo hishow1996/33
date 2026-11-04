@@ -1,6 +1,7 @@
 package io.translatetube.local.translate
 
 import io.translatetube.local.subs.SubtitleParsers
+import io.translatetube.local.tts.TtsTextPolicy
 
 /** Structured, content-free reason for rejecting one model output row. */
 internal data class TranslationRowRejection(
@@ -65,9 +66,10 @@ internal data class TranslationBatchResult(
                     )
                 }
                 val targetMismatch = targetMismatchDetail != null
+                val unspeakable = !value.isNullOrBlank() && !TtsTextPolicy.hasSpeakableContent(value)
                 // 纯语气词（Mm-hmm / Hmm / Oh）机器翻译常原样返回或只给标点；译文失败时用固定中文语气词，
                 // 确保这一句也有中文字幕和配音。
-                val interjection = if (value.isNullOrBlank() || sourceEcho || targetMismatch) {
+                val interjection = if (value.isNullOrBlank() || sourceEcho || targetMismatch || unspeakable) {
                     SubtitleInterjectionPolicy.chineseFor(sourceText, sourceLanguage, targetLanguage)
                 } else {
                     null
@@ -80,13 +82,14 @@ internal data class TranslationBatchResult(
                 }
                 val rejectionReason = when {
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
+                    unspeakable -> "UNSPEAKABLE_TRANSLATION"
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"
                     targetMismatch -> "TARGET_LANGUAGE_MISMATCH"
                     sourceEcho -> "SOURCE_ECHO"
                     else -> null
                 }
                 when {
-                    value.isNullOrBlank() || targetMismatch -> {
+                    value.isNullOrBlank() || targetMismatch || unspeakable -> {
                         // Empty output and status text still need another attempt.
                         if (sourceIndex !in translated) {
                             missing += sourceIndex
@@ -100,6 +103,7 @@ internal data class TranslationBatchResult(
                                         rawOutputCharCount = rawValue?.length ?: 0,
                                         diagnosticReason = when {
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
+                                            unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
                                             sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
                                             sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
                                             targetMismatch -> targetMismatchDetail
@@ -125,6 +129,7 @@ internal data class TranslationBatchResult(
                                         rawOutputCharCount = rawValue?.length ?: 0,
                                         diagnosticReason = when {
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
+                                            unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
                                             sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
                                             sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
                                             targetMismatch -> targetMismatchDetail

@@ -59,8 +59,7 @@ class DubbingRetryQueuePolicyTest {
                 hasReusableAudio = false,
                 workerActive = true,
                 released = false,
-                fallbackRequested = false,
-                alreadyQueued = false,
+                    alreadyQueued = false,
                 deterministicFailure = true,
             ),
         )
@@ -76,8 +75,7 @@ class DubbingRetryQueuePolicyTest {
                 hasReusableAudio = false,
                 workerActive = true,
                 released = false,
-                fallbackRequested = false,
-                alreadyQueued = false,
+                    alreadyQueued = false,
             ),
         )
     }
@@ -90,7 +88,6 @@ class DubbingRetryQueuePolicyTest {
             "hasReusableAudio" to true,
             "workerActive" to true,
             "released" to false,
-            "fallbackRequested" to false,
             "alreadyQueued" to false,
         )
         fun decision(overrides: Map<String, Boolean> = emptyMap()) =
@@ -100,13 +97,11 @@ class DubbingRetryQueuePolicyTest {
                 hasReusableAudio = overrides["hasReusableAudio"] ?: base.getValue("hasReusableAudio"),
                 workerActive = overrides["workerActive"] ?: base.getValue("workerActive"),
                 released = overrides["released"] ?: base.getValue("released"),
-                fallbackRequested = overrides["fallbackRequested"] ?: base.getValue("fallbackRequested"),
                 alreadyQueued = overrides["alreadyQueued"] ?: base.getValue("alreadyQueued"),
             )
         assertEquals(false, decision())
         assertEquals(false, decision(mapOf("hasReusableAudio" to false, "workerActive" to false)))
         assertEquals(false, decision(mapOf("hasReusableAudio" to false, "released" to true)))
-        assertEquals(false, decision(mapOf("hasReusableAudio" to false, "fallbackRequested" to true)))
         assertEquals(false, decision(mapOf("hasReusableAudio" to false, "alreadyQueued" to true)))
         assertEquals(false, decision(mapOf("hasReusableAudio" to false, "retryRequested" to false)))
     }

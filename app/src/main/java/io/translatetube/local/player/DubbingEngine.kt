@@ -124,9 +124,6 @@ class DubbingEngine(
     @Volatile private var backgroundTtsInitializationJob: Job? = null
     private val backgroundTtsInitLock = Any()
     private val ttsInstances = java.util.concurrent.CopyOnWriteArrayList<TtsEngine>()
-    private val fallbackRequested = java.util.concurrent.atomic.AtomicBoolean(false)
-    /** Return true when the service has scheduled a safe fallback-engine switch for this failed cue. */
-    @Volatile var onFallbackRequested: ((index: Int, detail: String) -> Boolean)? = null
     @Volatile var onSynthesisError: ((String) -> Unit)? = null
     val currentTtsName: String get() = tts?.name.orEmpty()
     /** True when the selected system TTS mode speaks directly instead of preparing PCM. */
@@ -467,7 +464,6 @@ class DubbingEngine(
                 ttsInstances.clear()
                 ttsInstances.add(tts)
                 ttsPublished = true
-                fallbackRequested.set(false)
                 providerRateLimitBlocked = false
                 this.lines = preparedLines
                 this.inputLinesForDiagnostics = lines
@@ -954,10 +950,6 @@ class DubbingEngine(
                 }
                 // Stop immediately if another path has already paused this provider queue.
                 if (providerRateLimitBlocked) break
-                // A fallback request stops this worker at a line boundary. The service waits for
-                // it to unwind before swapping engines, preventing old TTS PCM from being written
-                // into the new engine's cache namespace.
-                if (fallbackRequested.get()) break
                 val idx = synchronized(pending) {
                     val next = pending.pollFirst()
                     if (next != null) activeSynthesisIndex = next
@@ -1539,7 +1531,6 @@ class DubbingEngine(
                             "合成调用次数（含重试）" to synthesisCallCount.toString(),
                             "当前恢复重试次数" to (synthesisRecoveryRetryCounts[idx] ?: 0).toString(),
                             "是否已有同句播放重试等待" to retryRequestedWhileActive.toString(),
-                            "备用引擎切换是否已请求" to fallbackRequested.get().toString(),
                             "待合成队列行数" to pending.totalSize().toString(),
                             "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
                             "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
@@ -1553,13 +1544,6 @@ class DubbingEngine(
                         // The queued retry is real work, not terminal silence. Keeping readiness
                         // pending prevents tick() from showing a false silent-cue/error state.
                         markCuePendingForGeneration(idx, expectedGeneration = workerCacheGeneration)
-                        bumpPrepared()
-                        continue
-                    }
-                    if (requestTtsFallback(idx, detail)) {
-                        // The asynchronous service callback will install the fallback and requeue
-                        // this cue. Stop before synthesizing another line with the failed engine.
-                        markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                         bumpPrepared()
                         continue
                     }
@@ -1655,7 +1639,6 @@ class DubbingEngine(
                                     hasReusableAudio = hasReusableAudio,
                                     workerActive = workerStillOwnsGeneration,
                                     released = released,
-                                    fallbackRequested = fallbackRequested.get(),
                                     alreadyQueued = pending.contains(idx),
                                     deterministicFailure = deterministicFailureInThisCue,
                                 )
@@ -1720,7 +1703,7 @@ class DubbingEngine(
             val shouldRestart = synchronized(synthStartLock) {
                 if (synthJob === completedWorker) synthJob = null
                 !released && !synthesisMemoryFailure && !providerRateLimitBlocked &&
-                    !fallbackRequested.get() && pending.isNotEmpty()
+                    pending.isNotEmpty()
             }
             if (shouldRestart) startSynthLoop()
             }
@@ -1782,58 +1765,6 @@ class DubbingEngine(
             }
             audio
         }
-    }
-
-    private fun requestTtsFallback(index: Int, detail: String): Boolean {
-        if (!tts?.name.orEmpty().contains("系统TTS")) return false
-        if (!fallbackRequested.compareAndSet(false, true)) return true
-        val accepted = runCatching { onFallbackRequested?.invoke(index, detail) == true }.getOrDefault(false)
-        if (!accepted) fallbackRequested.set(false)
-        return accepted
-    }
-
-    /**
-     * Replace a failed System TTS instance after the active synthesis job has unwound, then retry
-     * the cue with a fresh engine-specific cache key. Existing valid fallback cache rows are reused.
-     */
-    suspend fun completeTtsFallback(fallback: TtsEngine, failedIndex: Int) {
-        synthJob?.join()
-        if (released || failedIndex !in lines.indices) {
-            runCatching { fallback.close() }
-            fallbackRequested.set(false)
-            return
-        }
-        val previous = tts
-        synchronized(cacheWriteLock) {
-            if (released) {
-                runCatching { fallback.close() }
-                fallbackRequested.set(false)
-                return
-            }
-            ttsInstances.addIfAbsent(fallback)
-            tts = fallback
-            fallbackRequested.set(false)
-        }
-        if (previous != null && previous !== fallback) {
-            runCatching { previous.close() }
-            ttsInstances.remove(previous)
-        }
-        // The memory LRU is keyed by subtitle index for fast lookup, but its entries are
-        // identity-bound. Clear all of it on an engine switch and rebuild readiness for the
-        // new engine so rows synthesized by the previous engine are not reported ready.
-        restartSynthesisForCurrentConfiguration()
-    }
-
-    fun failTtsFallback(failedIndex: Int, detail: String) {
-        // Keep the gate closed: continuing this worker would repeatedly synthesize with the
-        // already-failed System TTS and could make the whole subtitle queue appear stuck.
-        fallbackRequested.set(true)
-        if (failedIndex in lines.indices) {
-            silentCueReasonsByIndex[failedIndex] = "系统 TTS 失败且备用引擎恢复失败：${detail.take(320)}"
-            markCuePrepared(failedIndex, hasAudio = false)
-            bumpPrepared()
-        }
-        reportSynthesisError("系统 TTS 配音失败，自动切换备用引擎也未成功：$detail")
     }
 
     private fun reportSynthesisError(message: String) {
@@ -2888,9 +2819,7 @@ class DubbingEngine(
                                 )
                                 val detail = error.message ?: error.javaClass.simpleName
                                 markCuePrepared(lineIndex, hasAudio = false)
-                                if (!requestTtsFallback(lineIndex, detail)) {
-                                    reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：$detail")
-                                }
+                                reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：$detail")
                             }
                         }
                     } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -4211,7 +4140,6 @@ class DubbingEngine(
         backgroundSynthesisRequested = false
         backgroundTtsInitializationJob?.cancel()
         backgroundTtsInitializationJob = null
-        fallbackRequested.set(false)
         cacheInitGeneration.incrementAndGet()
         cacheInitJob?.cancel()
         // Serialize the task snapshot with startSynthLoop(). Without this lock, release()
