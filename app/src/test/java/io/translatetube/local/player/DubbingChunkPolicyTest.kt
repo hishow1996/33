@@ -50,4 +50,16 @@ class DubbingChunkPolicyTest {
         assertEquals(1, chunks.size)
         assertEquals(listOf(0, 1), chunks.single().lineIndices)
     }
+
+    @Test
+    fun playableCueWithoutChineseTranslationIsRejectedInsteadOfUsingSourceText() {
+        val sourceOnly = cue(0, 0L, 1_000L, 1).copy(zh = null)
+
+        val error = runCatching {
+            DubbingChunkPolicy.buildChunks(listOf(sourceOnly))
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message.orEmpty().contains("中文译文"))
+    }
 }
