@@ -947,9 +947,9 @@ object AppLogStore {
                 append("- ").append(key).append("：").append(value).append('\n')
             }
         }
-        append("日志事件元数据：\\n")
+        append("日志事件元数据：\n")
         eventMetadata.forEach { (key, value) ->
-            append("- ").append(key).append("：").append(value).append('\\n')
+            append("- ").append(key).append("：").append(value).append('\n')
         }
         if (level == "WARN" || level == "ERROR" || level == "FATAL") {
             append("近期操作轨迹关联方式：").append(recentTrailScope).append('\n')
