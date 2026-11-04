@@ -3870,8 +3870,15 @@ class PlaybackService : MediaSessionService() {
             lastProcessingNotificationAuditSignature = null
             return
         }
+        val speakerDisplay = if (speakerRecognitionActive) {
+            SpeakerRecognitionProgressPolicy.display(state.speakerRecognition)
+        } else null
         val (title, detail) = if (speakerRecognitionActive) {
-            "人物区分 · ${state.speakerRecognition.stageTitle}" to state.speakerRecognition.message
+            val speakerDetail = listOfNotNull(
+                speakerDisplay?.message?.takeIf { it.isNotBlank() },
+                speakerDisplay?.secondaryDetail?.takeIf { it.isNotBlank() },
+            ).joinToString(" · ")
+            "人物区分 · ${state.speakerRecognition.stageTitle}" to speakerDetail
                 .ifBlank { state.progress.removePrefix("人物识别 · ").ifBlank { "正在分析音频" } }
         } else when (state.phase) {
             Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
@@ -3939,29 +3946,12 @@ class PlaybackService : MediaSessionService() {
             } else null
             else -> null
         }
-        val speakerCounterDetail = if (speakerRecognitionActive) {
-            val recognition = state.speakerRecognition
-            val completed = recognition.completedUnits
-            val total = recognition.totalUnits
-            if (
-                completed != null && total != null && total > 0L &&
-                recognition.progressItem == null &&
-                recognition.stage in setOf(
-                    SpeakerRecognitionStage.ANALYZING_AUDIO,
-                    SpeakerRecognitionStage.LINKING_SUBTITLES,
-                )
-            ) {
-                val unit = if (recognition.stage == SpeakerRecognitionStage.ANALYZING_AUDIO) "段" else "行"
-                "已完成 ${completed.coerceIn(0L, total)}/$total$unit"
-            } else null
-        } else null
-        val detailWithSpeakerCount = if (speakerCounterDetail != null) {
-            "$detail · $speakerCounterDetail"
-        } else detail
+        // Speaker stage details are already formatted by SpeakerRecognitionProgressPolicy,
+        // the same presentation policy used by the in-app progress panel.
         val displayDetail = if (
             measuredPercent != null &&
-            !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detailWithSpeakerCount)
-        ) "$detailWithSpeakerCount · $measuredPercent%" else detailWithSpeakerCount
+            !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detail)
+        ) "$detail · $measuredPercent%" else detail
         val ongoing = state.isPlaying || preparationIncomplete || speakerRecognitionActive ||
             state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
         val hasProcessingActions = isProcessingPhase(state.phase)

@@ -7718,127 +7718,151 @@ private fun SpeakerRecognitionProgressPanel(
     ) {
         SpeakerRecognitionProgressPolicy.display(state)
     }
-    val isError = state.phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
-    val titleColor = when (state.phase) {
-        io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> Color(0xFF15966B)
-        io.translatetube.local.player.SpeakerRecognitionPhase.FAILED -> Color(0xFFB64A55)
-        io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED -> Color(0xFFA86B13)
+    val phase = state.phase
+    val isError = phase == io.translatetube.local.player.SpeakerRecognitionPhase.FAILED
+    val isInterruptedOrCancelled = phase in setOf(
+        io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLED,
+        io.translatetube.local.player.SpeakerRecognitionPhase.INTERRUPTED,
+    )
+    val titleColor = when {
+        phase == io.translatetube.local.player.SpeakerRecognitionPhase.SUCCEEDED -> Color(0xFF15966B)
+        isError -> Color(0xFFB64A55)
+        isInterruptedOrCancelled -> Color(0xFFA86B13)
         else -> OnBg
     }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 7.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
-            state.stageTitle,
-            color = titleColor,
-            style = MaterialTheme.typography.titleSmall.copy(
-                fontSize = 12.sp,
-                lineHeight = 15.sp,
-            ),
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        // Keep the cancel control in the heading row. It must not increase the height of
+        // the progress row, otherwise the byte-count detail appears detached from the bar.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                state.stageTitle,
+                modifier = Modifier.weight(1f),
+                color = titleColor,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                ),
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (canCancel && phase != io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING) {
+                TextButton(
+                    onClick = onCancel,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text(
+                        "取消",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+
         if (display.message.isNotBlank()) {
             Text(
                 display.message,
-                color = if (isError) Color(0xFFB64A55) else SubText,
+                color = when {
+                    isError -> Color(0xFFB64A55)
+                    isInterruptedOrCancelled -> Color(0xFFA86B13)
+                    else -> SubText
+                },
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontSize = 11.sp,
                     lineHeight = 14.sp,
                 ),
-                maxLines = if (isError) 2 else 1,
-                softWrap = isError,
+                maxLines = 2,
+                softWrap = true,
                 overflow = TextOverflow.Ellipsis,
             )
         }
 
         if (state.isActive) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                val progressPercent = state.progressPercent?.coerceIn(0, 100)
-                if (progressPercent != null) {
-                    key(state.stage, state.progressItem, state.taskToken) {
-                        val animatedProgress by animateFloatAsState(
-                            targetValue = progressPercent / 100f,
-                            animationSpec = tween(
-                                durationMillis = 260,
-                                easing = FastOutSlowInEasing,
-                            ),
-                            label = "speakerRecognitionProgress",
-                        )
-                        LinearProgressIndicator(
-                            progress = { animatedProgress },
-                            modifier = Modifier.weight(1f).height(4.dp),
-                        )
-                    }
-                    Text(
-                        progressPercent.toString() + "%",
-                        modifier = Modifier.width(36.dp),
-                        color = BrandBright,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 11.sp,
-                            fontFeatureSettings = "tnum",
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                        maxLines = 1,
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        modifier = Modifier.weight(1f).height(4.dp),
-                    )
-                    Spacer(Modifier.width(36.dp))
-                }
-
-                if (canCancel && state.phase != io.translatetube.local.player.SpeakerRecognitionPhase.CANCELLING) {
-                    TextButton(
-                        onClick = onCancel,
-                        contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
-                    ) {
+            // The bar and its byte/segment detail are one compact visual group.
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    val progressPercent = state.progressPercent?.coerceIn(0, 100)
+                    if (progressPercent != null) {
+                        key(state.stage, state.progressItem, state.taskToken) {
+                            val animatedProgress by animateFloatAsState(
+                                targetValue = progressPercent / 100f,
+                                animationSpec = tween(
+                                    durationMillis = 260,
+                                    easing = FastOutSlowInEasing,
+                                ),
+                                label = "speakerRecognitionProgress",
+                            )
+                            LinearProgressIndicator(
+                                progress = { animatedProgress },
+                                modifier = Modifier.weight(1f).height(5.dp),
+                                color = BrandBright,
+                                trackColor = OutlineSoft,
+                            )
+                        }
                         Text(
-                            "取消",
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            progressPercent.toString() + "%",
+                            modifier = Modifier.width(36.dp),
+                            color = BrandBright,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 11.sp,
+                                fontFeatureSettings = "tnum",
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.End,
                             maxLines = 1,
                         )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.weight(1f).height(5.dp),
+                            color = BrandBright,
+                            trackColor = OutlineSoft,
+                        )
                     }
-                } else {
-                    Spacer(Modifier.width(44.dp))
                 }
-            }
 
-            // Hold one detail row while active so switching stages does not resize the panel.
-            if (!display.secondaryDetail.isNullOrBlank()) {
-                Text(
-                    display.secondaryDetail,
-                    modifier = Modifier.fillMaxWidth(),
-                    color = SubText,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 10.sp,
-                        lineHeight = 12.sp,
-                        fontFeatureSettings = "tnum",
-                    ),
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            } else {
-                Spacer(Modifier.height(12.dp))
+                // Reserve the same small detail slot between stages to prevent panel jumps.
+                if (!display.secondaryDetail.isNullOrBlank()) {
+                    Text(
+                        display.secondaryDetail,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = SubText,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 11.sp,
+                            lineHeight = 13.sp,
+                            fontFeatureSettings = "tnum",
+                        ),
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    Spacer(Modifier.height(13.dp))
+                }
             }
         } else if (!display.secondaryDetail.isNullOrBlank()) {
             Text(
                 display.secondaryDetail,
+                modifier = Modifier.fillMaxWidth(),
                 color = SubText,
                 style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = 10.sp,
-                    lineHeight = 12.sp,
+                    fontSize = 11.sp,
+                    lineHeight = 13.sp,
+                    fontFeatureSettings = "tnum",
                 ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
