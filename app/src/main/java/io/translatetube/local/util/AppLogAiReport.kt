@@ -153,7 +153,7 @@ internal object AppLogAiReport {
                 }
             }
 
-            append("\n## 4. 完整事件时间线（JSONL，按时间升序）\n")
+            append("\n## 5. 完整事件时间线（JSONL，按时间升序）\n")
             append("每行是一个独立事件；details 包含事件上下文、近期操作轨迹、环境快照及异常堆栈。\n")
             ordered.forEachIndexed { index, event ->
                 val category = event.category.ifBlank {
@@ -224,7 +224,7 @@ internal object AppLogAiReport {
             }
             if (ordered.isEmpty()) append("（当前没有可导出的日志记录）\n")
 
-            append("\n## 5. AI 修复要求\n")
+            append("\n## 6. AI 修复要求\n")
             append("1. 先按 sessionId + operationId 分组，再查看五阶段诊断摘要；operationFailureRole=FIRST_RECORDED_ANOMALY_CANDIDATE 仅代表最早已记录异常，不能直接认定为真实根因。\n")
             append("2. 对同一任务后续异常逐条比较异常树、根因消息、首个应用栈帧和阶段字段；明确区分连锁错误、重复记录、并行故障及证据不足。\n")
             append("3. 不得仅凭时间先后断言因果；区分日志已证实的事实、合理假设和缺失证据。\n")

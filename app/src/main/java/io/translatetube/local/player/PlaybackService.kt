@@ -5465,7 +5465,7 @@ class PlaybackService : MediaSessionService() {
                 "恢复的源语言" to effectiveResumeState?.sourceLang.orEmpty().ifBlank { "未确定" },
                 "本次选择的配音引擎" to configuredTtsName,
                 "翻译服务配置编号" to activeTranslationId.toString(),
-            ),
+            ) + processingOperationContext.diagnosticFields(),
         )
         pm.pause()
         prepJob = scope.launch(

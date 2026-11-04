@@ -15,6 +15,9 @@ import io.translatetube.local.tts.LocalCpuBoundTtsEngine
 import io.translatetube.local.tts.GeminiTtsQuotaException
 import io.translatetube.local.tts.TimelineTtsPlayback
 import io.translatetube.local.tts.TtsInputLimitException
+import io.translatetube.local.util.AppLogOperationContext
+import io.translatetube.local.util.AppLogOperationContextHolder
+import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -64,6 +67,13 @@ class DubbingEngine(
     private val outputBus: DubbingTrackBus,
 ) {
     private val appContext = ctx.applicationContext
+    // Dubbing logs are written on a dedicated executor, outside the coroutine ThreadLocal.
+    // Capture the operation object once; its stage snapshot remains live and thread-safe.
+    private val logOperationContext: AppLogOperationContext? = AppLogOperationContextHolder.current.get()
+
+    private fun withOperationContext(fields: Map<String, String>): Map<String, String> =
+        logOperationContext?.let { AppLogStore.applyOperationContext(fields, it) } ?: fields
+
 
     private fun logDubbingInfo(
         message: String,
@@ -75,7 +85,7 @@ class DubbingEngine(
                 appContext,
                 tag,
                 message,
-                diagnosticContext = diagnosticContext,
+                diagnosticContext = withOperationContext(diagnosticContext),
             )
         }
     }
@@ -431,7 +441,7 @@ class DubbingEngine(
         if (preflightIssueCount > 0) {
             logDubbingError(
                 "配音字幕预检失败：$preflightIssueCount 条字幕无法生成中文配音",
-                diagnosticContext = mapOf(
+                diagnosticContext = withOperationContext(mapOf(
                     "配音引擎名称" to tts.name,
                     "配音引擎实现类" to tts.javaClass.name,
                     "配音引擎缓存/模型标识" to runCatching { tts.cacheKey }.getOrDefault("读取失败").take(1200),
@@ -443,7 +453,7 @@ class DubbingEngine(
                     "其余字幕详情" to if (preflightIssueCount > preflightDetails.size) {
                         "还有 ${preflightIssueCount - preflightDetails.size} 条未在此摘要展开"
                     } else "无",
-                ),
+                )),
                 tag = "Dubbing",
             )
             runCatching { tts.close() }
@@ -747,13 +757,13 @@ class DubbingEngine(
                         io.translatetube.local.util.AppLogStore.warning(
                             appContext, "DubbingEngine",
                             "配音 PCM 缓存初始化失败，正在重建待合成队列并继续尝试", e,
-                            diagnosticContext = mapOf(
+                            diagnosticContext = withOperationContext(mapOf(
                                 "缓存初始化代次" to generation.toString(),
                                 "当前缓存初始化代次" to cacheInitGeneration.get().toString(),
                                 "字幕总行数" to lines.size.toString(),
                                 "配音引擎" to (tts?.name ?: "未知引擎"),
                                 "是否已经释放" to released.toString(),
-                            ),
+                            )),
                         )
                     }
                     if (!released && generation == cacheInitGeneration.get()) {
@@ -1212,7 +1222,7 @@ class DubbingEngine(
                                         appContext,
                                         "DubbingEngine",
                                         "第 ${idx + 1}/${lines.size} 句自适应语速合成未产生更短的有效音频，保留上一版结果",
-                                        diagnosticContext = mapOf(
+                                        diagnosticContext = withOperationContext(mapOf(
                                             "字幕行号" to "${idx + 1}/${lines.size}",
                                             "配音引擎" to (tts?.name ?: "未知引擎"),
                                             "当前合成语速" to effectiveSynthesisSpeed.toString(),
@@ -1222,7 +1232,7 @@ class DubbingEngine(
                                             "候选音频有效" to candidateIsValid.toString(),
                                             "候选音频在样本上限内" to candidateWithinSampleLimit.toString(),
                                             "处理方式" to "不替换已验证的 PCM，后续由时间轴兜底处理",
-                                        ),
+                                        )),
                                     )
                                 }
                                 break
@@ -1257,14 +1267,14 @@ class DubbingEngine(
                                     "DubbingEngine",
                                     "第 ${idx + 1}/${lines.size} 句自适应语速重试失败，已保留此前有效音频",
                                     e,
-                                    diagnosticContext = mapOf(
+                                    diagnosticContext = withOperationContext(mapOf(
                                         "字幕行号" to "${idx + 1}/${lines.size}",
                                         "配音引擎" to (tts?.name ?: "未知引擎"),
                                         "当前合成语速" to effectiveSynthesisSpeed.toString(),
                                         "尝试语速" to retrySpeed.toString(),
                                         "已接受的自适应次数" to adaptiveRetryCount.toString(),
                                         "处理策略" to "保留此前有效音频，由时间轴兜底处理",
-                                    ),
+                                    )),
                                 )
                             }
                             break
@@ -1368,7 +1378,7 @@ class DubbingEngine(
                                 appContext, "DubbingEngine",
                                 "第 ${idx + 1}/${lines.size} 句配音缓存写入失败，正在尝试内存缓存播放",
                                 cacheError,
-                                diagnosticContext = mapOf(
+                                diagnosticContext = withOperationContext(mapOf(
                                     "字幕行号" to "${idx + 1}/${lines.size}",
                                     "配音引擎" to (tts?.name ?: "未知引擎"),
                                     "PCM 采样率 Hz" to readyAudio.sampleRate.toString(),
@@ -1377,7 +1387,7 @@ class DubbingEngine(
                                     "应用文件目录可用空间 MB" to (appContext.filesDir.usableSpace / (1024L * 1024L)).toString(),
                                     "当前内存缓存条目数" to synchronized(mem) { mem.size }.toString(),
                                     "恢复策略" to "优先保留已合成音频；内存也无法容纳时才报告配音失败",
-                                ),
+                                )),
                             )
                         }
                     }
@@ -1489,7 +1499,7 @@ class DubbingEngine(
                         logDubbingError(
                             "Gemini TTS 遇到 HTTP 429，已暂停待合成队列并保留未完成字幕",
                             e,
-                            diagnosticContext = mapOf(
+                            diagnosticContext = withOperationContext(mapOf(
                                 "字幕行号" to "${idx + 1}/${lines.size}",
                                 "配音引擎名称" to (tts?.name ?: "未知引擎"),
                                 "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
@@ -1499,7 +1509,7 @@ class DubbingEngine(
                                 "已合成 PCM 是否保留" to "true",
                                 "恢复策略" to "本次会话不再重试同 Key 的 Gemini 请求；重新绑定配音会话或切换引擎后继续",
                                 "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
-                            ),
+                            )),
                         )
                         // Make this actionable provider-quota failure replace any earlier generic
                         // one-shot synthesis warning from the same attached session.
@@ -1672,7 +1682,7 @@ class DubbingEngine(
                             appContext, "DubbingEngine",
                             "中文配音合成时内存耗尽，已停止当前合成队列",
                             memoryError,
-                            diagnosticContext = mapOf(
+                            diagnosticContext = withOperationContext(mapOf(
                                 "配音引擎" to (tts?.name ?: "未知引擎"),
                                 "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
                                 "字幕总行数" to lines.size.toString(),
@@ -1680,7 +1690,7 @@ class DubbingEngine(
                                 "待合成队列长度" to pendingCountBeforeOom.toString(),
                                 "内存缓存清理前条目数" to memoryCacheEntryCountBeforeOom.toString(),
                                 "失败处理" to "清空待合成队列和 PCM 内存缓存，向播放服务上报合成错误",
-                            ),
+                            )),
                         )
                     }
                     // OOM must replace any earlier one-time synthesis warning so the service
@@ -1753,14 +1763,14 @@ class DubbingEngine(
                     "DubbingEngine",
                     "第 ${idx + 1}/${lines.size} 句配音时长对齐失败，已保留成功合成的原始音频",
                     alignmentError,
-                    diagnosticContext = mapOf(
+                    diagnosticContext = withOperationContext(mapOf(
                         "字幕行号" to "${idx + 1}/${lines.size}",
                         "配音引擎" to (tts?.name ?: "未知引擎"),
                         "合成音频样本数" to audio.samples.size.toString(),
                         "合成采样率 Hz" to audio.sampleRate.toString(),
                         "目标对齐比例" to ratio.toString(),
                         "恢复策略" to "跳过 WSOLA 变速对齐，缓存并继续使用原始合成 PCM；挂载时由总线排队避免叠音",
-                    ),
+                    )),
                 )
             }
             audio
@@ -1771,7 +1781,7 @@ class DubbingEngine(
         if (!released && synthesisErrorReported.compareAndSet(false, true)) {
             logDubbingError(
                 "配音功能上报终止性故障：$message",
-                diagnosticContext = mapOf(
+                diagnosticContext = withOperationContext(mapOf(
                     "配音引擎名称" to (tts?.name ?: "未知引擎"),
                     "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
                     "故障时字幕行号" to if (_currentLine.value >= 0) "${_currentLine.value + 1}/${lines.size}" else "当前没有活动字幕行",
@@ -1783,7 +1793,7 @@ class DubbingEngine(
                     "首句输出是否已确认" to firstPlaybackReported.get().toString(),
                     "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
                     "混流总线代次" to outputBus.generationToken().toString(),
-                ),
+                )),
             )
             // A UI/notification callback must never terminate the synthesis worker itself.
             runCatching { onSynthesisError?.invoke(message) }
@@ -1808,7 +1818,7 @@ class DubbingEngine(
                 "DubbingEngine",
                 "第 ${index + 1}/${lines.size} 句配音${stage}失败（${tts?.name ?: "未知引擎"}）",
                 failure,
-                diagnosticContext = mapOf(
+                diagnosticContext = withOperationContext(mapOf(
                     "配音引擎名称" to (tts?.name ?: "未知引擎"),
                     "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
                     "故障阶段" to stage,
@@ -1838,7 +1848,7 @@ class DubbingEngine(
                             ?.joinToString { "type=${it.type}, id=${it.id}" }?.take(500)
                             ?.ifBlank { "未检测到输出设备" } ?: "不可用"
                     }.getOrDefault("读取失败"),
-                ) + extraContext,
+                ) + extraContext),
             )
         }.onFailure {
             android.util.Log.w("DubbingEngine", "Could not persist detailed dubbing failure log", it)
@@ -3484,7 +3494,7 @@ class DubbingEngine(
                         appContext,
                         "DubbingTimeline",
                         "系统 TTS 第 ${idx + 1} 句预计超出时间槽，将完整朗读且不暂停视频；期间经过的字幕进入顺序补播",
-                        diagnosticContext = mapOf(
+                        diagnosticContext = withOperationContext(mapOf(
                             "字幕行号" to "${idx + 1}/${lines.size}",
                             "配音引擎" to "系统TTS（即时模式）",
                             "字幕开始时间 ms" to line.startMs.toString(),
@@ -3498,7 +3508,7 @@ class DubbingEngine(
                             "用户语速" to baseSpeechRate.toString(),
                             "视频播放速度" to timelineSpeed.toString(),
                             "处理方式" to "不暂停视频；维持本句完整输出，并按时间顺序补播等待中的字幕",
-                        ),
+                        )),
                     )
                 }
             }
@@ -4054,7 +4064,7 @@ class DubbingEngine(
         }
         logDubbingError(
             "配音播放错误：第 ${index + 1}/${lines.size} 句未检测到可播放中文配音",
-            diagnosticContext = mapOf(
+            diagnosticContext = withOperationContext(mapOf(
                 "字幕行号" to "${index + 1}/${lines.size}",
                 "原因" to reason,
                 "故障阶段" to "字幕配音输出",
@@ -4067,7 +4077,7 @@ class DubbingEngine(
                 "字幕时间轴 ms" to "${rawCue?.startMs ?: cue.startMs}–${rawCue?.endMs ?: cue.endMs}",
                 "源语言标记" to sourceLanguageForDiagnostics,
                 "处理动作" to "该句没有可播放的中文配音，播放服务将停止视频并保留用户设置的原声音量",
-            ),
+            )),
             tag = "Dubbing",
         )
     }
