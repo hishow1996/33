@@ -653,7 +653,16 @@ fun WebVideoScreen(
                 "BackgroundWebTask",
                 "启动后台网页任务失败",
                 error,
-                diagnosticContext = mapOf("任务" to title, "任务编号" to taskId),
+                diagnosticContext = mapOf(
+                    "任务" to title,
+                    "任务编号" to taskId,
+                    "页面主机名" to webSourceHost(currentPage),
+                    "页面标题" to pageTitle.take(120),
+                    "页面导航代数" to pageGeneration.get().toString(),
+                    "当前页面是否仍活跃" to screenActive.get().toString(),
+                    "启动前界面状态" to status.take(160),
+                    "后台任务执行器" to "ModelDownloadForegroundService.launchExternalTask",
+                ),
             )
             null
         }
@@ -994,7 +1003,15 @@ fun WebVideoScreen(
             val cookie = runCatching {
                 android.webkit.CookieManager.getInstance().getCookie("https://www.bilibili.com/")
             }.getOrNull()
-            val result = runCatching { BilibiliNativeResolver.resolve(target, cookie) }.getOrNull()
+            var nativeResolveFailure: Exception? = null
+            val result = try {
+                BilibiliNativeResolver.resolve(target, cookie)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                nativeResolveFailure = failure
+                null
+            }
             mainHandler.post {
                 if (!screenActive.get() || pageGeneration.get() != resolveGeneration) return@post
                 bilibiliJob = null
@@ -1025,9 +1042,19 @@ fun WebVideoScreen(
                         context = appCtx,
                         tag = "WebVideoParse",
                         message = "B 站链接原生解析失败，回退 yt-dlp 解析",
+                        failure = nativeResolveFailure,
                         diagnosticContext = mapOf(
+                            "诊断事件类型" to "BILIBILI_NATIVE_RESOLVER_FALLBACK",
+                            "页面主机名" to webSourceHost(target),
                             "解析器" to "bilibili-native",
+                            "解析子阶段" to "请求视频元信息/播放地址",
+                            "解析结果状态" to if (nativeResolveFailure == null) "解析器返回空结果且未抛出异常" else "解析器抛出异常",
+                            "异常类型" to (nativeResolveFailure?.javaClass?.name ?: "无异常对象"),
+                            "异常详情" to (nativeResolveFailure?.message ?: "解析器未返回可播放结果").take(300),
+                            "是否捕获到 B 站登录 Cookie" to (!cookie.isNullOrBlank()).toString(),
                             "回退方式" to "yt-dlp 兜底解析",
+                            "当前页面导航代数" to resolveGeneration.toString(),
+                            "备用解析是否继续" to "是",
                         ),
                         issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
                             "WebVideoParse",
