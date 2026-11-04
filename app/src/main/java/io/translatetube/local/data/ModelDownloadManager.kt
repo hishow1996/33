@@ -1192,6 +1192,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
                             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
                         )
+                        var vadLastFailure: Exception? = null
                         for ((index, url) in ResumableModelArchiveDownloader.orderSourcesByResumeProgress(vad, vadUrls)) {
                             state.value = ModelState(
                                 status = ModelStatus.DOWNLOADING,
@@ -1243,16 +1244,25 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             } catch (e: kotlinx.coroutines.CancellationException) {
                                 throw e
                             } catch (e: Exception) {
+                                vadLastFailure = e
+                                val partial = ResumableModelArchiveDownloader.partFileFor(vad, url)
                                 io.translatetube.local.util.AppLogStore.warning(
                                     ctx.applicationContext,
                                     "VADDownload",
-                                    "语音检测 VAD 模型下载源失败",
+                                    "语音检测 VAD 模型下载源失败，正在尝试其他来源",
                                     e,
                                     diagnosticContext = mapOf(
+                                        "失败阶段" to state.value.stageMessage.orEmpty().ifBlank { state.value.status.name },
                                         "VAD 下载源序号" to (index + 1).toString(),
+                                        "VAD 候选下载源数量" to vadUrls.size.toString(),
                                         "VAD 下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
                                         "目标文件名" to vad.name,
+                                        "目标文件当前大小 bytes" to vad.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                                        "续传分片当前大小 bytes" to partial.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                                        "目标目录可用空间 bytes" to vad.parentFile?.usableSpace?.toString().orEmpty().ifBlank { "未知" },
                                         "当前完整性状态" to ModelFiles.isValidVadModel(vad).toString(),
+                                        "是否保留已安装转写主模型" to ModelFiles.whisperCoreReady(ctx).toString(),
+                                        "是否继续尝试其他下载源" to "是",
                                     ),
                                 )
                                 Log.w("ModelDL", "VAD 下载源失败: ${e.message}")
@@ -1265,6 +1275,29 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         state.value = ModelState(
                             status = ModelStatus.FAILED,
                             error = "本地转写主模型已安装，但语音检测模型完整性校验失败；点击重试只会补下载小型 VAD 模型。",
+                        )
+                        logModelError(
+                            "转写主模型安装后 VAD 附属模型仍不可用",
+                            failure = vadLastFailure,
+                            details = modelKindDetails(ModelKind.ASR) + mapOf(
+                                "失败阶段" to "ASR 主模型安装后的 VAD 附属模型补下载",
+                                "附属模型文件" to vad.name,
+                                "VAD 最终完整性" to ModelFiles.isValidVadModel(vad).toString(),
+                                "VAD 文件是否存在" to vad.exists().toString(),
+                                "VAD 当前大小 bytes" to vad.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                                "候选下载源数量" to vadUrls.size.toString(),
+                                "候选下载源主机" to vadUrls.map { runCatching { android.net.Uri.parse(it).host }.getOrNull() ?: "未知" }.distinct().joinToString(", "),
+                                "VAD 续传分片总大小 bytes" to vadUrls.sumOf { sourceUrl ->
+                                    ResumableModelArchiveDownloader.partFileFor(vad, sourceUrl).takeIf { it.isFile }?.length() ?: 0L
+                                }.toString(),
+                                "模型目录可用空间 bytes" to vad.parentFile?.usableSpace?.toString().orEmpty().ifBlank { "未知" },
+                                "最后异常类型" to (vadLastFailure?.javaClass?.name ?: "未保留异常对象"),
+                                "最后异常摘要" to (vadLastFailure?.message ?: "未提供").take(360),
+                                "转写主模型是否仍可用" to ModelFiles.whisperCoreReady(ctx).toString(),
+                                "本次清理对象" to "仅清理主模型压缩包及其临时分片，不删除已安装转写模型目录",
+                                "恢复建议" to "保留已安装转写主模型，只重试 VAD 小文件下载与 SHA-256 校验",
+                                "VAD 阶段耗时 ms" to (android.os.SystemClock.elapsedRealtime() - vadStageStartedAtMs).coerceAtLeast(0L).toString(),
+                            ),
                         )
                         return
                     }
@@ -1399,6 +1432,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             ),
         )
         var lastError: String? = null
+        var lastFailure: Exception? = null
         val urls = listOf(
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
@@ -1472,18 +1506,49 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                lastFailure = e
                 lastError = e.message ?: e.javaClass.simpleName
+                val partial = ResumableModelArchiveDownloader.partFileFor(vad, url)
+                logModelWarning(
+                    "VAD 附属模型下载源失败，继续尝试其他来源",
+                    e,
+                    mapOf(
+                        "失败阶段" to state.value.stageMessage.orEmpty().ifBlank { state.value.status.name },
+                        "下载源序号" to (index + 1).toString(),
+                        "候选下载源数量" to urls.size.toString(),
+                        "下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
+                        "附属模型文件" to vad.name,
+                        "当前完整模型文件大小 bytes" to vad.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                        "当前续传分片大小 bytes" to partial.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                        "模型目录可用空间 bytes" to (vad.parentFile?.usableSpace?.toString() ?: "未知"),
+                        "下载进度百分比" to state.value.progress.toString(),
+                        "是否继续尝试其他下载源" to "是",
+                    ),
+                )
             }
         }
         state.value = ModelState(status = ModelStatus.FAILED, error = "补下载 VAD 模型失败：${lastError ?: "网络异常"}")
         logModelError(
             "VAD 附属模型补下载失败",
+            failure = lastFailure,
             details = mapOf(
+                "失败阶段" to "已安装转写主模型的 VAD 附属文件补下载",
                 "附属模型文件" to vad.name,
+                "候选下载源数量" to urls.size.toString(),
                 "最后一次失败原因" to (lastError ?: "网络异常").take(360),
+                "最后异常类型" to (lastFailure?.javaClass?.name ?: "未保留异常对象"),
+                "最后异常摘要" to (lastFailure?.message ?: lastError ?: "未提供").take(360),
+                "VAD 文件是否存在" to vad.exists().toString(),
+                "VAD 当前大小 bytes" to vad.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
                 "最终完整性检查" to ModelFiles.isValidVadModel(vad).toString(),
+                "转写主模型是否仍可用" to ModelFiles.whisperCoreReady(ctx).toString(),
+                "模型目录可用空间 bytes" to (vad.parentFile?.usableSpace?.toString() ?: "未知"),
+                "续传分片总大小 bytes" to urls.sumOf { sourceUrl ->
+                    ResumableModelArchiveDownloader.partFileFor(vad, sourceUrl).takeIf { it.isFile }?.length() ?: 0L
+                }.toString(),
                 "总耗时 ms" to (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L).toString(),
                 "尝试过的下载源主机" to urls.map { runCatching { android.net.Uri.parse(it).host }.getOrNull() ?: "未知" }.distinct().joinToString(", "),
+                "恢复建议" to "已安装的 Whisper 主模型保持不动，只重试 VAD 下载及 SHA-256 校验",
             ),
         )
     }
