@@ -74,7 +74,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 2_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/v4"))
+        assertTrue(report.contains("report_schema: elephant-app-log/v5"))
         assertTrue(report.contains("最近最多 800 条"))
         assertTrue(report.contains("优先检查的故障事件"))
         assertTrue(report.contains("完整事件时间线（JSONL"))
@@ -92,6 +92,10 @@ class AppLogAiReportTest {
         assertTrue(report.contains("\"truncated\":true"))
         assertTrue(report.indexOf("\"eventId\":\"event-1\"") < report.indexOf("\"eventId\":\"event-2\""))
         assertTrue(report.contains("不要把不同进程会话混为一次任务"))
+        assertTrue(report.contains("任务故障关系候选"))
+        assertTrue(report.contains("FIRST_RECORDED_ANOMALY_CANDIDATE"))
+        assertTrue(report.contains("不能直接认定为真实根因"))
+        assertTrue(report.contains("operationFailureRole"))
     }
 
     @Test
@@ -159,7 +163,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v2"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v3"))
         assertTrue(report.contains("failure-2"))
         assertTrue(report.contains("start-1"))
         assertTrue(report.contains("rootCauseMessage"))
@@ -170,6 +174,10 @@ class AppLogAiReportTest {
         assertTrue(report.contains("HTTP 504"))
         assertTrue(report.contains("关联事件时间线"))
         assertTrue(report.contains("不同进程会话不会混合"))
+        assertTrue(report.contains("故障关系分析"))
+        assertTrue(report.contains("relationToSelectedEvent"))
+        assertTrue(report.contains("SAME_OPERATION_CONTEXT"))
+        assertTrue(report.contains("仅是上游候选"))
     }
 
 }

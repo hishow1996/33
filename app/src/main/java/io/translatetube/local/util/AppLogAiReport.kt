@@ -35,10 +35,12 @@ internal object AppLogAiReport {
         val priorityEvents = ordered.filter {
             it.level == "FATAL" || it.level == "ERROR" || it.level == "WARN"
         }.takeLast(80).asReversed()
+        val operationRoles = AppLogEventRelationPolicy.operationRoles(ordered)
+        val operationSummaries = AppLogEventRelationPolicy.operationFailureSummaries(ordered).take(80)
 
         return buildString {
             append("# 大象翻译 AI 修复诊断报告\n")
-            append("report_schema: elephant-app-log/v4\n")
+            append("report_schema: elephant-app-log/v5\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -75,7 +77,23 @@ internal object AppLogAiReport {
                 }
             }
 
-            append("\n## 2. 优先检查的故障事件（最多 80 条，按最新优先）\n")
+            append("\n## 2. 任务故障关系候选（仅对具备明确 operationId 的任务分组）\n")
+            if (operationSummaries.isEmpty()) {
+                append("当前读取范围内没有具备完整 sessionId/operationId 且包含异常事件的任务组；不能据此判断故障是否属于同一轮处理。\n")
+            } else {
+                operationSummaries.forEachIndexed { index, summary ->
+                    append(index + 1).append(". sessionId=").append(summary.sessionId)
+                        .append("；operationId=").append(summary.operationId)
+                        .append("；最早异常候选事件=").append(summary.firstAnomalyEventId)
+                        .append("；异常事件数=").append(summary.anomalyCount)
+                        .append("；后续异常数=").append(summary.laterAnomalyCount)
+                        .append("；明确恢复记录数=").append(summary.recoveryCount)
+                        .append('\n')
+                }
+                append("注意：最早异常仅代表当前保留日志中时间最早的异常候选，不等于真实根因；后续异常可能是连锁错误，也可能是并行/独立故障。\n")
+            }
+
+            append("\n## 3. 优先检查的故障事件（最多 80 条，按最新优先）\n")
             if (priorityEvents.isEmpty()) {
                 append("当前保留范围内没有 WARN/ERROR/FATAL 事件。\n")
             } else {
@@ -111,7 +129,7 @@ internal object AppLogAiReport {
                 }
             }
 
-            append("\n## 3. 完整事件时间线（JSONL，按时间升序）\n")
+            append("\n## 4. 完整事件时间线（JSONL，按时间升序）\n")
             append("每行是一个独立事件；details 包含事件上下文、近期操作轨迹、环境快照及异常堆栈。\n")
             ordered.forEachIndexed { index, event ->
                 val category = event.category.ifBlank {
@@ -119,7 +137,7 @@ internal object AppLogAiReport {
                 }
                 val json = JSONObject()
                     .put("schemaVersion", event.schemaVersion)
-                    .put("reportSchemaVersion", 4)
+                    .put("reportSchemaVersion", 5)
                     .put("index", index + 1)
                     .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + (index + 1) })
                     .put("sessionId", event.sessionId.ifBlank { "legacy/unknown" })
@@ -139,6 +157,17 @@ internal object AppLogAiReport {
                     )
                     .put("issueKey", event.issueKey)
                     .put("resolvesIssueKey", event.resolvesIssueKey)
+                    .put(
+                        "operationFailureRole",
+                        operationRoles[AppLogEventRelationPolicy.eventKey(event)]?.role ?: "NO_OPERATION_LINK",
+                    )
+                    .put(
+                        "operationFailureEvidence",
+                        AppLogStore.redactForExport(
+                            operationRoles[AppLogEventRelationPolicy.eventKey(event)]?.evidence
+                                ?: "事件没有可用的共同 sessionId/operationId",
+                        ),
+                    )
                     .put("recoveredAtMs", event.recoveredAtMs ?: 0L)
                     .put("errorClass", AppLogStore.redactForExport(event.errorClass))
                     .put("rootCauseMessage", AppLogStore.redactForExport(event.rootCauseMessage))
@@ -167,16 +196,17 @@ internal object AppLogAiReport {
             }
             if (ordered.isEmpty()) append("（当前没有可导出的日志记录）\n")
 
-            append("\n## 4. AI 修复要求\n")
-            append("1. 按 sessionId、sequence、timestampMs 还原触发操作和阶段顺序；不要把不同进程会话混为一次任务。\n")
-            append("2. 区分日志已证实的事实、合理假设和缺失证据；不得把推测写成已证实根因。\n")
-            append("3. 优先读取 diagnosticContext、rootCauseMessage、firstAppStackFrame、exceptionSnapshot、httpStatusCode 和 operationId 等结构化字段；exceptionSnapshot 保留每层异常自己的堆栈及 Suppressed。若任一节点 truncated=true，必须注明异常树/栈帧已截断。\n")
-            append("4. 检查最深层 cause、Suppressed 异常，以及第一个应用自身包名的栈帧；给出文件、类、方法和行号。\n")
-            append("5. 网络问题同时分析 HTTP 状态码、服务商错误码、requestId、Content-Type、响应长度、重试和解析器结果；不要把所有失败归为网络问题。\n")
-            append("6. 对 YouTube、网页视频和本地视频分别核对同一阶段的实现路径，并指出需要同步修复的入口。\n")
-            append("7. 提出最小且可验证的修复，说明文件、方法、风险和回归测试；不得用静默吞错、空结果或原声兜底掩盖失败。\n")
-            append("8. 日志不足时先指出应在真实失败分支补采的字段，不得臆造运行状态。\n")
-            append("9. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
+            append("\n## 5. AI 修复要求\n")
+            append("1. 先按 sessionId + operationId 分组；operationFailureRole=FIRST_RECORDED_ANOMALY_CANDIDATE 仅代表最早已记录异常，不能直接认定为真实根因。\n")
+            append("2. 对同一任务后续异常逐条比较异常树、根因消息、首个应用栈帧和阶段字段；明确区分连锁错误、重复记录、并行故障及证据不足。\n")
+            append("3. 不得仅凭时间先后断言因果；区分日志已证实的事实、合理假设和缺失证据。\n")
+            append("4. 优先读取 diagnosticContext、rootCauseMessage、firstAppStackFrame、exceptionSnapshot、httpStatusCode 和 operationId 等结构化字段；exceptionSnapshot 保留每层异常自己的堆栈及 Suppressed。若任一节点 truncated=true，必须注明异常树/栈帧已截断。\n")
+            append("5. 检查最深层 cause、Suppressed 异常，以及第一个应用自身包名的栈帧；给出文件、类、方法和行号。\n")
+            append("6. 网络问题同时分析 HTTP 状态码、服务商错误码、requestId、Content-Type、响应长度、重试和解析器结果；不要把所有失败归为网络问题。\n")
+            append("7. 对 YouTube、网页视频和本地视频分别核对同一阶段的实现路径，并指出需要同步修复的入口。\n")
+            append("8. 提出最小且可验证的修复，说明文件、方法、风险和回归测试；不得用静默吞错、空结果或原声兜底掩盖失败。\n")
+            append("9. 日志不足时先指出应在真实失败分支补采的字段，不得臆造运行状态。\n")
+            append("10. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
             append("\n隐私说明：导出前再次执行凭据脱敏；分享前仍应检查字幕片段、文件名和业务内容是否包含个人信息。\n")
         }
     }
@@ -199,8 +229,11 @@ internal object AppLogAiReport {
             else it.timestampMs == target.timestampMs && it.tag == target.tag && it.message == target.message
         } ?: target
         val diagnosis = AppLogDiagnostics.analyze(primary)
-
-        fun eventJson(event: AppLogRecord, index: Int): JSONObject = JSONObject()
+        val incidentRelations = AppLogEventRelationPolicy.againstSelected(ordered, primary)
+        fun eventJson(event: AppLogRecord, index: Int): JSONObject {
+            val relation = incidentRelations[AppLogEventRelationPolicy.eventKey(event)]
+                ?: AppLogEventRelation("NO_DIRECT_LINK", "没有匹配的直接关联证据")
+            return JSONObject()
             .put("index", index)
             .put("schemaVersion", event.schemaVersion)
             .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + index })
@@ -239,10 +272,13 @@ internal object AppLogAiReport {
                 },
             )
             .put("details", AppLogStore.redactForExport(event.details))
+            .put("relationToSelectedEvent", relation.role)
+            .put("relationEvidence", AppLogStore.redactForExport(relation.evidence))
+        }
 
         return buildString {
             append("# 大象翻译 AI 单条故障修复包\n")
-            append("report_schema: elephant-app-log/incident-v2\n")
+            append("report_schema: elephant-app-log/incident-v3\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -280,19 +316,27 @@ internal object AppLogAiReport {
             append("\n## 2. 主故障事件（结构化 JSON）\n")
             append(eventJson(primary, 1).toString()).append('\n')
 
-            append("\n## 3. 关联事件时间线（JSONL，按时间升序）\n")
+            append("\n## 3. 故障关系分析（以当前选中事件为参照）\n")
+            incidentRelations.forEach { (eventKey, relation) ->
+                append("- ").append(eventKey).append("：").append(relation.role)
+                    .append("；").append(AppLogStore.redactForExport(relation.evidence)).append('\n')
+            }
+            append("因果判断约束：更早/更晚只说明时间顺序；只有 resolvesIssueKey 与 issueKey 匹配才作为明确恢复关联。相同 issueKey 仅代表故障签名相同。\n")
+
+            append("\n## 4. 关联事件时间线（JSONL，按时间升序）\n")
             append("事件按同一 operationId 优先关联；没有操作 ID 时，仅收录同一 sessionId 的相邻事件。不同进程会话不会混合。\n")
             ordered.forEachIndexed { index, event ->
                 append(eventJson(event, index + 1).toString()).append('\n')
             }
 
-            append("\n## 4. AI 修复要求\n")
-            append("1. 先还原主故障前后的事件顺序，区分触发操作、失败步骤、重试和恢复结果。\n")
-            append("2. 优先查看 exceptionSnapshot.cause 链最深层异常及每层 stackFrames；单独检查 suppressed，勿把清理异常误判为主故障。若 truncated=true，说明当前包只包含上限内证据。\n")
-            append("3. 使用 rootCauseMessage 和 firstAppStackFrame 定位真实应用文件、类、方法及行号；若没有应用栈帧，明确说明证据缺口。\n")
-            append("4. 根据 diagnosticContext 判断视频来源、处理阶段、引擎、请求状态、批次/句子索引等字段；缺失字段不得猜测。\n")
-            append("5. 给出最小修复方案、可能影响的 YouTube/网页/本地入口、回归测试和验证标准。\n")
-            append("6. 不得通过吞掉异常、返回空成功、跳过错误或原声兜底来掩盖真实失败。\n")
+            append("\n## 5. AI 修复要求\n")
+            append("1. 先按 relationToSelectedEvent/relationEvidence 解释关联强度；不得将仅有时间先后的事件断言为因果。\n")
+            append("2. 先还原主故障前后的事件顺序，区分触发操作、失败步骤、重试和恢复结果。\n")
+            append("3. 优先查看 exceptionSnapshot.cause 链最深层异常及每层 stackFrames；单独检查 suppressed，勿把清理异常误判为主故障。若 truncated=true，说明当前包只包含上限内证据。\n")
+            append("4. 使用 rootCauseMessage 和 firstAppStackFrame 定位真实应用文件、类、方法及行号；若没有应用栈帧，明确说明证据缺口。\n")
+            append("5. 根据 diagnosticContext 判断视频来源、处理阶段、引擎、请求状态、批次/句子索引等字段；缺失字段不得猜测。\n")
+            append("6. 给出最小修复方案、可能影响的 YouTube/网页/本地入口、回归测试和验证标准。\n")
+            append("7. 不得通过吞掉异常、返回空成功、跳过错误或原声兜底来掩盖真实失败。\n")
             append("\n隐私说明：报告对常见密钥、令牌、Cookie 和签名 URL 参数执行脱敏；分享前仍请检查字幕片段、文件名和业务内容。\n")
         }
     }
