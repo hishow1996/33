@@ -345,6 +345,28 @@ object AppLogDiagnostics {
                 ),
             )
         }
+        val hasStructuredException = record.exceptionSnapshot != null ||
+            record.errorClass.isNotBlank() || hasExceptionTrace
+        if (!hasStructuredException && record.httpStatusCode !in 400..599) {
+            val callSite = record.diagnosticContext["日志调用位置"]
+                ?.takeIf { it.isNotBlank() && it !in setOf("未采集", "不可用", "旧版日志未记录") }
+                ?: "未记录日志调用位置"
+            val captureStatus = record.diagnosticContext["异常对象采集状态"]
+                ?.takeIf { it.isNotBlank() }
+                ?: "旧版日志未记录异常对象采集状态"
+            return result(
+                "失败事件缺少异常对象",
+                if (callSite == "未记录日志调用位置") "调用位置和异常根因均缺失" else "日志调用位置已记录，根因待补充",
+                "当前失败记录没有 Throwable、结构化异常树或可识别的 HTTP 错误状态。日志调用位置只能定位到记录失败状态的源码分支，不能代表异常真正抛出位置；必须结合该分支的返回值、错误码和控制流继续确认根因。",
+                listOf("日志调用位置：" + callSite, "异常对象采集状态：" + captureStatus),
+                listOf(
+                    "从日志调用位置打开对应文件和方法，找到生成这条失败日志的 if/else 或结果判定分支。",
+                    "检查该分支是否丢弃了原始异常；若存在 Throwable，应把原始对象传给 AppLogStore.error/warning。",
+                    "若失败不是异常而是业务状态，记录明确失败枚举、返回码、请求阶段、耗时和输入/输出数量，不要只写“失败”。",
+                    "补充失败前最后一个成功步骤，并为父任务和子请求传递稳定 operationId/requestId。",
+                ),
+            )
+        }
         return result(
             "根因信息不足",
             "证据不足",
