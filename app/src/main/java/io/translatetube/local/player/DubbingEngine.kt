@@ -708,16 +708,18 @@ class DubbingEngine(
                         val cacheHasAudio = cacheInspection.hasAudio
                         val blankTranslation = cue.zh.isNullOrBlank()
                         when {
-                            blankTranslation && cacheHasAudio == false ->
+                            blankTranslation -> {
+                                // A cue explicitly assigned to original audio has no Chinese text
+                                // to synthesize. Remove any stale PCM and resolve it as a silent
+                                // dubbing cue; never enqueue an impossible empty-text TTS request.
+                                if (cacheHasAudio == true) {
+                                    deleteCacheIfUnchanged(file, cacheInspection.stamp)
+                                }
                                 markCuePrepared(i, hasAudio = false)
-                            blankTranslation && cacheHasAudio == true -> {
-                                // A blank translation must never reuse a non-empty cache entry.
-                                deleteCacheIfUnchanged(file, cacheInspection.stamp)
-                                pending.offerLast(i)
                             }
-                            !blankTranslation && cacheHasAudio == true ->
+                            cacheHasAudio == true ->
                                 markCuePrepared(i, hasAudio = true)
-                            !blankTranslation && cacheHasAudio == false -> {
+                            cacheHasAudio == false -> {
                                 // Empty PCM from a failed old run isn't a successful cache hit.
                                 deleteCacheIfUnchanged(file, cacheInspection.stamp)
                                 pending.offerLast(i)
