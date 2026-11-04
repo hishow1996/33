@@ -226,4 +226,22 @@ class TranslationAdaptiveRecoveryTest {
         assertTrue(error?.message.orEmpty().contains("已禁止原声兜底"))
     }
 
+    @Test
+    fun doesNotTreatWrappedNetworkFailureAsRecoverableFormatError() = runBlocking {
+        val networkFailure = IllegalStateException(
+            "翻译服务返回的字幕编号不完整",
+            java.io.IOException("connection reset"),
+        )
+        var calls = 0
+        val error = runCatching {
+            translateBatchWithAdaptiveRecovery(listOf("a", "b", "c")) { _, _ ->
+                calls++
+                throw networkFailure
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error === networkFailure)
+        assertEquals(1, calls)
+    }
+
 }
