@@ -9145,6 +9145,7 @@ updateUiForSession(key, pipelineGeneration) {
                     db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
                 }
                 if (storedPartialAsr != null) {
+                    var checkpointRestoreFailure: Exception? = null
                     val restored = try {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
                         val checkpointVersion = checkpoint.optInt("version", -1)
@@ -9322,11 +9323,37 @@ updateUiForSession(key, pipelineGeneration) {
                         // Cancellation is control flow, not corrupt checkpoint data. Keep the
                         // saved progress intact so the next attempt can resume without redoing ASR.
                         throw cancelled
-                    } catch (_: Exception) {
+                    } catch (failure: Exception) {
+                        checkpointRestoreFailure = failure
                         null
                     }
                     if (restored == null) {
-                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key")
+                        runCatching {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                this@PlaybackService,
+                                "LocalAsrCheckpoint",
+                                "本地 ASR 恢复检查点无效或与当前音频不兼容，已清理并从头处理未恢复部分",
+                                checkpointRestoreFailure,
+                                diagnosticContext = currentStageDiagnostics.toMap() + mapOf(
+                                    "诊断事件类型" to "LOCAL_ASR_CHECKPOINT_REJECTED",
+                                    "失败子阶段" to "读取、校验或迁移 ASR 恢复检查点",
+                                    "检查点版本" to runCatching {
+                                        org.json.JSONObject(storedPartialAsr.linesJson).optInt("version", -1).toString()
+                                    }.getOrDefault("JSON 无法解析"),
+                                    "检查点 JSON 字符数" to storedPartialAsr.linesJson.length.toString(),
+                                    "检查点源语言" to storedPartialAsr.sourceLang.ifBlank { "未记录" },
+                                    "检查点更新时间 ms" to storedPartialAsr.updatedAt.toString(),
+                                    "当前 VAD 总分段数" to segs.size.toString(),
+                                    "当前音频签名与检查点是否兼容" to "校验未通过或恢复过程发生异常",
+                                    "失败异常类型" to (checkpointRestoreFailure?.javaClass?.name ?: "无异常对象；恢复结果为空"),
+                                    "失败异常摘要" to (checkpointRestoreFailure?.message ?: "恢复函数返回空结果").take(300),
+                                    "处理方式" to "删除旧恢复清单与分段缓存；不会把不兼容旧结果当作成功字幕",
+                                ),
+                            )
+                        }.onFailure { loggingFailure ->
+                            android.util.Log.w("PlaybackService", "Unable to persist rejected ASR checkpoint diagnostic", loggingFailure)
+                        }
+                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key", checkpointRestoreFailure)
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                         db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
                     } else {
