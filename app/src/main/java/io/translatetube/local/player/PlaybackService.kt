@@ -682,8 +682,6 @@ data class PlayerUiState(
     val dubbingCuePending: Boolean = false,
     /** 点播放被拦住（配音/转写引擎没就绪、配音出错等）时显示给用户的原因；开始播放后清除。 */
     val playBlockedHint: String? = null,
-    /** 该提示是否同时提供"仅播放原声"按钮。 */
-    val playBlockedOffersOriginalOnly: Boolean = false,
     /** 本次加载中播放器因网络错误自动重试的次数（真实的加载错误回调计数）。 */
     val loadRetryCount: Int = 0,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
@@ -3260,8 +3258,6 @@ class PlaybackService : MediaSessionService() {
                     failureDetail = state.noModelHint ?: state.dubbingStatus ?: state.error,
                 )?.message
             } else null
-        val blockedOffersOriginal = state.playBlockedOffersOriginalOnly ||
-            (state.dubbingOn && (state.waitingForDubbingEngine || state.dubbingHasErrors))
         val input = PlaybackHintInput(
             screenEligible = screenEligible,
             isPlaying = isPlaying,
@@ -3280,7 +3276,6 @@ class PlaybackService : MediaSessionService() {
                 playerError?.contains("超时") == true,
             failureMessage = playerError,
             blockedMessage = blocked,
-            blockedOffersOriginalOnly = blockedOffersOriginal,
             noFirstFrameTimedOut = noFirstFrameTimedOut,
             playbackStalled = playbackStalled,
         )
@@ -3461,7 +3456,6 @@ class PlaybackService : MediaSessionService() {
         }
         when (action) {
             PlaybackHintAction.OPEN_SETTINGS -> Unit
-            PlaybackHintAction.PLAY_ORIGINAL_ONLY -> playOriginalOnly()
             PlaybackHintAction.REPARSE -> {
                 val failure = pm.playbackFailure.value
                 playbackRecoveryFailure = null
@@ -3551,21 +3545,13 @@ class PlaybackService : MediaSessionService() {
             if (state.key == st.key) {
                 state.copy(
                     playBlockedHint = hint.message,
-                    playBlockedOffersOriginalOnly = hint.offersOriginalOnly,
                 )
             } else state
         }
     }
 
     fun dismissPlayBlockedHint() {
-        ui.update { it.copy(playBlockedHint = null, playBlockedOffersOriginalOnly = false) }
-    }
-
-    /** 用户明确选择"仅播放原声"：关闭中文配音并直接开始播放，不再被配音问题拦住。 */
-    fun playOriginalOnly() {
-        if (ui.value.dubbingOn) toggleDub()
-        dismissPlayBlockedHint()
-        playPlayback()
+        ui.update { it.copy(playBlockedHint = null) }
     }
 
     private suspend fun startPlaybackWithMountedDubbing(
@@ -15391,7 +15377,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     state.copy(
                         dubbingOn = false,
                         activeDubbingLine = -1,
-                        dubbingStatus = "仅播放原声",
+                        dubbingStatus = "中文配音已关闭",
                     )
                 } else state
             }
