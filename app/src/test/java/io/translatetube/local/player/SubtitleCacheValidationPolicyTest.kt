@@ -238,13 +238,18 @@ class SubtitleCacheValidationPolicyTest {
             SubLine(3, 3_000L, 4_000L, "Goodbye", "Goodbye"),
             SubLine(4, 4_000L, 5_000L, "Hello", "Hello"),
             SubLine(5, 5_000L, 6_000L, "Hello world", "你好世界"),
+            SubLine(6, 6_000L, 7_000L, "Good Morning", "Good Morning"),
+            SubLine(7, 7_000L, 8_000L, "THANK YOU", "THANK YOU"),
         )
 
         val sanitized = lines.map {
             SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(it, "en")
         }
 
-        assertEquals(listOf("John", null, "Sara", null, null, "你好世界"), sanitized.map { it.zh })
+        assertEquals(
+            listOf("John", null, "Sara", null, null, "你好世界", null, null),
+            sanitized.map { it.zh },
+        )
     }
 
     @Test
