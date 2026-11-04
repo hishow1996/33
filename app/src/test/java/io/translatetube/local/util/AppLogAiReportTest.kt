@@ -111,7 +111,7 @@ class AppLogAiReportTest {
         assertTrue(report.contains("legacy/unknown"))
         assertTrue(report.contains("legacy-1000-1"))
         assertTrue(report.contains("\"schemaVersion\":1"))
-        assertTrue(report.contains("\"reportSchemaVersion\":4"))
+        assertTrue(report.contains("\"reportSchemaVersion\":5"))
         assertFalse(report.contains("undefined"))
     }
     @Test
@@ -153,8 +153,16 @@ class AppLogAiReportTest {
             eventId = "start-1",
             sequence = 1L,
         )
+        val earlierAnomaly = target.copy(
+            timestampMs = 18_500L,
+            level = "WARN",
+            message = "翻译前置检查出现警告",
+            eventId = "earlier-anomaly",
+            sequence = 0L,
+            issueKey = "earlier-issue",
+        )
         val report = AppLogAiReport.renderIncident(
-            records = listOf(related, target),
+            records = listOf(earlierAnomaly, related, target),
             target = target,
             exportedAt = "now",
             appVersion = "1.0",
@@ -177,6 +185,7 @@ class AppLogAiReportTest {
         assertTrue(report.contains("故障关系分析"))
         assertTrue(report.contains("relationToSelectedEvent"))
         assertTrue(report.contains("SAME_OPERATION_CONTEXT"))
+        assertTrue(report.contains("EARLIER_ANOMALY_SAME_OPERATION"))
         assertTrue(report.contains("仅是上游候选"))
     }
 
