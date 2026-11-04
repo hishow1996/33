@@ -32,24 +32,26 @@ class PlaybackBlockedHintPolicyTest {
     }
 
     @Test
-    fun missingTranscriptionEngineIsExplainedAndOffersNoOriginalOnly() {
+    fun missingTranscriptionEngineIsExplainedWithoutOriginalOnlyAction() {
         val h = hint(waitingTranscription = true)!!
         assertTrue(h.message.contains("转写引擎"))
-        assertFalse(h.offersOriginalOnly)
+        assertFalse(h.message.contains("仅播放原声"))
     }
 
     @Test
-    fun missingDubbingEngineNamesTheEngineAndOffersOriginalOnly() {
+    fun missingDubbingEngineNamesTheEngineAndPointsToSettings() {
         val h = hint(waitingDubbing = true, engine = "Edge TTS")!!
         assertTrue(h.message.contains("Edge TTS"))
-        assertTrue(h.offersOriginalOnly)
+        assertTrue(h.message.contains("请检查配音引擎设置"))
+        assertFalse(h.message.contains("仅播放原声"))
     }
 
     @Test
-    fun dubbingFailureIncludesTheReasonAndOffersOriginalOnly() {
+    fun dubbingFailureIncludesTheReasonWithoutAnOriginalOnlyShortcut() {
         val h = hint(hasErrors = true, detail = "系统 TTS 合成失败：没有中文语音数据")!!
         assertTrue(h.message.startsWith("配音语音失败：系统 TTS 合成失败"))
-        assertTrue(h.offersOriginalOnly)
+        assertTrue(h.message.contains("请检查配音引擎设置后重试"))
+        assertFalse(h.message.contains("仅播放原声"))
     }
 
     @Test
@@ -76,7 +78,7 @@ class PlaybackBlockedHintPolicyTest {
     fun processingErrorIsExplainedWithoutOriginalOnlyShortcut() {
         val h = hint(phaseError = true, detail = "网络超时")!!
         assertTrue(h.message.contains("网络超时"))
-        assertFalse(h.offersOriginalOnly)
+        assertFalse(h.message.contains("仅播放原声"))
     }
 
     @Test
