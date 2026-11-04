@@ -13875,7 +13875,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 d.updatePlayerSpeed(pm.playbackSpeed())
                 // Voice and source use independent gains; both may remain audible at the same time.
                 d.updateVolume(st.dubbingVolume)
-                syncOriginalVolumeWithDubbing(d, st, "continuing a dubbed cue")
+                syncOriginalVolumeWithDubbing(
+                    d,
+                    st,
+                    "continuing a dubbed cue",
+                    dubbingCuePending = previousDubbingLine >= 0 &&
+                        !d.hasStartedPlaybackFor(previousDubbingLine),
+                )
                 d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
             } else if (queuedHead != null) {
                 // Live System TTS stays serialized; generated PCM playback is scheduled by bus timestamps.
@@ -13948,6 +13954,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         state.copy(
                             noModelHint = state.noModelHint ?: hint,
                             activeDubbingLine = -1,
+                            dubbingCuePending = false,
                         )
                     } else state
                 }
