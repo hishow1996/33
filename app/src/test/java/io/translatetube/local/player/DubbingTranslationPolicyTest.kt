@@ -1,7 +1,6 @@
 package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,7 +37,7 @@ class DubbingTranslationPolicyTest {
     fun sourceEchoProvidesSpecificDiagnosticReason() {
         val result = DubbingTranslationPolicy.resolveText("Hello world.", "Hello world")
         assertNull(result.text)
-        assertEquals("译文与原文相同，命中原文回显过滤规则", result.reason)
+        assertEquals("译文与原文相同，未生成中文译文", result.reason)
     }
 
     @Test
@@ -82,59 +81,31 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
-    fun marksUnusableTranslationsAsExplicitOriginalAudioFallbackBeforeDubbing() {
+    fun rejectsUnusableTranslationInsteadOfSilentlyUsingTheSourceAudio() {
         val sourceLines = listOf(
-            io.translatetube.local.subs.SubLine(0, 0, 900, "Hello world", "你好世界"),
-            io.translatetube.local.subs.SubLine(1, 900, 1800, "Hello there", "Hello there"),
-            io.translatetube.local.subs.SubLine(2, 1800, 2700, "Where are you?", null),
-            io.translatetube.local.subs.SubLine(3, 2700, 3600, "How are you?", "こんにちは"),
-            io.translatetube.local.subs.SubLine(4, 3600, 4500, "See you soon", "。"),
-            io.translatetube.local.subs.SubLine(
-                5, 4500, 5400, "Already on original audio", "stale text",
-                translationFallbackOriginalAudio = true,
-            ),
+            io.translatetube.local.subs.SubLine(0, 0L, 900L, "Hello world", "你好世界"),
+            io.translatetube.local.subs.SubLine(1, 900L, 1800L, "NASA", "NASA"),
         )
 
         val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(sourceLines, "en")
 
-        assertEquals(listOf(1, 2, 3, 4, 5), prepared.originalAudioFallbackIndices)
-        assertEquals("你好世界", prepared.lines[0].zh)
-        assertFalse(prepared.lines[0].translationFallbackOriginalAudio)
-        prepared.originalAudioFallbackIndices.forEach { index ->
-            assertTrue(prepared.lines[index].translationFallbackOriginalAudio)
-            assertNull(prepared.lines[index].zh)
-        }
-        assertEquals("译文与原文相同，命中原文回显过滤规则", prepared.fallbackReasons[1])
-        assertEquals("翻译结果为空或只有空白字符", prepared.fallbackReasons[2])
-        assertEquals("译文未达到中文目标语言", prepared.fallbackReasons[3])
-        assertEquals("已由翻译阶段明确采用原声兜底（旧缓存未保存具体失败原因）", prepared.fallbackReasons[5])
+        assertEquals(listOf("你好世界", "NASA"), prepared.map { it.zh })
+        val error = runCatching {
+            DubbingTranslationPolicy.prepareLinesForDubbing(
+                listOf(io.translatetube.local.subs.SubLine(2, 1800L, 2700L, "Where are you?", null)),
+                "en",
+            )
+        }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("无法生成中文配音"))
     }
 
     @Test
-    fun keepsTheSpecificFallbackReasonWhenRestoringCachedSubtitleRows() {
-        val source = io.translatetube.local.subs.SubLine(
-            0, 0L, 900L, "Hello world", null,
-            translationFallbackOriginalAudio = true,
-            translationFallbackReason = "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
-        )
-        val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(listOf(source), "en")
-
-        assertEquals(
-            "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
-            prepared.fallbackReasons[0],
-        )
-        assertEquals(
-            "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
-            prepared.lines[0].translationFallbackReason,
-        )
-    }
-
-    @Test
-    fun doesNotMarkBlankSourceCuesAsTranslationFailures() {
+    fun blankSourceCuesDoNotBlockDubbingPreflight() {
         val source = io.translatetube.local.subs.SubLine(0, 0, 500, "", null)
         val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(listOf(source), "en")
 
-        assertTrue(prepared.originalAudioFallbackIndices.isEmpty())
-        assertFalse(prepared.lines.single().translationFallbackOriginalAudio)
+        assertEquals(1, prepared.size)
+        assertNull(prepared.single().zh)
     }
 }
