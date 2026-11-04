@@ -32,14 +32,27 @@ internal object ImportedSubtitlePolicy {
     }
 
     /**
-     * Restores rows from "import already translated subtitles" snapshots. These rows are trusted
-     * user-provided output; do not detect their source language or route them back through an engine.
+     * Preserve only translation text explicitly supplied by the imported file.
+     * Missing output stays null until the source language is known.
      */
     fun preserveImportedTranslations(lines: List<SubLine>): List<SubLine> =
         lines.mapIndexed { index, line ->
             line.copy(
                 index = index,
-                zh = line.zh?.takeIf { it.isNotBlank() } ?: line.text,
+                zh = line.zh?.takeIf { it.isNotBlank() },
             )
+        }
+
+    /**
+     * Chinese source captions are already in the target language. Fill only absent output,
+     * and never overwrite a translation explicitly supplied by the imported file.
+     */
+    fun completeChineseSourceCaptions(lines: List<SubLine>): List<SubLine> =
+        lines.map { line ->
+            if (line.zh.isNullOrBlank() && line.text.isNotBlank()) {
+                line.copy(zh = line.text)
+            } else {
+                line
+            }
         }
 }
