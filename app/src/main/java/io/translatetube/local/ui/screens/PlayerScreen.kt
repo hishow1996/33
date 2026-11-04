@@ -7055,13 +7055,17 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         .takeIf { it > 0 }
                         ?.toFloat()
                         ?: with(density) { captionLaneMaxHeight.toPx() }
-                    val horizontalSafePx = with(density) { 4.dp.toPx() }
+                    // Match the subtitle movement area's left/right edges to the fullscreen
+                    // video viewport. Keep only a compact, symmetric 5dp top/bottom inset.
+                    val horizontalSafePx = 0f
+                    val verticalSafePx = with(density) { 5.dp.toPx() }
                     val minLeftPx = horizontalSafePx
                     val maxLeftPx = (containerWidthPx - captionWidthPx - horizontalSafePx)
                         .coerceAtLeast(minLeftPx)
-                    // The caption can overlap controls and the seek bar; only keep it on screen.
-                    val minTopPx = 0f
-                    val maxTopPx = (containerHeightPx - captionHeightPx).coerceAtLeast(minTopPx)
+                    // The subtitle may still overlap the center controls and seek bar.
+                    val minTopPx = verticalSafePx
+                    val maxTopPx = (containerHeightPx - captionHeightPx - verticalSafePx)
+                        .coerceAtLeast(minTopPx)
                     val leftPx = (
                         containerWidthPx * fullscreenCaptionCenterX - captionWidthPx / 2f
                     ).coerceIn(minLeftPx, maxLeftPx)
