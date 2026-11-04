@@ -7055,19 +7055,20 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 if (!importEngineReady) {
                     // The selected TTS engine is not ready. Keep the imported captions visible,
                     // block dubbing playback, and ask the user to prepare the selected engine.
-                    val translatedCount = translatedLines.count {
-                        SubtitleParsers.cleanTranslatedText(it.zh) != null
-                    }
+                    var translatedCount = 0
                     val arr = org.json.JSONArray()
-                    for (line in translatedLines) arr.put(
-                        org.json.JSONObject()
-                            .put("s", line.startMs)
-                            .put("e", line.endMs)
-                            .put("t", line.text)
-                            .put("zh", line.zh ?: "")
-                            
-                            .put("sp", line.speakerId)
-                    )
+                    for (line in translatedLines) {
+                        val cacheLine = SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(line, srcLang)
+                        if (!cacheLine.zh.isNullOrBlank()) translatedCount++
+                        arr.put(
+                            org.json.JSONObject()
+                                .put("s", cacheLine.startMs)
+                                .put("e", cacheLine.endMs)
+                                .put("t", cacheLine.text)
+                                .put("zh", cacheLine.zh ?: "")
+                                .put("sp", cacheLine.speakerId)
+                        )
+                    }
                     ensureCurrentSession(sessionKey, pipelineGeneration)
                     if (translatedCount > translatedLines.size / 2) {
                         AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
@@ -7175,20 +7176,22 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 }
 
                 // Store a cache only after import + translation produced useful subtitle rows.
+                var cacheableTranslationCount = 0
                 val arr = org.json.JSONArray()
-                for (line in translatedLines) arr.put(
-                    org.json.JSONObject()
-                        .put("s", line.startMs)
-                        .put("e", line.endMs)
-                        .put("t", line.text)
-                        .put("zh", line.zh ?: "")
-                            
-                        .put("sp", line.speakerId)
-                )
+                for (line in translatedLines) {
+                    val cacheLine = SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(line, srcLang)
+                    if (!cacheLine.zh.isNullOrBlank()) cacheableTranslationCount++
+                    arr.put(
+                        org.json.JSONObject()
+                            .put("s", cacheLine.startMs)
+                            .put("e", cacheLine.endMs)
+                            .put("t", cacheLine.text)
+                            .put("zh", cacheLine.zh ?: "")
+                            .put("sp", cacheLine.speakerId)
+                    )
+                }
                 ensureCurrentSession(sessionKey, pipelineGeneration)
-                if (translatedLines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } >
-                    translatedLines.size / 2
-                ) {
+                if (cacheableTranslationCount > translatedLines.size / 2) {
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             importedCacheKey,
@@ -7414,13 +7417,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         return DubbingTranslationPolicy.usableText(line.text, line.zh, srcLang).isNullOrBlank()
     }
 
-    /** Reject corrupt timelines and progress/status placeholders before restoring translated rows. */
-    private fun isUsableTranslationCache(linesJson: String): Boolean = try {
+    /** Reject malformed timelines and caches with no row passing translation quality checks. */
+    private fun isUsableTranslationCache(linesJson: String, sourceLanguage: String): Boolean = try {
         val rows = org.json.JSONArray(linesJson)
-        if (rows.length() == 0) {
+        if (rows.length() == 0 || rows.length() > 500_000) {
             false
         } else {
-            val translations = ArrayList<String?>(rows.length())
+            val cachedRows = ArrayList<SubtitleCacheValidationPolicy.CachedTranslationRow>(rows.length())
             val timelineRows = ArrayList<Triple<Long, Long, String>>(rows.length())
             for (i in 0 until rows.length()) {
                 val row = rows.optJSONObject(i)
@@ -7428,19 +7431,23 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val startMs = row.optLong("s", Long.MIN_VALUE)
                 val endMs = row.optLong("e", Long.MIN_VALUE)
                 val originalText = row.optString("t").trim()
+                val cachedTranslation = row.optString("zh", "")
+                    .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
                 timelineRows += Triple(startMs, endMs, originalText)
-
-                translations += row.optString("zh", "")
+                cachedRows += SubtitleCacheValidationPolicy.CachedTranslationRow(
+                    startMs = startMs,
+                    endMs = endMs,
+                    sourceText = originalText,
+                    translatedText = cachedTranslation,
+                )
             }
             if (!SubtitleCacheValidationPolicy.hasValidTimeline(timelineRows)) {
                 throw IllegalArgumentException("字幕缓存时间轴无效或未按开始时间排序")
             }
-            // Keep any valid completed rows; restore logic cleans placeholder rows to null and
-            // translates only those missing cues on retry.
-            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(translations)
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(cachedRows, sourceLanguage, "zh")
         }
     } catch (e: Exception) {
-        android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON or timeline", e)
+        android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON, timeline or quality", e)
         false
     }
 
@@ -7936,7 +7943,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             var cached = if (manualTranslationRequestedKeys.contains(key)) {
                 null
             } else {
-                storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson, it.srcLang) }
             }
             if (storedTranslationCache != null && cached == null) {
                 android.util.Log.w(
@@ -8365,7 +8372,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     cached = if (manualTranslationRequestedKeys.contains(key)) {
                         null
                     } else {
-                        storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                        storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson, it.srcLang) }
                     }
                 }
                 if (storedTranslationCache != null && cached == null) {
@@ -8396,7 +8403,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val legacyTranslation = db.subtitleCacheDao()
                     .getLatestCompletedByCacheKeyPrefix(legacyTranslationPrefix)
                     ?.takeIf { entry ->
-                        isUsableTranslationCache(entry.linesJson) &&
+                        isUsableTranslationCache(entry.linesJson, entry.srcLang) &&
                             translationCacheMatchesSource(entry.linesJson, restoredSourceLines.orEmpty())
                     }
                 if (legacyTranslation != null) {
@@ -9138,7 +9145,6 @@ updateUiForSession(key, pipelineGeneration) {
                     db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
                 }
                 if (storedPartialAsr != null) {
-                    var checkpointRestoreFailure: Exception? = null
                     val restored = try {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
                         val checkpointVersion = checkpoint.optInt("version", -1)
@@ -9316,37 +9322,11 @@ updateUiForSession(key, pipelineGeneration) {
                         // Cancellation is control flow, not corrupt checkpoint data. Keep the
                         // saved progress intact so the next attempt can resume without redoing ASR.
                         throw cancelled
-                    } catch (failure: Exception) {
-                        checkpointRestoreFailure = failure
+                    } catch (_: Exception) {
                         null
                     }
                     if (restored == null) {
-                        runCatching {
-                            io.translatetube.local.util.AppLogStore.warning(
-                                this@PlaybackService,
-                                "LocalAsrCheckpoint",
-                                "本地 ASR 恢复检查点无效或与当前音频不兼容，已清理并从头处理未恢复部分",
-                                checkpointRestoreFailure,
-                                diagnosticContext = currentStageDiagnostics.toMap() + mapOf(
-                                    "诊断事件类型" to "LOCAL_ASR_CHECKPOINT_REJECTED",
-                                    "失败子阶段" to "读取、校验或迁移 ASR 恢复检查点",
-                                    "检查点版本" to runCatching {
-                                        org.json.JSONObject(storedPartialAsr.linesJson).optInt("version", -1).toString()
-                                    }.getOrDefault("JSON 无法解析"),
-                                    "检查点 JSON 字符数" to storedPartialAsr.linesJson.length.toString(),
-                                    "检查点源语言" to storedPartialAsr.sourceLang.ifBlank { "未记录" },
-                                    "检查点更新时间 ms" to storedPartialAsr.updatedAt.toString(),
-                                    "当前 VAD 总分段数" to segs.size.toString(),
-                                    "当前音频签名与检查点是否兼容" to "校验未通过或恢复过程发生异常",
-                                    "失败异常类型" to (checkpointRestoreFailure?.javaClass?.name ?: "无异常对象；恢复结果为空"),
-                                    "失败异常摘要" to (checkpointRestoreFailure?.message ?: "恢复函数返回空结果").take(300),
-                                    "处理方式" to "删除旧恢复清单与分段缓存；不会把不兼容旧结果当作成功字幕",
-                                ),
-                            )
-                        }.onFailure { loggingFailure ->
-                            android.util.Log.w("PlaybackService", "Unable to persist rejected ASR checkpoint diagnostic", loggingFailure)
-                        }
-                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key", checkpointRestoreFailure)
+                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key")
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                         db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
                     } else {
@@ -9928,7 +9908,7 @@ updateUiForSession(key, pipelineGeneration) {
                     previousTranslationCacheKey != latestTranslationCacheKey
                 ) {
                     val latestStoredTranslationCache = db.subtitleCacheDao().get(latestTranslationCacheKey)
-                    cached = latestStoredTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                    cached = latestStoredTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson, it.srcLang) }
                     if (latestStoredTranslationCache != null && cached == null) {
                         db.subtitleCacheDao().delete(latestTranslationCacheKey)
                     }
@@ -10143,27 +10123,22 @@ updateUiForSession(key, pipelineGeneration) {
                         // Persist only when more than half of rows have usable Chinese output.
                         ensureCurrentSession(key, pipelineGeneration)
                         var translatedRowCount = 0
-                        for ((index, line) in translatedLines.withIndex()) {
-                            if ((index and 0xff) == 0) {
+                        val arr = org.json.JSONArray()
+                        for ((rowIndex, line) in translatedLines.withIndex()) {
+                            if ((rowIndex and 0xff) == 0) {
                                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             }
-                            if (!line.zh.isNullOrEmpty()) translatedRowCount++
+                            val cacheLine = SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(line, srcLang)
+                            if (!cacheLine.zh.isNullOrBlank()) translatedRowCount++
+                            arr.put(
+                                org.json.JSONObject()
+                                    .put("s", cacheLine.startMs)
+                                    .put("e", cacheLine.endMs)
+                                    .put("t", cacheLine.text)
+                                    .put("zh", cacheLine.zh ?: "")
+                            )
                         }
                         if (translatedRowCount > translatedLines.size / 2) {
-                            val arr = org.json.JSONArray()
-                            for ((rowIndex, line) in translatedLines.withIndex()) {
-                                if ((rowIndex and 0xff) == 0) {
-                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                }
-                                arr.put(
-                                    org.json.JSONObject()
-                                        .put("s", line.startMs)
-                                        .put("e", line.endMs)
-                                        .put("t", line.text)
-                                        .put("zh", line.zh ?: "")
-                            
-                                )
-                            }
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             ensureCurrentSession(key, pipelineGeneration)
                             db.subtitleCacheDao().put(
@@ -11698,29 +11673,33 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     continue
                 }
                 // Persist only after the triggering batch is complete and every pending row is valid.
+                var cacheableBatchTranslationCount = 0
                 val cacheRows = org.json.JSONArray()
                 for ((rowIndex, line) in updatedLines.withIndex()) {
                     if ((rowIndex and 0xff) == 0) {
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     }
+                    val cacheLine = SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(line, srcLang)
+                    if (!cacheLine.zh.isNullOrBlank()) cacheableBatchTranslationCount++
                     cacheRows.put(
                         org.json.JSONObject()
-                            .put("s", line.startMs)
-                            .put("e", line.endMs)
-                            .put("t", line.text)
-                            .put("zh", line.zh ?: "")
-                            
-                            .put("sp", line.speakerId)
+                            .put("s", cacheLine.startMs)
+                            .put("e", cacheLine.endMs)
+                            .put("t", cacheLine.text)
+                            .put("zh", cacheLine.zh ?: "")
+                            .put("sp", cacheLine.speakerId)
                     )
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 ensureCurrentSession(key, pipelineGeneration)
-                db.subtitleCacheDao().put(
-                    io.translatetube.local.data.SubtitleCacheEntity(
-                        translationCacheKey, src, cacheRows.toString(), System.currentTimeMillis(),
-                        videoKey = key,
+                if (cacheableBatchTranslationCount > 0) {
+                    db.subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            translationCacheKey, src, cacheRows.toString(), System.currentTimeMillis(),
+                            videoKey = key,
+                        )
                     )
-                )
+                }
             }
             val externallyTranslatedFinal = awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)
             if (externallyTranslatedFinal != null) {
@@ -15052,14 +15031,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             }
                         }
                 }
+                var cacheableTranslationCount = 0
                 val arr = org.json.JSONArray()
-                for (line in updated) arr.put(
-                    org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
-                        .put("t", line.text).put("zh", line.zh ?: "")
-                            .put("sp", line.speakerId)
-                )
+                for (line in updated) {
+                    val cacheLine = SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(line, sessionSourceLang)
+                    if (!cacheLine.zh.isNullOrBlank()) cacheableTranslationCount++
+                    arr.put(
+                        org.json.JSONObject().put("s", cacheLine.startMs).put("e", cacheLine.endMs)
+                            .put("t", cacheLine.text).put("zh", cacheLine.zh ?: "")
+                            .put("sp", cacheLine.speakerId)
+                    )
+                }
                 ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
-                if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
+                if (cacheableTranslationCount > updated.size / 2) {
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             translationCacheKey,
@@ -15413,22 +15397,22 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }
                 }
 
+                var cacheableTranslationCount = 0
                 val cacheRows = org.json.JSONArray()
                 updated.forEach { line ->
+                    val cacheLine = SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(line, sourceLang)
+                    if (!cacheLine.zh.isNullOrBlank()) cacheableTranslationCount++
                     cacheRows.put(
                         org.json.JSONObject()
-                            .put("s", line.startMs)
-                            .put("e", line.endMs)
-                            .put("t", line.text)
-                            .put("zh", line.zh ?: "")
-                            
-                            .put("sp", line.speakerId)
+                            .put("s", cacheLine.startMs)
+                            .put("e", cacheLine.endMs)
+                            .put("t", cacheLine.text)
+                            .put("zh", cacheLine.zh ?: "")
+                            .put("sp", cacheLine.speakerId)
                     )
                 }
                 ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
-                if (updated.isNotEmpty() &&
-                    updated.count { !it.zh.isNullOrBlank() } > updated.size / 2
-                ) {
+                if (updated.isNotEmpty() && cacheableTranslationCount > updated.size / 2) {
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             translationCacheKey,

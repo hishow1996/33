@@ -228,4 +228,37 @@ class SubtitleCacheValidationPolicyTest {
     }
 
 
+    @Test
+    fun cacheSerializationKeepsOnlyValidatedChineseTranslations() {
+        val lines = listOf(
+            SubLine(0, 0L, 1_000L, "John", "John"),
+            SubLine(1, 1_000L, 2_000L, "John", "David"),
+            SubLine(2, 2_000L, 3_000L, "Sarah", "Sara"),
+            SubLine(3, 3_000L, 4_000L, "Goodbye", "Goodbye"),
+            SubLine(4, 4_000L, 5_000L, "Hello", "Hello"),
+            SubLine(5, 5_000L, 6_000L, "Hello world", "你好世界"),
+        )
+
+        val sanitized = lines.map {
+            SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(it, "en")
+        }
+
+        assertEquals(listOf("John", null, "Sara", null, null, "你好世界"), sanitized.map { it.zh })
+    }
+
+    @Test
+    fun cacheIsRecoverableOnlyWhenAtLeastOneRowHasAValidTranslation() {
+        val invalidOnly = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "John", "David"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Goodbye", "Goodbye"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "Hello", "Hello"),
+        )
+        val partiallyValid = invalidOnly + SubtitleCacheValidationPolicy.CachedTranslationRow(
+            3_000L, 4_000L, "Sarah", "Sara",
+        )
+
+        assertFalse(SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(invalidOnly, "en"))
+        assertTrue(SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(partiallyValid, "en"))
+    }
+
 }

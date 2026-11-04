@@ -39,6 +39,26 @@ internal object SubtitleCacheValidationPolicy {
     }
 
     /**
+     * Persist only translations accepted by the same language and speechability checks used by dubbing.
+     * Invalid rows retain their source cue and timing, but their cached translation is cleared so
+     * reopening the video retries only those rows.
+     */
+    fun sanitizeTranslationForStorage(line: SubLine, sourceLanguage: String): SubLine =
+        line.copy(
+            zh = if (line.text.isBlank()) null else
+                DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage),
+        )
+
+    /** Nonempty but invalid echoes/placeholders do not make a translation cache recoverable. */
+    fun hasRecoverableTranslationRows(
+        rows: List<CachedTranslationRow>,
+        sourceLanguage: String,
+        targetLanguage: String = "zh",
+    ): Boolean = rows.any { row ->
+        usableCachedTranslation(row.sourceText, row.translatedText, sourceLanguage, targetLanguage) != null
+    }
+
+    /**
      * Restore an imported translation cache only when every cached cue still maps to the exact
      * source text and timeline. Partial valid caches are allowed; missing/placeholder rows remain
      * null so translateLines can retry just those rows.
