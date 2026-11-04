@@ -776,7 +776,34 @@ object AppLogStore {
                 val category = runCatching {
                     AppLogTitleResolver.featureLabel(safeTag, safeMessage)
                 }.getOrDefault("未分类日志")
-                val safeContext = effectiveDiagnosticContext.entries
+                val diagnosticPriorityKeys = setOf(
+                    "操作关联 ID",
+                    "视频来源",
+                    "视频会话指纹",
+                    "处理代数",
+                    "本轮处理已耗时 ms",
+                    "当前处理阶段",
+                    "当前 UI 阶段",
+                    "当前处理步骤",
+                    "失败前阶段",
+                    "处理流程",
+                    "转写引擎",
+                    "翻译引擎",
+                    "配音引擎",
+                    "当前字幕行数",
+                    "字幕总行数",
+                    "已获得有效译文行数",
+                    "已准备配音行数",
+                    "已生成可播放配音行数",
+                    "当前视频字幕索引",
+                    "当前实际配音字幕索引",
+                )
+                // Keep common operation/stage evidence even when a specialised failure branch
+                // contributes many keys. Otherwise take(64) may silently drop the stage snapshot.
+                val prioritisedDiagnosticEntries = effectiveDiagnosticContext.entries.sortedBy {
+                    if (it.key in diagnosticPriorityKeys) 0 else 1
+                }
+                val safeContext = prioritisedDiagnosticEntries
                     .take(64)
                     .associate { entry ->
                         redact(entry.key).take(100) to redact(entry.value).take(2_000)
