@@ -1620,7 +1620,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     color = Color(0xFFFFEBEE),
                 ) {
                     Text(
-                        "配音合成未就绪，暂播原声" +
+                        "中文配音正在合成" +
                             if (state.totalLines > 0) {
                                 "（已备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines}）"
                             } else "",
@@ -7740,7 +7740,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     val displayPhase = if (waitingForDubbingEngine && state.phase == Phase.READY) Phase.SYNTHESIZING else state.phase
     val title = when {
         isCancelled -> "处理已取消"
-        state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
+        state.dubbingHasErrors -> "配音合成失败，视频已暂停"
         waitingForDubbingEngine -> "等待配音引擎就绪"
         else -> VideoProcessingFlowPolicy.mainTitle(
             source = source,
@@ -7881,7 +7881,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
                 waitingForDubbingEngine ->
                     "等待配音引擎就绪 · 阶段 ${stageNumber}/${stageCount}"
                 state.dubbingHasErrors ->
-                    "部分配音失败 · 失败字幕已恢复原声 · 阶段 ${stageNumber}/${stageCount}"
+                    "配音合成失败 · 视频已暂停 · 阶段 ${stageNumber}/${stageCount}"
                 state.phase == Phase.READY && completed -> "全部阶段已完成 · ${stageCount}/${stageCount}"
                 state.phase == Phase.READY -> "配音阶段待完成 · 阶段 ${stageNumber}/${stageCount}"
                 isCancelled -> "处理已取消 · 停在阶段 ${stageNumber}/${stageCount}"
