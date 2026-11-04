@@ -430,27 +430,74 @@ object SpeakerDiarizer {
     ): List<Segment> = diarizeMutex.withLock {
         val ownerJob = currentCoroutineContext()[Job]
         val checkActive: () -> Unit = { ownerJob?.ensureActive() }
-        withContext(Dispatchers.IO) {
-            require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
-            val models = prepareModelFiles(context, ownerJob, checkActive, onProgress)
-            onProgress(
-                SpeakerRecognitionProgressUpdate(
-                    stage = SpeakerRecognitionStage.INITIALIZING_MODEL,
-                    message = "正在初始化人物识别模型…",
-                ),
-            )
-            val session = createNativeSession(models, speakerThreads(context), checkActive)
-            try {
-                onProgress(
+        var currentStage = "音频输入校验"
+        var latestProgress = "等待开始"
+        var modelFiles: ModelFiles? = null
+        var modelThreads = 0
+        var modelInitializationMs: Long? = null
+        fun publishProgress(update: SpeakerRecognitionProgressUpdate) {
+            currentStage = update.stage.name
+            latestProgress = update.message.take(240)
+            onProgress(update)
+        }
+        try {
+            withContext(Dispatchers.IO) {
+                require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
+                currentStage = "准备人物识别模型文件"
+                modelFiles = prepareModelFiles(context, ownerJob, checkActive, ::publishProgress)
+                publishProgress(
                     SpeakerRecognitionProgressUpdate(
-                        stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
-                        message = "正在分析人物声音…",
+                        stage = SpeakerRecognitionStage.INITIALIZING_MODEL,
+                        message = "正在初始化人物识别模型…",
                     ),
                 )
-                processWithNativeSession(session, samples, checkActive)
-            } finally {
-                session.close()
+                modelThreads = speakerThreads(context)
+                val initStartedAtNs = System.nanoTime()
+                val session = createNativeSession(requireNotNull(modelFiles), modelThreads, checkActive)
+                modelInitializationMs = (System.nanoTime() - initStartedAtNs).coerceAtLeast(0L) / 1_000_000L
+                try {
+                    publishProgress(
+                        SpeakerRecognitionProgressUpdate(
+                            stage = SpeakerRecognitionStage.ANALYZING_AUDIO,
+                            message = "正在分析人物声音…",
+                        ),
+                    )
+                    processWithNativeSession(session, samples, checkActive)
+                } finally {
+                    session.close()
+                }
             }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    context.applicationContext,
+                    "SpeakerDiarizer",
+                    "人物识别失败",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "诊断事件类型" to "SPEAKER_DIARIZATION_FAILURE",
+                        "失败子阶段" to currentStage,
+                        "最近人物识别进度" to latestProgress,
+                        "人物识别模型版本" to MODEL_VERSION,
+                        "输入音频类型" to "16 kHz 单声道 FloatArray",
+                        "输入音频样本数" to samples.size.toString(),
+                        "估算音频时长 ms" to (samples.size.toLong() * 1_000L / 16_000L).toString(),
+                        "输入 FloatArray 字节数" to (samples.size.toLong() * java.lang.Float.BYTES).toString(),
+                        "模型线程数" to modelThreads.takeIf { it > 0 }?.toString().orEmpty().ifBlank { "初始化前失败" },
+                        "模型初始化耗时 ms" to modelInitializationMs?.toString().orEmpty().ifBlank { "尚未完成" },
+                        "模型播放负载是否活跃" to DevicePerformanceManager.isPlaybackLoadActive().toString(),
+                        "分离模型文件是否存在" to (modelFiles?.segmentation?.isFile?.toString() ?: "未准备"),
+                        "分离模型文件字节数" to modelFiles?.segmentation?.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "未准备" },
+                        "说话人嵌入模型文件是否存在" to (modelFiles?.embedding?.isFile?.toString() ?: "未准备"),
+                        "说话人嵌入模型文件字节数" to modelFiles?.embedding?.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "未准备" },
+                    ),
+                )
+            }.onFailure { loggingFailure ->
+                Log.w("SpeakerDiarizer", "Could not persist speaker recognition failure", loggingFailure)
+            }
+            throw failure
         }
     }
 
