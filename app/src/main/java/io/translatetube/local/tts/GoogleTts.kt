@@ -165,6 +165,7 @@ internal class GoogleTts(context: Context) : TtsEngine {
                 val host = runCatching { android.net.Uri.parse(url).host }.getOrNull().orEmpty().ifBlank { "未知" }
                 val path = runCatching { android.net.Uri.parse(url).path }.getOrNull().orEmpty().take(160)
                 val willTryNext = index < urls.lastIndex
+                val httpFailure = e as? GoogleTtsHttpException
                 AppLogStore.warning(
                     appCtx,
                     "GoogleTTS",
@@ -182,6 +183,12 @@ internal class GoogleTts(context: Context) : TtsEngine {
                         "当前字幕正文是否写入日志" to "否",
                         "请求语速" to normalizedSpeed.toString(),
                         "HTTP 返回音频字节数" to responseBytes.toString(),
+                        "HTTP 状态码" to (httpFailure?.statusCode?.toString() ?: "未收到非成功响应"),
+                        "HTTP 原因短语" to httpFailure?.statusMessage.orEmpty().ifBlank { "未提供" }.take(120),
+                        "响应 Content-Type" to httpFailure?.contentType.orEmpty().ifBlank { "未提供" },
+                        "响应 Content-Length" to (httpFailure?.contentLength?.toString() ?: "未知"),
+                        "响应 Retry-After" to httpFailure?.retryAfter.orEmpty().ifBlank { "未提供" },
+                        "响应 Server" to httpFailure?.server.orEmpty().ifBlank { "未提供" },
                         "MP3 最低有效字节数" to MIN_MP3_BYTES.toString(),
                         "异常类型" to e.javaClass.name,
                         "异常摘要" to (e.message ?: "无异常消息").take(320),
@@ -231,12 +238,30 @@ internal class GoogleTts(context: Context) : TtsEngine {
             .header("Referer", "https://translate.google.com/")
             .build()
         client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+            if (!resp.isSuccessful) {
+                throw GoogleTtsHttpException(
+                    statusCode = resp.code,
+                    statusMessage = resp.message,
+                    contentType = resp.header("Content-Type"),
+                    contentLength = resp.body?.contentLength()?.takeIf { it >= 0L },
+                    retryAfter = resp.header("Retry-After"),
+                    server = resp.header("Server"),
+                )
+            }
             val body = resp.body?.bytes() ?: ByteArray(0)
             if (body.size < MIN_MP3_BYTES) throw IllegalStateException("响应音频过短：${body.size} 字节")
             return body
         }
     }
+
+    private class GoogleTtsHttpException(
+        val statusCode: Int,
+        val statusMessage: String,
+        val contentType: String?,
+        val contentLength: Long?,
+        val retryAfter: String?,
+        val server: String?,
+    ) : IllegalStateException("HTTP $statusCode${statusMessage.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
 
     private fun decodeMp3(bytes: ByteArray, checkActive: () -> Unit): Pair<FloatArray, Int> {
         val extractor = MediaExtractor()
