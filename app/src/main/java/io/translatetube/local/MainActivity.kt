@@ -472,7 +472,11 @@ class MainActivity : ComponentActivity() {
                                         null
                                     }
                                     val reusedReadySession = if (reuseRequest != null) {
-                                        val reused = PlaybackService.instance?.resumeReadySessionIfCompatible(
+                                        val service = PlaybackService.instance
+                                        val reused = service?.resumeProcessingSessionIfCompatible(
+                                            key = reuseRequest.key,
+                                            requestToken = reuseRequest.ts,
+                                        ) == true || service?.resumeReadySessionIfCompatible(
                                             key = reuseRequest.key,
                                             requestToken = reuseRequest.ts,
                                             isYouTube = reuseRequest.videoId != null,
@@ -710,7 +714,11 @@ class MainActivity : ComponentActivity() {
                                     val cleanRequest = request.copy(preferReadyHistoryResume = false)
                                     val reuseRequest = if (request.preferReadyHistoryResume) withFreshRequestToken(cleanRequest) else null
                                     val reusedReadySession = if (reuseRequest != null) {
-                                        val reused = PlaybackService.instance?.resumeReadySessionIfCompatible(
+                                        val service = PlaybackService.instance
+                                        val reused = service?.resumeProcessingSessionIfCompatible(
+                                            key = reuseRequest.key,
+                                            requestToken = reuseRequest.ts,
+                                        ) == true || service?.resumeReadySessionIfCompatible(
                                             key = reuseRequest.key,
                                             requestToken = reuseRequest.ts,
                                             isYouTube = reuseRequest.videoId != null,

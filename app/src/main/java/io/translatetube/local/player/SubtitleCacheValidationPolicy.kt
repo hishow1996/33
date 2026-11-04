@@ -14,6 +14,7 @@ internal object SubtitleCacheValidationPolicy {
         val endMs: Long,
         val sourceText: String,
         val translatedText: String?,
+        val originalAudioFallback: Boolean = false,
     )
 
     /**
@@ -70,7 +71,7 @@ internal object SubtitleCacheValidationPolicy {
                 source.text != cached.sourceText
             ) return null
             previousStart = cached.startMs
-            if (usableCachedTranslation(
+            if (cached.originalAudioFallback || usableCachedTranslation(
                     source.text, cached.translatedText, sourceLanguage, targetLanguage,
                 ) != null
             ) {
@@ -86,7 +87,8 @@ internal object SubtitleCacheValidationPolicy {
             restored += source.copy(
                 zh = usableCachedTranslation(
                     source.text, cachedRows[index].translatedText, sourceLanguage, targetLanguage,
-                )
+                ),
+                translationFallbackOriginalAudio = cachedRows[index].originalAudioFallback,
             )
         }
         checkActive()
@@ -117,13 +119,24 @@ internal object SubtitleCacheValidationPolicy {
      * Reuse it when at least one real translation survives cleanup; callers can then retry only
      * the blank/placeholder rows. A cache made entirely of placeholders is not recoverable.
      */
-    fun hasRecoverableTranslationRows(translations: List<String?>): Boolean =
-        translations.any { !SubtitleParsers.cleanTranslatedText(it).isNullOrBlank() }
+    fun hasRecoverableTranslationRows(
+        translations: List<String?>,
+        originalAudioFallbackRows: List<Boolean> = emptyList(),
+    ): Boolean =
+        translations.indices.any { index ->
+            originalAudioFallbackRows.getOrNull(index) == true ||
+                !SubtitleParsers.cleanTranslatedText(translations[index]).isNullOrBlank()
+        }
 
     /**
      * Chinese source captions are already the target language. Repair legacy/incomplete cache rows
      * from their source text rather than leaving blank or stale placeholder translations visible.
      */
     fun restoreChineseSourceTranslations(rows: List<SubLine>): List<SubLine> =
-        rows.map { line -> line.copy(zh = line.text.takeIf { it.isNotBlank() }) }
+        rows.map {
+            it.copy(
+                zh = it.text.takeIf { text -> text.isNotBlank() },
+                translationFallbackOriginalAudio = false,
+            )
+        }
 }

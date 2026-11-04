@@ -1,9 +1,9 @@
 package io.translatetube.local.player
 
 /**
- * Decide whether an unchanged source cue may be treated as an untranslated/original-audio
- * fallback for this engine. Local neural models must retry source echoes; term-like cues
- * (names, acronyms, URLs) are already allowed by SubtitleTranslationQualityPolicy.
+ * Decide whether a very small number of unresolved cues can safely remain on original audio.
+ * The threshold is measured against the complete subtitle timeline, not the final retry batch:
+ * a one-row tail from a 770-row cached transcript is still only one failed cue.
  */
 internal object TranslationBatchFallbackPolicy {
     fun shouldTreatSourceEchoAsUntranslatedFallback(engineId: String): Boolean =
@@ -19,10 +19,6 @@ internal object TranslationBatchFallbackPolicy {
     fun isApiLanguageModelEngine(engineId: String): Boolean =
         engineId == "openai" || engineId == "gemini"
 
-    /**
-     * Keep a small number of invalid subtitle rows on original audio only when the batch has
-     * usable translations. Global provider/model failures must still fail the task.
-     */
     fun shouldKeepUnresolvedOnOriginalAudio(
         unresolvedCount: Int,
         batchSize: Int,
@@ -30,11 +26,18 @@ internal object TranslationBatchFallbackPolicy {
         sourceEchoAsUntranslatedFallback: Boolean,
         isLocalTranslationEngine: Boolean,
         isApiLanguageModelEngine: Boolean = false,
+        totalSubtitleRows: Int = batchSize,
     ): Boolean {
-        if (unresolvedCount <= 0 || batchSize <= 0 || unresolvedCount >= batchSize) return false
-        // Only treat a genuinely small tail of failures as recoverable. For a normal 10-row
-        // batch this permits at most 2 rows; a fully/mostly failed model batch remains an error.
-        val maximumRecoverableRows = (batchSize / 4).coerceAtLeast(1)
+        if (
+            unresolvedCount <= 0 ||
+            batchSize <= 0 ||
+            totalSubtitleRows <= 0 ||
+            unresolvedCount >= totalSubtitleRows
+        ) return false
+
+        // At most 1% of the full timeline, capped at three cues. This permits an isolated
+        // stubborn cue without masking a provider/model failure affecting a meaningful portion.
+        val maximumRecoverableRows = ((totalSubtitleRows + 99) / 100).coerceIn(1, 3)
         return unresolvedCount <= maximumRecoverableRows &&
             hasUsableTranslation &&
             (sourceEchoAsUntranslatedFallback || isLocalTranslationEngine || isApiLanguageModelEngine)

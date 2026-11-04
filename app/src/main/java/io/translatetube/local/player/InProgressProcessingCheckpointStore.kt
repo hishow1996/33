@@ -70,9 +70,9 @@ internal data class InProgressCheckpointLoadResult(
 
 internal object InProgressProcessingCheckpointStore {
     private const val DIRECTORY_NAME = "in_progress_processing"
-    // Version 2 introduced gzip; versions 3–5 added restart flags and YouTube subtitle mode.
-    // Version 6 adds a content fingerprint used for integrity checks and write de-duplication.
-    private const val VERSION = 6
+    // Versions 2–5 added gzip/restart metadata; version 6 added content fingerprints.
+    // Version 7 also fingerprints terminal original-audio translation fallbacks.
+    private const val VERSION = 7
     private const val MAX_FILE_BYTES = 24L * 1024L * 1024L
     private const val MAX_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BYTES = 96L * 1024L * 1024L
@@ -439,6 +439,7 @@ internal object InProgressProcessingCheckpointStore {
                 requireFreshTranslation = root.optBoolean("requireFreshTranslation", false),
                 youtubeSubtitleMode = readNullableString(root, "youtubeSubtitleMode"),
                 state = restored,
+                version = version,
             )
             if (root.optString("contentFingerprint") != expectedFingerprint) {
                 discard(file)
@@ -528,7 +529,8 @@ internal object InProgressProcessingCheckpointStore {
                     .put("e", line.endMs)
                     .put("t", line.text)
                     .put("zh", line.zh?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                    .put("sp", line.speakerId),
+                    .put("sp", line.speakerId)
+                    .put("oa", line.translationFallbackOriginalAudio),
             )
         }
 
@@ -583,7 +585,10 @@ internal object InProgressProcessingCheckpointStore {
             } else {
                 rawTranslation.toString().takeIf { it.isNotBlank() }
             }
-            lines += SubLine(index, start, end, original, translation, row.optInt("sp", -1))
+            lines += SubLine(
+                index, start, end, original, translation, row.optInt("sp", -1),
+                row.optBoolean("oa", false),
+            )
         }
 
         val qualityArray = obj.optJSONArray("qualityOptions") ?: JSONArray()
@@ -621,7 +626,7 @@ internal object InProgressProcessingCheckpointStore {
             thumbUrl = thumb,
             durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L),
             lines = lines,
-            translatedLineCount = lines.count { !it.zh.isNullOrBlank() },
+            translatedLineCount = lines.count { !it.zh.isNullOrBlank() || it.translationFallbackOriginalAudio },
             totalLines = lines.size,
             audioOnly = obj.optBoolean("audioOnly", false),
             videoAspect = obj.optDouble("videoAspect", 16.0 / 9.0).toFloat()
@@ -645,6 +650,7 @@ internal object InProgressProcessingCheckpointStore {
         requireFreshTranslation: Boolean,
         youtubeSubtitleMode: String?,
         state: PlayerUiState,
+        version: Int = VERSION,
     ): String {
         val digest = MessageDigest.getInstance("SHA-256")
         fun updateField(value: String?) {
@@ -662,7 +668,7 @@ internal object InProgressProcessingCheckpointStore {
 
         // Only fields written to the durable checkpoint participate. Playback position, UI text,
         // prepared-cue counters and transient task progress deliberately do not trigger disk writes.
-        updateField(VERSION.toString())
+        updateField(version.toString())
         updateField(keyHash)
         updateField(identityHash)
         updateField(fingerprints.transcription)
@@ -708,6 +714,7 @@ internal object InProgressProcessingCheckpointStore {
             updateField(line.endMs.toString())
             updateField(line.text)
             updateField(line.zh?.takeIf { it.isNotBlank() })
+            if (version >= 7) updateField(line.translationFallbackOriginalAudio.toString())
             updateField(line.speakerId.toString())
         }
         return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }

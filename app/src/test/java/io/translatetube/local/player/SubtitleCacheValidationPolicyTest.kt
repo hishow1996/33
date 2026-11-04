@@ -200,4 +200,31 @@ class SubtitleCacheValidationPolicyTest {
         )
     }
 
+    @Test
+    fun restoresExplicitOriginalAudioFallbackRowsAsCompletedCacheEntries() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "Hello"),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "Goodbye"),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "Hello", "你好"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                1_000L, 2_000L, "Goodbye", null, originalAudioFallback = true,
+            ),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source, cached, sourceLanguage = "en",
+        ) ?: throw AssertionError("Expected explicit original-audio fallback to restore")
+
+        assertEquals(listOf("你好", null), restored.map { it.zh })
+        assertTrue(restored[1].translationFallbackOriginalAudio)
+        assertTrue(
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(
+                listOf("你好", null),
+                listOf(false, true),
+            )
+        )
+    }
+
 }

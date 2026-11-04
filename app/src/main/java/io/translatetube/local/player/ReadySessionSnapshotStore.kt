@@ -392,7 +392,7 @@ internal object ReadySessionSnapshotStore {
                 thumbUrl = thumbUrl,
                 durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L),
                 lines = lines,
-                translatedLineCount = lines.count { !it.zh.isNullOrBlank() },
+                translatedLineCount = lines.count { !it.zh.isNullOrBlank() || it.translationFallbackOriginalAudio },
                 activeDubbingLine = -1,
                 currentLine = -1,
                 preparedUntil = 0,

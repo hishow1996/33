@@ -135,4 +135,45 @@ class TranslationBatchFallbackPolicyTest {
             )
         )
     }
+    @Test
+    fun allowsOneUnresolvedCueInACompletedLargeTranscriptToFallBackToOriginalAudio() {
+        assertTrue(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 1,
+                batchSize = 1,
+                totalSubtitleRows = 770,
+                hasUsableTranslation = true,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = false,
+                isApiLanguageModelEngine = true,
+            )
+        )
+    }
+
+    @Test
+    fun doesNotHideMultipleFailuresOrAnEntirelyFailedTranscriptBehindOriginalAudioFallback() {
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 4,
+                batchSize = 4,
+                totalSubtitleRows = 770,
+                hasUsableTranslation = true,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = false,
+                isApiLanguageModelEngine = true,
+            )
+        )
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 1,
+                batchSize = 1,
+                totalSubtitleRows = 1,
+                hasUsableTranslation = false,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = false,
+                isApiLanguageModelEngine = true,
+            )
+        )
+    }
+
 }
