@@ -4,7 +4,6 @@ internal enum class PlaybackHintAction {
     RETRY,
     RELOAD,
     REPARSE,
-    PLAY_ORIGINAL_ONLY,
     OPEN_SETTINGS,
 }
 
@@ -52,7 +51,6 @@ internal data class PlaybackHintInput(
     val networkFailure: Boolean = false,
     val failureMessage: String? = null,
     val blockedMessage: String? = null,
-    val blockedOffersOriginalOnly: Boolean = false,
     val noFirstFrameTimedOut: Boolean = false,
     /** Playhead is unchanged while Media3 still claims active playback. */
     val playbackStalled: Boolean = false,
@@ -124,18 +122,8 @@ internal object PlaybackHintPolicy {
                 message = safeReason(input.blockedMessage),
                 showSpinner = input.blockedMessage.contains("准备中") ||
                     input.blockedMessage.contains("准备好后"),
-                action = if (input.blockedOffersOriginalOnly) {
-                    PlaybackHintAction.PLAY_ORIGINAL_ONLY
-                } else {
-                    PlaybackHintAction.OPEN_SETTINGS
-                },
-                actionLabel = if (input.blockedOffersOriginalOnly) "仅播放原声" else "去设置",
-                secondaryAction = if (input.blockedOffersOriginalOnly) {
-                    PlaybackHintAction.OPEN_SETTINGS
-                } else {
-                    null
-                },
-                secondaryActionLabel = if (input.blockedOffersOriginalOnly) "去设置" else null,
+                action = PlaybackHintAction.OPEN_SETTINGS,
+                actionLabel = "去设置",
                 priority = 85,
             )
             input.loadRetryCount > 0 && input.isBuffering -> PlaybackHint(
