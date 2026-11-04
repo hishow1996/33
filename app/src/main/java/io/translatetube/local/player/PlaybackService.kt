@@ -7510,6 +7510,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         // Keep local PCM protected from concurrent pruning while the current ASR pass reads it.
         var leasedLocalPcmCachePath: String? = null
         var transientCloudUploadAudio: File? = null
+        // Updated at each real stage boundary so the outer failure record keeps the last known
+        // business state even when a lower-level helper throws before it can log locally.
+        val currentStageDiagnostics = linkedMapOf<String, String>()
+        currentStageDiagnostics["当前处理阶段"] = "PIPELINE_START"
+        currentStageDiagnostics["当前处理代数"] = pipelineGeneration.toString()
         // True once the pipeline reaches the dubbing-engine step. Only a failure from that point
         // on may be blamed on the text-to-speech setup; an earlier parse/download/transcribe/
         // translate failure used to show the same "check your TTS service" banner.
@@ -8422,6 +8427,26 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         else -> "auto" // ElevenLabs has no separate language setting in this UI.
                     }
                 }
+                currentStageDiagnostics.clear()
+                currentStageDiagnostics.putAll(
+                    mapOf(
+                        "诊断事件类型" to "TRANSCRIPTION_STAGE",
+                        "当前处理阶段" to Phase.DOWNLOADING_AUDIO.name,
+                        "当前处理子步骤" to "准备原始音轨并确定云端/本地转写输入",
+                        "视频来源" to when {
+                            videoId != null -> "YouTube"
+                            remoteMediaUrl != null -> "网页视频/远程媒体"
+                            localUri != null -> "本地视频"
+                            else -> "未知来源"
+                        },
+                        "转写服务商 ID" to asrProvider,
+                        "转写引擎名称" to transcriptionEngineDisplayName.ifBlank { "未确定" },
+                        "转写语言参数" to cloudLanguage,
+                        "API Key 是否已配置" to if (asrProvider == "local") "不适用（本地引擎）" else asrApiKey.isNotBlank().toString(),
+                        "本地转写模型 ID" to localAsrModelId.ifBlank { "未选择/未使用" },
+                        "处理代数" to pipelineGeneration.toString(),
+                    ),
+                )
                 if (videoId != null) {
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
@@ -8475,6 +8500,23 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     )
                     else -> localUri ?: throw IllegalStateException("无音频源")
                 }
+                val audioFileObject = audioFile as? File
+                currentStageDiagnostics.putAll(
+                    mapOf(
+                        "当前处理阶段" to Phase.DOWNLOADING_AUDIO.name,
+                        "当前处理子步骤" to "原始音轨已定位，准备格式检测/解码",
+                        "音频输入类型" to when (audioFile) {
+                            is File -> "应用缓存/临时音频文件"
+                            is Uri -> "内容 URI"
+                            else -> audioFile.javaClass.simpleName
+                        },
+                        "原始音频文件是否存在" to (audioFileObject?.isFile?.toString() ?: "不适用"),
+                        "原始音频文件字节数" to (audioFileObject?.takeIf { it.isFile }?.length()?.toString() ?: "未能直接读取"),
+                        "原始音频文件扩展名" to (audioFileObject?.extension?.takeIf { it.isNotBlank() } ?: "未知/URI 输入"),
+                        "缓存音频是否来自 YouTube" to (videoId != null).toString(),
+                        "缓存音频是否来自网页媒体" to (remoteMediaUrl != null).toString(),
+                    ),
+                )
                 val localPcmCacheFile = if (
                     audioFile is Uri && localUri != null &&
                     !cacheKeyBase.startsWith("local-media-unverified-v1:")
@@ -8658,6 +8700,24 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 if (directCloudPreparation != null) {
                     val encodedInput = directCloudPreparation.first
                     asrTimelineDurationMs = directCloudPreparation.second
+                    currentStageDiagnostics.putAll(
+                        mapOf(
+                            "当前处理阶段" to Phase.TRANSCRIBING.name,
+                            "当前处理子步骤" to "已完成编码音轨格式预检，准备直传云端",
+                            "云端音频上传方式" to "编码媒体文件直传（不进行 PCM 解码）",
+                            "云端上传文件名" to encodedInput.fileName,
+                            "云端音频 MIME 类型" to encodedInput.mimeType,
+                            "云端上传文件字节数" to encodedInput.file.length().toString(),
+                            "云端音频时长 ms" to directCloudPreparation.second.toString(),
+                            "云端转写服务商" to asrProvider,
+                            "云端转写模型 ID" to when (asrProvider) {
+                                "elevenlabs" -> "scribe_v2"
+                                "cartesia" -> "ink-whisper"
+                                else -> "Kawa"
+                            },
+                            "云端转写语言参数" to cloudLanguage,
+                        ),
+                    )
                     val directResult = try {
                         withContext(Dispatchers.IO) {
                             val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -8685,6 +8745,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 checkpointDirectory = cacheDir,
                                 allowUncertainRetry = allowCloudAsrResubmission,
                                 submissionGuardIdentity = cacheKeyBase,
+                                logContext = this@PlaybackService,
+                                diagnosticContext = currentStageDiagnostics.toMap() + mapOf(
+                                    "云端请求阶段" to "上传编码音轨并提交转写任务",
+                                    "是否使用持久化响应检查点" to (sourceSubtitleCacheKey.isNotBlank()).toString(),
+                                    "不确定提交是否已由用户确认重试" to allowCloudAsrResubmission.toString(),
+                                ),
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) {
@@ -8815,6 +8881,28 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     throw cancelled
                 } catch (error: Exception) {
                     decodedPcmHolder.getAndSet(null)?.file?.delete()
+                    currentStageDiagnostics.putAll(
+                        mapOf(
+                            "当前处理阶段" to Phase.TRANSCRIBING.name,
+                            "当前处理子步骤" to "原始音轨解码为 16 kHz 单声道 PCM 失败",
+                            "音频解码输入类型" to if (audioFile is File) "本地缓存文件" else "内容 URI",
+                            "解码前音频文件是否存在" to (audioFile as? File)?.isFile?.toString().orEmpty().ifBlank { "不适用" },
+                            "解码前音频文件字节数" to (audioFile as? File)?.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "未能直接读取" },
+                            "解码异常类型" to error.javaClass.name,
+                            "解码异常原因" to (error.message ?: "未提供"),
+                        ),
+                    )
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.error(
+                            this@PlaybackService,
+                            "AudioExtract",
+                            "转写前音轨解码为 PCM 失败",
+                            error,
+                            diagnosticContext = currentStageDiagnostics.toMap(),
+                        )
+                    }.onFailure {
+                        android.util.Log.w("PlaybackService", "Unable to persist audio decode failure diagnostic", it)
+                    }
                     // A remote download that the platform cannot decode must not stay in the cache
                     // forever. Otherwise every user retry reuses the same unusable bytes and fails
                     // before ASR can start. Successful decodes still retain audio for ASR retries.
@@ -8866,6 +8954,22 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 // The transcript clock must use the duration of the exact PCM file sent to ASR.
                 // Provider timestamps are relative to this full recording, not to each displayed line.
                 asrTimelineDurationMs = pcmFile.durationMs
+                currentStageDiagnostics.putAll(
+                    mapOf(
+                        "当前处理阶段" to Phase.TRANSCRIBING.name,
+                        "当前处理子步骤" to if (asrProvider == "local") "16 kHz 单声道 PCM 已准备，开始本地分段识别" else "16 kHz 单声道 PCM 已准备，封装 WAV 后上传云端",
+                        "音频上传/识别方式" to if (asrProvider == "local") "本地模型读取 PCM 文件" else "PCM16 WAV 云端上传",
+                        "PCM 音频文件字节数" to pcmFile.file.length().toString(),
+                        "PCM 音频时长 ms" to pcmFile.durationMs.toString(),
+                        "PCM 采样率 Hz" to "16000",
+                        "PCM 声道数" to "1",
+                        "PCM 位深 bits" to "16",
+                        "PCM 采样点数" to ((pcmFile.file.length().coerceAtLeast(44L) - 44L) / 2L).toString(),
+                        "转写服务商 ID" to asrProvider,
+                        "转写语言参数" to cloudLanguage,
+                        "本地转写模型 ID" to localAsrModelId.ifBlank { "未选择/未使用" },
+                    ),
+                )
                 val (decodedAsrLines, decodedAsrLang) = if (asrProvider == "local") {
 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
@@ -9374,6 +9478,14 @@ updateUiForSession(key, pipelineGeneration) {
                                 checkpointDirectory = cacheDir,
                                 allowUncertainRetry = allowCloudAsrResubmission,
                                 submissionGuardIdentity = cacheKeyBase,
+                                logContext = this@PlaybackService,
+                                diagnosticContext = currentStageDiagnostics.toMap() + mapOf(
+                                    "云端请求阶段" to "16 kHz 单声道 PCM16 WAV 上传",
+                                    "云端 WAV 文件字节数" to cloudWav.length().toString(),
+                                    "云端 WAV 文件头格式" to "RIFF/WAVE PCM16，16 kHz，单声道",
+                                    "是否使用持久化响应检查点" to (sourceSubtitleCacheKey.isNotBlank()).toString(),
+                                    "不确定提交是否已由用户确认重试" to allowCloudAsrResubmission.toString(),
+                                ),
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key, pipelineGeneration) { it.copy(
@@ -9663,6 +9775,25 @@ updateUiForSession(key, pipelineGeneration) {
             }
 
             suspend fun prepareTranslatedLines(): List<SubLine> {
+                val translationState = ui.value.takeIf { it.key == key }
+                currentStageDiagnostics.clear()
+                currentStageDiagnostics.putAll(
+                    mapOf(
+                        "诊断事件类型" to "TRANSLATION_PREPARATION_STAGE",
+                        "当前处理阶段" to Phase.TRANSLATING.name,
+                        "当前处理子步骤" to "检查译文缓存、恢复字幕并补齐有效中文译文",
+                        "视频来源" to when {
+                            videoId != null -> "YouTube"
+                            remoteMediaUrl != null -> "网页视频/远程媒体"
+                            else -> "本地/导入任务"
+                        },
+                        "字幕源语言" to srcLang.ifBlank { translationState?.sourceLang.orEmpty() }.ifBlank { "未确定" },
+                        "当前翻译引擎" to translationState?.engineName.orEmpty().ifBlank { "尚未确定或缓存命中" },
+                        "当前字幕行数" to (lines?.size ?: translationState?.lines?.size ?: 0).toString(),
+                        "当前有效译文行数" to (lines?.count { !it.zh.isNullOrBlank() } ?: translationState?.translatedLineCount ?: 0).toString(),
+                        "处理代数" to pipelineGeneration.toString(),
+                    ),
+                )
                 val restoredProcessingFlow = resumeState?.processingFlow ?: ui.value.processingFlow
                 val isImportedTranslatedSnapshot =
                     restoredProcessingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
@@ -9886,6 +10017,26 @@ updateUiForSession(key, pipelineGeneration) {
             val finalLines = prepareTranslatedLines()
 
             suspend fun assembleAndPlay() {
+                val assemblyState = ui.value.takeIf { it.key == key }
+                currentStageDiagnostics.clear()
+                currentStageDiagnostics.putAll(
+                    mapOf(
+                        "诊断事件类型" to "PLAYBACK_ASSEMBLY_STAGE",
+                        "当前处理阶段" to Phase.SYNTHESIZING.name,
+                        "当前处理子步骤" to "装配播放器媒体源、初始化配音并准备可播放队列",
+                        "视频来源" to when {
+                            videoId != null -> "YouTube"
+                            remoteMediaUrl != null -> "网页视频/远程媒体"
+                            else -> "本地视频"
+                        },
+                        "当前字幕行数" to finalLines.size.toString(),
+                        "有效译文行数" to finalLines.count { !it.zh.isNullOrBlank() }.toString(),
+                        "选定配音引擎" to assemblyState?.ttsEngineName.orEmpty().ifBlank { "读取设置中/未确定" },
+                        "配音是否启用" to assemblyState?.dubbingOn?.toString().orEmpty(),
+                        "媒体是否复用已挂载播放器" to reuseMountedMedia.toString(),
+                        "处理代数" to pipelineGeneration.toString(),
+                    ),
+                )
                 // ---- 4. 流装配 ----
                 if (!reuseMountedMedia) {
                 if (videoId != null) {
@@ -10368,7 +10519,7 @@ updateUiForSession(key, pipelineGeneration) {
                     "原声是否静音" to (failureState.originalVolume <= 0f).toString(),
                     "处理代数" to pipelineGeneration.toString(),
                     "翻译诊断 ID" to (e as? TranslationFailureException)?.diagnosticId.orEmpty(),
-                    ),
+                    ) + currentStageDiagnostics,
                     issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
                 )
 android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
