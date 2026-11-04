@@ -648,7 +648,7 @@ data class PlayerUiState(
      */
     val captionOverride: String? = null,
     val preparedUntil: Int = 0,
-    /** Rows with playable audio; unlike preparedCount, excludes silent/source-fallback rows. */
+    /** Rows with playable audio; unlike preparedCount, excludes silent rows. */
     val audioReadyCount: Int = 0,
     val preparedCount: Int = 0,
     val totalLines: Int = 0,
@@ -670,8 +670,8 @@ data class PlayerUiState(
     /** 播放器正在加载/缓冲视频；网络慢或首次加载时界面显示转圈。 */
     val isBuffering: Boolean = false,
     /**
-     * 配音已开启，但当前正在播放的这句字幕的中文配音还没合成好（既没就绪也没判定失败），
-     * 此时播放的是原声；界面据此告诉用户原因，而不是让用户对着没有中文声音的字幕干等。
+     * 配音已开启，但当前字幕的中文配音尚未就绪（既没就绪也没判定失败）。
+     * 界面据此显示等待状态；原声音量仍由用户的原声开关控制。
      */
     val dubbingCuePending: Boolean = false,
     /** 点播放被拦住（配音/转写引擎没就绪、配音出错等）时显示给用户的原因；开始播放后清除。 */
@@ -686,7 +686,7 @@ data class PlayerUiState(
     val waitingForTranscriptionEngine: Boolean = false,
     /** Chinese dubbing is blocked because the selected TTS engine is not ready. */
     val waitingForDubbingEngine: Boolean = false,
-    /** At least one translated cue failed synthesis/output and has fallen back to the original audio. */
+    /** At least one translated cue failed synthesis/output. */
     val dubbingHasErrors: Boolean = false,
     val qualityOptions: List<String> = emptyList(),
     val selectedQuality: String = "",
@@ -6979,8 +6979,8 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                     else -> selectedImportTts == "system"
                 }
                 if (!importEngineReady) {
-                    // 中文源 + 所选 TTS 引擎未就绪（模型未下载/未知引擎）：直接显示原文并保留原声。
-                    // 引擎就绪时（含系统 TTS 与已装模型）仍按时间轴朗读中文字幕。
+                    // The selected TTS engine is not ready. Keep the imported captions visible,
+                    // block dubbing playback, and ask the user to prepare the selected engine.
                     val translatedCount = translatedLines.count {
                         SubtitleParsers.cleanTranslatedText(it.zh) != null
                     }
@@ -10074,8 +10074,8 @@ updateUiForSession(key, pipelineGeneration) {
                             val waitStartedNs = System.nanoTime()
                             val deadlineNs = waitStartedNs +
                                 java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
-                                    // 用户要求视频立即开播：首句直播缓冲最多 1 秒（原 3 秒），
-                                    // 未就绪的句先原声，TTS 引擎就绪后自然接上时间轴。
+                                    // Wait briefly for direct TTS initialization. A not-yet-ready
+                                    // cue remains governed by the selected source-audio volume setting.
                                     startupBuffer.waitTimeoutMs.coerceAtMost(1_000L),
                                 )
                             startupDubbing.prioritizeAround(
@@ -13765,7 +13765,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
         }
 
-        // 与上面"配音尚未就绪"分支同一判定：这句配音既没就绪也没失败，正在播放的只有原声。
+        // This flag reports that the current Chinese cue is still being synthesized.
         val dubbingCuePending = d != null && st.dubbingOn &&
             !keepingPreviousDubbingCue && queuedHead == null &&
             dubLine >= 0 && !d.isPrepared(dubLine) && !d.isSilent(dubLine)
@@ -14435,7 +14435,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "识别到人物数量" to detectedSpeakerCount.toString(),
                         "配音引擎" to selectedTts,
                         "旧配音引擎是否已释放" to oldEngineRetired.toString(),
-                        "错误后的恢复" to "恢复原字幕和原声；保留原有音色分配以便重试",
+                        "错误后的恢复" to "恢复原字幕并保留音色分配；旧配音引擎已释放时暂停视频",
                     ),
                 )
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
@@ -14752,7 +14752,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "目标配音引擎" to selectedTts,
                         "音色分配是否已经保存" to assignmentsSaved.toString(),
                         "旧配音引擎是否已释放" to oldEngineRetired.toString(),
-                        "失败后的恢复" to "恢复原字幕和可用原声，必要时回滚音色分配",
+                        "失败后的恢复" to "恢复原字幕并回滚音色分配；配音引擎不可用时暂停视频",
                     ),
                 )
                 // Restore the persisted assignment and translated captions if setup failed before
