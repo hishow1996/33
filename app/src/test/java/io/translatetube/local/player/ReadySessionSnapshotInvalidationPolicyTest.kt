@@ -1,0 +1,137 @@
+package io.translatetube.local.player
+
+import io.translatetube.local.subs.SubLine
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ReadySessionSnapshotInvalidationPolicyTest {
+    private fun state(
+        flow: ProcessingFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+        sourceLang: String = "ko",
+        text: String = "안녕하세요",
+        translated: String? = "你好",
+        startMs: Long = 0L,
+        endMs: Long = 1200L,
+    ) = PlayerUiState(
+        phase = Phase.READY,
+        key = "youtube:test",
+        sourceLang = sourceLang,
+        processingFlow = flow,
+        lines = listOf(SubLine(0, startMs, endMs, text, translated, -1)),
+    )
+
+    @Test
+    fun youtubeCaptionPreferenceRefreshIsLimitedToCaptionFlows() {
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.AUTO,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.IMPORTED_SUBTITLES,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeCaptionFlow(
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            ),
+        )
+    }
+
+    @Test
+    fun youtubeSubtitleLanguageChangesAlsoRecheckPreviousAsrFallbackSessions() {
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                ProcessingFlow.AUTO,
+            ),
+        )
+        for (flow in listOf(
+            ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ProcessingFlow.IMPORTED_SUBTITLES,
+            ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+        )) {
+            assertFalse(
+                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(flow),
+            )
+        }
+    }
+
+    @Test
+    fun sameCaptionTimelineIsMatchedAcrossTranslationAndTtsResults() {
+        assertTrue(
+            ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(
+                saved = state(translated = "你好"),
+                invalid = state(translated = "您好", sourceLang = "ko"),
+            ),
+        )
+    }
+
+    @Test
+    fun differentCaptionTextOrTimingIsPreserved() {
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(
+                saved = state(text = "안녕하세요"),
+                invalid = state(text = "감사합니다"),
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(
+                saved = state(endMs = 1200L),
+                invalid = state(endMs = 1500L),
+            ),
+        )
+    }
+
+    @Test
+    fun importedSubtitleResultsAreNeverInvalidatedAsYoutubeCaptionSource() {
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(
+                saved = state(flow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES),
+                invalid = state(),
+            ),
+        )
+    }
+
+    @Test
+    fun noEmptyTimelineCanMatchForBulkInvalidation() {
+        assertFalse(
+            ReadySessionSnapshotInvalidationPolicy.sameYouTubeCaptionSource(
+                saved = state(),
+                invalid = state().copy(lines = emptyList()),
+            ),
+        )
+    }
+}

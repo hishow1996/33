@@ -1,0 +1,131 @@
+package io.translatetube.local.player
+
+import java.io.IOException
+import java.net.UnknownHostException
+import kotlinx.coroutines.CancellationException
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class MediaDownloadRetryPolicyTest {
+    @Test
+    fun retriesDnsFailuresWithLongerBoundedBackoff() {
+        val dnsFailure = UnknownHostException("Unable to resolve media host")
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(dnsFailure))
+        assertEquals("DNS 域名解析暂时失败", MediaDownloadRetryPolicy.retryReasonLabel(dnsFailure))
+        assertEquals(2_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 1))
+        assertEquals(4_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 2))
+        assertEquals(8_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 3))
+        assertEquals(16_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 4))
+        assertEquals(20_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 5))
+        assertEquals(20_000L, MediaDownloadRetryPolicy.retryDelayMillis(dnsFailure, 6))
+    }
+
+    @Test
+    fun ordinaryNetworkFailuresUseShorterBoundedBackoff() {
+        val networkFailure = IOException("connection reset")
+        assertEquals(750L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 1))
+        assertEquals(1_500L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 2))
+        assertEquals(3_000L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 3))
+        assertEquals(6_000L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 4))
+        assertEquals(8_000L, MediaDownloadRetryPolicy.retryDelayMillis(networkFailure, 5))
+    }
+
+    @Test
+    fun retriesTransientNetworkErrorsAndHttpStatuses() {
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("connection reset")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 429: rate limited")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 503: service unavailable")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP/2 503: service unavailable")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP Error 503: Service Unavailable")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("status=404 media not found")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP/2 404: not found")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 503")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("HLS 片段下载失败（HTTP 429）。")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载不完整：响应声明 1024 字节，实际收到 512 字节")))
+        // Unknown Content-Length can still be truncated relative to the HLS range declaration.
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("HLS BYTERANGE 片段不完整：清单要求 512 字节，实际收到 300 字节")))
+    }
+
+    @Test
+    fun refreshesStaleSignedStreamsButNotTransientServerFailures() {
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("音频下载失败 403")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("HLS 清单读取失败（HTTP 410）。")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IOException("HTTP/1.1 403: forbidden")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IOException("HTTP Error 403: Forbidden")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("status code=410 from media endpoint")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("链接可能过期或需要登录")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("音频下载失败 503")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("本地音频格式不受支持")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(CancellationException("task cancelled")))
+    }
+
+    @Test
+    fun signedStreamRefreshDetectionIsIndependentOfDeviceLocale() {
+        val previous = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale("tr", "TR"))
+            assertTrue(
+                MediaDownloadRetryPolicy.shouldRefreshSignedStream(
+                    IllegalStateException("SIGNATURE HAS EXPIRED"),
+                ),
+            )
+        } finally {
+            java.util.Locale.setDefault(previous)
+        }
+    }
+
+    @Test
+    fun wrappedCancellationIsNeverRetriedOrRefreshed() {
+        val wrapped = IOException("download wrapper", CancellationException("obsolete task"))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(wrapped))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(wrapped))
+    }
+
+    @Test
+    fun cyclicCauseChainsDoNotHangRetryDetection() {
+        val first = IOException("HTTP 503: service unavailable")
+        val second = IllegalStateException("wrapped failure")
+        first.initCause(second)
+        second.initCause(first)
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(first))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(first))
+    }
+
+    @Test
+    fun ytDlpFallbackIsSuppressedForCancellationAndInactiveSessions() {
+        assertTrue(MediaDownloadRetryPolicy.shouldFallbackToStreaming(IOException("format unsupported"), true))
+        assertFalse(MediaDownloadRetryPolicy.shouldFallbackToStreaming(CancellationException("cancelled"), true))
+        assertFalse(
+            MediaDownloadRetryPolicy.shouldFallbackToStreaming(
+                IOException("wrapped", CancellationException("cancelled")),
+                true,
+            )
+        )
+        assertFalse(MediaDownloadRetryPolicy.shouldFallbackToStreaming(IOException("format unsupported"), false))
+    }
+
+    @Test
+    fun doesNotRetryPermanentErrorsOrCancellation() {
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 403")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 401: unauthorized")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 403: forbidden")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 404: not found")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 410: gone")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 404")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(CancellationException("task cancelled")))
+    }
+    @Test
+    fun nestedHttpErrorsUseTheMostSpecificCauseInsteadOfAStaleWrapperStatus() {
+        val permanentInner = IOException("download wrapper says HTTP 503", IOException("HTTP 404: not found"))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(permanentInner))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(permanentInner))
+
+        val transientInner = IOException("download wrapper says HTTP 404", IOException("HTTP 503: unavailable"))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(transientInner))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(transientInner))
+    }
+
+}

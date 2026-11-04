@@ -1,0 +1,62 @@
+package io.translatetube.local.tts
+
+import java.security.MessageDigest
+import java.util.Locale
+
+/**
+ * Builds stable TTS cache identities from voices, model policies, and credentials without
+ * exposing API keys in cache names.
+ */
+internal object TtsCacheIdentityPolicy {
+    fun credentialFingerprint(apiKey: String): String {
+        if (apiKey.isBlank()) return "missing"
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(apiKey.toByteArray(Charsets.UTF_8))
+        return digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    // Retain the shipped Edge cache identity while this exact voice order is active. Any
+    // changed name or order receives a deterministic suffix so speakerId-to-voice remapping
+    // cannot silently reuse a cache synthesized with another voice.
+    private val legacyEdgeVoiceCatalog = listOf(
+        "zh-CN-XiaoxiaoNeural",
+        "zh-CN-YunxiNeural",
+        "zh-CN-XiaoyiNeural",
+        "zh-CN-YunyangNeural",
+        "zh-CN-XiaohanNeural",
+        "zh-CN-XiaomengNeural",
+    )
+
+    fun edgeCacheKey(voiceCatalog: List<String>): String {
+        val normalizedCatalog = voiceCatalog.map { it.trim() }
+        if (normalizedCatalog == legacyEdgeVoiceCatalog) return "edge-readaloud-v2|zh-neural"
+        val voiceFingerprint = MessageDigest.getInstance("SHA-256")
+            .digest(normalizedCatalog.joinToString("\n").toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return "edge-readaloud-v2|zh-neural|voices-$voiceFingerprint"
+    }
+
+    // Keep the historical cache identity for the shipped model order so previously
+    // synthesized, successful PCM remains reusable. Any changed candidate or priority order
+    // receives a distinct identity automatically rather than relying on a manual version bump.
+    private val legacyGeminiModelCandidates = listOf(
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-pro-preview-tts",
+    )
+
+    fun geminiCacheKey(
+        voiceName: String,
+        apiKey: String,
+        modelCandidates: List<String> = legacyGeminiModelCandidates,
+    ): String {
+        val base = "gemini-tts-v3-${voiceName.trim().lowercase(Locale.ROOT)}-${credentialFingerprint(apiKey)}"
+        val normalizedCandidates = modelCandidates.map { it.trim() }.filter { it.isNotEmpty() }
+        if (normalizedCandidates == legacyGeminiModelCandidates) return base
+        val modelFingerprint = MessageDigest.getInstance("SHA-256")
+            .digest(normalizedCandidates.joinToString("\n").toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return "$base-models-$modelFingerprint"
+    }
+}

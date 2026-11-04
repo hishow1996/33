@@ -1,0 +1,74 @@
+package io.translatetube.local.player
+
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class DubbingQueueOrderTest {
+    @Test
+    fun currentAndNextTwoLinesMoveAheadOfEarlierQueuedWork() {
+        assertEquals(
+            listOf(20, 21, 22, 3, 4, 9),
+            DubbingQueueOrder.prioritize(
+                queued = listOf(3, 4, 9, 20, 21, 22),
+                currentIndex = 20,
+                totalLines = 30,
+            ),
+        )
+    }
+
+    @Test
+    fun missingCurrentLineDoesNotDropOrDuplicateOtherQueuedLines() {
+        val original = listOf(1, 2, 5, 8, 9)
+        val result = DubbingQueueOrder.prioritize(original, 6, 12)
+        // Only existing cues in [currentIndex, currentIndex + lookAhead] are promoted.
+        // Cue 9 is outside the default window for currentIndex=6 and remains in stable order.
+        assertEquals(listOf(8, 1, 2, 5, 9), result)
+        assertEquals(original.sorted(), result.sorted())
+    }
+
+    @Test
+    fun duplicateQueuedIndexesDoNotDuplicateSynthesisWork() {
+        assertEquals(
+            listOf(3, 4, 2, 8),
+            DubbingQueueOrder.prioritize(
+                queued = listOf(4, 4, 2, 3, 2, 8),
+                currentIndex = 3,
+                totalLines = 10,
+                lookAhead = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun zeroLookAheadPromotesOnlyCurrentCueAndPreservesRemainingOrder() {
+        assertEquals(
+            listOf(5, 2, 7, 1),
+            DubbingQueueOrder.prioritize(
+                queued = listOf(2, 7, 5, 1),
+                currentIndex = 5,
+                totalLines = 8,
+                lookAhead = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun hugeLookAheadCannotOverflowAndOutOfRangeQueueItemsAreIgnored() {
+        assertEquals(
+            listOf(Int.MAX_VALUE - 2, Int.MAX_VALUE - 1),
+            DubbingQueueOrder.prioritize(
+                queued = listOf(-1, Int.MAX_VALUE, Int.MAX_VALUE - 1, Int.MAX_VALUE - 2),
+                currentIndex = Int.MAX_VALUE - 2,
+                totalLines = Int.MAX_VALUE,
+                lookAhead = Int.MAX_VALUE,
+            ),
+        )
+    }
+
+    @Test
+    fun invalidTargetLeavesQueueUnchanged() {
+        val original = listOf(0, 2, 4)
+        assertEquals(original, DubbingQueueOrder.prioritize(original, -1, 5))
+        assertEquals(original, DubbingQueueOrder.prioritize(original, 9, 5))
+    }
+}

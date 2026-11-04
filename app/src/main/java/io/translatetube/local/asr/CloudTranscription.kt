@@ -1,0 +1,1134 @@
+package io.translatetube.local.asr
+
+import android.content.Context
+import io.translatetube.local.translate.Crypto
+import io.translatetube.local.translate.SourceLanguagePolicy
+import io.translatetube.local.yt.executeCancellableHttpCall
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.ResponseBody
+import org.json.JSONObject
+import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.charset.Charset
+import java.util.Collections
+import java.util.IdentityHashMap
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+
+/** Reads provider keys from encrypted SharedPreferences values written by SettingsScreen. */
+object CloudTranscriptionSettings {
+    fun apiKey(context: Context, provider: String): String {
+        if (provider != "elevenlabs" && provider != "cartesia" && provider != "kawa") return ""
+        val stored = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString("asr_" + provider + "_key", "").orEmpty()
+        return Crypto.decrypt(stored).trim()
+    }
+}
+
+/** Batch cloud transcription for ElevenLabs Scribe, Cartesia Ink, and Kawa. Call from Dispatchers.IO. */
+object CloudTranscription {
+    data class Result(
+        val cues: List<Triple<Long, Long, String>>,
+        val language: String,
+    )
+
+    /** A supported encoded source file that can be sent directly to a cloud STT API. */
+    data class EncodedAudioInput(
+        val file: File,
+        val fileName: String,
+        val mimeType: String,
+    )
+
+    internal data class TimedWord(val text: String, val startMs: Long, val endMs: Long)
+
+    /** One Kawa upload with a one-second leading context window and a non-overlapping cue ownership window. */
+    internal data class KawaChunkRange(
+        val offsetBytes: Long,
+        val sizeBytes: Long,
+        val ownedStartMs: Long,
+        val ownedEndMs: Long,
+    )
+
+    /** Split provider words at long silences instead of stretching a caption across the pause. */
+    internal const val MAX_WORD_GAP_MS = 800L
+
+    /** Bound JSON allocation on memory-constrained phones when a provider returns malformed data. */
+    internal const val MAX_RESPONSE_BODY_BYTES = 16L * 1024L * 1024L
+    /** Prevent unusually large word arrays from multiplying the memory cost of JSON parsing. */
+    internal const val MAX_PROVIDER_WORD_COUNT = 200_000
+
+    // A force-stop can bypass finally cleanup for both staging and request WAV files.
+    // Match only our own filename prefixes and leave recently modified work untouched.
+    internal const val STAGED_WAV_MAX_AGE_MS = 24L * 60L * 60L * 1_000L
+
+    internal fun cleanupStaleWavStages(
+        directory: File,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Int {
+        val files = directory.listFiles() ?: return 0
+        var deleted = 0
+        for (file in files) {
+            val abandonedStage = file.name.startsWith("cloud-wav-") && file.name.endsWith(".part")
+            // PlaybackService creates the final request WAV under this prefix; a force-stop can
+            // bypass its finally deletion just as it can leave the writer's staging file behind.
+            val abandonedRequest = file.name.startsWith("asr-cloud-") && file.name.endsWith(".wav")
+            // Kawa's bounded per-chunk uploads are also staged as WAVs and can survive force-stop.
+            val abandonedKawaChunk = file.name.startsWith("asr-kawa-") && file.name.endsWith(".wav")
+            if (!file.isFile || (!abandonedStage && !abandonedRequest && !abandonedKawaChunk)) continue
+            val modified = file.lastModified()
+            if (modified > 0L && nowMs >= modified &&
+                nowMs - modified > STAGED_WAV_MAX_AGE_MS && file.delete()
+            ) {
+                deleted++
+            }
+        }
+        return deleted
+    }
+
+    /**
+     * Cartesia accepts documented ISO-639-1 codes; "auto" is a UI sentinel, not an API code.
+     * Both "no" and "nn" are supported and must retain their distinct meanings.
+     */
+    internal fun cartesiaLanguageCode(language: String): String? {
+        val normalized = SourceLanguagePolicy.normalizeTag(language)
+        if (SourceLanguagePolicy.isUndetermined(normalized)) return null
+
+        // Cartesia expects a two-letter ISO-639-1 code. Strip any canonicalized script/region
+        // suffix; unknown ASR/UI sentinels are omitted rather than sent as invalid language IDs.
+        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        return primary.takeIf { code ->
+            code.length == 2 && code.all { it in 'a'..'z' }
+        }
+    }
+
+    /** Kawa's automatic-detection mode is represented by omitting the language field. */
+    internal fun kawaLanguageCode(language: String): String? {
+        val value = SourceLanguagePolicy.normalizeTag(language)
+        return value.takeUnless(SourceLanguagePolicy::isUndetermined)
+    }
+
+    private val cartesiaSourceLanguageCodes = setOf(
+        "en", "zh", "ja", "ko", "es", "fr", "de", "pt", "ru", "it", "hi", "ar",
+        "nl", "tr", "pl", "vi", "th", "id", "fi", "uk", "sv", "da", "no", "nn",
+    )
+    private val kawaSourceLanguageCodes = cartesiaSourceLanguageCodes - "nn"
+
+    /**
+     * YouTube audio metadata is more authoritative than an unrelated saved ASR language setting.
+     * Return null when metadata is unknown or the selected provider cannot be safely given that
+     * language; callers then use automatic detection instead of silently forcing English.
+     */
+    internal fun youtubeSourceLanguageHint(provider: String, audioLanguage: String?): String? {
+        val primary = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+            .normalizeLanguageCode(audioLanguage) ?: return null
+        return when (provider) {
+            "elevenlabs" -> elevenLabsLanguageCode(primary)
+            "cartesia" -> cartesiaLanguageCode(primary)?.takeIf { it in cartesiaSourceLanguageCodes }
+            "kawa" -> kawaLanguageCode(primary)?.takeIf { it in kawaSourceLanguageCodes }
+            else -> null
+        }
+    }
+
+    /** ElevenLabs accepts an optional ISO-639-1/3 hint; null keeps its automatic language detection. */
+    internal fun elevenLabsLanguageCode(language: String): String? {
+        val normalized = SourceLanguagePolicy.normalizeTag(language)
+        if (SourceLanguagePolicy.isUndetermined(normalized)) return null
+        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        return primary.takeIf { code ->
+            code.length in 2..3 && code.all { it in 'a'..'z' }
+        }
+    }
+
+    private val kawaJobIdPattern = Regex("[A-Za-z0-9_-]{1,256}")
+
+    /** Keep server-returned job IDs inside one fixed path segment before attaching the API key. */
+    internal fun kawaPollUrl(jobId: String): String {
+        if (!kawaJobIdPattern.matches(jobId)) {
+            throw IOException("Kawa 返回的转写任务编号格式无效")
+        }
+        val base = "https://api.makimoto.ai/v1/transcriptions".toHttpUrlOrNull()
+            ?: throw IOException("Kawa 转写查询地址无效")
+        return base.newBuilder().addPathSegment(jobId).build().toString()
+    }
+
+    /**
+     * Kawa's asynchronous job endpoint can be briefly rate-limited or unavailable. Retry only
+     * transient network/HTTP failures; authentication and task/schema errors should fail promptly.
+     */
+    internal const val MAX_CLOUD_SUBMISSION_RETRIES = 2
+
+    internal fun cloudSubmissionHttpStatus(error: Throwable): Int? {
+        val messages = causeChain(error).mapNotNull { it.message }.joinToString(" ")
+        return Regex("""HTTP\s*(\d{3})""", RegexOption.IGNORE_CASE)
+            .find(messages)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    internal fun isDefinitiveCloudSubmissionRejection(error: Throwable): Boolean {
+        val statusCode = cloudSubmissionHttpStatus(error) ?: return false
+        return statusCode in 400..499 && statusCode !in setOf(408, 425)
+    }
+
+    internal fun shouldRetryCloudSubmission(error: Throwable): Boolean {
+        val chain = causeChain(error)
+        if (chain.any { it is java.util.concurrent.CancellationException }) return false
+        return cloudSubmissionHttpStatus(error) == 429
+    }
+
+    internal fun shouldRetryKawaPoll(error: Throwable): Boolean {
+        val chain = causeChain(error)
+        if (chain.any { it is java.util.concurrent.CancellationException }) return false
+        val messages = chain.mapNotNull { it.message }.joinToString(" ")
+        val statusCode = Regex("""HTTP\s*(\d{3})""", RegexOption.IGNORE_CASE)
+            .find(messages)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (statusCode != null) {
+            return statusCode in setOf(408, 425, 429, 500, 502, 503, 504)
+        }
+        // Bounded-body violations are deterministic; retrying the same oversized response only
+        // wastes the user's time and repeats the same allocation/parse path.
+        if (messages.contains("响应超过") || messages.contains("安全上限")) return false
+        return chain.any { it is IOException }
+    }
+
+    /** Throwable cause chains should be linear, but defensive handling avoids hangs on cyclic wrappers. */
+    private fun causeChain(error: Throwable): List<Throwable> {
+        val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+        val chain = ArrayList<Throwable>()
+        var current: Throwable? = error
+        while (current != null && seen.add(current)) {
+            chain += current
+            current = current.cause
+        }
+        return chain
+    }
+
+    /** Read UTF-8 response data with a hard byte limit and cooperative cancellation checks. */
+    internal fun readBoundedUtf8(
+        input: InputStream,
+        maxBytes: Long = MAX_RESPONSE_BODY_BYTES,
+        checkActive: () -> Unit = {},
+    ): String {
+        require(maxBytes in 1L..Int.MAX_VALUE.toLong()) { "云端响应大小上限无效" }
+        val output = ByteArrayOutputStream(minOf(maxBytes, 64L * 1024L).toInt())
+        val buffer = ByteArray(16 * 1024)
+        var totalBytes = 0L
+        while (true) {
+            checkActive()
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count == 0) {
+                // Some provider streams may fail to make progress on a bulk read. Force a
+                // single-byte read so this bounded reader cannot busy-loop forever.
+                val single = input.read()
+                if (single < 0) break
+                if (totalBytes >= maxBytes) {
+                    throw IOException("云端转写响应超过安全上限（${maxBytes} 字节），请切换本地 Whisper 或缩短音频后重试")
+                }
+                output.write(single)
+                totalBytes++
+                continue
+            }
+            if (count.toLong() > maxBytes - totalBytes) {
+                throw IOException("云端转写响应超过安全上限（${maxBytes} 字节），请切换本地 Whisper 或缩短音频后重试")
+            }
+            output.write(buffer, 0, count)
+            totalBytes += count.toLong()
+        }
+        return String(output.toByteArray(), Charsets.UTF_8)
+    }
+
+    private fun readResponseBody(body: ResponseBody?, checkActive: () -> Unit): String {
+        if (body == null) return ""
+        if (body.contentLength() > MAX_RESPONSE_BODY_BYTES) {
+            throw IOException("云端转写响应超过 16 MB 安全上限，请切换本地 Whisper 或缩短音频后重试")
+        }
+        return body.byteStream().use { input ->
+            readBoundedUtf8(input, checkActive = checkActive)
+        }
+    }
+
+
+    /**
+     * Identify the actual container from its signature rather than trusting the cache ".bin"
+     * suffix. Kawa is intentionally excluded: it still needs bounded PCM16/WAV chunks under its
+     * documented upload-size limit.
+     */
+    fun detectEncodedAudioInput(file: File, provider: String): EncodedAudioInput? {
+        if (provider != "elevenlabs" && provider != "cartesia") return null
+        if (!file.isFile || file.length() < 8L) return null
+
+        val header = ByteArray(16)
+        val count = FileInputStream(file).use { input ->
+            var offset = 0
+            while (offset < header.size) {
+                val read = input.read(header, offset, header.size - offset)
+                if (read <= 0) break
+                offset += read
+            }
+            offset
+        }
+        fun ascii(offset: Int, length: Int): String =
+            if (count >= offset + length) String(header, offset, length, Charset.forName("US-ASCII")) else ""
+
+        val detected = when {
+            count >= 12 && ascii(0, 4) == "RIFF" && ascii(8, 4) == "WAVE" ->
+                "wav" to "audio/wav"
+            count >= 12 && ascii(0, 4) == "FORM" &&
+                (ascii(8, 4) == "AIFF" || ascii(8, 4) == "AIFC") ->
+                "aiff" to "audio/aiff"
+            count >= 4 && ascii(0, 4) == "fLaC" ->
+                "flac" to "audio/flac"
+            count >= 4 && ascii(0, 4) == "OggS" ->
+                "ogg" to "audio/ogg"
+            count >= 4 &&
+                (header[0].toInt() and 0xff) == 0x1a &&
+                (header[1].toInt() and 0xff) == 0x45 &&
+                (header[2].toInt() and 0xff) == 0xdf &&
+                (header[3].toInt() and 0xff) == 0xa3 ->
+                "webm" to "audio/webm"
+            count >= 8 && ascii(4, 4) == "ftyp" ->
+                "m4a" to "audio/mp4"
+            count >= 2 &&
+                (header[0].toInt() and 0xff) == 0xff &&
+                ((header[1].toInt() and 0xff) and 0xf6) == 0xf0 ->
+                "aac" to "audio/aac"
+            count >= 3 && ascii(0, 3) == "ID3" ->
+                "mp3" to "audio/mpeg"
+            count >= 2 &&
+                (header[0].toInt() and 0xff) == 0xff &&
+                ((header[1].toInt() and 0xff) and 0xe0) == 0xe0 ->
+                "mp3" to "audio/mpeg"
+            else -> null
+        } ?: return null
+
+        val (extension, mimeType) = detected
+        val supported = when (provider) {
+            "elevenlabs" -> extension in setOf("aac", "aiff", "flac", "m4a", "mp3", "ogg", "wav", "webm")
+            "cartesia" -> extension in setOf("flac", "m4a", "mp3", "ogg", "wav", "webm")
+            else -> false
+        }
+        if (!supported) return null
+        return EncodedAudioInput(
+            file = file,
+            fileName = "source-audio.$extension",
+            mimeType = mimeType,
+        )
+    }
+
+    /**
+     * Validate the canonical WAV produced by this app before uploading it. A stale/truncated cache
+     * should fail locally instead of spending bandwidth or cloud transcription quota.
+     */
+    internal fun validatePcm16MonoWav(file: File) {
+        if (!file.isFile || file.length() <= 44L) {
+            throw IOException("待转写 WAV 文件不存在或没有有效音频数据")
+        }
+        val actualLength = file.length()
+        val header = ByteArray(44)
+        try {
+            java.io.RandomAccessFile(file, "r").use { it.readFully(header) }
+        } catch (error: Exception) {
+            throw IOException("无法读取 WAV 文件头", error)
+        }
+        fun ascii(offset: Int, length: Int): String =
+            String(header, offset, length, Charset.forName("US-ASCII"))
+        val values = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+        val riffLength = values.getInt(4).toLong() and 0xffff_ffffL
+        val formatLength = values.getInt(16)
+        val formatCode = values.getShort(20).toInt() and 0xffff
+        val channels = values.getShort(22).toInt() and 0xffff
+        val sampleRate = values.getInt(24)
+        val byteRate = values.getInt(28)
+        val blockAlign = values.getShort(32).toInt() and 0xffff
+        val bitsPerSample = values.getShort(34).toInt() and 0xffff
+        val dataLength = values.getInt(40).toLong() and 0xffff_ffffL
+        if (ascii(0, 4) != "RIFF" || ascii(8, 4) != "WAVE" ||
+            ascii(12, 4) != "fmt " || ascii(36, 4) != "data" ||
+            formatLength != 16 || formatCode != 1 || channels != 1 ||
+            sampleRate != 16_000 || byteRate != 32_000 ||
+            blockAlign != 2 || bitsPerSample != 16
+        ) {
+            throw IOException("WAV 格式不符合云端转写要求：需要 16 kHz、单声道、PCM16")
+        }
+        if (dataLength <= 0L || dataLength % 2L != 0L ||
+            dataLength != actualLength - 44L || riffLength != actualLength - 8L
+        ) {
+            throw IOException("WAV 文件头声明的长度与实际音频数据不一致")
+        }
+    }
+
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.MINUTES)
+            .readTimeout(10, TimeUnit.MINUTES)
+            .callTimeout(20, TimeUnit.MINUTES)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
+    /** Wrap the local 16kHz mono PCM16 cache as WAV; the video frames are never uploaded. */
+    fun writeWavFile(
+        pcmFile: AudioExtract.PcmFile,
+        output: File,
+        checkActive: () -> Unit = {},
+        onProgressPercent: (Int) -> Unit = {},
+    ) {
+        require(pcmFile.file.canonicalFile != output.canonicalFile) {
+            "WAV 输出不能覆盖输入 PCM 缓存"
+        }
+        require(pcmFile.sampleRate == 16_000) { "云端转写需要 16kHz PCM 音频" }
+        val dataBytes = pcmFile.sampleCount * 2L
+        require(dataBytes in 2L..(0xffff_ffffL - 36L)) { "音频太大，无法安全创建 WAV 文件" }
+        require(pcmFile.file.isFile && pcmFile.file.length() == dataBytes) { "PCM 缓存长度与声明的采样数不一致，无法创建 WAV 文件" }
+
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+        header.put("RIFF".toByteArray(Charset.forName("US-ASCII")))
+        header.putInt((36L + dataBytes).toInt())
+        header.put("WAVE".toByteArray(Charset.forName("US-ASCII")))
+        header.put("fmt ".toByteArray(Charset.forName("US-ASCII")))
+        header.putInt(16)
+        header.putShort(1.toShort())
+        header.putShort(1.toShort())
+        header.putInt(pcmFile.sampleRate)
+        header.putInt(pcmFile.sampleRate * 2)
+        header.putShort(2.toShort())
+        header.putShort(16.toShort())
+        header.put("data".toByteArray(Charset.forName("US-ASCII")))
+        header.putInt(dataBytes.toInt())
+
+        val parent = output.absoluteFile.parentFile
+            ?: throw IOException("WAV 输出目录无效")
+        if (!parent.isDirectory) throw IOException("WAV 输出目录不存在")
+        cleanupStaleWavStages(parent)
+        val staged = File.createTempFile("cloud-wav-", ".part", parent)
+        var installed = false
+        try {
+            FileInputStream(pcmFile.file).use { input ->
+                FileOutputStream(staged).use { fileOutput ->
+                    BufferedOutputStream(fileOutput, 64 * 1024).use { dest ->
+                        dest.write(header.array())
+                        val buffer = ByteArray(64 * 1024)
+                        var copied = 0L
+                        var lastProgressPercent = -1
+                        while (copied < dataBytes) {
+                            checkActive()
+                            val wanted = minOf(buffer.size.toLong(), dataBytes - copied).toInt()
+                            val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer, 0, wanted)
+                            if (count < 0) throw IOException("音频缓存提前结束，无法创建完整 WAV")
+                            dest.write(buffer, 0, count)
+                            copied += count
+                            val percent = ((copied.toDouble() / dataBytes.toDouble()) * 100.0)
+                                .toInt().coerceIn(0, 99)
+                            if (percent > lastProgressPercent) {
+                                lastProgressPercent = percent
+                                onProgressPercent(percent)
+                            }
+                        }
+                        checkActive()
+                        dest.flush()
+                        fileOutput.fd.sync()
+                    }
+                }
+            }
+            checkActive()
+            AtomicFileInstaller.install(staged, output)
+            installed = true
+            onProgressPercent(100)
+        } finally {
+            if (!installed) runCatching { staged.delete() }
+        }
+    }
+
+    suspend fun transcribe(
+        provider: String,
+        apiKey: String,
+        language: String,
+        wavFile: File,
+        durationMs: Long,
+        checkActive: () -> Unit = {},
+        onProgress: (String) -> Unit = {},
+        encodedAudio: EncodedAudioInput? = null,
+        /** Stable source + ASR configuration identity; used for durable provider response checkpoints. */
+        checkpointIdentity: String? = null,
+        /** App-private directory shared by normal WAV and direct-upload paths. */
+        checkpointDirectory: File? = null,
+        /** True only after the user explicitly confirms resubmitting an unresolved prior request. */
+        allowUncertainRetry: Boolean = false,
+        /** Stable source identity, independent of language, credentials or generated upload encoding. */
+        submissionGuardIdentity: String? = null,
+    ): Result {
+        require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
+        require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
+        require(encodedAudio == null || provider != "kawa") { "Kawa 必须使用分段 PCM16 WAV 音频" }
+        val minimumBytes = if (encodedAudio == null) 45L else 1L
+        require(wavFile.isFile && wavFile.length() >= minimumBytes) { "待转写音频为空" }
+        if (encodedAudio == null || provider == "kawa") validatePcm16MonoWav(wavFile)
+        if (encodedAudio != null && encodedAudio.file.absoluteFile != wavFile.absoluteFile) {
+            throw IOException("直传音频与请求文件不一致")
+        }
+        if (durationMs <= 0L) throw IOException("待转写音频时长无效，无法建立字幕时间轴")
+        checkActive()
+        val ownerJob = currentCoroutineContext()[Job]
+        if (provider == "kawa") {
+            return transcribeKawa(
+                apiKey = apiKey,
+                language = language,
+                wavFile = wavFile,
+                durationMs = durationMs,
+                checkActive = checkActive,
+                ownerJob = ownerJob,
+                onProgress = onProgress,
+                checkpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() },
+            )
+        }
+
+        val providerName = if (provider == "elevenlabs") "ElevenLabs" else "Cartesia"
+        val stableCheckpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() }
+        var responseCheckpointFile: File? = null
+        var responseAudioDigest: String? = null
+        var submissionGuardFile: File? = null
+        if (stableCheckpointIdentity != null) {
+            val directoryRoot = checkpointDirectory ?: wavFile.absoluteFile.parentFile
+                ?: throw IOException("云端转写检查点目录无效")
+            val directory = File(directoryRoot, "cloud_asr_response_checkpoints")
+            responseAudioDigest = CloudAsrResponseCheckpointStore.digestAudioFile(wavFile, checkActive)
+            responseCheckpointFile = CloudAsrResponseCheckpointStore.fileFor(
+                directory, provider, stableCheckpointIdentity, requireNotNull(responseAudioDigest),
+            )
+            runCatching {
+                CloudAsrResponseCheckpointStore.cleanupStale(
+                    directory = directory,
+                    keepFile = responseCheckpointFile,
+                )
+            }
+            val stableSubmissionGuardIdentity = submissionGuardIdentity
+                ?.takeIf { it.isNotBlank() } ?: stableCheckpointIdentity
+            submissionGuardFile = CloudAsrSubmissionGuardStore.fileFor(
+                directory, provider, stableSubmissionGuardIdentity,
+            )
+            val savedResponse = CloudAsrResponseCheckpointStore.read(
+                requireNotNull(responseCheckpointFile), provider, stableCheckpointIdentity,
+                requireNotNull(responseAudioDigest), durationMs,
+            )
+            if (savedResponse != null) {
+                runCatching { CloudAsrSubmissionGuardStore.clear(requireNotNull(submissionGuardFile)) }
+                onProgress("已恢复上次云端转写结果，正在整理字幕…")
+                return parseProviderResponse(savedResponse, durationMs, checkActive)
+            }
+            if (CloudAsrSubmissionGuardStore.hasPendingSubmission(requireNotNull(submissionGuardFile)) &&
+                !allowUncertainRetry
+            ) {
+                throw CloudAsrSubmissionUncertainException(providerName)
+            }
+            // On explicit approval the old marker stays until refreshed immediately before POST.
+        }
+        onProgress("正在上传音频并提交 $providerName 转写任务…")
+        val form = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file",
+                encodedAudio?.fileName ?: wavFile.name,
+                wavFile.asRequestBody((encodedAudio?.mimeType ?: "audio/wav").toMediaType()),
+            )
+            .apply {
+                if (provider == "elevenlabs") {
+                    addFormDataPart("model_id", "scribe_v2")
+                    elevenLabsLanguageCode(language)?.let { addFormDataPart("language_code", it) }
+                    addFormDataPart("tag_audio_events", "false")
+                    addFormDataPart("timestamps_granularity", "word")
+                } else {
+                    addFormDataPart("model", "ink-whisper")
+                    cartesiaLanguageCode(language)?.let { addFormDataPart("language", it) }
+                    addFormDataPart("timestamp_granularities[]", "word")
+                }
+            }
+            .build()
+
+        val request = Request.Builder()
+            .url(if (provider == "elevenlabs") {
+                "https://api.elevenlabs.io/v1/speech-to-text"
+            } else {
+                "https://api.cartesia.ai/stt"
+            })
+            .apply {
+                if (provider == "elevenlabs") {
+                    header("xi-api-key", apiKey)
+                } else {
+                    header("Authorization", "Bearer " + apiKey)
+                    header("Cartesia-Version", "2026-08-14")
+                }
+            }
+            .post(form)
+            .build()
+
+        var responseText: String? = null
+        var retriesUsed = 0
+        while (responseText == null) {
+            checkActive()
+            submissionGuardFile?.let { CloudAsrSubmissionGuardStore.markInFlight(it) }
+            try {
+                responseText = executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
+                    val body = readResponseBody(response.body, checkActive)
+                    checkActive()
+                    if (!response.isSuccessful) {
+                        val serverMessage = try {
+                            val obj = JSONObject(body)
+                            obj.optString("detail").takeIf { it.isNotBlank() }
+                                ?: obj.optString("message").takeIf { it.isNotBlank() }
+                                ?: obj.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+                        } catch (_: Exception) {
+                            null
+                        }
+                        val advice = when (response.code) {
+                            401, 403 -> "API Key 无效或当前账户没有转写权限"
+                            413 -> "音频文件超过服务商允许的大小"
+                            429 -> "云端转写额度或请求频率已达到上限"
+                            else -> serverMessage?.take(240) ?: "请检查网络、模型权限和服务商账户"
+                        }
+                        throw IOException(providerName + " 云端转写失败（HTTP " + response.code + "）：" + advice)
+                    }
+                    body
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                val statusCode = cloudSubmissionHttpStatus(error)
+                when {
+                    statusCode == 429 -> {
+                        submissionGuardFile?.let { CloudAsrSubmissionGuardStore.clear(it) }
+                        if (retriesUsed >= MAX_CLOUD_SUBMISSION_RETRIES ||
+                            !shouldRetryCloudSubmission(error)
+                        ) throw error
+                    }
+                    isDefinitiveCloudSubmissionRejection(error) -> {
+                        submissionGuardFile?.let { CloudAsrSubmissionGuardStore.clear(it) }
+                        throw error
+                    }
+                    else -> throw CloudAsrSubmissionUncertainException(providerName, error)
+                }
+                retriesUsed++
+                val waitMs = 750L shl (retriesUsed - 1)
+                onProgress(
+                    "$providerName 云端服务暂时异常，${waitMs} 毫秒后自动重试（" +
+                        "$retriesUsed/$MAX_CLOUD_SUBMISSION_RETRIES）…"
+                )
+                delay(waitMs)
+                checkActive()
+            }
+        }
+
+        checkActive()
+        val completedResponseText = responseText ?: throw IOException("云端转写没有返回响应")
+        onProgress("$providerName 云端已返回结果，正在保存恢复点…")
+        var durableResponseSaved = false
+        if (responseCheckpointFile != null && responseAudioDigest != null &&
+            stableCheckpointIdentity != null
+        ) {
+            try {
+                durableResponseSaved = CloudAsrResponseCheckpointStore.write(
+                    file = requireNotNull(responseCheckpointFile),
+                    provider = provider,
+                    identity = stableCheckpointIdentity,
+                    audioDigest = requireNotNull(responseAudioDigest),
+                    durationMs = durationMs,
+                    responseText = completedResponseText,
+                    checkActive = checkActive,
+                )
+                if (durableResponseSaved) {
+                    submissionGuardFile?.let { runCatching { CloudAsrSubmissionGuardStore.clear(it) } }
+                    onProgress("$providerName 转写结果已保存，正在整理词级时间戳…")
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("CloudTranscription", "Cloud ASR response checkpoint write failed", error)
+            }
+        }
+        val parsedResult = parseProviderResponse(completedResponseText, durationMs, checkActive)
+        if (!durableResponseSaved) {
+            submissionGuardFile?.let { runCatching { CloudAsrSubmissionGuardStore.clear(it) } }
+        }
+        return parsedResult
+    }
+
+    private fun parseProviderResponse(
+        responseText: String,
+        durationMs: Long,
+        checkActive: () -> Unit,
+    ): Result {
+        checkActive()
+        val root = try {
+            JSONObject(responseText)
+        } catch (error: Exception) {
+            throw IOException("云端转写返回的内容无法解析", error)
+        }
+        val wordsArray = root.optJSONArray("words")
+            ?: root.optJSONObject("transcript")?.optJSONArray("words")
+            ?: throw IOException("云端转写没有返回词级时间戳，请检查服务商模型与接口权限")
+        if (wordsArray.length() > MAX_PROVIDER_WORD_COUNT) {
+            throw IOException("云端转写返回的词级记录过多，已停止处理以保护设备内存；请缩短视频后重试")
+        }
+        val safeDuration = durationMs.coerceAtLeast(1L)
+        val words = ArrayList<TimedWord>(wordsArray.length())
+        for (index in 0 until wordsArray.length()) {
+            if ((index and 0xff) == 0) checkActive()
+            val item = wordsArray.optJSONObject(index) ?: continue
+            if (item.optString("type") == "spacing" || item.optString("type") == "audio_event") continue
+            val token = item.optString("text").trim().ifBlank { item.optString("word").trim() }
+            if (token.isBlank()) continue
+            val interval = providerWordRange(
+                item.optDouble("start", Double.NaN),
+                item.optDouble("end", Double.NaN),
+                safeDuration,
+            ) ?: continue
+            words += TimedWord(token, interval.first, interval.second)
+        }
+        val cues = groupWords(words, safeDuration, checkActive)
+        if (cues.isEmpty()) {
+            throw IOException("云端识别没有生成有效时间轴字幕；可切回本地 Whisper 重试")
+        }
+        val language = root.optString("language_code").ifBlank {
+            root.optString("language").ifBlank {
+                root.optJSONObject("transcript")?.optString("language").orEmpty()
+            }
+        }
+        return Result(cues, language)
+    }
+
+    /** Kawa limits uploads to 10 MB. Process one 8 MiB PCM chunk at a time to bound disk usage. */
+    private suspend fun transcribeKawa(
+        apiKey: String,
+        language: String,
+        wavFile: File,
+        durationMs: Long,
+        checkActive: () -> Unit,
+        ownerJob: Job?,
+        onProgress: (String) -> Unit,
+        checkpointIdentity: String?,
+    ): Result {
+        val pcmBytes = wavFile.length() - 44L
+        if (pcmBytes <= 0L || pcmBytes % 2L != 0L) {
+            throw IOException("待转写 WAV 音频为空或 PCM 数据未按 16 位采样对齐")
+        }
+        val ranges = kawaChunkRangesWithContext(pcmBytes)
+        if (ranges.isEmpty()) throw IOException("待转写 WAV 音频为空")
+        val cues = ArrayList<Triple<Long, Long, String>>()
+        var detectedLanguage = language
+        val checkpointDirectory = checkpointIdentity?.let {
+            File(wavFile.parentFile ?: wavFile.absoluteFile.parentFile, "kawa_asr_checkpoints")
+                .apply { mkdirs() }
+        }
+        if (checkpointDirectory != null) {
+            KawaAsrCheckpointStore.cleanupStale(
+                directory = checkpointDirectory,
+                activeIdentity = checkpointIdentity,
+            )
+        }
+
+        // Do not create every chunk up front: for a long recording that duplicates almost the
+        // entire WAV on disk and can exhaust free storage before the first request is uploaded.
+        java.io.RandomAccessFile(wavFile, "r").use { input ->
+            for ((rangeIndex, range) in ranges.withIndex()) {
+                val chunkNumber = rangeIndex + 1
+                val offsetBytes = range.offsetBytes
+                val size = range.sizeBytes
+                checkActive()
+                ownerJob?.ensureActive()
+                val offsetMs = offsetBytes / 32L // 16 kHz * mono * PCM16 = 32 bytes per millisecond.
+                val audioDigest = if (checkpointDirectory != null && checkpointIdentity != null) {
+                    KawaAsrCheckpointStore.digestAudioRange(
+                        file = wavFile,
+                        offsetBytes = 44L + offsetBytes,
+                        sizeBytes = size,
+                        checkActive = checkActive,
+                    )
+                } else null
+                val checkpointFile = if (audioDigest != null && checkpointDirectory != null) {
+                    KawaAsrCheckpointStore.fileFor(
+                        directory = checkpointDirectory,
+                        identity = checkpointIdentity.orEmpty(),
+                        chunkIndex = rangeIndex,
+                        audioDigest = audioDigest,
+                    )
+                } else null
+                val restoredChunk = if (checkpointFile != null && audioDigest != null) {
+                    KawaAsrCheckpointStore.read(
+                        file = checkpointFile,
+                        audioDigest = audioDigest,
+                        chunkIndex = rangeIndex,
+                        range = range,
+                        durationMs = durationMs,
+                    )
+                } else null
+                if (restoredChunk != null) {
+                    cues.addAll(restoredChunk.cues)
+                    restoredChunk.language.takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
+                    onProgress("已恢复第 ${chunkNumber}/${ranges.size} 段云端转写结果，跳过重复上传")
+                    continue
+                }
+                val chunk = File.createTempFile("asr-kawa-", ".wav", wavFile.parentFile)
+                val chunkCues = ArrayList<Triple<Long, Long, String>>()
+                try {
+                    val header = ByteArray(44)
+                    input.seek(0L)
+                    input.readFully(header)
+                    val little = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                    little.putInt(4, (36L + size).toInt())
+                    little.putInt(40, size.toInt())
+
+                    FileOutputStream(chunk).use { output ->
+                        output.write(header)
+                        input.seek(44L + offsetBytes)
+                        val buffer = ByteArray(64 * 1024)
+                        var remaining = size
+                        while (remaining > 0L) {
+                            checkActive()
+                            ownerJob?.ensureActive()
+                            val count = minOf(buffer.size.toLong(), remaining).toInt()
+                            // RandomAccessFile.readFully either fills this bounded chunk or fails;
+                            // unlike read(), it cannot spin forever on a zero-progress read.
+                            input.readFully(buffer, 0, count)
+                            output.write(buffer, 0, count)
+                            remaining -= count
+                        }
+                        output.flush()
+                    }
+
+                    onProgress("正在上传第 ${chunkNumber}/${ranges.size} 段音频到 Kawa…")
+                    val form = MultipartBody.Builder().setType(MultipartBody.FORM)
+                        .addFormDataPart("file", chunk.name, chunk.asRequestBody("audio/wav".toMediaType()))
+                        .apply {
+                            kawaLanguageCode(language)?.let { addFormDataPart("language", it) }
+                        }
+                        .build()
+                    val create = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions")
+                        .header("Authorization", "Bearer " + apiKey)
+                        .post(form)
+                        .build()
+                    val jobId = executeCancellableHttpCall(client.newCall(create), ownerJob) { response ->
+                        val body = readResponseBody(response.body, checkActive)
+                        checkActive()
+                        if (!response.isSuccessful) {
+                            val message = runCatching {
+                                JSONObject(body).optJSONObject("error")?.optString("message")
+                            }.getOrNull()
+                            val advice = when (response.code) {
+                                401, 403 -> "Kawa API Key 无效或没有访问权限"
+                                413 -> "Kawa 单次上传上限为 10 MB"
+                                415 -> "Kawa 只接受 MP3 或 WAV 音频"
+                                429 -> "Kawa 请求被限流或免费转写额度已用完，请稍后重试并检查账户额度"
+                                else -> message?.takeIf { it.isNotBlank() }?.take(200) ?: "请检查网络和 Kawa 账户"
+                            }
+                            throw IOException("Kawa 云端转写失败（HTTP " + response.code + "）：" + advice)
+                        }
+                        JSONObject(body).optString("job_id").takeIf { it.isNotBlank() }
+                            ?: throw IOException("Kawa 没有返回转写任务编号")
+                    }
+                    val pollUrl = kawaPollUrl(jobId)
+
+                    // The service has accepted the file; keep only one request chunk while polling.
+                    chunk.delete()
+                    onProgress("第 ${chunkNumber}/${ranges.size} 段已提交，等待 Kawa 识别…")
+
+                    var result: JSONObject? = null
+                    var attempts = 0
+                    while (attempts++ < 180) {
+                        checkActive()
+                        ownerJob?.ensureActive()
+                        val poll = Request.Builder()
+                            .url(pollUrl)
+                            .header("Authorization", "Bearer " + apiKey)
+                            .get()
+                            .build()
+                        val status = try {
+                            executeCancellableHttpCall(client.newCall(poll), ownerJob) { response ->
+                                val body = readResponseBody(response.body, checkActive)
+                                checkActive()
+                                if (!response.isSuccessful) {
+                                    throw IOException("Kawa 查询转写状态失败（HTTP " + response.code + "）")
+                                }
+                                JSONObject(body)
+                            }
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (error: IOException) {
+                            if (attempts >= 180 || !shouldRetryKawaPoll(error)) throw error
+                            // Keep the remote task alive through brief rate limits/transient outages,
+                            // while bounding extra polling traffic and preserving prompt cancellation.
+                            delay((500L + attempts.toLong() * 250L).coerceAtMost(5_000L))
+                            continue
+                        }
+                        when (val stateName = status.optString("status").trim().lowercase(java.util.Locale.ROOT)) {
+                            "succeeded" -> {
+                                onProgress("第 ${chunkNumber}/${ranges.size} 段识别完成，整理时间戳…")
+                                result = status.optJSONObject("result")
+                                    ?: throw IOException("Kawa 已报告转写完成，但响应缺少有效 result 数据")
+                                break
+                            }
+                            "failed" -> throw IOException(
+                                "Kawa 转写任务失败：" +
+                                    status.optJSONObject("error")?.optString("message").orEmpty()
+                                        .ifBlank { "服务端处理失败" }.take(200)
+                            )
+                            "queued", "processing" -> {
+                                if (attempts == 1 || attempts % 5 == 0) {
+                                    onProgress(
+                                        "Kawa 正在识别第 ${chunkNumber}/${ranges.size} 段…（已等待约 ${attempts * 2L} 秒）"
+                                    )
+                                }
+                            }
+                            else -> throw IOException("Kawa 返回未知转写状态：" + stateName.take(80))
+                        }
+                        delay(2_000L)
+                    }
+
+                    val obj = result ?: throw IOException("Kawa 转写等待超时，请稍后重试")
+                    obj.optString("language").takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
+                    val transcript = obj.optJSONArray("transcript")
+                        ?: throw IOException("Kawa 返回结果缺少分段时间戳")
+                    if (transcript.length() > MAX_PROVIDER_WORD_COUNT) {
+                        throw IOException("Kawa 返回的字幕分段过多，已停止处理以保护设备内存")
+                    }
+                    for (i in 0 until transcript.length()) {
+                        checkActive()
+                        val item = transcript.optJSONObject(i) ?: continue
+                        val text = item.optString("text").trim()
+                        val start = item.optDouble("time_start", Double.NaN)
+                        val end = item.optDouble("time_end", Double.NaN)
+                        if (text.isBlank()) continue
+                        val chunkDurationMs = (size + 31L) / 32L
+                        val timeline = mapChunkCue(
+                            offsetMs = offsetMs,
+                            localStartSeconds = start,
+                            localEndSeconds = end,
+                            chunkDurationMs = chunkDurationMs,
+                            totalDurationMs = durationMs,
+                        ) ?: continue
+                        // The adjacent chunk owns its leading context interval. This keeps a cue
+                        // near a hard upload boundary from being emitted twice.
+                        if (timeline.first < range.ownedStartMs || timeline.first >= range.ownedEndMs) continue
+                        val cue = Triple(timeline.first, timeline.second, text)
+                        cues += cue
+                        chunkCues += cue
+                    }
+                    // Commit each successful request before starting the next independently billable upload.
+                    if (checkpointFile != null && audioDigest != null) {
+                        KawaAsrCheckpointStore.write(
+                            file = checkpointFile,
+                            audioDigest = audioDigest,
+                            chunkIndex = rangeIndex,
+                            range = range,
+                            durationMs = durationMs,
+                            language = obj.optString("language").take(64),
+                            cues = chunkCues,
+                            checkActive = checkActive,
+                        )
+                    }
+                } finally {
+                    runCatching { chunk.delete() }
+                }
+            }
+        }
+        if (cues.isEmpty()) throw IOException("Kawa 没有返回有效字幕时间轴；可切回本地 Whisper 重试")
+        return Result(cues.sortedBy { it.first }, detectedLanguage)
+    }
+
+    /**
+     * Convert a provider's chunk-local seconds to the whole-media timeline without allowing an
+     * invalid timestamp to overflow when the chunk offset is added. Provider times occasionally
+     * exceed the uploaded chunk; clamp only the end, and reject starts outside that chunk.
+     */
+    internal fun mapChunkCue(
+        offsetMs: Long,
+        localStartSeconds: Double,
+        localEndSeconds: Double,
+        chunkDurationMs: Long,
+        totalDurationMs: Long,
+    ): Pair<Long, Long>? {
+        if (offsetMs < 0L || chunkDurationMs <= 0L || totalDurationMs <= 0L) return null
+        if (!localStartSeconds.isFinite() || !localEndSeconds.isFinite() ||
+            localStartSeconds < 0.0 || localEndSeconds <= localStartSeconds
+        ) return null
+
+        val globalOffset = offsetMs.coerceAtMost(totalDurationMs)
+        val remainingMediaMs = totalDurationMs - globalOffset
+        val usableChunkMs = minOf(chunkDurationMs, remainingMediaMs)
+        if (usableChunkMs <= 0L) return null
+
+        // Compare before conversion: multiplying a huge but finite Double by 1000 can overflow.
+        if (localStartSeconds >= usableChunkMs.toDouble() / 1_000.0) return null
+        val startMs = (localStartSeconds * 1_000.0).toLong().coerceIn(0L, usableChunkMs - 1L)
+        val endMsDouble = localEndSeconds * 1_000.0
+        val endMs = if (!endMsDouble.isFinite() || endMsDouble >= usableChunkMs.toDouble()) {
+            usableChunkMs
+        } else {
+            endMsDouble.toLong().coerceAtLeast(startMs + 1L).coerceAtMost(usableChunkMs)
+        }
+        return (globalOffset + startMs) to (globalOffset + endMs)
+    }
+
+    /**
+     * Normalize a provider's seconds-based word range before it enters subtitle grouping.
+     * Reject zero-length, negative, non-finite, or post-media starts; clamp only an end that
+     * extends beyond the media so malformed data cannot invent a final 1 ms caption.
+     */
+    internal fun providerWordRange(
+        startSeconds: Double,
+        endSeconds: Double,
+        durationMs: Long,
+    ): Pair<Long, Long>? {
+        if (durationMs <= 0L ||
+            !startSeconds.isFinite() || !endSeconds.isFinite() ||
+            startSeconds < 0.0 || endSeconds <= startSeconds
+        ) return null
+
+        val startMsDouble = startSeconds * 1_000.0
+        if (!startMsDouble.isFinite() || startMsDouble >= durationMs.toDouble()) return null
+        val safeStart = startMsDouble.toLong().coerceIn(0L, durationMs - 1L)
+
+        val endMsDouble = endSeconds * 1_000.0
+        val safeEnd = if (!endMsDouble.isFinite() || endMsDouble >= durationMs.toDouble()) {
+            durationMs
+        } else {
+            endMsDouble.toLong().coerceAtLeast(safeStart + 1L).coerceAtMost(durationMs)
+        }
+        return safeStart to safeEnd
+    }
+
+    internal fun kawaChunkRanges(pcmBytes: Long): List<Pair<Long, Long>> {
+        if (pcmBytes <= 0L || pcmBytes % 2L != 0L) return emptyList()
+        val chunkBytes = 8L * 1024L * 1024L
+        val result = ArrayList<Pair<Long, Long>>()
+        var offset = 0L
+        while (offset < pcmBytes) {
+            val size = minOf(chunkBytes, pcmBytes - offset)
+            result += offset to size
+            offset += size
+        }
+        return result
+    }
+
+    /**
+     * Adds one second of preceding audio to each Kawa request after the first. The upload stays
+     * below Kawa's 10 MB limit, while the ownership windows remain contiguous and non-overlapping.
+     */
+    internal fun kawaChunkRangesWithContext(pcmBytes: Long): List<KawaChunkRange> {
+        if (pcmBytes <= 0L || pcmBytes % 2L != 0L) return emptyList()
+        val chunkBytes = 8L * 1024L * 1024L
+        // 16 kHz mono PCM16 is 32 bytes per millisecond; align overlap to a whole second.
+        val contextBytes = 32_000L
+        val result = ArrayList<KawaChunkRange>()
+        var primaryOffset = 0L
+        while (primaryOffset < pcmBytes) {
+            val offset = (primaryOffset - contextBytes).coerceAtLeast(0L)
+            val end = primaryOffset + minOf(chunkBytes, pcmBytes - primaryOffset)
+            val isLast = end == pcmBytes
+            val ownedStartMs = offset / 32L
+            val ownedEndMs = if (isLast) pcmBytes / 32L else (end - contextBytes) / 32L
+            val size = end - offset
+            if (size <= 0L || size % 2L != 0L || ownedEndMs <= ownedStartMs) {
+                return emptyList()
+            }
+            result += KawaChunkRange(
+                offsetBytes = offset,
+                sizeBytes = size,
+                ownedStartMs = ownedStartMs,
+                ownedEndMs = ownedEndMs,
+            )
+            if (isLast) break
+            primaryOffset = end
+        }
+        return result
+    }
+
+    internal fun groupWords(
+        words: List<TimedWord>,
+        durationMs: Long,
+        checkActive: () -> Unit = {},
+    ): List<Triple<Long, Long, String>> {
+        if (durationMs <= 0L || words.isEmpty()) return emptyList()
+        if (words.size > MAX_PROVIDER_WORD_COUNT) {
+            throw IllegalArgumentException("云端转写词级记录超过安全上限")
+        }
+        // Validate and deduplicate in one pass without a chain of temporary sequences.
+        val orderedWords = ArrayList<TimedWord>(words.size)
+        val seen = HashSet<TimedWord>(words.size)
+        for (index in words.indices) {
+            if ((index and 0xff) == 0) checkActive()
+            val raw = words[index]
+            val text = raw.text.trim()
+            if (text.isEmpty() || raw.startMs < 0L ||
+                raw.startMs >= durationMs || raw.endMs <= raw.startMs
+            ) continue
+            val normalized = raw.copy(text = text, endMs = raw.endMs.coerceAtMost(durationMs))
+            if (normalized.endMs > normalized.startMs && seen.add(normalized)) {
+                orderedWords += normalized
+            }
+        }
+        if (orderedWords.isEmpty()) return emptyList()
+        orderedWords.sortWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
+        checkActive()
+
+        val result = mutableListOf<Triple<Long, Long, String>>()
+        val text = StringBuilder()
+        var cueStart = 0L
+        var cueEnd = 0L
+        var count = 0
+
+        fun flush() {
+            val value = text.toString().trim()
+            if (value.isNotBlank() && cueEnd > cueStart) {
+                val start = cueStart.coerceIn(0L, durationMs - 1L)
+                val end = cueEnd.coerceIn(start + 1L, durationMs)
+                result += Triple(start, end, value)
+            }
+            text.clear()
+            count = 0
+            cueStart = 0L
+            cueEnd = 0L
+        }
+
+        for (index in orderedWords.indices) {
+            if ((index and 0xff) == 0) checkActive()
+            val word = orderedWords[index]
+            val pauseMs = if (text.isNotEmpty()) word.startMs - cueEnd else 0L
+            if (text.isNotEmpty() && pauseMs > MAX_WORD_GAP_MS) flush()
+            if (text.isNotEmpty() &&
+                (count >= 14 || text.length >= 48 || word.endMs - cueStart >= 6_500L)
+            ) flush()
+            if (text.isEmpty()) cueStart = word.startMs
+            if (text.isNotEmpty() && needsAsciiSpace(text.last(), word.text.first())) text.append(' ')
+            text.append(word.text)
+            cueEnd = maxOf(cueEnd, word.endMs)
+            count++
+            val last = word.text.last()
+            if (last in ".!?。！？；;：:" || count >= 14 || text.length >= 48 || cueEnd - cueStart >= 6_500L) {
+                flush()
+            }
+        }
+        checkActive()
+        flush()
+        return result
+    }
+
+    private fun needsAsciiSpace(previous: Char, next: Char): Boolean {
+        fun asciiWord(c: Char): Boolean =
+            c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9'
+        return asciiWord(previous) && asciiWord(next)
+    }
+}

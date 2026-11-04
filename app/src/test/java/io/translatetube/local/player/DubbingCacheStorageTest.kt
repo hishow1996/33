@@ -1,0 +1,182 @@
+package io.translatetube.local.player
+
+import java.io.File
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class DubbingCacheStorageTest {
+    @Test
+    fun migratesFinalPcmFilesAndPreservesTheirCacheIdentity() {
+        val root = createTempDir(prefix = "dubbing-cache-migration")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video")
+            val bytes = ByteArray(1024) { (it % 127).toByte() }
+            val source = File(legacy, "cue-v11.pcm").apply { writeBytes(bytes) }
+            val oldTimestamp = 1_700_000_000_000L
+            source.setLastModified(oldTimestamp)
+            File(legacy, "unfinished.pcm.tmp").writeText("partial")
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(1, count)
+            assertArrayEquals(bytes, File(durable, source.name).readBytes())
+            assertEquals(oldTimestamp, File(durable, source.name).lastModified())
+            assertFalse(source.exists())
+            assertTrue(File(legacy, "unfinished.pcm.tmp").isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun keepsLegacySourceWhenDurableFileWithSameIdentityHasDifferentLength() {
+        val root = createTempDir(prefix = "dubbing-cache-conflict")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val source = File(legacy, "cue.pcm").apply { writeBytes(ByteArray(64) { 1 }) }
+            val existing = File(durable, "cue.pcm").apply { writeBytes(ByteArray(32) { 2 }) }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(0, count)
+            assertTrue(source.isFile)
+            assertArrayEquals(ByteArray(32) { 2 }, existing.readBytes())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun keepsLegacySourceWhenDurableFileHasSameLengthButDifferentBytes() {
+        val root = createTempDir(prefix = "dubbing-cache-same-size-conflict")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val legacyBytes = ByteArray(64) { 1 }
+            val durableBytes = ByteArray(64) { 2 }
+            val source = File(legacy, "cue.pcm").apply { writeBytes(legacyBytes) }
+            val existing = File(durable, "cue.pcm").apply { writeBytes(durableBytes) }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(0, count)
+            assertTrue("legacy cache must remain available", source.isFile)
+            assertArrayEquals(legacyBytes, source.readBytes())
+            assertArrayEquals("existing durable cache must not be overwritten", durableBytes, existing.readBytes())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun restoresValidLegacyPcmOverSameSizeCorruptDurableCache() {
+        val root = createTempDir(prefix = "dubbing-cache-recover-corrupt")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val legacyBytes = pcmCache(0.1f, -0.2f)
+            val corruptBytes = pcmCache(Float.NaN, -0.2f)
+            val source = File(legacy, "cue.pcm").apply { writeBytes(legacyBytes) }
+            val destination = File(durable, "cue.pcm").apply { writeBytes(corruptBytes) }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(1, count)
+            assertArrayEquals("valid legacy audio must repair the damaged durable copy", legacyBytes, destination.readBytes())
+            assertFalse("legacy copy is removed only after repair is verified", source.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun keepsValidDurablePcmWhenLegacyPayloadDiffersButIsAlsoValid() {
+        val root = createTempDir(prefix = "dubbing-cache-keep-valid-durable")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val legacyBytes = pcmCache(0.3f, -0.4f)
+            val durableBytes = pcmCache(0.1f, -0.2f)
+            val source = File(legacy, "cue.pcm").apply { writeBytes(legacyBytes) }
+            val destination = File(durable, "cue.pcm").apply { writeBytes(durableBytes) }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(0, count)
+            assertArrayEquals("a valid durable cache must not be overwritten", durableBytes, destination.readBytes())
+            assertFalse("redundant legacy payload can be removed", source.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun removesOnlyStaleMigrationArtifactsEvenWhenLegacyDirectoryIsMissing() {
+        val root = createTempDir(prefix = "dubbing-cache-stale-migration")
+        try {
+            val durable = File(root, "no-backup/dub/video").apply { mkdirs() }
+            val now = System.currentTimeMillis()
+            val staleTemp = File(durable, "cue.pcm.123.migration.tmp").apply {
+                writeText("abandoned temp")
+                setLastModified(now - 24L * 60L * 60L * 1_000L)
+            }
+            val staleBackup = File(durable, "cue.pcm.123.migration.bak").apply {
+                writeText("abandoned backup")
+                setLastModified(now - 24L * 60L * 60L * 1_000L)
+            }
+            val freshTemp = File(durable, "new-cue.pcm.456.migration.tmp").apply {
+                writeText("fresh work")
+                setLastModified(now)
+            }
+            val finalizedPcm = File(durable, "ready-cue.pcm").apply {
+                writeBytes(pcmCache(0.1f, -0.2f))
+            }
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(
+                legacyDirectory = File(root, "cache/dub/missing-video"),
+                durableDirectory = durable,
+            )
+
+            assertEquals(0, count)
+            assertFalse("stale migration temp should be reclaimed", staleTemp.exists())
+            assertFalse("stale migration backup should be reclaimed", staleBackup.exists())
+            assertTrue("recent staging work must be preserved", freshTemp.isFile)
+            assertTrue("finalized PCM must never be treated as a migration artifact", finalizedPcm.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private fun pcmCache(vararg samples: Float): ByteArray {
+        val bytes = java.io.ByteArrayOutputStream()
+        java.io.DataOutputStream(bytes).use { output ->
+            output.writeInt(16_000)
+            output.writeInt(samples.size)
+            samples.forEach(output::writeFloat)
+        }
+        return bytes.toByteArray()
+    }
+
+    @Test
+    fun leavesLegacySourceUntouchedWhenDestinationCannotBeCreated() {
+        val root = createTempDir(prefix = "dubbing-cache-unwritable")
+        try {
+            val legacy = File(root, "cache/dub/video").apply { mkdirs() }
+            val source = File(legacy, "cue.pcm").apply { writeBytes(ByteArray(16) { 3 }) }
+            val durableParentFile = File(root, "not-a-directory").apply { writeText("block") }
+            val durable = File(durableParentFile, "video")
+
+            val count = DubbingCacheStorage.migrateLegacyVideoDirectory(legacy, durable)
+
+            assertEquals(0, count)
+            assertTrue(source.isFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+}

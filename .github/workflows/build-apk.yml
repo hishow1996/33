@@ -1,0 +1,353 @@
+# Explicit user-requested APK build trigger (2026-11-03 latest main).
+# Retry APK build after fixing SpeakerAssignmentPolicyTest import (2026-11-01).
+# Retry APK build after removing duplicate speaker-anchor constants (2026-11-01).
+# Explicit user-requested APK build trigger (2026-11-01 09:40 Asia/Tokyo; latest main a4da352e).
+# Explicit user-requested APK build retry after repairing ASR checkpoint v4 validation and Web policy test class (2026-11-01).
+# Explicit user-requested APK build trigger after aligning Cloud ASR guard unit-test signature (2026-11-01).
+# Explicit user-requested APK build trigger after Cloud ASR and nullable checkpoint compile fixes (2026-11-01).
+# Explicit user-requested APK build trigger (2026-11-01): build latest main through unit tests and both APK variants.
+# Retry APK build after fixing StageProgressVisual InfiniteTransition animation spec types (2026-10-31).
+# Explicit user-requested APK build trigger (2026-10-31): validate latest main and repair any Kotlin/Gradle compile failures.
+# Explicit user-requested APK build marker (2026-10-29 22:09 +08:00).
+# Explicit user-requested build for latest main after 2026-10-29 mascot icon adjustments.
+# Explicit retry build after fixing legacy YouTube ASR cache key migration test (2026-10-29).
+# Explicit retry build after making captured media IDs explicitly non-null (2026-10-29).
+# Explicit retry build after correcting PlaybackService stage scope (2026-10-29).
+# Explicit one-time APK build requested after PlaybackService method-size fix (2026-10-29).
+# Explicit one-time APK build requested by user on 2026-10-28 for cross-source translation engine restart fixes.
+# Explicitly requested APK build after GLM API endpoint and thinking-control fixes (2026-10-28).
+# Trigger one-time APK build requested by user
+# Explicit user-requested APK build for latest main after webpage stage-resume/navigation fixes (2026-10-26).
+# Explicit one-time APK build requested by user on 2026-10-26 for five-stage translation-engine integration.
+# Explicit one-time APK build requested by user on 2026-10-25 for latest main after local translation back-gesture fix.
+# Re-trigger requested APK build for latest dubbing-readiness fix (2026-10-25).
+# Explicit user-requested one-time APK build trigger for main commit 008d6ef85e19 (2026-10-25).
+# Explicit one-time APK build requested by user for latest main commit 99af4946 (2026-10-24).
+# Explicit one-time APK rebuild requested after fixing Kotlin compile errors on 2026-10-24.
+# Explicit one-time APK build requested by user on 2026-10-24 19:28 +08:00.
+# Explicit one-time APK build requested by user on 2026-10-24 for latest main source including address-bar height adjustment.
+# Explicit one-time APK build requested by user on 2026-10-24 for latest main after history-navigation and address-bar height fixes.
+# Explicit one-time APK rebuild requested on 2026-10-24 after fixing LocalDensity compile errors.
+# Explicit one-time APK build requested by user on 2026-10-24 16:58 Asia/Singapore for latest main.
+# Explicit one-time APK build for latest main source after 2026-10-24 changes.
+# Explicit user-requested APK build trigger after fixing DubbingEngine prefeed compile errors (2026-10-22).
+# Explicit user-requested APK build trigger for latest main source after Bilibili duplicate-detection guard fix (2026-10-22).
+# Explicit one-time APK build for the panel drag position-change fix (2026-10-22).
+# Explicit one-time APK build trigger for video source card More panel UI update (2026-10-22).
+# Explicit one-time APK build for the webpage media card details update (2026-10-21).
+# One-time user-requested APK build trigger for the current main source.
+# Build validation for unified external subtitle translation across YouTube, web, and local media (2026-10-21).
+# Re-run validation after correcting Kotlin compilation blockers.
+# User-requested APK build for latest main changes (2026-10-21).
+# Retry after aligning the HTML response test fixture with its asserted Content-Type.
+# Retry with the test fixture's Content-Type matching the exact assertion.
+# Validation run for remote audio-track probing and failure diagnosis.
+# Explicit one-time APK build trigger after yt-dlp download progress changes (2026-10-20).
+# Explicit retry after fixing the webpage source-hint compiler error (2026-10-20).
+# User-requested APK build trigger (2026-10-20).
+# User-requested full regression and APK build for manual speaker diarization optimization (2026-11-02).
+# Explicit APK build trigger for latest application source commit 92165991ce9dc95130f014b071d7b3faea5c815b.
+# User-requested build of the latest main source (2026-10-19).
+name: Build Android APK
+
+# Explicit APK build retry after fixing the storage-management icon compile error.
+
+# Explicit APK build trigger for the dedicated storage-management screen.
+
+# User-requested rebuild trigger for latest main commit 3ceecff (2026-10-18).
+
+# Explicit rebuild request after hardening subtitle-seek recovery and direct System TTS utterance lifecycle.
+# Explicit rebuild request after keeping the player page visible during subtitle-seek buffering.
+# Explicit retry trigger after fixing the VideoSourceKind import in subtitle processing UI.
+# Explicit trigger for the user's yt-dlp local-version detection fix.
+# User-requested workflow-only trigger commits are the fallback when manual dispatch is unavailable.
+# Explicit rebuild trigger for making the player visible before the first progressive TTS cue.
+# Re-run JVM regression checks after the safe overrun policy changed old 2x-sync expectations.
+# User-requested APK build after thread-safe playbackAllowed player-state read.
+# Explicit trigger for the user's request to build the latest main-branch source.
+# User-requested APK build for the dedicated local application logs screen.
+# User-requested APK build after enriching crash root-cause and operation-context diagnostics.
+# Final trigger after adding recoverable error logging to playback, TTS, subtitles and web parsing.
+# Retry trigger after correcting the TTS preview log context reference.
+# User-requested rebuild after fixing TextureView parent reuse during reparse.
+# Explicit retry trigger after fixing the duplicate unavailable-TTS fallback branch.
+# Regression rebuild after rejecting invalid TTS timing estimates before auto-pause.
+# Explicit rebuild trigger after limiting dubbing speed to a natural synchronization rate.
+# Re-run JVM tests after aligning legacy timing assertions with the 1.35x natural-rate limit.
+on:
+  # Build only when explicitly requested by a uniquely named trigger commit, or manual dispatch.
+  # Ordinary source commits supersede an accidental or stale APK run but never pass the build job gate.
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  # Newer commits supersede stale APK builds; don't let a slow cache-upload step block the newest fix.
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Run only on manual dispatch or a uniquely named, explicitly requested trigger commit.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.event.head_commit.message == 'Trigger one-time APK build requested by user' || github.event.head_commit.message == 'Trigger retry APK build after Kotlin compile fixes' || github.event.head_commit.message == 'Trigger final APK build after unit-test import fix' || github.event.head_commit.message == 'Trigger APK build after test expectations and VTT line breaks are fixed' || github.event.head_commit.message == 'Trigger APK build after subtitle import UI cleanup' || github.event.head_commit.message == 'Trigger APK build after AudioTrack static state fix' || github.event.head_commit.message == 'Trigger APK build after Google subtitle and processing-page fixes' || github.event.head_commit.message == 'Trigger APK build after automatic yt-dlp fallback ordering update' || github.event.head_commit.message == 'Trigger APK build after settings UI redesign' || github.event.head_commit.message == 'Trigger APK build after settings UI compile fix' || github.event.head_commit.message == 'Trigger APK build after restoring settings UI' || github.event.head_commit.message == 'Trigger APK build after System TTS audio-routing and workbench fixes' || github.event.head_commit.message == 'Trigger APK build after yt-dlp local version detection fix' || github.event.head_commit.message == 'Trigger APK build after SenseVoice integration' || github.event.head_commit.message == 'Trigger APK build after local ASR performance optimization' || github.event.head_commit.message == 'Trigger APK build after subtitle seeking and TTS lifecycle hardening' || github.event.head_commit.message == 'Trigger APK build after preventing subtitle seek from reopening parsing page' || github.event.head_commit.message == 'Trigger APK build after first progressive TTS cue visibility fix' || github.event.head_commit.message == 'Trigger APK build after dubbing-audible fix series' || github.event.head_commit.message == 'Trigger APK build after TextureView parent fix' || github.event.head_commit.message == 'Trigger APK build after application logs screen' || github.event.head_commit.message == 'Trigger APK build after application log error coverage' || github.event.head_commit.message == 'Trigger APK rebuild after TTS preview log scope fix' || github.event.head_commit.message == 'Trigger APK build after detailed diagnostic context' || startsWith(github.event.head_commit.message, 'Trigger APK build after overrun-safe dubbing synchronization') || startsWith(github.event.head_commit.message, 'Trigger APK build after long-sentence auto-pause synchronization') || github.event.head_commit.message == 'Trigger APK build after animation optimizations' || github.event.head_commit.message == 'Trigger retry APK build after fixing workflow expression' || github.event.head_commit.message == 'Trigger retry APK build after animation color import fix' || github.event.head_commit.message == 'Trigger APK build after panel drag position-change fix' || github.event.head_commit.message == 'Trigger APK build after mascot icon fixes'))
+    name: Build installable APKs
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      # Install SDK packages in a separate shell step so each package is a distinct sdkmanager argument.
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"; fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;29.0.14206865" "cmake;3.31.6"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+
+      # This is the final integration build. Run unit tests before creating installable APK artifacts.
+      # Speech models are downloaded by the app on first use; do not bundle the 300MB+ ONNX models into the APK.
+
+      - name: Download statically linked sherpa-onnx AAR
+        run: |
+          mkdir -p app/libs
+          curl -fL --retry 3 --retry-delay 2 \
+            -o app/libs/sherpa-onnx-static.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar
+
+      - name: Run JVM unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      # This repository intentionally ignores local keystores. Generate an ephemeral CI-only
+      # debug keystore so the debug APK remains installable without storing signing keys in Git.
+      - name: Generate CI debug keystore
+        run: |
+          keytool -genkeypair -noprompt -storetype JKS \
+            -keystore debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Build debug and release APKs
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
+
+      - name: Verify OPUS-MT native runtime is packaged in APKs
+        run: |
+          python3 - <<'PY'
+          import glob
+          import struct
+          import zipfile
+
+          apks = glob.glob("app/build/outputs/apk/debug/*.apk")
+          apks += glob.glob("app/build/outputs/apk/release/*.apk")
+          if not apks:
+              raise SystemExit("No APK files were produced.")
+
+          entry_name = "lib/arm64-v8a/libopusmtct2.so"
+          for apk in apks:
+              with zipfile.ZipFile(apk) as archive:
+                  try:
+                      info = archive.getinfo(entry_name)
+                  except KeyError:
+                      raise SystemExit(f"{apk} is missing {entry_name}")
+                  header = archive.read(entry_name)[:20]
+                  if len(header) != 20 or header[:4] != b"\x7fELF":
+                      raise SystemExit(f"{apk} contains an invalid ELF native library")
+                  if header[4] != 2 or header[5] != 1:
+                      raise SystemExit(f"{apk} does not contain a 64-bit little-endian native library")
+                  machine = struct.unpack("<H", header[18:20])[0]
+                  if machine != 183 or info.file_size < 1_000_000:
+                      raise SystemExit(f"{apk} contains an invalid ARM64 CTranslate2 runtime")
+                  print(f"Verified {apk}: {entry_name} ({info.file_size} bytes, AArch64)")
+          PY
+
+      - name: Verify HY-MT1.5 native runtime is packaged in APKs
+        run: |
+          python3 - <<'PY'
+          import glob
+          import struct
+          import zipfile
+
+          apks = glob.glob("app/build/outputs/apk/debug/*.apk")
+          apks += glob.glob("app/build/outputs/apk/release/*.apk")
+          if not apks:
+              raise SystemExit("No APK files were produced.")
+
+          entry_name = "lib/arm64-v8a/libhymt.so"
+          for apk in apks:
+              with zipfile.ZipFile(apk) as archive:
+                  try:
+                      info = archive.getinfo(entry_name)
+                  except KeyError:
+                      raise SystemExit(f"{apk} is missing {entry_name}")
+                  header = archive.read(entry_name)[:20]
+                  if len(header) != 20 or header[:4] != b"\x7fELF":
+                      raise SystemExit(f"{apk} contains an invalid ELF native library")
+                  if header[4] != 2 or header[5] != 1:
+                      raise SystemExit(f"{apk} does not contain a 64-bit little-endian native library")
+                  machine = struct.unpack("<H", header[18:20])[0]
+                  if machine != 183 or info.file_size < 1_000_000:
+                      raise SystemExit(f"{apk} contains an invalid ARM64 HY-MT1.5 runtime")
+                  print(f"Verified {apk}: {entry_name} ({info.file_size} bytes, AArch64)")
+          PY
+
+      # Debug APKs are signed with Android's debug key and can be installed directly.
+      - name: Upload installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: elephant-translate-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: elephant-translate-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+# User-requested APK rebuild after adding Microsoft Edge TTS.
+
+# Trigger Edge TTS integration build using the workflow's existing approved trigger.
+
+# Stop the in-progress APK build at the user's request; do not start a replacement build.
+
+# Trigger APK build after user confirmed the request again on 2026-10-19.
+
+# Retry APK build after correcting Edge TTS Kotlin string escaping.
+
+# Retry APK build after fixing in-memory MP3 decoding and Kotlin numeric types.
+
+# Retry APK build after rewriting the online TTS decoder block with balanced braces.
+
+# Explicit APK build trigger after bounded TTS recovery and Edge TTS token correction (2026-10-19).
+
+# Explicit APK build retry after fixing detailed TTS diagnostic interpolation (2026-10-19).
+
+# Explicit APK build trigger requested on 2026-10-19; no application source changes.
+
+# Retry APK build after fixing speaker diarization compiler scope errors (2026-10-19).
+
+# Explicit APK build trigger requested for the latest main-branch dubbing synchronization changes (2026-10-19).
+
+# Re-trigger latest main source APK build on 2026-10-19; workflow-only, no application source changes.
+
+# Re-trigger latest main after correcting floating-point timing boundaries in dubbing tests (2026-10-19).
+
+# Explicit user-requested APK build trigger after processing-page title/header refinement (2026-10-19).
+
+# Explicit retry APK build trigger after fixing AppLogsScreen horizontalScroll import (2026-10-19).
+
+# Explicit APK build trigger requested by user on 2026-10-20.
+# Explicit APK build trigger requested by user on 2026-10-20.
+
+# Workaround: pin the APK build to the explicit Ubuntu 22.04 hosted-runner label after ubuntu-latest jobs remained queued without runner assignment.
+
+# Trigger one-time APK build requested by user
+# Trigger one-time APK build requested by user - latest main UI panel build (2026-10-20).
+# Retry APK build after fixing WebVideoScreen viewport height receiver compile error (2026-10-20).
+# User-requested APK build trigger for latest main source ca652a241fd79707293cce1574bbb35751bee6bf (2026-10-20).
+
+# User-requested APK build trigger for latest main source df13462038dd53546e46eb357e8aac23233719ca (2026-10-20).
+
+# User-requested APK build for latest main source ab085aed346585a53d9e0f942b3175c04fb3f56d (2026-10-20).
+
+# Explicit APK build trigger requested on 2026-10-21.
+
+# Rebuild latest main including PikPak WebView blank-page recovery (2026-10-21).
+
+# One-time build request marker: 2026-10-21T17:24+08:00
+
+# Explicit user-requested APK build trigger (2026-10-21 19:24 +08:00).
+
+# Explicit user-requested APK build trigger (2026-10-22 14:07 +08:00).
+
+# Explicit user-requested APK build trigger (2026-10-22 19:07 +08:00).
+
+# Explicit user-requested APK build trigger (2026-10-23).
+
+# Explicit user-requested APK build trigger after Kotlin compile fixes (2026-10-23).
+
+# Explicit user-requested APK build trigger after fixing Bilibili video ID nullability compile error (2026-10-23 evening).
+
+# Explicit user-requested APK build trigger (2026-10-24 Asia/Singapore).
+
+# Explicit user-requested APK rebuild after SettingsScreen compile fix (2026-10-24).
+
+# Explicit user-requested APK build trigger (2026-10-24 16:16 Europe/Vilnius; latest main).
+
+# Explicit one-time APK build requested by user on 2026-10-25 for latest main source (translation API cards/logos and Baidu WebView translation engine).
+
+# Explicit one-time APK rebuild requested on 2026-10-25 after fixing ApiManagerScreen.kt when-expression syntax (commit 534b3940).
+
+# Explicit one-time APK rebuild requested on 2026-10-25 after adding DeepL OkHttp Cookie and CookieJar imports (commit 84605f51).
+
+# Explicit user-requested APK build trigger for latest main including SMaLL-100 integration and restored hand-drawn logo (2026-10-25).
+
+# Explicit user-requested APK build retry after correcting opusSourceCompatible scope in LocalTranslationSection.kt (2026-10-25).
+
+# Explicit user-requested APK build trigger for latest main containing local translation models in the common translation pipeline (2026-10-25).
+# Explicit user-requested APK build trigger (2026-10-27).
+# Explicit user-requested APK build trigger (2026-10-27 video-aspect resize).
+# Explicit user-requested APK build trigger (2026-10-27 11:36 Asia/Singapore).
+# Explicit user-requested APK build after floating-window replay and shared dubbing playback synchronization fix (2026-10-27).
+# Explicit retry of user-requested APK build after fixing Canvas size name shadowing in floating resize handle (2026-10-27).
+# Explicit retry after fixing YouTube audio-language candidate typing (2026-10-28).
+# Explicit retry after fixing missing batchSize in translation fallback test (2026-10-28).
+
+# Explicit user-requested APK build trigger (2026-10-28 18:30 Asia/Tokyo).
+
+# Retry APK build after fixing PlaybackService stale-handler returns (2026-10-28).
+
+# Explicit one-time APK build request (2026-10-29).
+
+# Explicit user-requested APK build trigger (2026-10-30).
+# Explicit user-requested APK build trigger for main (2026-10-30 09:30 +08:00).
+# Explicit user-requested APK build trigger (2026-10-31).
+# Explicit one-time APK retry after fixing the missing IOException import (2026-10-31).
+# Explicit APK retry after adding the sherpa AAR conflicting-entry path to diagnostics (2026-10-31).
+# Explicit APK retry after limiting sherpa ONNX conflict validation to the packaged ARM64 ABI (2026-10-31).
+# Explicit APK retry after fixing Small100Translation download try/use braces (2026-10-31).
+# Explicit APK retry after fixing Kotlin compile errors found on 2026-10-31.
+# Explicit APK retry after fixing five-stage policy and shared runtime lease unit tests (2026-10-31).
+# Explicit APK retry after excluding the unused x86 ONNX Runtime duplicate (2026-10-31).
+
+# Explicit user-requested APK build trigger (2026-11-01 11:33 +08:00).
+# User-requested APK build trigger for latest main source a45104d2 (2026-11-01).
+# User-requested APK build retry after fixing PlayerScreen waveform template syntax (2026-11-01).
+# User-requested APK build retry after importing DubbingCacheStorage (2026-11-01).
+# Explicit user-requested APK build trigger (2026-11-02 08:37 +08:00; latest main 0fa529c9).
+
+# HY-MT1.5 integration update is source-only; no Gradle build was requested for this change.
+# User-requested APK build trigger for latest main source (2026-11-02 21:40 +08:00).
+# Explicit user-requested APK build trigger for latest main source (2026-11-02 22:53 +08:00).
+# Explicit one-time APK build requested by user on 2026-11-03.
+
+# Explicit user-requested APK build trigger (2026-11-03 20:13 America/Los_Angeles).

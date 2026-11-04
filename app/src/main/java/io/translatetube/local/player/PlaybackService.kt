@@ -1,0 +1,15437 @@
+package io.translatetube.local.player
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import android.content.pm.ServiceInfo
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
+import io.translatetube.local.R
+import io.translatetube.local.util.AudioDownloadProgressFormatter
+import io.translatetube.local.asr.AudioExtract
+import io.translatetube.local.asr.AudioTrackSelectionPolicy
+import io.translatetube.local.asr.LocalAsrEngine
+import io.translatetube.local.asr.LocalAsrPerformancePolicy
+import io.translatetube.local.asr.SenseVoiceEngine
+import io.translatetube.local.asr.SpeakerDiarizer
+import io.translatetube.local.asr.SpeechOnsetDetector
+import io.translatetube.local.asr.WhisperEngine
+import io.translatetube.local.asr.vadSegments
+import io.translatetube.local.asr.vadSegmentsFromFile
+import io.translatetube.local.asr.VAD_QUIET_AUDIO_THRESHOLD
+import io.translatetube.local.data.AppDatabase
+import io.translatetube.local.data.SourceType
+import io.translatetube.local.data.VideoEntity
+import io.translatetube.local.data.VideoHistoryCacheIndex
+import io.translatetube.local.subs.SubLine
+import io.translatetube.local.subs.SubtitleParsers
+import io.translatetube.local.subs.SubtitleFileDecoder
+import io.translatetube.local.translate.Crypto
+import io.translatetube.local.translate.EngineFactory
+import io.translatetube.local.translate.LangMap
+import io.translatetube.local.translate.SourceLanguagePolicy
+import io.translatetube.local.translate.MlKitEngine
+import io.translatetube.local.translate.OpusMtEngine
+import io.translatetube.local.translate.Small100Engine
+import io.translatetube.local.translate.SinglePairTranslationEngine
+import io.translatetube.local.translate.GoogleHybridEngine
+import io.translatetube.local.translate.TranslationEngine
+import io.translatetube.local.tts.KokoroTts
+import io.translatetube.local.tts.TtsEngine
+import io.translatetube.local.yt.NewPipeRepo
+import io.translatetube.local.yt.SubtitleTrackOption
+import io.translatetube.local.yt.YouTubeAudioCandidate
+import io.translatetube.local.yt.YouTubeStreamSelector
+import io.translatetube.local.yt.YouTubeVideoCandidate
+import io.translatetube.local.yt.BoundedTextPayload
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import java.io.File
+import java.io.OutputStreamWriter
+import java.security.MessageDigest
+
+enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
+
+/**
+ * Persists only a one-way configuration fingerprint per history item. It lets history routing
+ * distinguish unchanged settings after the in-memory playback service has been recreated, without
+ * persisting API secrets or subtitle text in SharedPreferences.
+ */
+private enum class EngineConfigDomain {
+    TRANSCRIPTION,
+    TRANSLATION,
+    DUBBING,
+}
+
+
+private object ReadyHistorySessionConfigStore {
+    private const val PREFS_NAME = "ready_history_session_config"
+    private const val KEY_PREFIX = "video_"
+    private const val ACTIVE_API_PROFILE_FINGERPRINT_KEY =
+        TranslationConfigPreferencePolicy.ACTIVE_PROFILE_FINGERPRINT_KEY
+
+    fun isRelevantPreferenceKey(
+        key: String,
+        selectedTtsEngine: String,
+        activeTranslationId: Long,
+    ): Boolean =
+        EngineConfigPreferenceIdentityPolicy.isRelevantForSelectedEngines(
+            key = key,
+            selectedTtsEngine = selectedTtsEngine,
+            activeTranslationId = activeTranslationId,
+        ) && (
+            key == "active_api_id" ||
+                key == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
+                // ASR provider/model choices, including local and cloud implementations.
+                key.startsWith("asr_") ||
+                key.startsWith("local_asr_") ||
+                key.startsWith("cloud_asr_") ||
+                key.startsWith("online_asr_") ||
+                key.startsWith("whisper_") ||
+                key.startsWith("sensevoice_") ||
+                key.contains("transcription", ignoreCase = true) ||
+                key.contains("transcribe", ignoreCase = true) ||
+                key.contains("speech_recognition", ignoreCase = true) ||
+                // Online API profiles and built-in/local translation model choices.
+                key.startsWith("free_gemini_") ||
+                key.startsWith("free_deepseek_") ||
+                key.startsWith("mlkit_") ||
+                key.startsWith("opus_") ||
+                key.startsWith("small100_") ||
+                key.startsWith("single_pair_") ||
+                key.startsWith("local_translation_") ||
+                key.startsWith("online_translation_") ||
+                key.startsWith("cloud_translation_") ||
+                key.startsWith("local_translate_") ||
+                key.startsWith("online_translate_") ||
+                key.startsWith("cloud_translate_") ||
+                key.contains("translate", ignoreCase = true) ||
+                key.contains("translation", ignoreCase = true) ||
+                // Voice engine, provider, model and voice-selection settings.
+                key.startsWith("tts_") ||
+                key.startsWith("edge_tts_") ||
+                key.startsWith("google_tts_") ||
+                key.startsWith("gemini_tts_") ||
+                key.startsWith("online_tts_") ||
+                key.startsWith("cloud_tts_") ||
+                key.startsWith("local_tts_") ||
+                key.startsWith("piper_") ||
+                key.startsWith("kokoro_") ||
+                key.startsWith("system_tts_")
+        )
+
+    fun fingerprint(
+        context: Context,
+        ignoreTranscription: Boolean = false,
+        videoKey: String? = null,
+        youtubeSubtitleModeOverride: String? = null,
+    ): String {
+        val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        // Persisted settings are sparse: older installs can still use the default English mode
+        // without having a preference row. Add one canonical token for every YouTube fingerprint
+        // so such sessions cannot match snapshots produced before the language mode existed.
+        val youtubeSubtitleModeEntry =
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeFingerprintEntry(
+                videoKey = videoKey,
+                storedValue = youtubeSubtitleModeOverride ?: settings.getString(
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                ),
+            )
+        val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
+            settings.getString("asr_provider", "local"),
+        )
+        val activeTranslationId = settings.getLong("active_api_id", -1L)
+        val activeTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(settings.getString("tts_engine", "edge"))
+        val relevant = settings.all.entries
+            .filter { entry ->
+                val isTranscriptionPreference =
+                    belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION)
+                val isTranslationPreference =
+                    belongsToDomain(entry.key, EngineConfigDomain.TRANSLATION)
+                isRelevantPreferenceKey(entry.key, activeTtsEngine, activeTranslationId) &&
+                    entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
+                    (!isTranslationPreference ||
+                        TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                            entry.key,
+                            activeTranslationId,
+                        ) ||
+                        (belongsToDomain(entry.key, EngineConfigDomain.DUBBING) &&
+                            DubbingConfigPreferencePolicy.isRelevantForActiveEngine(
+                                entry.key,
+                                activeTtsEngine,
+                            ))) &&
+                    !(ignoreTranscription && isTranscriptionPreference) &&
+                    (ignoreTranscription || !isTranscriptionPreference ||
+                        AsrConfigPreferencePolicy.isRelevantForActiveProvider(
+                            entry.key,
+                            activeAsrProvider,
+                        ))
+            }
+            .map { entry ->
+                val rawValue = when (val raw = entry.value) {
+                    is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
+                    else -> raw?.toString().orEmpty()
+                }
+                val value = AsrCredentialFingerprintPolicy.canonicalValue(
+                    key = entry.key,
+                    storedValue = rawValue,
+                    decrypt = Crypto::decrypt,
+                )
+                "${entry.key}=$value"
+            }
+            .toMutableList()
+        // Older app versions did not mirror active Room API-profile configuration into settings.
+        // Treat such snapshots as unknown instead of reusing a potentially stale translation result.
+        val activeApiId = settings.getLong("active_api_id", -1L)
+        if (
+            activeApiId >= 0L &&
+            settings.getString(ACTIVE_API_PROFILE_FINGERPRINT_KEY, null).isNullOrBlank()
+        ) {
+            relevant.add("$ACTIVE_API_PROFILE_FINGERPRINT_KEY=legacy-uninitialized:$activeApiId")
+        }
+        youtubeSubtitleModeEntry?.let(relevant::add)
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(relevant.sorted().joinToString("\n").toByteArray(Charsets.UTF_8))
+        return digest.take(12).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    fun fingerprints(context: Context): EngineConfigFingerprints = EngineConfigFingerprints(
+        transcription = domainFingerprint(context, EngineConfigDomain.TRANSCRIPTION),
+        translation = domainFingerprint(context, EngineConfigDomain.TRANSLATION),
+        dubbing = domainFingerprint(context, EngineConfigDomain.DUBBING),
+    )
+
+    /**
+     * Detect whether the selected engines differ from the last successful run for this video.
+     * A changed configuration must synthesize fresh Chinese speech even if a matching subtitle
+     * snapshot for this configuration is already available.
+     */
+    fun hasEngineConfigChangedSinceLastSuccess(context: Context, videoKey: String): Boolean {
+        val previous = savedFingerprints(context, videoKey) ?: return false
+        val current = fingerprints(context)
+        val flow = savedProcessingFlow(context, videoKey)
+        return EngineRestartStagePolicy.hasRelevantConfigChange(
+            previous = previous,
+            current = current,
+            processingFlow = flow,
+            ignoreTranscription = flow == ProcessingFlow.YOUTUBE_SUBTITLES,
+        )
+    }
+
+    fun savedProcessingFlow(context: Context, videoKey: String): ProcessingFlow? {
+        if (videoKey.isBlank()) return null
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        val saved = prefs.getString(key + "-processing-flow", null)
+        if (!saved.isNullOrBlank()) {
+            return runCatching { ProcessingFlow.valueOf(saved) }.getOrNull()
+        }
+        // Older versions kept the same distinction as a boolean: only true means YouTube captions were used.
+        if (!videoKey.startsWith("youtube:", ignoreCase = true)) return null
+        return if (prefs.getBoolean("$key-ignore-transcription", false)) {
+            ProcessingFlow.YOUTUBE_SUBTITLES
+        } else {
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+        }
+    }
+
+    fun hasYouTubeSubtitleModeChanged(context: Context, videoKey: String): Boolean {
+        if (!videoKey.startsWith("youtube:", ignoreCase = true)) return false
+        val key = storageKey(videoKey)
+        val savedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedMode = savedPrefs.getString(key + "-youtube-subtitle-mode", null)
+        val currentMode = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString(
+                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+            ) ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE
+        // An older success has no mode marker, so it is parsed once under the new explicit preference.
+        if (savedMode == null) return savedPrefs.getString(key, null) != null
+        return savedMode != currentMode
+    }
+
+    fun savedCompositeFingerprint(context: Context, videoKey: String): String? {
+        if (videoKey.isBlank()) return null
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(storageKey(videoKey), null)
+    }
+
+    fun savedFingerprints(context: Context, videoKey: String): EngineConfigFingerprints? {
+        if (videoKey.isBlank()) return null
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        val transcription = prefs.getString(key + "-transcription-fingerprint", null) ?: return null
+        val translation = prefs.getString(key + "-translation-fingerprint", null) ?: return null
+        val dubbing = prefs.getString(key + "-dubbing-fingerprint", null) ?: return null
+        if (transcription.isBlank() || translation.isBlank() || dubbing.isBlank()) return null
+        return EngineConfigFingerprints(transcription, translation, dubbing)
+    }
+
+    private fun domainFingerprint(context: Context, domain: EngineConfigDomain): String {
+        val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
+            settings.getString("asr_provider", "local"),
+        )
+        val activeTranslationId = settings.getLong("active_api_id", -1L)
+        val activeTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(settings.getString("tts_engine", "edge"))
+        val entries = settings.all.entries
+            .filter { entry ->
+                belongsToDomain(entry.key, domain) &&
+                    (domain != EngineConfigDomain.DUBBING ||
+                        DubbingConfigPreferencePolicy.isRelevantForActiveEngine(
+                            entry.key,
+                            activeTtsEngine,
+                        )) &&
+                    (domain != EngineConfigDomain.TRANSCRIPTION ||
+                        AsrConfigPreferencePolicy.isRelevantForActiveProvider(
+                            entry.key,
+                            activeAsrProvider,
+                        )) &&
+                    (domain != EngineConfigDomain.TRANSLATION ||
+                        TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
+                            entry.key,
+                            activeTranslationId,
+                        ))
+            }
+            .sortedBy { it.key }
+            .joinToString("\n") { entry ->
+                val rawValue = when (val raw = entry.value) {
+                    is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
+                    else -> raw?.toString().orEmpty()
+                }
+                val value = AsrCredentialFingerprintPolicy.canonicalValue(
+                    key = entry.key,
+                    storedValue = rawValue,
+                    decrypt = Crypto::decrypt,
+                )
+                "${entry.key}=$value"
+            }
+        val activeApiId = settings.getLong("active_api_id", -1L)
+        val hasUninitializedActiveApiProfile = domain == EngineConfigDomain.TRANSLATION &&
+            activeApiId >= 0L &&
+            settings.getString(ACTIVE_API_PROFILE_FINGERPRINT_KEY, null).isNullOrBlank()
+        val canonicalEntries = if (hasUninitializedActiveApiProfile) {
+            "$entries\n$ACTIVE_API_PROFILE_FINGERPRINT_KEY=legacy-uninitialized:$activeApiId"
+        } else {
+            entries
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(canonicalEntries.toByteArray(Charsets.UTF_8))
+            .take(12)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    private fun belongsToDomain(key: String, domain: EngineConfigDomain): Boolean {
+        if (!EngineConfigPreferenceIdentityPolicy.isFingerprintRelevant(key)) return false
+        return when (domain) {
+            EngineConfigDomain.TRANSCRIPTION ->
+                key.startsWith("asr_") ||
+                    key.startsWith("local_asr_") ||
+                    key.startsWith("cloud_asr_") ||
+                    key.startsWith("online_asr_") ||
+                    key.startsWith("whisper_") ||
+                    key.startsWith("sensevoice_") ||
+                    key.contains("transcription", ignoreCase = true) ||
+                    key.contains("transcribe", ignoreCase = true) ||
+                    key.contains("speech_recognition", ignoreCase = true)
+            EngineConfigDomain.TRANSLATION ->
+                key == "active_api_id" ||
+                    key.startsWith("free_gemini_") ||
+                    key.startsWith("free_deepseek_") ||
+                    // Local model identity and manual/automatic language-mode options affect output.
+                    key.startsWith("mlkit_") ||
+                    key.startsWith("opus_") ||
+                    key.startsWith("small100_") ||
+                    key.startsWith("single_pair_") ||
+                    key.startsWith("local_translation_") ||
+                    key.startsWith("online_translation_") ||
+                    key.startsWith("cloud_translation_") ||
+                    key.startsWith("local_translate_") ||
+                    key.startsWith("online_translate_") ||
+                    key.startsWith("cloud_translate_") ||
+                    key.contains("translate", ignoreCase = true) ||
+                    key.contains("translation", ignoreCase = true)
+            EngineConfigDomain.DUBBING ->
+                DubbingConfigPreferencePolicy.isDubbingPreferenceKey(key)
+        }
+    }
+    fun save(
+        context: Context,
+        videoKey: String,
+        fingerprint: String,
+        ignoreTranscription: Boolean,
+        fingerprints: EngineConfigFingerprints,
+        processingFlow: ProcessingFlow,
+        youtubeSubtitleMode: String? = null,
+    ) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        prefs.edit()
+            .putString(key, fingerprint)
+            .putBoolean("$key-ignore-transcription", ignoreTranscription)
+            .putString(key + "-transcription-fingerprint", fingerprints.transcription)
+            .putString(key + "-translation-fingerprint", fingerprints.translation)
+            .putString(key + "-dubbing-fingerprint", fingerprints.dubbing)
+            .putString(key + "-processing-flow", processingFlow.name)
+            .putString(
+                key + "-youtube-subtitle-mode",
+                youtubeSubtitleMode?.let {
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                        .modeFromPreference(it).preferenceValue
+                } ?: context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                    .getString(
+                        io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                        io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                    ) ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+            )
+            .apply()
+    }
+
+    fun matches(
+        context: Context,
+        videoKey: String,
+        isYouTube: Boolean,
+        snapshotIdentityKey: String = videoKey,
+    ): Boolean {
+        if (videoKey.isBlank()) return false
+        val exactSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(
+            context, videoKey, identityKey = snapshotIdentityKey,
+        ) { ignoreTranscription ->
+            fingerprint(
+                context,
+                ignoreTranscription = ignoreTranscription,
+                videoKey = videoKey,
+            )
+        }
+        val savedFlowForModeCheck = savedProcessingFlow(context, videoKey)
+            ?: exactSnapshot?.state?.processingFlow
+        if (
+            isYouTube &&
+            savedFlowForModeCheck != null &&
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(savedFlowForModeCheck) &&
+            hasYouTubeSubtitleModeChanged(context, videoKey)
+        ) return false
+        if (exactSnapshot != null) return true
+        // The history row keeps only the media URL, not the page-origin or cookie scope. Without
+        // a matching scoped snapshot, settings-only metadata cannot prove this is the same media
+        // session, so never advertise an immediate READY restore for a remote URL.
+        if (
+            videoKey.startsWith("remote:", ignoreCase = true) ||
+            videoKey.startsWith("local:", ignoreCase = true)
+        ) return false
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        val saved = prefs.getString(key, null) ?: return false
+        val ignoreTranscription = prefs.getBoolean("$key-ignore-transcription", false)
+        val savedFlow = savedProcessingFlow(context, videoKey)
+        if (
+            ignoreTranscription &&
+            !EngineRestartStagePolicy.ignoresTranscriptionConfig(savedFlow, isYouTube)
+        ) return false
+        if (saved.isBlank()) return false
+
+        if (saved == fingerprint(
+                context,
+                ignoreTranscription = ignoreTranscription,
+                videoKey = videoKey,
+            )
+        ) return true
+
+        // Older imported-subtitle sessions and YouTube ASR sessions may have a global
+        // fingerprint mismatch caused only by an unrelated preference. Compare the actual engine
+        // domains so history does not falsely mark reusable results as requiring a full reprocess.
+        val importedSubtitleFlow = savedFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+            savedFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+        val youtubeAsrFlow = isYouTube && savedFlow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+        if (importedSubtitleFlow || youtubeAsrFlow) {
+            val previous = savedFingerprints(context, videoKey) ?: return false
+            return !EngineRestartStagePolicy.hasRelevantConfigChange(
+                previous = previous,
+                current = fingerprints(context),
+                processingFlow = savedFlow,
+                ignoreTranscription = false,
+            )
+        }
+        return false
+    }
+
+    fun remove(context: Context, videoKey: String) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        prefs.edit()
+            .remove(key)
+            .remove("$key-ignore-transcription")
+            .remove(key + "-transcription-fingerprint")
+            .remove(key + "-translation-fingerprint")
+            .remove(key + "-dubbing-fingerprint")
+            .remove(key + "-processing-flow")
+            .remove(key + "-youtube-subtitle-mode")
+            .apply()
+        ReadySessionSnapshotStore.remove(context, videoKey)
+    }
+
+    fun clearAll(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
+        ReadySessionSnapshotStore.clearAll(context)
+    }
+
+    private fun storageKey(videoKey: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(videoKey.toByteArray(Charsets.UTF_8))
+        return KEY_PREFIX + digest.take(16).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+}
+
+private data class PartialAsrTranscript(
+    val processedSegments: Int,
+    val rows: List<Triple<Long, Long, String>>,
+    val sourceLang: String,
+)
+
+private class TranslationFailureException(message: String, cause: Throwable) :
+    IllegalStateException(message, cause)
+
+
+data class AudioProgressSnapshot(
+    val downloadedBytes: Long,
+    val totalBytes: Long? = null,
+    val percent: Int? = null,
+    val totalIsEstimate: Boolean = false,
+) {
+    /** Returns only a measured percentage or a ratio based on an exact known total. */
+    fun fraction(): Float? {
+        percent?.takeIf { it >= 0 }?.let { return it.coerceIn(0, 100) / 100f }
+        if (totalIsEstimate) return null
+        val total = totalBytes?.takeIf { it > 0L && downloadedBytes >= 0L && downloadedBytes <= it }
+            ?: return null
+        return (downloadedBytes.toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f)
+    }
+}
+
+
+enum class SpeakerRecognitionPhase {
+    IDLE,
+    PREPARING,
+    DOWNLOADING_MODELS,
+    ANALYZING,
+    APPLYING,
+    CANCELLING,
+    INTERRUPTED,
+    SUCCEEDED,
+    FAILED,
+    CANCELLED,
+}
+
+data class SpeakerRecognitionUiState(
+    val phase: SpeakerRecognitionPhase = SpeakerRecognitionPhase.IDLE,
+    val stage: SpeakerRecognitionStage = SpeakerRecognitionStage.PREPARING_AUDIO,
+    val message: String = "",
+    val progressPercent: Int? = null,
+    val personCount: Int = 0,
+    val error: String? = null,
+    val completedUnits: Long? = null,
+    val totalUnits: Long? = null,
+    val progressItem: String? = null,
+    /** Identifies one user-triggered pass; stale callbacks cannot update a replacement task. */
+    val taskToken: Long? = null,
+) {
+    val isActive: Boolean
+        get() = phase == SpeakerRecognitionPhase.PREPARING ||
+            phase == SpeakerRecognitionPhase.DOWNLOADING_MODELS ||
+            phase == SpeakerRecognitionPhase.ANALYZING ||
+            phase == SpeakerRecognitionPhase.APPLYING ||
+            phase == SpeakerRecognitionPhase.CANCELLING
+
+    /** Cancellation is safe until the existing dubbing engine starts being replaced. */
+    val canCancel: Boolean
+        get() = isActive &&
+            phase != SpeakerRecognitionPhase.CANCELLING &&
+            stage != SpeakerRecognitionStage.APPLYING_VOICES
+
+    /** The one stage currently being processed; later stages are intentionally not listed. */
+    val stageTitle: String
+        get() = when (phase) {
+            SpeakerRecognitionPhase.SUCCEEDED -> "区分完成"
+            SpeakerRecognitionPhase.FAILED -> "区分失败"
+            SpeakerRecognitionPhase.CANCELLED -> "已取消"
+            SpeakerRecognitionPhase.INTERRUPTED -> "上次识别已中断"
+            SpeakerRecognitionPhase.CANCELLING -> "取消人物区分"
+            else -> stage.title
+        }
+
+    val activeLabel: String
+        get() = if (phase == SpeakerRecognitionPhase.CANCELLING) {
+            "正在取消人物区分…"
+        } else {
+            stage.activeLabel
+        }
+}
+
+/** Metadata already discovered for the exact webpage candidate selected by the user. */
+data class SelectedWebMediaMetadata(
+    /** Digest binding the detected values to this media URL + page-origin + cookie session. */
+    val sourceIdentity: String = "",
+    val audioCodecLabel: String = "",
+    val audioChannelCount: Int = 0,
+    val audioSampleRateHz: Int = 0,
+    val mediaDurationMs: Long = 0L,
+    val audioSourceType: String = "",
+    val videoResolution: String = "",
+)
+
+data class PlayerUiState(
+    val phase: Phase = Phase.IDLE,
+    val progress: String = "",
+    val speakerRecognition: SpeakerRecognitionUiState = SpeakerRecognitionUiState(),
+    val audioProgress: AudioProgressSnapshot? = null,
+    val audioTrackLanguage: String = "",
+    val audioTrackMimeType: String = "",
+    val audioTrackCodecLabel: String = "",
+    /** Source/session identity for every audio metadata field above; never stores the source URL. */
+    val audioMetadataSourceIdentity: String = "",
+    val audioTrackDurationMs: Long = 0L,
+    val audioTrackChannelCount: Int = 0,
+    val audioTrackSampleRateHz: Int = 0,
+    val audioTrackSourceType: String = "",
+    /** Actual dimensions reported for the currently selected video track, not the display surface. */
+    val videoResolution: String = "",
+    val transcriptionEngineName: String = "",
+    val transcriptionProgressPercent: Int? = null,
+    val transcriptionCompletedSegments: Int = 0,
+    val transcriptionTotalSegments: Int = 0,
+    val key: String = "",
+    val title: String = "",
+    val channel: String = "",
+    val thumbUrl: String? = null,
+    val durationMs: Long = 0,
+    val lines: List<SubLine> = emptyList(),
+    /** Latest recognized source captions shown in the five-stage processing preview. */
+    val transcriptionPreviewLines: List<SubLine> = emptyList(),
+    /** Latest successfully translated captions shown in the five-stage processing preview. */
+    val translationPreviewLines: List<SubLine> = emptyList(),
+    /** Number of rows resolved for the active subtitle-translation pass; avoids rescanning the full list for progress. */
+    val translatedLineCount: Int = 0,
+    /** Current translation batch, using one-based numbering for display. */
+    val translationCurrentBatch: Int = 0,
+    val translationTotalBatches: Int = 0,
+    /** Number of retries already used by the current translation batch. */
+    val translationRetryCount: Int = 0,
+    /** Subtitle index whose AudioTrack has actually started; separate from the video playhead highlight. */
+    val activeDubbingLine: Int = -1,
+    val currentLine: Int = -1,
+    /**
+     * 当前配音实际念的整块文本（相邻两句合并成一块一口气合成时，念的是两句）。非空时字幕条显示它，
+     * 保证"听到的"和"看到的"是同一段文字；为空时显示 [currentLine] 那一行自己的译文。
+     */
+    val captionOverride: String? = null,
+    val preparedUntil: Int = 0,
+    /** Rows with playable audio; unlike preparedCount, excludes silent/source-fallback rows. */
+    val audioReadyCount: Int = 0,
+    val preparedCount: Int = 0,
+    val totalLines: Int = 0,
+    val dubbingOn: Boolean = true,
+    val muteOriginal: Boolean = true,
+    /** User-selected source and Chinese dubbing gains, independently adjustable from 0 to 1. */
+    val originalVolume: Float = 1f,
+    val dubbingVolume: Float = 1f,
+    val audioOnly: Boolean = false,
+    val error: String? = null,
+    val cloudAsrSubmissionUncertain: Boolean = false,
+    val sourceLang: String = "",
+    val engineName: String = "",
+    /** Translation cache identity is carried through retries so imported sources keep their fingerprint. */
+    val translationCacheKey: String = "",
+    val ttsEngineName: String = "",
+    val dubbingStatus: String = "",
+    val isPlaying: Boolean = false,
+    /** 播放器正在加载/缓冲视频；网络慢或首次加载时界面显示转圈。 */
+    val isBuffering: Boolean = false,
+    /**
+     * 配音已开启，但当前正在播放的这句字幕的中文配音还没合成好（既没就绪也没判定失败），
+     * 此时播放的是原声；界面据此告诉用户原因，而不是让用户对着没有中文声音的字幕干等。
+     */
+    val dubbingCuePending: Boolean = false,
+    /** 点播放被拦住（配音/转写引擎没就绪、配音出错等）时显示给用户的原因；开始播放后清除。 */
+    val playBlockedHint: String? = null,
+    /** 该提示是否同时提供"仅播放原声"按钮。 */
+    val playBlockedOffersOriginalOnly: Boolean = false,
+    /** 本次加载中播放器因网络错误自动重试的次数（真实的加载错误回调计数）。 */
+    val loadRetryCount: Int = 0,
+    val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
+    val noModelHint: String? = null,     // 模型/引擎问题的用户提示
+    /** Subtitle generation is blocked because the selected ASR engine is not ready. */
+    val waitingForTranscriptionEngine: Boolean = false,
+    /** Chinese dubbing is blocked because the selected TTS engine is not ready. */
+    val waitingForDubbingEngine: Boolean = false,
+    /** At least one translated cue failed synthesis/output and has fallen back to the original audio. */
+    val dubbingHasErrors: Boolean = false,
+    val qualityOptions: List<String> = emptyList(),
+    val selectedQuality: String = "",
+    val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
+    val subtitleTrackStatus: String = "",
+    /** The user opted to translate the transcript externally instead of using the configured engine. */
+    val manualTranslationModeEnabled: Boolean = false,
+    /** The transcription/translation pipeline is waiting for an external translated subtitle file. */
+    val manualTranslationWaiting: Boolean = false,
+    val isProcessingPaused: Boolean = false,
+    val processingFlow: ProcessingFlow = ProcessingFlow.AUTO,
+    /** Last active pipeline stage when processing entered ERROR. */
+    val failedPhase: Phase? = null,
+    /** Last visible step detail captured before an error or cancellation cleared progress. */
+    val failedProgress: String = "",
+)
+
+private data class YouTubeQualitySource(
+    val label: String,
+    val height: Int,
+    val url: String,
+    val muxed: Boolean,
+)
+
+private data class YouTubeStreamChoices(
+    val sources: List<YouTubeQualitySource>,
+    val audioUrl: String,
+    val defaultQuality: YouTubeQualitySource,
+)
+
+/** 开播前等待第一句配音挂上混流总线的最长时间（视频还没开始播，不影响观看）。 */
+private const val STARTUP_MOUNT_WAIT_MS = 800L
+
+/** 开播前挂载首批句子期间冻结渲染头的最长时间（覆盖挂载等待 + 音频管线 flush）。 */
+private const val STARTUP_READ_HEAD_FREEZE_MS = 2_000L
+
+/** 开播前 flush 之后，位置不连续回调保留总线的有效期。 */
+private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
+
+// Media3's DefaultMediaNotificationProvider uses notification ID 1001 for media controls.
+// Processing progress must use a distinct ID so BigTextStyle updates cannot replace MediaStyle.
+private const val PROCESSING_NOTIFICATION_ID = 1004
+private const val PROCESSING_NOTIFICATION_MIN_INTERVAL_MS = 750L
+/** Reassert the service's CPU/foreground protection even if Media3 or an OEM background manager demotes it. */
+private const val BACKGROUND_PROCESSING_GUARD_INTERVAL_MS = 10_000L
+private const val MAX_NOTIFICATION_AUDIT_EVENTS = 12
+
+class PlaybackService : MediaSessionService() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Serialize notification creation and posting on the main looper; StateFlow progress ticks
+    // can otherwise race with direct service commands while Android is inflating the same notice.
+    private val processingNotificationHandler = Handler(Looper.getMainLooper())
+    private val processingNotificationUpdateLock = Any()
+    private var processingNotificationUpdateScheduled = false
+    private var processingNotificationUpdatePending = false
+    @Volatile private var processingNotificationShuttingDown = false
+    @Volatile private var lastProcessingNotificationPostedAtMs = 0L
+    @Volatile private var processingNotificationPostCount = 0L
+    private var lastProcessingNotificationFingerprint: String? = null
+    @Volatile private var lastProcessingNotificationAuditSignature: String? = null
+    /** Keep processing in the foreground even when Media3 no longer needs a playback notification. */
+    @Volatile private var processingForegroundActive = false
+    @Volatile private var latestProcessingNotification: Notification? = null
+    /** Periodically revalidates background execution protection for every pipeline stage. */
+    private var backgroundProcessingGuardJob: Job? = null
+    private val processingWakeLockLock = Any()
+    private var processingWakeLock: PowerManager.WakeLock? = null
+    @Volatile private var lastProcessingForegroundFailureKey: String? = null
+    private val notificationAuditLock = Any()
+    private val recentNotificationAuditTrail = java.util.ArrayDeque<String>()
+    @Volatile private var mediaNotificationUpdateCount = 0L
+    @Volatile private var lastMediaNotificationUpdatedAtMs = 0L
+    @Volatile private var lastMediaNotificationAuditSignature: String? = null
+    private val processingNotificationUpdateRunnable = Runnable { drainProcessingNotificationUpdate() }
+    private lateinit var pm: PlayerManager
+    // A seek can trigger transient buffering/state callbacks after the immediate play() call.
+    // Retry playback once on ExoPlayer's main looper, but cancel the retry on an explicit pause.
+    private val seekResumeHandler = Handler(Looper.getMainLooper())
+    // Surface attachment has a separate queue from seek/playback recovery so future seek retries
+    // cannot accidentally delay video-view binding.
+    private val surfaceAttachHandler = Handler(Looper.getMainLooper())
+    private val seekResumeLock = Any()
+    private var seekResumeGeneration = 0L
+    private var pendingSeekResume: Runnable? = null
+    /** Catch-up queue for subtitle starts that pass while an earlier utterance finishes. */
+    private val dubbingCatchUpLock = Any()
+    private val dubbingCatchUpQueue = LinkedHashSet<Int>()
+    @Volatile private var dubbingCatchUpSessionKey = ""
+    private var lastDubbingCatchUpPositionMs = -1L
+    private val dubbingDrainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var dubbingDrainAfterVideoEnd = false
+    @Volatile private var dubbingDrainEngine: DubbingEngine? = null
+    @Volatile private var dubbingDrainSessionKey = ""
+    @Volatile private var dubbingDrainPoll: Runnable? = null
+    @Volatile private var playerReady = false
+    // The player outlives the Activity; only foreground/floating modes expect a visible video surface.
+    @Volatile private var videoPresentationMode = VideoPresentationMode.BACKGROUND_AUDIO
+    // Keep only the latest requested video output. A weak reference avoids retaining an old Activity view.
+    @Volatile private var requestedVideoSurface: java.lang.ref.WeakReference<android.view.TextureView>? = null
+    // Accessed only on the main thread. Media3 already listens for SurfaceTexture
+    // creation/destruction on the currently bound TextureView, so do not reset the same output.
+    private var boundVideoSurface: java.lang.ref.WeakReference<android.view.TextureView>? = null
+    private var session: MediaSession? = null
+    @Volatile private var dubbing: DubbingEngine? = null
+    private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
+    @Volatile private var localAsrEngine: LocalAsrEngine? = null
+    @Volatile private var localAsrEngineModelId: String? = null
+    // sherpa-onnx OfflineRecognizer is native state and must never decode two videos concurrently.
+    private val localAsrMutex = kotlinx.coroutines.sync.Mutex()
+
+    private fun retireDubbing(engine: DubbingEngine?): DubbingEngine? {
+        if (engine == null) return null
+        // Register first: releaseAndJoin() is cancellable, but later tasks must still wait for
+        // this engine to finish blocking TTS/native work before initializing a replacement.
+        retiringDubbingEngines.addIfAbsent(engine)
+        if (dubbing === engine) dubbing = null
+        engine.release()
+        return engine
+    }
+
+    private fun retireCurrentDubbing(): DubbingEngine? = retireDubbing(dubbing)
+
+    private suspend fun awaitRetiredDubbingEngines() {
+        while (true) {
+            val previous = retiringDubbingEngines.firstOrNull() ?: return
+            // If this pipeline is canceled while waiting, keep the retired engine registered so
+            // the next pipeline cannot initialize another TTS beside an active native call.
+            previous.releaseAndJoin()
+            retiringDubbingEngines.remove(previous)
+        }
+    }
+    private var prepJob: Job? = null
+    private val manualTranslationRequestedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val manualTranslationWaiters =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<List<SubLine>?>>()
+    private val manualTranslationSources = java.util.concurrent.ConcurrentHashMap<String, List<SubLine>>()
+    /**
+     * 用户点"启用外部翻译模式"时完成：正在进行的应用内翻译请求据此立即放弃等待，
+     * 马上进入"等待外部译文"，导出/导入按钮不用等当前这批翻完才亮。
+     */
+    private val manualTranslationInterrupts =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Unit>>()
+    private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var processingPaused = false
+    @Volatile private var videoKey = ""
+    private var videoId: String? = null
+    private var localUri: Uri? = null
+    @Volatile private var activeLocalMediaIdentityKey: String? = null
+    // Avoid blocking callers on slow document providers; only the newest open may publish a result.
+    private val localMediaIdentityResolutionGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+    private var remoteMediaUrl: String? = null
+    private var remoteMediaTitle: String = ""
+    private var remoteMediaReferrer: String = ""
+    private var remoteMediaUserAgent: String = ""
+    private var remoteMediaCookie: String? = null
+    @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
+    @Volatile private var qualityAudioUrl: String = ""
+    /** 仅在本轮网页/本地视频源已挂载后，才读取其可选视频轨。 */
+    @Volatile private var adaptiveQualitySourceReady = false
+    @Volatile private var activeOpenRequestToken: Long = 0L
+    // A media key can be reopened from History without changing the key. Give each open
+    // a unique generation so a cancelled previous pipeline cannot resume beside the new TTS engine.
+    private val pipelineGenerationLock = Any()
+    private var pipelineGenerationCounter = 0L
+    @Volatile private var activePipelineGeneration = 0L
+    private var dubbingMutationGenerationCounter = 0L
+    @Volatile private var activeDubbingMutationGeneration = 0L
+    @Volatile private var processingEngineConfigFingerprint = ""
+    // Track the engine domains that produced the current pipeline, even before a first successful snapshot exists.
+    @Volatile private var processingEngineDomainFingerprints = EngineConfigFingerprints("", "", "")
+    /** Exact media-session identity used by the durable, unfinished processing checkpoint. */
+    @Volatile private var activeProcessingCheckpointIdentityKey = ""
+    // A downstream engine may change while source preparation is intentionally allowed to finish.
+    // Keep that decision attached to this pipeline generation so stage 5 still bypasses old PCM.
+    @Volatile private var forceFreshDubbingPipelineGeneration = 0L
+    @Volatile private var forceFreshTranslationPipelineGeneration = 0L
+    // Serialize checkpoint writes. A canceled pipeline may still finish a blocking AtomicFile write;
+    // the next generation must write after it, using a freshly sampled UI state and identity.
+    private val inProgressCheckpointWriteMutex = kotlinx.coroutines.sync.Mutex()
+    private val processingCheckpointRestoreGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+    // Snapshot the configuration that produced the currently completed session. Unlike the
+    // preference-listener baseline above, this value must not change just because settings are
+    // edited while the READY player is idle on the Home screen.
+    @Volatile private var completedReadySessionKey = ""
+    @Volatile private var completedReadySessionIgnoresTranscription = false
+    @Volatile private var completedReadySessionEngineFingerprint = ""
+    private var enginePreferencesListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
+    @Volatile private var enginePreferenceRestartJob: Job? = null
+    // Preserve a YouTube subtitle-mode change across the preference debounce if another engine setting changes too.
+    @Volatile private var pendingYouTubeSubtitleRefreshKey: String? = null
+    // Track the caption mode used by the active pipeline so a rapid change-and-revert
+    // doesn't leave a stale request that forces a later, unrelated engine restart to redownload captions.
+    @Volatile private var activeProcessingYouTubeSubtitleMode =
+        io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE
+    // Serialize every flow that creates/replaces a DubbingEngine. YouTube, remote web media,
+    // local video and imported subtitles must not initialize a new TTS engine while a cancelled
+    // pipeline is still unwinding a blocking Android TTS/JNI call.
+    private val pipelineExecutionMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var qualityRecoveryAttempted = false
+    @Volatile private var expiredAddressRecoveryAttempted = false
+    @Volatile private var playbackRecoveryInProgress = false
+    @Volatile private var playbackRecoveryMessage: String? = null
+    @Volatile private var playbackRecoveryFailure: String? = null
+    @Volatile private var playbackRecoveryWasPlayerVisible = false
+    @Volatile private var playbackRestoreRequested = false
+    private var playbackHintJob: Job? = null
+    private var playbackHintShownAtMs = 0L
+    private var noFrameWaitStartedAtMs = 0L
+    private var noFrameWaitSessionKey = ""
+    private var lastObservedSourceGeneration = -1L
+    private var playbackStallWatchSessionKey = ""
+    private var playbackStallWatchPositionMs = -1L
+    private var playbackStallWatchLastProgressAtMs = 0L
+    private var idleRecoveryAttemptedKey = ""
+    // Black-screen escalation (soft reload -> one player rebuild -> final error). Main thread only.
+    private var firstFrameEscalationKey = ""
+    private var firstFrameEscalationStage = FirstFrameTimeoutPolicy.SOFT_RELOAD_STAGE
+    private var blackScreenErrorLoggedKey = ""
+    private var qualityRecoveryJob: Job? = null
+    private var qualityJob: Job? = null
+    private var importedLines: List<SubLine>? = null
+    // Subtitle inputs can arrive out of time order. Reuse the same interval index as dubbing
+    // rather than rebuilding it every playback tick or assuming the UI list is sorted.
+    private var highlightTimelineSource: List<SubLine>? = null
+    private var highlightTimeline = DubbingTimeline(emptyList())
+    // Cache the first usable caption with the interval index; gap ticks must not rescan all rows.
+    private var highlightFirstSpokenLine = -1
+    private var lastLineIdx = Int.MIN_VALUE
+    private var dubCollectJob: Job? = null
+    private var speakerJob: Job? = null
+    private val speakerRecognitionCancellationLock = Any()
+    @Volatile private var speakerRecognitionCommitTaskToken: Long? = null
+    @Volatile private var speakerCancelRequestedAtMs = 0L
+    @Volatile private var speakerCancelTaskToken: Long? = null
+    @Volatile private var speakerCancelStageAtRequest = ""
+    @Volatile private var speakerCancelProgressAtRequest = "不定进度"
+    @Volatile private var subtitleDownloadJob: Job? = null
+    private val asrAudioDownloadLocks = KeyedMutex<String>()
+    private val localAsrPcmLocks = KeyedMutex<String>()
+    // Do not evict downloaded audio while MediaExtractor is actively reading it.
+    private val activeAsrAudioPaths = ActiveFileLeaseRegistry()
+
+    companion object {
+        private const val PREF_PLAYER_ORIGINAL_VOLUME = "player_original_audio_volume"
+        private const val PREF_PLAYER_ORIGINAL_VOLUME_LAST = "player_original_audio_volume_last_nonzero"
+        private const val PREF_PLAYER_DUBBING_VOLUME = "player_chinese_dubbing_volume"
+        private const val PREF_PLAYER_DUBBING_VOLUME_LAST = "player_chinese_dubbing_volume_last_nonzero"
+
+        @Volatile var instance: PlaybackService? = null
+            private set
+        /** Changes after every successful service/player initialization so the screen can rebind its retained TextureView. */
+        val serviceGeneration = MutableStateFlow(0L)
+        private val cloudAsrResubmissionConsentKeys =
+            java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val ui = MutableStateFlow(PlayerUiState())
+        private val _playbackHint = MutableStateFlow<PlaybackHint?>(null)
+        internal val playbackHint: StateFlow<PlaybackHint?> = _playbackHint
+        fun state(): StateFlow<PlayerUiState> = ui
+
+        fun confirmUncertainCloudAsrResubmission() {
+            val current = ui.value
+            if (current.cloudAsrSubmissionUncertain && current.key.isNotBlank()) {
+                cloudAsrResubmissionConsentKeys.add(current.key)
+            }
+        }
+
+        /**
+         * A privacy-safe runtime snapshot attached to uncaught-crash records. Never include raw
+         * video URLs, cookies, subtitle text, API keys, or local file paths here.
+         */
+        fun diagnosticSnapshot(): Map<String, String> {
+            val state = ui.value
+            val service = instance
+            val snapshot = linkedMapOf(
+                "播放服务实例状态" to if (service == null) "当前没有活动的 PlaybackService 实例" else "实例存在",
+                "当前处理阶段" to state.phase.name,
+                "当前视频源类型" to (service?.diagnosticMediaSourceType(state) ?: "服务实例不可用"),
+                "当前会话指纹" to if (state.key.isBlank()) "无活动会话" else
+                    (service?.safeDiagnosticSessionFingerprint(state.key) ?: "服务实例不可用"),
+                "视频播放状态" to if (state.isPlaying) "播放中" else "未播放/状态未知",
+                "中文配音开关" to state.dubbingOn.toString(),
+                "原声音量档位" to state.originalVolume.toString(),
+                "中文配音音量档位" to state.dubbingVolume.toString(),
+                "当前处理是否暂停" to state.isProcessingPaused.toString(),
+            )
+            if (service != null) snapshot.putAll(service.notificationRuntimeSnapshot())
+            return snapshot
+        }
+
+        /** 播放画面 TextureView（供悬浮窗摘取 reparent） */
+        @Volatile var videoSurfaceView: android.view.TextureView? = null
+        const val CH_MAIN = "playback"
+        const val ACTION_TOGGLE_PROCESSING_PAUSE = "io.translatetube.local.action.TOGGLE_PROCESSING_PAUSE"
+        const val ACTION_CANCEL_PROCESSING = "io.translatetube.local.action.CANCEL_PROCESSING"
+        const val ACTION_CANCEL_SPEAKER_RECOGNITION = "io.translatetube.local.action.CANCEL_SPEAKER_RECOGNITION"
+        const val EXTRA_PROCESSING_SESSION_KEY = "io.translatetube.local.extra.PROCESSING_SESSION_KEY"
+
+        /** True when history has a candidate saved result; PlaybackService still verifies it before reuse. */
+        fun hasCompatibleHistorySnapshot(
+            context: Context,
+            key: String,
+            isYouTube: Boolean,
+            remoteMediaUrl: String? = null,
+            remoteMediaReferrer: String? = null,
+            remoteMediaCookie: String? = null,
+            localMediaUri: String? = null,
+        ): Boolean {
+            val effectiveRemoteUrl = remoteMediaUrl ?: key
+                .takeIf { it.startsWith("remote:", ignoreCase = true) }
+                ?.removePrefix("remote:")
+            val effectiveLocalUri = localMediaUri ?: key
+                .takeIf { it.startsWith("local:", ignoreCase = true) }
+                ?.removePrefix("local:")
+            // A local entry can show the temporary restore veil when any saved result exists.
+            // open() verifies the file identity asynchronously before it reuses that result.
+            if (effectiveLocalUri != null) {
+                return ReadySessionSnapshotStore.hasAnySnapshotForVideo(context, key)
+            }
+            val localIdentity: String? = null
+            val snapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+                videoKey = key,
+                remoteMediaUrl = effectiveRemoteUrl,
+                referrer = remoteMediaReferrer.orEmpty(),
+                cookie = remoteMediaCookie,
+                localMediaIdentityKey = localIdentity,
+            )
+            return ReadyHistorySessionConfigStore.matches(
+                context,
+                key,
+                isYouTube = isYouTube,
+                snapshotIdentityKey = snapshotIdentityKey,
+            )
+        }
+
+        fun clearHistorySessionConfig(context: Context, key: String) =
+            ReadyHistorySessionConfigStore.remove(context, key)
+
+        fun clearAllHistorySessionConfig(context: Context) =
+            ReadyHistorySessionConfigStore.clearAll(context)
+
+        /** Delete one history-owned local PCM cache only when no active ASR reader holds it. */
+        fun deleteUnleasedLocalPcmCacheFile(file: File): Boolean {
+            val service = instance
+            return if (service != null) {
+                // A lease may belong to an in-progress .part writer even before the final file exists.
+                service.activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) {
+                    !file.exists() || file.delete()
+                }
+            } else {
+                !file.exists() || file.delete()
+            }
+        }
+
+        /** Delete one downloaded ASR source-audio cache only when no active reader owns it. */
+        fun deleteUnleasedAsrAudioCacheFile(file: File): Boolean {
+            val service = instance
+            return if (service != null) {
+                // Do not treat a not-yet-created .bin as idle: its download can still own a lease.
+                service.activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) {
+                    !file.exists() || file.delete()
+                }
+            } else {
+                !file.exists() || file.delete()
+            }
+        }
+    }
+
+    /** A detected person and the first subtitle cue attributed to that person. */
+    data class SpeakerPersonSummary(
+        val personId: Int,
+        val firstLineIndex: Int,
+        val subtitleCount: Int,
+        val voiceId: Int,
+        val sampleText: String,
+    )
+
+    /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
+    val isReady: Boolean get() = playerReady && ::pm.isInitialized
+
+    /** Secondary speaker recognition/reassignment may still be reading the durable audio cache. */
+    val isSpeakerTaskActive: Boolean get() = speakerJob?.isActive == true
+
+    /** Only a user-triggered recognition pass can be canceled independently of the main pipeline. */
+    val canCancelSpeakerRecognition: Boolean
+        get() {
+            val recognition = ui.value.speakerRecognition
+            return speakerJob?.isActive == true &&
+                recognition.canCancel &&
+                recognition.taskToken != speakerRecognitionCommitTaskToken
+        }
+
+    /** Return the detected people in first-appearance order for the playback tools panel. */
+    fun getDetectedSpeakerPeople(): List<SpeakerPersonSummary> {
+        val current = ui.value
+        val key = current.key
+        if (key.isBlank() || videoKey != key) return emptyList()
+        val assignments = loadSpeakerAssignments(key, currentTtsEngineId())
+        val indexesByPerson = linkedMapOf<Int, MutableList<Int>>()
+        current.lines.forEachIndexed { index, line ->
+            val personId = assignments.lineSpeakers[
+                SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+            ] ?: return@forEachIndexed
+            if (personId in 0..999) indexesByPerson.getOrPut(personId) { mutableListOf() }.add(index)
+        }
+        return indexesByPerson.entries
+            .sortedBy { it.value.firstOrNull() ?: Int.MAX_VALUE }
+            .mapNotNull { (personId, indexes) ->
+                val firstIndex = indexes.firstOrNull() ?: return@mapNotNull null
+                val firstLine = current.lines.getOrNull(firstIndex) ?: return@mapNotNull null
+                val firstLineKey = SpeakerAssignmentCodec.lineKey(firstLine.startMs, firstLine.endMs)
+                val voiceId = assignments.speakerVoices[personId]
+                    ?: assignments.lineVoices[firstLineKey]
+                    ?: firstLine.speakerId
+                SpeakerPersonSummary(
+                    personId = personId,
+                    firstLineIndex = firstIndex,
+                    subtitleCount = indexes.size,
+                    voiceId = voiceId.coerceIn(-1, 53),
+                    sampleText = (firstLine.zh?.takeIf { it.isNotBlank() } ?: firstLine.text)
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                        .take(88),
+                )
+            }
+    }
+
+    private fun beginSpeakerRecognitionTaskJournal(sessionKey: String) {
+        val current = ui.value
+        if (current.key != sessionKey) return
+        SpeakerRecognitionTaskJournal.begin(this, sessionKey, current.speakerRecognition)
+    }
+
+    private fun persistSpeakerRecognitionState(sessionKey: String) {
+        val current = ui.value
+        if (current.key != sessionKey) return
+        SpeakerRecognitionTaskJournal.save(this, sessionKey, current.speakerRecognition)
+    }
+
+    private fun recordSpeakerCancellationResponse(taskToken: Long) {
+        if (speakerCancelTaskToken != taskToken) return
+        val cancelStartedAt = speakerCancelRequestedAtMs
+        if (cancelStartedAt > 0L) {
+            val cancelElapsedMs = (
+                android.os.SystemClock.elapsedRealtime() - cancelStartedAt
+            ).coerceAtLeast(0L)
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "SpeakerDiarization",
+                "人物识别取消响应时间",
+                diagnosticContext = mapOf(
+                    "取消响应耗时 ms" to cancelElapsedMs.toString(),
+                    "取消前阶段" to speakerCancelStageAtRequest,
+                    "取消前进度" to speakerCancelProgressAtRequest,
+                    "任务令牌" to taskToken.toString(),
+                ),
+            )
+        }
+        speakerCancelRequestedAtMs = 0L
+        speakerCancelTaskToken = null
+        speakerCancelStageAtRequest = ""
+        speakerCancelProgressAtRequest = "不定进度"
+    }
+
+    private fun clearSpeakerRecognitionJournal(sessionKey: String, taskToken: Long?) {
+        if (taskToken == null) return
+        SpeakerRecognitionTaskJournal.clear(this, sessionKey, taskToken)
+    }
+
+    /** Cancel only the active diarization pass; voice-assignment work remains untouched. */
+    fun cancelSpeakerRecognition() {
+        synchronized(speakerRecognitionCancellationLock) {
+            val current = ui.value
+            val recognition = current.speakerRecognition
+            val job = speakerJob
+            val taskToken = recognition.taskToken
+            if (
+                !recognition.canCancel ||
+                taskToken != null && taskToken == speakerRecognitionCommitTaskToken ||
+                job?.isActive != true ||
+                current.key.isBlank()
+            ) return
+
+            speakerCancelRequestedAtMs = android.os.SystemClock.elapsedRealtime()
+            speakerCancelTaskToken = taskToken
+            speakerCancelStageAtRequest = recognition.stage.name
+            speakerCancelProgressAtRequest =
+                recognition.progressPercent?.let { "$it%" } ?: "不定进度"
+            // Publish and persist CANCELLING before cancelling the job, so a fast completion callback
+            // cannot be overwritten by a late UI update that leaves the menu stuck in CANCELLING.
+            updateUiForSession(current.key) { state ->
+                if (state.key == current.key) {
+                    state.copy(
+                        speakerRecognition = state.speakerRecognition.copy(
+                            phase = SpeakerRecognitionPhase.CANCELLING,
+                            message = "正在取消人物识别…",
+                            error = null,
+                        ),
+                    )
+                } else state
+            }
+            persistSpeakerRecognitionState(current.key)
+            job.cancel(kotlinx.coroutines.CancellationException("用户取消人物识别"))
+            android.util.Log.i("PlaybackService", "User canceled speaker diarization for the active playback session")
+        }
+    }
+
+    /**
+     * A video key identifies media, not a particular user action. The same history row can be
+     * tapped again with different TTS settings, so compare the request token as well as the key.
+     * Returning from Settings with the same token must not restart the active playback session.
+     */
+    fun isOpenRequestActive(key: String, requestToken: Long): Boolean =
+        requestToken > 0L &&
+            activeOpenRequestToken == requestToken &&
+            videoKey == key &&
+            ui.value.key == key
+
+    /**
+     * Reuse an already prepared video when it is opened again from Home history. This deliberately
+     * does not call open(): open() invalidates the playback pipeline, retires the dubbing engine,
+     * and returns the UI to PARSING. YouTube does not depend on the selected ASR engine once its
+     * translated subtitle timeline has already been prepared.
+     */
+    fun resumeReadySessionIfCompatible(
+        key: String,
+        requestToken: Long,
+        isYouTube: Boolean,
+    ): Boolean {
+        if (!playerReady || !::pm.isInitialized || requestToken <= 0L) return false
+        val state = ui.value
+        // Speaker recognition/reassignment is a secondary task on an already-ready session.
+        // It may temporarily rebuild the dubbing engine, but a history tap must reconnect to this
+        // live task rather than calling open() and retiring its active engine/audio cache.
+        if (
+            key.isNotBlank() &&
+            key == videoKey &&
+            key == state.key &&
+            speakerJob?.isActive == true
+        ) {
+            return try {
+                if (!state.isPlaying) pm.play()
+                activeOpenRequestToken = requestToken
+                io.translatetube.local.util.AppLogStore.info(
+                    this,
+                    "PlaybackFlow",
+                    "历史记录复用正在进行的人物识别任务，跳过新建视频处理流程",
+                diagnosticContext = mapOf(
+                    "当前阶段" to state.phase.name,
+                    "当前进度" to state.progress.take(120),
+                    "跳过五阶段重启" to "是",
+                    ),
+                )
+                true
+            } catch (error: Exception) {
+                android.util.Log.w("PlaybackService", "恢复人物识别中的播放会话失败", error)
+                false
+            }
+        }
+        if (
+            key.isBlank() ||
+            key != videoKey ||
+            key != completedReadySessionKey ||
+            state.key != key ||
+            state.phase != Phase.READY ||
+            state.waitingForTranscriptionEngine ||
+            state.waitingForDubbingEngine ||
+            state.dubbingHasErrors
+        ) return false
+
+        // This synchronous Boolean API cannot verify provider-backed URIs safely without blocking.
+        // Let open() resolve the metadata on IO and restore a compatible successful snapshot.
+        if (localUri != null) return false
+        val currentLocalIdentity: String? = null
+        val currentRemoteSnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey = key,
+            remoteMediaUrl = remoteMediaUrl,
+            referrer = remoteMediaReferrer,
+            cookie = remoteMediaCookie,
+            localMediaIdentityKey = currentLocalIdentity,
+        )
+        val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(
+            this,
+            key,
+            identityKey = currentRemoteSnapshotIdentityKey,
+            expectedProcessingFlows = setOf(state.processingFlow),
+        ) { ignore ->
+            ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
+        }
+        val youtubeSubtitleModeChanged =
+            isYouTube &&
+                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key)
+        if (
+            currentConfigSnapshot != null &&
+            currentConfigSnapshot.fingerprint != completedReadySessionEngineFingerprint &&
+            !ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key) &&
+            !youtubeSubtitleModeChanged
+        ) {
+            val restoredState = currentConfigSnapshot.state.copy(
+                // Playback volume controls audibility; keep timeline preparation independent so
+                // muting dubbing does not discard the background synthesis queue.
+                dubbingOn = true,
+                muteOriginal = state.originalVolume <= 0f,
+                originalVolume = state.originalVolume,
+                dubbingVolume = state.dubbingVolume,
+                audioOnly = state.audioOnly,
+                videoAspect = state.videoAspect,
+            )
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackFlow",
+                "命中该视频此前成功的引擎配置组合，直接恢复其完整处理结果",
+                diagnosticContext = mapOf(
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "处理流程" to restoredState.processingFlow.name,
+                    "恢复的配置指纹" to currentConfigSnapshot.fingerprint.take(16),
+                    "原文字幕行数" to restoredState.lines.size.toString(),
+                    "是否重新转写" to "否",
+                    "是否重新翻译" to "否",
+                    "配音缓存策略" to "复用该成功配置自己的 PCM，不重新合成",
+                ),
+            )
+            open(
+                key = key,
+                videoId = videoId,
+                localUri = localUri,
+                importedLines = null,
+                resumeState = restoredState,
+                remoteMediaUrl = remoteMediaUrl,
+                remoteMediaTitle = remoteMediaTitle,
+                remoteMediaReferrer = remoteMediaReferrer,
+                remoteMediaCookie = remoteMediaCookie,
+                remoteMediaUserAgent = remoteMediaUserAgent,
+                requestToken = requestToken,
+                reuseMountedMediaForRestart = true,
+                // This snapshot was verified against the selected configuration. Restore the
+                // completed playback result and its own PCM cache without revisiting five stages.
+                restoreReadySnapshot = true,
+                forceRegenerateDubbing = false,
+            )
+            return true
+        }
+
+        val ignoreTranscription = completedReadySessionIgnoresTranscription
+        if (
+            ignoreTranscription &&
+            !EngineRestartStagePolicy.ignoresTranscriptionConfig(state.processingFlow, isYouTube)
+        ) return false
+        val currentFingerprint = processingEnginePreferenceFingerprint(
+            ignoreTranscription = ignoreTranscription,
+            forVideoKey = key,
+        )
+        val previousDomains = ReadyHistorySessionConfigStore.savedFingerprints(this, key)
+        val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this)
+        val forceYouTubeSubtitleRefresh =
+            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key)
+        val restartStage = if (forceYouTubeSubtitleRefresh) {
+            EngineRestartStage.TRANSCRIPTION
+        } else {
+            previousDomains?.let { previous ->
+                chooseEngineRestartStage(previous, currentDomains, state, ignoreTranscription)
+            }
+        }
+
+        if (restartStage != null && state.lines.isNotEmpty()) {
+            val restartState = stateForEngineRestart(state, restartStage)
+            val importedRestartLines = if (this.importedLines != null) restartState?.lines else null
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackFlow",
+                "引擎配置变化，按最早受影响阶段恢复视频处理",
+                diagnosticContext = mapOf(
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "恢复阶段" to restartStage.name,
+                    "转写配置是否变化" to (previousDomains?.let { it.transcription != currentDomains.transcription }?.toString() ?: "未知"),
+                    "翻译配置是否变化" to (previousDomains?.let { it.translation != currentDomains.translation }?.toString() ?: "未知"),
+                    "配音配置是否变化" to (previousDomains?.let { it.dubbing != currentDomains.dubbing }?.toString() ?: "未知"),
+                    "YouTube字幕语言设置是否变化" to forceYouTubeSubtitleRefresh.toString(),
+                    "已复用字幕行数" to state.lines.size.toString(),
+                    "音轨处理策略" to when (restartStage) {
+                        EngineRestartStage.TRANSCRIPTION -> "复用已缓存音轨；重新转写、翻译和配音"
+                        EngineRestartStage.TRANSLATION -> "复用原文字幕和时间轴；重新翻译和配音"
+                        EngineRestartStage.DUBBING -> if (
+                        !isChineseLanguage(state.sourceLang) &&
+                            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
+                    ) "复用原文和已完成译文；补齐未完成翻译后重新生成配音"
+                    else "复用原文、中文字幕和时间轴；仅重新生成配音"
+                    },
+                ),
+            )
+            open(
+                key = key,
+                videoId = videoId,
+                localUri = localUri,
+                importedLines = importedRestartLines,
+                resumeState = if (forceYouTubeSubtitleRefresh) null else restartState,
+                remoteMediaUrl = remoteMediaUrl,
+                remoteMediaTitle = remoteMediaTitle,
+                remoteMediaReferrer = remoteMediaReferrer,
+                remoteMediaCookie = remoteMediaCookie,
+                remoteMediaUserAgent = remoteMediaUserAgent,
+                requestToken = requestToken,
+                reuseMountedMediaForRestart = true,
+                forceRegenerateDubbing = true,
+                forceRegenerateFromStage = restartStage,
+                forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                reuseMatchingDubbingCache = previousDomains?.let { previous ->
+                    EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                        previous,
+                        currentDomains,
+                        processingFlow = state.processingFlow,
+                    )
+                } == true,
+            )
+            return true
+        }
+
+        if (completedReadySessionEngineFingerprint.isBlank() || currentFingerprint != completedReadySessionEngineFingerprint) {
+            return false
+        }
+        return try {
+            if (!state.isPlaying) pm.play()
+            activeOpenRequestToken = requestToken
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackFlow",
+                "首页历史记录复用已就绪的视频会话，跳过五阶段处理页",
+                diagnosticContext = mapOf(
+                    "视频来源" to if (isYouTube) "YouTube" else if (key.startsWith("remote:")) "网页视频" else "本地视频",
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "播放请求标记" to requestToken.toString(),
+                    "引擎配置是否匹配" to "是",
+                    "YouTube 是否忽略转写引擎配置" to isYouTube.toString(),
+                ),
+            )
+            true
+        } catch (error: Exception) {
+            android.util.Log.w("PlaybackService", "Unable to resume completed history session", error)
+            false
+        }
+    }
+
+    /** Persist the current original timeline / partial Chinese translations for process-death recovery. */
+    private suspend fun persistInProgressProcessingCheckpoint(
+        sessionKey: String,
+        pipelineGeneration: Long,
+    ) {
+        inProgressCheckpointWriteMutex.withLock {
+            // Re-check after waiting for the previous write: the UI may now belong to a newer
+            // pipeline generation, even when it is processing the same history key.
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            val state = ui.value
+            if (state.key != sessionKey || state.lines.isEmpty()) return@withLock
+            if (!InProgressProcessingCheckpointPhasePolicy.canPersist(state.phase)) return@withLock
+
+            val identityKey = activeProcessingCheckpointIdentityKey
+            val fingerprints = processingEngineDomainFingerprints
+            if (identityKey.isBlank() ||
+                fingerprints.transcription.isBlank() ||
+                fingerprints.translation.isBlank() ||
+                fingerprints.dubbing.isBlank()
+            ) return@withLock
+
+            // READY only means the startup buffer can play. Keep a recovery checkpoint while
+            // later cues are still being synthesized, but remove it after the entire queue is
+            // prepared. The same mutex also serializes this deletion against pending writes.
+            val readyResultIsComplete =
+                state.phase == Phase.READY &&
+                    !state.waitingForTranscriptionEngine &&
+                    !state.waitingForDubbingEngine &&
+                    !state.dubbingHasErrors &&
+                    state.lines.none { needsSubtitleTranslation(it, state.sourceLang) } &&
+                    isDubbingQueueFullyPreparedForCheckpoint(state)
+            if (readyResultIsComplete) {
+                deleteInProgressCheckpointIfCurrent(sessionKey, pipelineGeneration, identityKey)
+                return@withLock
+            }
+
+            // Content fingerprints avoid recompressing and rewriting the same subtitle timeline
+            // when only playback counters, notification text or other transient UI fields change.
+            val saved = withContext(Dispatchers.IO) {
+                if (
+                    videoKey != sessionKey ||
+                    activePipelineGeneration != pipelineGeneration ||
+                    activeProcessingCheckpointIdentityKey != identityKey ||
+                    processingEngineDomainFingerprints != fingerprints
+                ) {
+                    null
+                } else {
+                    InProgressProcessingCheckpointStore.save(
+                        context = this@PlaybackService,
+                        videoKey = sessionKey,
+                        identityKey = identityKey,
+                        state = state.copy(lines = state.lines.toList()),
+                        fingerprints = fingerprints,
+                        requireFreshDubbing =
+                            forceFreshDubbingPipelineGeneration == pipelineGeneration,
+                        requireFreshTranslation =
+                            forceFreshTranslationPipelineGeneration == pipelineGeneration,
+                        youtubeSubtitleMode = activeProcessingYouTubeSubtitleMode.takeIf {
+                            sessionKey.startsWith("youtube:", ignoreCase = true) &&
+                                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                                    state.processingFlow,
+                                )
+                        },
+                    )
+                }
+            }
+
+            if (
+                saved != null &&
+                InProgressProcessingCheckpointStoragePolicy.shouldReportSaveOutcome(
+                    saved.status,
+                    saved.reason,
+                ) &&
+                videoKey == sessionKey &&
+                activePipelineGeneration == pipelineGeneration &&
+                activeProcessingCheckpointIdentityKey == identityKey
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackCheckpoint",
+                    "处理中间进度保存失败",
+                    saved.failure,
+                    diagnosticContext = mapOf(
+                        "视频来源" to when {
+                            sessionKey.startsWith("remote:", ignoreCase = true) -> "网页视频"
+                            sessionKey.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                            else -> "本地视频"
+                        },
+                        "当前阶段" to state.phase.name,
+                        "字幕行数" to state.lines.size.toString(),
+                        "已准备配音行数" to state.preparedCount.toString(),
+                        "配音总行数" to state.totalLines.toString(),
+                        "保存状态" to saved.status.name,
+                        "失败阶段" to saved.stage.orEmpty(),
+                        "失败原因" to saved.reason.orEmpty(),
+                        "未压缩大小字节" to saved.uncompressedBytes?.toString().orEmpty(),
+                        "压缩大小字节" to saved.compressedBytes?.toString().orEmpty(),
+                        "保存耗时 ms" to saved.elapsedMs.toString(),
+                        "检查点压缩大小限制 MB" to "24",
+                        "检查点解压大小限制 MB" to "64",
+                        "失败处理代数" to pipelineGeneration.toString(),
+                    ),
+                )
+            }
+
+            if (
+                saved != null &&
+                saved.cleanupFailure != null &&
+                videoKey == sessionKey &&
+                activePipelineGeneration == pipelineGeneration &&
+                activeProcessingCheckpointIdentityKey == identityKey
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackCheckpoint",
+                    "检查点已保存，但旧文件清理失败",
+                    saved.cleanupFailure,
+                    diagnosticContext = mapOf(
+                        "视频来源" to if (sessionKey.startsWith("youtube:", ignoreCase = true)) "YouTube" else
+                            if (sessionKey.startsWith("remote:", ignoreCase = true)) "网页视频" else "本地视频",
+                        "检查点状态" to saved.status.name,
+                        "失败处理代数" to pipelineGeneration.toString(),
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Best-effort lifecycle flush; unrelated phases and completed READY sessions are no-ops. */
+    fun persistCurrentProcessingCheckpoint() {
+        val sessionKey = videoKey
+        val generation = activePipelineGeneration
+        if (sessionKey.isBlank() || generation <= 0L) return
+        scope.launch {
+            runCatching { persistInProgressProcessingCheckpoint(sessionKey, generation) }
+                .onFailure { error ->
+                    if (error !is kotlinx.coroutines.CancellationException) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackCheckpoint",
+                            "应用进入后台时保存处理中间进度失败",
+                            error,
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun chooseEngineRestartStage(
+        previous: EngineConfigFingerprints,
+        current: EngineConfigFingerprints,
+        state: PlayerUiState,
+        ignoreTranscription: Boolean,
+        skipSavedYouTubeSubtitleModeCheck: Boolean = false,
+    ): EngineRestartStage? {
+        // A subtitle-language preference change must re-enter YouTube source discovery even when
+        // the previous run fell back to ASR; the new mode may expose a usable caption track.
+        if (
+            !skipSavedYouTubeSubtitleModeCheck &&
+                ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)
+        ) {
+            return EngineRestartStage.TRANSCRIPTION
+        }
+        val sourceIsChinese = isChineseLanguage(state.sourceLang)
+        return EngineRestartStagePolicy.choose(
+            previous = previous,
+            current = current,
+            processingFlow = state.processingFlow,
+            ignoreTranscription = ignoreTranscription,
+            hasLines = state.lines.isNotEmpty(),
+            sourceLanguageIsChinese = sourceIsChinese,
+        )
+    }
+
+    private fun stateForEngineRestart(
+        state: PlayerUiState,
+        stage: EngineRestartStage,
+    ): PlayerUiState? = when (stage) {
+        EngineRestartStage.TRANSCRIPTION -> state.copy(
+            lines = emptyList(),
+            transcriptionPreviewLines = emptyList(),
+            translationPreviewLines = emptyList(),
+            translatedLineCount = 0,
+            translationCurrentBatch = 0,
+            translationTotalBatches = 0,
+            translationRetryCount = 0,
+            totalLines = 0,
+            preparedUntil = 0,
+            preparedCount = 0,
+            audioReadyCount = 0,
+            sourceLang = "",
+            waitingForTranscriptionEngine = false,
+            waitingForDubbingEngine = false,
+            dubbingHasErrors = false,
+            error = null,
+            failedPhase = null,
+            failedProgress = "",
+        )
+        EngineRestartStage.TRANSLATION -> state.copy(
+            lines = state.lines.mapIndexed { index, line -> line.copy(index = index, zh = null) },
+            translationPreviewLines = emptyList(),
+            translatedLineCount = 0,
+            translationCurrentBatch = 0,
+            translationTotalBatches = 0,
+            translationRetryCount = 0,
+            preparedUntil = 0,
+            preparedCount = 0,
+            audioReadyCount = 0,
+            waitingForTranscriptionEngine = false,
+            waitingForDubbingEngine = false,
+            dubbingHasErrors = false,
+            error = null,
+            failedPhase = null,
+            failedProgress = "",
+        )
+        EngineRestartStage.DUBBING -> state.copy(
+            preparedUntil = 0,
+            preparedCount = 0,
+            audioReadyCount = 0,
+            waitingForTranscriptionEngine = false,
+            waitingForDubbingEngine = false,
+            dubbingHasErrors = false,
+            error = null,
+            failedPhase = null,
+            failedProgress = "",
+        )
+    }
+
+    private fun beginPipelineGeneration(): Long = synchronized(pipelineGenerationLock) {
+        (++pipelineGenerationCounter).also { activePipelineGeneration = it }
+    }
+
+    private fun beginDubbingMutationGeneration(): Long = synchronized(pipelineGenerationLock) {
+        (++dubbingMutationGenerationCounter).also { activeDubbingMutationGeneration = it }
+    }
+
+    private suspend fun ensureCurrentSession(
+        sessionKey: String,
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
+    ) {
+        // Extractor/JNI calls are sometimes synchronous. A canceled job may return from one
+        // without suspending, so explicitly check before publishing results or opening engines.
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        PlaybackSessionGuard.ensureCurrent(
+            sessionKey = sessionKey,
+            activeVideoKey = videoKey,
+            activeUiKey = ui.value.key,
+            expectedPipelineGeneration = pipelineGeneration,
+            activePipelineGeneration = activePipelineGeneration,
+            expectedDubbingMutationGeneration = dubbingMutationGeneration,
+            activeDubbingMutationGeneration = activeDubbingMutationGeneration,
+        )
+    }
+
+    private fun isProcessingPhase(phase: Phase): Boolean = phase in setOf(
+        Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING,
+        Phase.TRANSLATING, Phase.SYNTHESIZING,
+    )
+
+    private fun isProcessingEnginePreferenceKey(key: String): Boolean {
+        val selectedTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
+        val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
+            .getLong("active_api_id", -1L)
+        return ReadyHistorySessionConfigStore.isRelevantPreferenceKey(
+            key,
+            selectedTtsEngine,
+            activeTranslationId,
+        )
+    }
+
+    /**
+     * Hash only the settings that influence transcription, translation or synthesis.
+     * The fingerprint is diagnostic-safe: API keys and other preference values are never logged.
+     */
+    private fun processingEnginePreferenceFingerprint(
+        ignoreTranscription: Boolean = false,
+        forVideoKey: String = videoKey,
+        youtubeSubtitleModeOverride: String? = null,
+    ): String = ReadyHistorySessionConfigStore.fingerprint(
+        this,
+        ignoreTranscription,
+        forVideoKey,
+        youtubeSubtitleModeOverride,
+    )
+
+    private fun selectedYouTubeSubtitleMode(): String =
+        getSharedPreferences("settings", MODE_PRIVATE).getString(
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+        ) ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE
+
+    /**
+     * Restart the active pipeline when an output-affecting engine setting changes.
+     * A completed READY session is eligible too: changing translation engines while the player
+     * is open must not leave the previous engine's Chinese subtitles on screen.
+     */
+    private fun shouldRestartForEnginePreferenceChange(state: PlayerUiState): Boolean =
+        (state.key.isNotBlank() &&
+            state.key == videoKey &&
+            pendingYouTubeSubtitleRefreshKey == state.key) ||
+            isProcessingPhase(state.phase) ||
+            (state.phase == Phase.READY && (
+                state.waitingForTranscriptionEngine ||
+                    state.waitingForDubbingEngine ||
+                    (state.key.isNotBlank() && state.key == videoKey && state.lines.isNotEmpty())
+                )) ||
+            (state.phase == Phase.ERROR &&
+                state.key.isNotBlank() &&
+                state.key == videoKey &&
+                state.lines.isNotEmpty() &&
+                state.sourceLang.isNotBlank())
+
+    private fun registerProcessingEnginePreferenceWatcher() {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
+            if (changedKey != null && isProcessingEnginePreferenceKey(changedKey)) {
+                val current = ui.value
+                if (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY && videoKey.isNotBlank()) {
+                    val usesYouTubeCaptionSource =
+                        current.key == videoKey &&
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(current.processingFlow)
+                    pendingYouTubeSubtitleRefreshKey =
+                        if (usesYouTubeCaptionSource &&
+                            selectedYouTubeSubtitleMode() != activeProcessingYouTubeSubtitleMode
+                        ) videoKey else null
+                }
+                val latestFingerprint = processingEnginePreferenceFingerprint()
+                if (!shouldRestartForEnginePreferenceChange(current)) {
+                    processingEngineConfigFingerprint = latestFingerprint
+                    processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                    activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+                    if (pendingYouTubeSubtitleRefreshKey == videoKey) {
+                        pendingYouTubeSubtitleRefreshKey = null
+                    }
+                } else if (latestFingerprint != processingEngineConfigFingerprint) {
+                    // Debounce rapid preference writes so a single settings change restarts the
+                    // pipeline once, using the final selected ASR/translation/TTS configuration.
+                    enginePreferenceRestartJob?.cancel()
+                    val changedSessionKey = videoKey
+                    val changedPipelineGeneration = activePipelineGeneration
+                    enginePreferenceRestartJob = scope.launch {
+                        kotlinx.coroutines.delay(850L)
+                        val stableFingerprint = processingEnginePreferenceFingerprint()
+                        val state = ui.value
+                        // If the user canceled or opened a different item while this debounce was
+                        // pending, don't resurrect that task. A pipeline that simply reached READY
+                        // is still restarted because the engine changed while it was processing.
+                        if (changedSessionKey.isBlank() ||
+                            videoKey != changedSessionKey ||
+                            activePipelineGeneration != changedPipelineGeneration ||
+                            state.key != changedSessionKey
+                        ) {
+                            if (pendingYouTubeSubtitleRefreshKey == changedSessionKey) {
+                                pendingYouTubeSubtitleRefreshKey = null
+                            }
+                            processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                            return@launch
+                        }
+                        if (stableFingerprint == processingEngineConfigFingerprint) return@launch
+
+                        // An imported already-translated subtitle file is authoritative input.
+                        // A translator or ASR preference change must not cancel/reopen this flow,
+                        // because there is no translation/ASR stage to rerun. A TTS fingerprint
+                        // change remains relevant and continues through the normal dubbing restart.
+                        val currentDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                        val previousDomainFingerprints = processingEngineDomainFingerprints
+                        val importingTranslatedFile =
+                            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+                                state.phase == Phase.PARSING &&
+                                state.subtitleTrackStatus == "正在导入已翻译字幕"
+                        val importedTranslationSettingsAreIrrelevant =
+                            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+                                !EngineRestartStagePolicy.hasRelevantConfigChange(
+                                    previous = previousDomainFingerprints,
+                                    current = currentDomainFingerprints,
+                                    processingFlow = state.processingFlow,
+                                    ignoreTranscription = true,
+                                )
+                        val usesUserImportedSubtitles =
+                            state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+                                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                        val pendingSubtitleModeRefresh =
+                            pendingYouTubeSubtitleRefreshKey == changedSessionKey
+                        val restartVideoIdCandidate = videoId ?: if (remoteMediaUrl == null) {
+                            changedSessionKey.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+                        } else {
+                            null
+                        }
+                        val forceYouTubeSubtitleRefresh =
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(state.processingFlow) &&
+                                !usesUserImportedSubtitles &&
+                                pendingSubtitleModeRefresh &&
+                                restartVideoIdCandidate != null
+                        val ignoreTranscriptionForCurrentFlow =
+                            state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
+                                usesUserImportedSubtitles ||
+                                (completedReadySessionKey == changedSessionKey &&
+                                    completedReadySessionIgnoresTranscription)
+                        val hasRelevantEngineConfigChange =
+                            EngineRestartStagePolicy.hasRelevantConfigChange(
+                                previous = previousDomainFingerprints,
+                                current = currentDomainFingerprints,
+                                processingFlow = state.processingFlow,
+                                ignoreTranscription = ignoreTranscriptionForCurrentFlow,
+                            )
+                        if (importingTranslatedFile || importedTranslationSettingsAreIrrelevant) {
+                            if (hasRelevantEngineConfigChange) {
+                                forceFreshDubbingPipelineGeneration = changedPipelineGeneration
+                            }
+                            // During the file-read phase there is no reusable subtitle timeline yet.
+                            // Keep the import alive for any engine setting change; the new TTS setting
+                            // is read when synthesis starts. After import, only a relevant TTS change
+                            // should restart this authoritative translated-subtitle flow.
+                            processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = currentDomainFingerprints
+                            activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+                            if (pendingYouTubeSubtitleRefreshKey == changedSessionKey) {
+                                pendingYouTubeSubtitleRefreshKey = null
+                            }
+                            return@launch
+                        }
+
+                        // Some flows do not consume every engine domain: YouTube-caption and
+                        // user-imported-subtitle flows do not use the ASR engine. Do not reopen the
+                        // whole pipeline just because the global preference fingerprint changed.
+                        // A pending YouTube subtitle-mode refresh remains an explicit exception.
+                        if (!forceYouTubeSubtitleRefresh && !hasRelevantEngineConfigChange) {
+                            processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = currentDomainFingerprints
+                            activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+                            if (pendingYouTubeSubtitleRefreshKey == changedSessionKey) {
+                                pendingYouTubeSubtitleRefreshKey = null
+                            }
+                            return@launch
+                        }
+
+                        val sessionKey = changedSessionKey
+                        val restartLocalUri = localUri
+                        val restartRemoteUrl = remoteMediaUrl
+                        val restartVideoId = videoId ?: if (restartRemoteUrl == null) {
+                            sessionKey.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+                        } else {
+                            null
+                        }
+                        val restartRemoteTitle = remoteMediaTitle
+                        val restartRemoteReferrer = remoteMediaReferrer
+                        val restartRemoteCookie = remoteMediaCookie
+                        val restartRemoteUserAgent = remoteMediaUserAgent
+
+                        // A newer video open or a second settings change may supersede this
+                        // debounced decision. Revalidate both the session and the exact preference
+                        // fingerprint before starting any stage restart.
+                        if (
+                            videoKey != sessionKey ||
+                            activePipelineGeneration != changedPipelineGeneration ||
+                            ui.value.key != sessionKey
+                        ) return@launch
+                        if (!EnginePreferenceRestartDecisionPolicy.isStillCurrent(
+                                decisionFingerprint = stableFingerprint,
+                                currentFingerprint = processingEnginePreferenceFingerprint(),
+                            )
+                        ) {
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "引擎配置在恢复决策期间再次变化，已丢弃过期重处理决定",
+                                diagnosticContext = mapOf(
+                                    "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                                    "旧决策指纹" to stableFingerprint.take(16),
+                                    "当前配置指纹" to processingEnginePreferenceFingerprint().take(16),
+                                    "是否启动旧配置重处理" to "否",
+                                ),
+                            )
+                            return@launch
+                        }
+
+                        if (pendingSubtitleModeRefresh) pendingYouTubeSubtitleRefreshKey = null
+
+                        // A selected engine change starts a new output run even when this exact combination
+                        // has a historical snapshot. Reuse only upstream inputs before the changed stage.
+                        // The active media identity and preference fingerprint were revalidated above.
+
+                        val sourcePreparationPreviousDomains = processingEngineDomainFingerprints
+                        val sourcePreparationCurrentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                        if (
+                            !forceYouTubeSubtitleRefresh &&
+                            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                                phase = state.phase,
+                                processingFlow = state.processingFlow,
+                                previous = sourcePreparationPreviousDomains,
+                                current = sourcePreparationCurrentDomains,
+                            )
+                        ) {
+                            // Keep source preparation running, but make the later stage-5 attach a
+                            // fresh synthesis even when this exact engine/voice has an older PCM file.
+                            forceFreshDubbingPipelineGeneration = changedPipelineGeneration
+                            if (sourcePreparationPreviousDomains.translation != sourcePreparationCurrentDomains.translation) {
+                                forceFreshTranslationPipelineGeneration = changedPipelineGeneration
+                            }
+                            // Translation and TTS are read when their stages start. Do not cancel ASR
+                            // just because a downstream engine changed while audio is being prepared
+                            // or transcribed; doing so wastes work and can discard an active checkpoint.
+                            processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = sourcePreparationCurrentDomains
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "转写继续使用当前引擎，后续阶段应用新配置",
+                                diagnosticContext = mapOf(
+                                    "处理阶段" to state.phase.name,
+                                    "处理流程" to state.processingFlow.name,
+                                    "转写配置变化" to "否",
+                                    "翻译配置变化" to (sourcePreparationPreviousDomains.translation != sourcePreparationCurrentDomains.translation).toString(),
+                                    "配音配置变化" to (sourcePreparationPreviousDomains.dubbing != sourcePreparationCurrentDomains.dubbing).toString(),
+                                    "是否重启当前阶段" to "否",
+                                ),
+                            )
+                            return@launch
+                        }
+
+                        // On a completed session, compare the saved per-domain fingerprints and
+                        // restart at the earliest affected stage using the shared, source-independent policy.
+                        // Translation changes reuse source text/timestamps and regenerate Chinese speech.
+                        // A model can change while translation or synthesis is still running.
+                        // Reuse the source timeline in those phases too; relying only on a successful
+                        // history snapshot forced first-time/in-progress videos back to stage 1.
+                        val canResumeWithTimeline =
+                            state.phase in setOf(
+                                Phase.READY,
+                                Phase.ERROR,
+                                Phase.TRANSLATING,
+                                Phase.SYNTHESIZING,
+                            ) &&
+                                state.lines.isNotEmpty() &&
+                                state.sourceLang.isNotBlank()
+                        val canResumeAtSourceStage =
+                            EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                                phase = state.phase,
+                                processingFlow = state.processingFlow,
+                            )
+                        // This baseline belongs to the active pipeline, not just the last successful
+                        // run. It enables stage-specific resume even on the first run of this video,
+                        // including source preparation before the first subtitle row exists.
+                        val previousDomains = if (canResumeWithTimeline || canResumeAtSourceStage) {
+                            processingEngineDomainFingerprints
+                        } else null
+                        val currentDomains = if (previousDomains != null) {
+                            ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                        } else null
+                        val readyRestartStage = if (previousDomains != null && currentDomains != null) {
+                            val ignoreTranscription =
+                                state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
+                                    (completedReadySessionKey == sessionKey &&
+                                        completedReadySessionIgnoresTranscription)
+                            val configRestartStage = chooseEngineRestartStage(
+                                previousDomains,
+                                currentDomains,
+                                state,
+                                ignoreTranscription,
+                            )
+                            when {
+                                // A caption-mode change must re-enter subtitle discovery, not treat
+                                // an empty resume snapshot as an ASR transcript request.
+                                forceYouTubeSubtitleRefresh -> EngineRestartStage.TRANSCRIPTION
+                                configRestartStage != null -> configRestartStage
+                                // There are no rows to preserve yet. Restart at the current source
+                                // preparation boundary; cached audio and partial ASR checkpoints
+                                // remain available, without reopening the whole source pipeline.
+                                canResumeAtSourceStage -> EngineRestartStage.TRANSCRIPTION
+                                else -> null
+                            }
+                        } else null
+                        val readyRestartState = readyRestartStage?.let { stage ->
+                            stateForEngineRestart(state, stage)
+                        }
+                        // Before YouTube resolves AUTO into captions or speech recognition, an ASR
+                        // engine switch must re-enter source discovery. An empty AUTO snapshot would
+                        // otherwise skip caption discovery and jump straight to ASR.
+                        val rediscoverYouTubeSourceBeforeAsr =
+                            readyRestartStage == EngineRestartStage.TRANSCRIPTION &&
+                                state.phase == Phase.PARSING &&
+                                state.processingFlow == ProcessingFlow.AUTO &&
+                                state.lines.isEmpty()
+                        val effectiveReadyRestartState =
+                            readyRestartState.takeUnless { rediscoverYouTubeSourceBeforeAsr }
+                        val canResumeAtStage = (canResumeWithTimeline || canResumeAtSourceStage) &&
+                            readyRestartStage != null &&
+                            (effectiveReadyRestartState != null || rediscoverYouTubeSourceBeforeAsr)
+                        val importedRestartLines = if (
+                            canResumeAtStage && this@PlaybackService.importedLines != null
+                        ) {
+                            effectiveReadyRestartState?.lines
+                        } else null
+                        val restartRequestToken = activeOpenRequestToken
+
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            when {
+                                canResumeAtStage && state.phase == Phase.READY ->
+                                    "播放完成后检测到引擎设置变化，按最早受影响阶段重新处理当前视频"
+                                canResumeAtStage && state.phase == Phase.ERROR ->
+                                    "处理失败后检测到引擎设置变化，恢复最早受影响阶段并按新配置重试"
+                                canResumeAtStage && state.phase == Phase.TRANSLATING ->
+                                    "翻译处理中检测到引擎设置变化，复用原文时间轴继续处理"
+                                canResumeAtStage && state.phase == Phase.SYNTHESIZING ->
+                                    "配音处理中检测到引擎设置变化，恢复最早受影响阶段继续处理"
+                                else ->
+                                    "处理期间检测到引擎设置变化，按新配置重新处理当前视频"
+                            },
+                            diagnosticContext = mapOf(
+                                "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                                "触发时处理阶段" to state.phase.name,
+                                "处理流程" to state.processingFlow.name,
+                                "旧引擎配置指纹" to processingEngineConfigFingerprint.take(16),
+                                "新引擎配置指纹" to stableFingerprint.take(16),
+                                "选择的恢复阶段" to (readyRestartStage?.name ?: "从流程入口恢复"),
+                                "已复用字幕行数" to (effectiveReadyRestartState?.lines?.size ?: 0).toString(),
+                                "是否重新发现 YouTube 字幕轨" to rediscoverYouTubeSourceBeforeAsr.toString(),
+                                "恢复策略" to when (readyRestartStage) {
+                                    EngineRestartStage.TRANSCRIPTION -> "重新获取/转写原文字幕，再翻译和配音"
+                                    EngineRestartStage.TRANSLATION -> "复用原文和时间轴，按新翻译引擎重新翻译，再生成配音"
+                                    EngineRestartStage.DUBBING -> if (
+                                        !isChineseLanguage(state.sourceLang) &&
+                                            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
+                                    ) "复用原文和已完成译文；补齐未完成翻译后重新生成配音"
+                                    else "复用原文、中文字幕和时间轴，仅重新生成配音"
+                                    null -> "使用现有缓存策略重新进入公共处理流程"
+                                },
+                                "音频策略" to "已缓存音轨和原文字幕按来源与转写引擎隔离复用",
+                            ),
+                        )
+                        withContext(Dispatchers.Main.immediate) {
+                            open(
+                                key = sessionKey,
+                                videoId = restartVideoId,
+                                localUri = restartLocalUri,
+                                importedLines = importedRestartLines,
+                                resumeState = if (forceYouTubeSubtitleRefresh) {
+                                    null
+                                } else if (canResumeAtStage) {
+                                    effectiveReadyRestartState
+                                } else {
+                                    null
+                                },
+                                remoteMediaUrl = restartRemoteUrl,
+                                remoteMediaTitle = restartRemoteTitle,
+                                remoteMediaReferrer = restartRemoteReferrer,
+                                remoteMediaCookie = restartRemoteCookie,
+                                remoteMediaUserAgent = restartRemoteUserAgent,
+                                requestToken = restartRequestToken,
+                                reuseMountedMediaForRestart = canResumeAtStage,
+                                forceRegenerateDubbing = true,
+                                forceRegenerateFromStage = readyRestartStage,
+                                reuseMatchingDubbingCache = previousDomains?.let { previous ->
+                                    currentDomains?.let { current ->
+                                        EngineRestartStagePolicy.canReuseMatchingDubbingCache(
+                                            previous,
+                                            current,
+                                            processingFlow = state.processingFlow,
+                                        )
+                                    }
+                                } == true,
+                                forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                            )
+                        }
+                    }
+                } else {
+                    // The user may switch an engine away and back before the debounce expires.
+                    // The active task already matches the final settings; cancel the obsolete restart.
+                    enginePreferenceRestartJob?.cancel()
+                    enginePreferenceRestartJob = null
+                    if (pendingYouTubeSubtitleRefreshKey == videoKey &&
+                        selectedYouTubeSubtitleMode() == activeProcessingYouTubeSubtitleMode
+                    ) {
+                        pendingYouTubeSubtitleRefreshKey = null
+                    }
+                }
+            }
+        }
+        enginePreferencesListener = listener
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+    }
+    /** Processing checkpoints wait here while paused. */
+    private suspend fun awaitProcessingResumed(
+        sessionKey: String,
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
+    ) {
+        if (processingPaused) processingPauseGate.withLock { /* resumes when unlocked */ }
+        ensureCurrentSession(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+    }
+
+    fun toggleProcessingPause() {
+        if (!isProcessingPhase(ui.value.phase)) return
+        if (processingPaused) {
+            processingPaused = false
+            if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        } else if (processingPauseGate.tryLock()) {
+            processingPaused = true
+        }
+        ui.update { current ->
+            if (current.key == videoKey) current.copy(isProcessingPaused = processingPaused)
+            else current
+        }
+    }
+
+    fun cancelProcessing() {
+        val current = ui.value
+        if (!isProcessingPhase(current.phase)) {
+            updateProcessingNotification(current)
+            return
+        }
+        beginPipelineGeneration()
+        processingPaused = false
+        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        prepJob?.cancel(kotlinx.coroutines.CancellationException("用户取消视频处理"))
+        prepJob = null
+        subtitleDownloadJob?.cancel()
+        subtitleDownloadJob = null
+        speakerJob?.cancel()
+        speakerJob = null
+        qualityJob?.cancel()
+        qualityJob = null
+        qualityRecoveryJob?.cancel()
+        qualityRecoveryJob = null
+        dubCollectJob?.cancel()
+        dubCollectJob = null
+        runCatching { retireCurrentDubbing() }
+        if (playerReady && ::pm.isInitialized) runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
+        updateUiForSession(current.key) {
+            it.copy(
+                phase = Phase.ERROR,
+                progress = "",
+                error = "已取消处理。点击重试即可重新开始。",
+                muteOriginal = false,
+                noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
+                isProcessingPaused = false,
+            )
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val requestedSession = intent?.getStringExtra(EXTRA_PROCESSING_SESSION_KEY)
+        if (!requestedSession.isNullOrBlank() && requestedSession != ui.value.key) {
+            updateProcessingNotification(ui.value)
+            return START_NOT_STICKY
+        }
+        when (intent?.action) {
+            ACTION_TOGGLE_PROCESSING_PAUSE -> {
+                toggleProcessingPause()
+                updateProcessingNotification(ui.value)
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL_PROCESSING -> {
+                cancelProcessing()
+                updateProcessingNotification(ui.value)
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL_SPEAKER_RECOGNITION -> {
+                cancelSpeakerRecognition()
+                updateProcessingNotification(ui.value)
+                return START_NOT_STICKY
+            }
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    /** 主线程把画面 TextureView 交给播放器 */
+    /** 播放头前方已缓冲的时长（毫秒），供加载转圈如实显示进度；需在主线程调用。 */
+    fun bufferedAheadMs(): Long = if (playerReady && ::pm.isInitialized) pm.bufferedAheadMs() else 0L
+
+    /**
+     * Report where video is currently presented. BACKGROUND_AUDIO never pauses the player or
+     * dubbing; it only disables video-only black-screen recovery while no picture is expected.
+     */
+    fun setVideoPresentationMode(mode: VideoPresentationMode) {
+        val updateMode = Runnable {
+            val changed = videoPresentationMode != mode
+            videoPresentationMode = mode
+            if (changed) {
+                // A wait window from one presentation mode must not leak into another.
+                noFrameWaitStartedAtMs = 0L
+                noFrameWaitSessionKey = ui.value.key
+                playbackStallWatchSessionKey = ""
+                playbackStallWatchPositionMs = -1L
+                playbackStallWatchLastProgressAtMs = 0L
+                scope.launch(Dispatchers.IO) {
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.info(
+                            applicationContext,
+                            "PlayerManager",
+                            "视频呈现模式已切换",
+                            diagnosticContext = mapOf("视频呈现模式" to mode.name),
+                        )
+                    }
+                }
+            }
+            if (VideoPresentationModePolicy.shouldRebindVideoSurface(mode) &&
+                playerReady && ::pm.isInitialized
+            ) {
+                // Re-submit the latest TextureView when switching foreground/floating modes or
+                // when an Activity resumes after its playback service has been recreated.
+                attachPendingVideoSurface()
+                refreshPlaybackHint()
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) updateMode.run()
+        else surfaceAttachHandler.post(updateMode)
+    }
+
+    fun attachSurface(tv: android.view.TextureView) {
+        // Remember the newest view even if the service/player is still initializing. The
+        // successful initialization path will attach it, so an early call cannot be lost.
+        requestedVideoSurface = java.lang.ref.WeakReference(tv)
+        val attach = object : Runnable {
+            private var bindAttempts = 0
+
+            override fun run() {
+                // A queued request from an older screen must never replace the current surface.
+                if (requestedVideoSurface?.get() !== tv || !playerReady || !::pm.isInitialized) {
+                    return
+                }
+                // Do not bind before TextureView owns a valid, laid-out SurfaceTexture. The screen
+                // retries when the texture and non-zero dimensions become available.
+                if (!tv.isAttachedToWindow || !tv.isAvailable || tv.width <= 0 || tv.height <= 0) {
+                    return
+                }
+                // Repeated lifecycle/Compose callbacks must not clear and recreate an already-bound
+                // Media3 output. Media3 itself tracks SurfaceTexture availability for this view.
+                if (boundVideoSurface?.get() === tv) return
+
+                try {
+                    // A different TextureView is a new video output. Never carry the previous
+                    // output's "first frame rendered" state into it, or a blank replacement view
+                    // can look healthy forever while the old surface is gone.
+                    pm.markVideoSurfaceNeedsFrame()
+                    noFrameWaitStartedAtMs = 0L
+                    noFrameWaitSessionKey = ui.value.key
+                    playbackStallWatchSessionKey = ""
+                    playbackStallWatchPositionMs = -1L
+                    playbackStallWatchLastProgressAtMs = 0L
+                    pm.player.setVideoTextureView(tv)
+                    boundVideoSurface = java.lang.ref.WeakReference(tv)
+                    val bindDetails = mapOf(
+                        "视频视图宽度" to tv.width.toString(),
+                        "视频视图高度" to tv.height.toString(),
+                        "纹理可用" to tv.isAvailable.toString(),
+                        "播放器状态" to pm.player.playbackState.toString(),
+                        "是否正在播放" to pm.player.isPlaying.toString(),
+                    )
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            io.translatetube.local.util.AppLogStore.info(
+                                applicationContext,
+                                "PlayerManager",
+                                "视频画面已绑定",
+                                diagnosticContext = bindDetails,
+                            )
+                        }
+                    }
+                } catch (error: Throwable) {
+                    if (error is VirtualMachineError || error is ThreadDeath) throw error
+                    if (boundVideoSurface?.get() === tv) boundVideoSurface = null
+                    android.util.Log.w("PlaybackService", "Attach video surface failed", error)
+                    val failureDetails = mapOf(
+                        "视频视图宽度" to tv.width.toString(),
+                        "视频视图高度" to tv.height.toString(),
+                        "纹理可用" to tv.isAvailable.toString(),
+                        "重试次数" to bindAttempts.toString(),
+                    )
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                applicationContext,
+                                "PlayerManager",
+                                "视频画面绑定失败",
+                                error,
+                                diagnosticContext = failureDetails,
+                            )
+                        }
+                    }
+                    // A transient renderer/view race should not require leaving and reopening the page.
+                    // Retry only the failed bind, at most twice, and only while this remains the latest view.
+                    if (bindAttempts < 2 && requestedVideoSurface?.get() === tv &&
+                        tv.isAttachedToWindow && tv.isAvailable
+                    ) {
+                        bindAttempts++
+                        surfaceAttachHandler.postDelayed(this, 200L)
+                    }
+                }
+            }
+        }
+        // Avoid an unnecessary main-loop delay when called from Compose/View lifecycle callbacks.
+        if (Looper.myLooper() == Looper.getMainLooper()) attach.run()
+        else surfaceAttachHandler.post(attach)
+    }
+
+    /**
+     * Called only after the Activity confirms that TextureView received a different SurfaceTexture.
+     * Media3 owns the TextureView listener and handles the actual surface swap; this only invalidates
+     * our previous first-frame proof so a missing frame is visible to the playback watchdog.
+     */
+    fun notifyVideoSurfaceRecreated(tv: android.view.TextureView) {
+        if (requestedVideoSurface?.get() !== tv || !playerReady || !::pm.isInitialized) return
+        pm.markVideoSurfaceNeedsFrame()
+        noFrameWaitStartedAtMs = 0L
+        noFrameWaitSessionKey = ui.value.key
+        playbackStallWatchSessionKey = ""
+        playbackStallWatchPositionMs = -1L
+        playbackStallWatchLastProgressAtMs = 0L
+        refreshPlaybackHint()
+    }
+
+    private fun attachPendingVideoSurface() {
+        requestedVideoSurface?.get()?.let(::attachSurface)
+    }
+
+    /** Keep a durable record of the last phase even if Android later kills the process. */
+    private fun startPendingResumeJournal() {
+        scope.launch {
+            var lastKey = ""
+            var lastPhase: Phase? = null
+            var lastProgress = ""
+            var lastWriteAtMs = 0L
+            ui.collect { state ->
+                if (state.key.isBlank() || state.phase == Phase.IDLE || state.key != videoKey || activePipelineGeneration == 0L) return@collect
+                val phaseChanged = state.key != lastKey || state.phase != lastPhase
+                val progress = state.progress.ifBlank { state.error.orEmpty() }.trim().take(180)
+                val progressChanged = progress != lastProgress
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (!phaseChanged && (!progressChanged || now - lastWriteAtMs < 2_000L)) {
+                    return@collect
+                }
+                lastKey = state.key
+                lastPhase = state.phase
+                lastProgress = progress
+                lastWriteAtMs = now
+                withContext(Dispatchers.IO) {
+                    PendingProcessingResumeStore.record(
+                        context = this@PlaybackService,
+                        sessionKey = state.key,
+                        phase = state.phase,
+                        progress = progress,
+                    )
+                }
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        val audioPrefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val storedTtsEngine = audioPrefs.getString("tts_engine", "edge")
+        val normalizedTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(storedTtsEngine)
+        if (normalizedTtsEngine != storedTtsEngine) {
+            // Migrate removed/invalid legacy TTS IDs before any processing task reads them.
+            audioPrefs.edit().putString("tts_engine", normalizedTtsEngine).apply()
+        }
+        val savedOriginalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 1f).coerceIn(0f, 1f)
+        val savedDubbingVolume = audioPrefs.getFloat(PREF_PLAYER_DUBBING_VOLUME, 1f).coerceIn(0f, 1f)
+        ui.update { state ->
+            state.copy(
+                originalVolume = savedOriginalVolume,
+                dubbingVolume = savedDubbingVolume,
+                muteOriginal = savedOriginalVolume <= 0f,
+            )
+        }
+        // Supply the application context for structured NewPipe/YouTube extraction diagnostics.
+        // The extractor itself is initialized lazily by the first metadata request.
+        NewPipeRepo.setLogContext(applicationContext)
+        registerProcessingEnginePreferenceWatcher()
+        startPendingResumeJournal()
+        // 先尽早建立前台通知，再初始化播放器；任何初始化异常都转成页面错误，
+        // 避免点击“观看”后因 Service onCreate 抛异常而直接杀掉整个进程。
+        try {
+            NotificationManagerCompat_c.create(this)
+            val boot = NotificationCompat.Builder(this, CH_MAIN)
+                .setSmallIcon(io.translatetube.local.R.drawable.ic_stat_brand)
+                .setContentTitle("大象翻译")
+                .setContentText("正在准备…")
+                .setOngoing(true)
+                .setContentIntent(
+                    PendingIntent.getActivity(
+                        this, 0,
+                        Intent(this, io.translatetube.local.MainActivity::class.java),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                )
+                .build()
+            rememberNotificationAudit("BEFORE startForeground id=1001 purpose=service-start-placeholder")
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "即将提交播放服务启动前台通知",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001",
+                    "通知用途" to "播放服务启动占位通知；后续可能被 Media3 媒体控制通知替换",
+                    "通知构建方式" to "NotificationCompat.Builder",
+                    "通知是否 ongoing" to "true",
+                    "提交线程" to Thread.currentThread().name,
+                ),
+            )
+            // The bootstrap notice only starts the media service. Do not implicitly activate
+            // every declared foreground-service type before a processing task actually begins.
+            ServiceCompat.startForeground(
+                this,
+                1001,
+                boot,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            )
+            rememberNotificationAudit("AFTER startForeground id=1001 returned")
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "播放服务启动前台通知提交调用已返回",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001",
+                    "通知用途" to "启动占位通知",
+                    "提交线程" to Thread.currentThread().name,
+                ),
+            )
+
+            pm = PlayerManager(this)
+            pm.playbackAllowed = { !isDubbingPlaybackBlocked(ui.value) }
+            pm.onPlayBlocked = { publishPlayBlockedHint() }
+            pm.onPlaybackRestoreRequested = {
+                playbackRestoreRequested = true
+                noFrameWaitStartedAtMs = 0L
+                refreshPlaybackHint()
+            }
+            pm.originalVolume = ui.value.originalVolume
+            pm.dubbingVolume = ui.value.dubbingVolume
+            // Match the new mix bus to the currently visible mode before any timeline tick runs.
+            pm.dubbingBus.setDubbingEnabled(ui.value.dubbingOn)
+            pm.onTick = { ms -> tickFromPlayerCallback(ms, "player ticker") }
+            pm.onEnded = ended@{
+                // Player callbacks may be delivered after a new media item has replaced the old
+                // one. Only drain/stop dubbing if the player itself is still actually ENDED.
+                if (
+                    !::pm.isInitialized ||
+                    pm.player.playbackState != androidx.media3.common.Player.STATE_ENDED
+                ) {
+                    android.util.Log.d(
+                        "PlaybackService",
+                        "Ignoring stale playback-ended callback; current state=" +
+                            if (::pm.isInitialized) pm.player.playbackState.toString() else "released",
+                    )
+                    return@ended
+                }
+                val sessionKey = ui.value.key
+                val engine = dubbing
+                val activeIndex = engine?.currentLineIdx() ?: -1
+                val activeSentenceCanFinish = engine != null && activeIndex >= 0 && (
+                    engine.shouldContinueCurrentCue(-1) ||
+                        (!engine.hasStartedPlaybackFor(activeIndex) &&
+                            engine.isPrepared(activeIndex) && !engine.isSilent(activeIndex))
+                    )
+                val queuedCuesRemain = hasDubbingCatchUpCues(sessionKey)
+                if (engine != null && ui.value.dubbingOn && (queuedCuesRemain || activeSentenceCanFinish)) {
+                    // The video has ended; finish speech off-timeline without pausing or restarting the video.
+                    if (activeIndex >= 0 && !engine.hasStartedPlaybackFor(activeIndex) &&
+                        engine.isPrepared(activeIndex) && !engine.isSilent(activeIndex)
+                    ) {
+                        enqueueDubbingCatchUpCue(sessionKey, activeIndex)
+                    }
+                    safelySetOriginalVolume(1f, "video ended; draining remaining dubbing")
+                    ui.update {
+                        if (it.key == sessionKey) it.copy(
+                            isPlaying = false,
+                            currentLine = -1,
+                            activeDubbingLine = activeIndex,
+                            dubbingStatus = "视频已结束，正在完成剩余配音",
+                        ) else it
+                    }
+                    startDubbingDrainAfterVideoEnd(engine, sessionKey)
+                } else {
+                    cancelDubbingDrainAfterVideoEnd()
+                    clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = pm.position())
+                    safelyControlDubbing("player ended") { dubbing?.stop() }
+                    safelySetOriginalVolume(1f, "player ended")
+                    ui.update { it.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1) }
+                }
+            }
+            pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
+
+            // Keep dubbed AudioTrack locked to ExoPlayer's playback state. This callback
+            // runs with the player's state change, so voice stops immediately on pause and
+            // resumes from the paused sample position instead of finishing the current line.
+            pm.player.addListener(object : androidx.media3.common.Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    val endedWithPendingDubbing = !isPlaying && ::pm.isInitialized &&
+                        pm.player.playbackState == androidx.media3.common.Player.STATE_ENDED &&
+                        hasPendingDubbingAfterVideoEnd(ui.value.key)
+                    if (!isPlaying && ::pm.isInitialized && !pm.player.playWhenReady && !endedWithPendingDubbing) {
+                        cancelDubbingDrainAfterVideoEnd()
+                        clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
+                    }
+                    if (isPlaying && dubbingDrainAfterVideoEnd) {
+                        cancelDubbingDrainAfterVideoEnd()
+                        clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
+                    }
+                    val drainingEndedVideo = !isPlaying && ::pm.isInitialized &&
+                        pm.player.playbackState == androidx.media3.common.Player.STATE_ENDED &&
+                        hasPendingDubbingAfterVideoEnd(ui.value.key)
+                    if (isPlaying && ui.value.dubbingOn) {
+                        // A new video play session owns the timeline again; discard stale voice
+                        // and let the next tick select the subtitle at the live playhead.
+                        safelyControlDubbing("player resumed") { dubbing?.stop() }
+                        lastLineIdx = Int.MIN_VALUE
+                        if (::pm.isInitialized) tickFromPlayerCallback(pm.position(), "player resumed")
+                    } else if (!drainingEndedVideo) {
+                        if (
+                            !isPlaying &&
+                            ::pm.isInitialized &&
+                            pm.player.playWhenReady &&
+                            pm.player.playbackState == androidx.media3.common.Player.STATE_BUFFERING
+                        ) {
+                            preserveInterruptedImmediateCueOnBuffer(ui.value.key)
+                        }
+                        safelyControlDubbing("player paused") { dubbing?.pausePlayback() }
+                        ui.update { state ->
+                            if (state.activeDubbingLine == -1) state
+                            else state.copy(activeDubbingLine = -1)
+                        }
+                    }
+                }
+
+                override fun onPositionDiscontinuity(
+                    oldPosition: androidx.media3.common.Player.PositionInfo,
+                    newPosition: androidx.media3.common.Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    cancelDubbingDrainAfterVideoEnd()
+                    clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = newPosition.positionMs)
+                    // A seek can land inside the same subtitle cue, so comparing line indexes
+                    // alone is not enough. Invalidate any queued/playing PCM and re-evaluate at
+                    // Media3's new playhead immediately; this also covers seeks from media controls.
+                    safelyControlDubbing("position discontinuity") { dubbing?.stop() }
+                    // 混流总线：seek 后音频流会 flush；清空旧块并按新媒体头重设时钟基点，
+                    // 下一次 playAt()（本次 tick 立即触发）重新挂载正确时间窗的块。
+                    if (::pm.isInitialized) {
+                        val preserveStartupMount = DubbingStartupFlushPolicy.shouldKeepMountedBus(
+                            expectedPositionMs = startupMountedBusPositionMs,
+                            actualPositionMs = newPosition.positionMs,
+                            nowNanos = System.nanoTime(),
+                            expiresAtNanos = startupMountedBusExpiresAtNanos,
+                        )
+                        // This is intentionally one-shot. Any other seek/discontinuity invalidates
+                        // the exemption, even when it happens inside the startup time window.
+                        startupMountedBusPositionMs = -1L
+                        startupMountedBusExpiresAtNanos = 0L
+                        if (preserveStartupMount) {
+                            // Startup flush: keep the already-mounted first cues, but align the read head.
+                            pm.dubbingBus.rewindReadHead()
+                        } else {
+                            pm.dubbingBus.reset()
+                        }
+                        pm.dubbingBus.setStreamStartUs(newPosition.positionMs * 1000L)
+                    }
+                    lastLineIdx = Int.MIN_VALUE
+                    if (::pm.isInitialized) tickFromPlayerCallback(newPosition.positionMs, "position discontinuity")
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                        // 混流时钟基点：READY 后音频流从头输出，以当前播放位置校准总线。
+                        if (::pm.isInitialized) {
+                            pm.dubbingBus.setStreamStartUs(
+                                pm.player.currentPosition.coerceAtLeast(0L) * 1000L,
+                            )
+                        }
+                        ui.update { state ->
+                            if (state.progress.startsWith("正在尝试兼容清晰度 ")) {
+                                state.copy(phase = Phase.READY, progress = "", error = null)
+                            } else state
+                        }
+                    }
+                }
+                override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                    // Read the dimensions from the selected media track, never from the view size.
+                    val selectedResolution = tracks.groups.asSequence()
+                        .filter { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }
+                        .flatMap { group ->
+                            (0 until group.length).asSequence()
+                                .filter { trackIndex -> group.isTrackSelected(trackIndex) }
+                                .map { trackIndex -> group.getTrackFormat(trackIndex) }
+                        }
+                        .mapNotNull { format ->
+                            val width = format.width
+                            val height = format.height
+                            when {
+                                width > 0 && height > 0 -> "$width × $height"
+                                height > 0 -> "${height}p"
+                                else -> null
+                            }
+                        }
+                        .firstOrNull()
+                    if (!selectedResolution.isNullOrBlank()) {
+                        val activeKey = ui.value.key
+                        ui.update { state ->
+                            if (state.key == activeKey) state.copy(videoResolution = selectedResolution) else state
+                        }
+                    }
+                    // HLS/DASH track metadata may be available before the first decoded video frame.
+                    refreshAdaptiveVideoQualityOptions()
+                }
+
+                override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                    // Use decoded media dimensions as a fallback when track metadata arrives late.
+                    val width = videoSize.width
+                    val height = videoSize.height
+                    if (width <= 0 || height <= 0) return
+                    val selectedResolution = "$width × $height"
+                    val activeKey = ui.value.key
+                    ui.update { state ->
+                        if (state.key == activeKey) state.copy(videoResolution = selectedResolution) else state
+                    }
+                }
+            })
+
+            val pi = PendingIntent.getActivity(
+                this, 0, Intent(this, io.translatetube.local.MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            session = MediaSession.Builder(this, pm.player)
+                .setSessionActivity(pi)
+                .build()
+
+            scope.launch {
+                pm.isPlaying.collect { playing ->
+                    ui.update {
+                        it.copy(
+                            isPlaying = playing,
+                            playBlockedHint = if (playing) null else it.playBlockedHint,
+                        )
+                    }
+                }
+            }
+            scope.launch {
+                pm.isBuffering.collect { buffering -> ui.update { it.copy(isBuffering = buffering) } }
+            }
+            scope.launch {
+                pm.loadRetryCount.collect { retries -> ui.update { it.copy(loadRetryCount = retries) } }
+            }
+            // Processing belongs to the foreground service, not the visible Activity.
+            // Keep the ongoing notification current so users can switch apps and return later.
+            scope.launch {
+                ui.collect { state -> updateProcessingNotification(state) }
+            }
+            scope.launch {
+                pm.errorSink.collect { err ->
+                    if (err == null || pm.errorSink.value != err) return@collect
+                    if (qualityRecoveryJob?.isActive == true) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Ignoring duplicate player error while playback recovery is active",
+                        )
+                        return@collect
+                    }
+
+                    val currentState = ui.value
+                    val sessionKey = currentState.key
+                    val recoveryPipelineGeneration = activePipelineGeneration
+                    val failure = pm.playbackFailure.value
+                    if (failure?.isExpiredAddress == true) {
+                        if (!expiredAddressRecoveryAttempted) {
+                            startExpiredAddressRecovery(sessionKey, err, recoveryPipelineGeneration)
+                        } else {
+                            markPlaybackRecoveryFailed(
+                                sessionKey,
+                                recoveryPipelineGeneration,
+                                "地址已失效，自动重新获取失败。请检查网络后重试。",
+                            )
+                        }
+                        return@collect
+                    }
+
+                    val id = videoId
+                    if (id != null && qualitySources.isNotEmpty() && !qualityRecoveryAttempted) {
+                        qualityRecoveryAttempted = true
+                        playbackRecoveryInProgress = true
+                        playbackRecoveryMessage = "视频加载失败，正在恢复播放…"
+                        playbackRecoveryFailure = null
+                        playbackRecoveryWasPlayerVisible =
+                            currentState.phase in setOf(Phase.READY, Phase.SYNTHESIZING) ||
+                                currentState.isPlaying || pm.hasRenderedFirstFrame.value
+                        noFrameWaitStartedAtMs = 0L
+                        qualityRecoveryJob = scope.launch {
+                            recoverYouTubePlayback(sessionKey, id, err, recoveryPipelineGeneration)
+                        }
+                        return@collect
+                    }
+
+                    val keepPlayerVisible = currentState.phase in setOf(Phase.READY, Phase.SYNTHESIZING) &&
+                        runCatching { pm.player.mediaItemCount > 0 }.getOrDefault(false)
+                    if (keepPlayerVisible || playbackRecoveryInProgress || playbackRecoveryFailure != null ||
+                        currentState.playBlockedHint != null
+                    ) {
+                        refreshPlaybackHint()
+                    } else {
+                        updateUiForSession(sessionKey, recoveryPipelineGeneration) {
+                            it.copy(error = err, phase = Phase.ERROR, progress = "")
+                        }
+                    }
+                }
+            }
+            playerReady = true
+            instance = this
+            // A new ready service means a new ExoPlayer instance. Notify an already-composed
+            // PlayerScreen so it rebinds its retained TextureView even if no attach event fires.
+            serviceGeneration.value = serviceGeneration.value + 1L
+            attachPendingVideoSurface()
+            startPlaybackHintMonitor()
+            // Start only after PlayerManager/notification collection are ready. The watchdog
+            // belongs to the service scope, never to a Compose screen or Activity lifecycle.
+            startBackgroundProcessingGuard()
+        } catch (e: Throwable) {
+            if (e is VirtualMachineError || e is ThreadDeath) throw e
+            playerReady = false
+            instance = this
+            val message = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+            ui.update {
+                it.copy(phase = Phase.ERROR, progress = "", error = "播放器初始化失败（${e.javaClass.simpleName}）：$message")
+            }
+            publishPlaybackHintCandidate(
+                PlaybackHint(
+                    key = "load-failed",
+                    message = "视频加载失败：${PlaybackHintPolicy.safeReason(message)}",
+                    action = PlaybackHintAction.RETRY,
+                    actionLabel = "重试",
+                    priority = 90,
+                ),
+                force = true,
+            )
+            android.util.Log.e("PlaybackService", "Playback service initialization failed", e)
+            stopSelf()
+        }
+    }
+
+
+    /**
+     * A worker can remain active briefly after marking the final row ready. Use cue readiness as
+     * the user-visible completion condition so notifications don't stick at 100% while cleanup ends.
+     */
+    private fun isDubbingPreparationIncomplete(state: PlayerUiState): Boolean {
+        val engine = dubbing ?: return false
+        if (!engine.isPreparing) return false
+        // A session with no subtitle cues has no synthesis work to wait for.
+        return state.totalLines > 0 && state.preparedCount < state.totalLines
+    }
+
+    /**
+     * Keep the translated checkpoint while the background dubbing queue is still warming.
+     * READY means the startup buffer can play; it does not mean every subtitle cue is synthesized.
+     */
+    private fun isDubbingQueueFullyPreparedForCheckpoint(state: PlayerUiState): Boolean {
+        if (state.totalLines <= 0) return true
+        val engine = dubbing ?: return false
+        return engine.usesImmediateTimelinePlayback || state.preparedCount >= state.totalLines
+    }
+
+    private suspend fun deleteInProgressCheckpointIfCurrent(
+        sessionKey: String,
+        pipelineGeneration: Long,
+        identityKey: String,
+    ): Boolean? {
+        val deleted = withContext(Dispatchers.IO) {
+            if (
+                videoKey != sessionKey ||
+                activePipelineGeneration != pipelineGeneration ||
+                activeProcessingCheckpointIdentityKey != identityKey
+            ) {
+                null
+            } else {
+                InProgressProcessingCheckpointStore.delete(
+                    this@PlaybackService,
+                    sessionKey,
+                    identityKey,
+                )
+            }
+        }
+        if (deleted == false) {
+            io.translatetube.local.util.AppLogStore.warning(
+                this,
+                "PlaybackCheckpoint",
+                "检查点清理失败，保留现有恢复数据",
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        sessionKey.startsWith("remote:", ignoreCase = true) -> "网页视频"
+                        sessionKey.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                        else -> "本地视频"
+                    },
+                    "清理阶段" to "完成后清理",
+                    "处理代数" to pipelineGeneration.toString(),
+                ),
+            )
+        }
+        return deleted
+    }
+
+    private suspend fun clearInProgressCheckpointAfterDubbing(
+        sessionKey: String,
+        pipelineGeneration: Long,
+    ) {
+        inProgressCheckpointWriteMutex.withLock {
+            val state = ui.value
+            if (
+                state.key != sessionKey ||
+                activePipelineGeneration != pipelineGeneration ||
+                activeProcessingCheckpointIdentityKey.isBlank() ||
+                state.phase != Phase.READY ||
+                state.waitingForTranscriptionEngine ||
+                state.waitingForDubbingEngine ||
+                state.dubbingHasErrors ||
+                state.lines.any { needsSubtitleTranslation(it, state.sourceLang) } ||
+                !isDubbingQueueFullyPreparedForCheckpoint(state)
+            ) return@withLock
+
+            deleteInProgressCheckpointIfCurrent(
+                sessionKey = sessionKey,
+                pipelineGeneration = pipelineGeneration,
+                identityKey = activeProcessingCheckpointIdentityKey,
+            )
+        }
+    }
+
+    /**
+     * Wait only for a small initial PCM buffer before starting video playback. The DubbingEngine
+     * keeps the rest of the queue running in its service scope, so later cues are synthesized
+     * while the video and already-ready Chinese speech are playing. Failed cues are counted as
+     * prepared but the first audible cue is still required to contain valid audio.
+     */
+    private suspend fun awaitInitialDubbingBufferBeforePlayback(
+        sessionKey: String,
+        pipelineGeneration: Long,
+        engine: DubbingEngine,
+        lines: List<SubLine>,
+    ) {
+        if (engine.usesImmediateTimelinePlayback || lines.isEmpty()) return
+
+        val spokenIndices = DubbingStartupBufferPolicy.spokenCueIndices(lines)
+        val firstSpeechCue = spokenIndices.firstOrNull() ?: return
+        val startupPlan = DubbingStartupBufferPolicy.plan(
+            lines = lines,
+            spokenCueIndices = spokenIndices,
+            immediateMode = false,
+            synthesisTimelineLagFactor = engine.synthesisTimelineLagFactor,
+            synthesisSampleCount = engine.synthesisTimelineLagSampleCount,
+        )
+        val requiredStartupCues = startupPlan.lineIndices
+            .take(startupPlan.minimumCueCount.coerceAtLeast(1))
+            .ifEmpty { listOf(firstSpeechCue) }
+        engine.prioritizeAround(firstSpeechCue, lookAhead = 12)
+
+        val deadlineNs = System.nanoTime() +
+            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupPlan.waitTimeoutMs.coerceAtLeast(1L))
+        var lastReportedCount = -1
+        while (true) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration)
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            if (dubbing !== engine) {
+                throw kotlinx.coroutines.CancellationException("配音引擎已更换，取消等待合成")
+            }
+
+            val prepared = engine.preparedCount.value.coerceIn(0, lines.size)
+            if (prepared != lastReportedCount) {
+                lastReportedCount = prepared
+                val audioReady = engine.audioReadyCount.value.coerceIn(0, lines.size)
+                updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                    state.copy(
+                        phase = Phase.SYNTHESIZING,
+                        progress = "正在合成中文配音（已处理 $prepared/${lines.size}，可用配音 $audioReady 行），首批配音就绪即开始播放",
+                    )
+                }
+            }
+
+            val readyAhead = requiredStartupCues.count { index ->
+                engine.isPrepared(index) || engine.isSilent(index)
+            }
+            if (readyAhead >= requiredStartupCues.size) break
+            if (System.nanoTime() >= deadlineNs && !engine.isPreparing) {
+                val remaining = (requiredStartupCues.size - readyAhead).coerceAtLeast(0)
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                    state.copy(
+                        waitingForDubbingEngine = true,
+                        dubbingStatus = "${state.ttsEngineName.ifBlank { "配音引擎" }} 首批配音尚有 $remaining 句未就绪",
+                        progress = "首批 7 句配音尚未全部就绪，视频保持暂停",
+                        noModelHint = state.noModelHint
+                            ?: "正在等待开头 7 句中文配音完成。配音就绪后即可开始播放；请检查语音服务或模型状态。",
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    if (videoKey == sessionKey && ui.value.key == sessionKey) pm.pause()
+                }
+                // Do not silently fall through and start with fewer than seven prepared cues.
+                return
+            }
+            kotlinx.coroutines.delay(100L)
+        }
+
+        // Never start source-only playback if the initial usable voice failed or is still unavailable.
+        // A failed cue is counted as "prepared" by the queue, but it is not an audible result.
+        awaitProcessingResumed(sessionKey, pipelineGeneration)
+        ensureCurrentSession(sessionKey, pipelineGeneration)
+        val firstAudibleCue = spokenIndices.firstOrNull { index ->
+            lines[index].zh?.let {
+                io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(it)
+            } == true
+        } ?: return
+        val firstCueHasAudio = engine.isPrepared(firstAudibleCue) && !engine.isSilent(firstAudibleCue)
+        if (!firstCueHasAudio) {
+            val terminalFailure = engine.isSilent(firstAudibleCue)
+            val hint = if (terminalFailure) {
+                "所选配音引擎未能生成首句中文配音，视频已暂停。请检查引擎连接或模型文件后重新处理此视频。"
+            } else {
+                "等待首句中文配音超过启动等待时间，视频保持暂停。请检查网络连接、语音服务或模型状态后重新处理。"
+            }
+            updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                state.copy(
+                    waitingForDubbingEngine = !terminalFailure,
+                    dubbingHasErrors = state.dubbingHasErrors || terminalFailure,
+                    dubbingStatus = if (terminalFailure) "首句配音生成失败，视频已暂停" else "首句配音尚未就绪，视频保持暂停",
+                    noModelHint = state.noModelHint ?: hint,
+                    progress = if (terminalFailure) "首句配音生成失败，视频已暂停" else "等待首句配音生成完成；视频暂不播放",
+                )
+            }
+            withContext(Dispatchers.Main) {
+                if (videoKey == sessionKey && ui.value.key == sessionKey) pm.pause()
+            }
+        }
+    }
+
+    /**
+     * One-shot identity for the startup seek whose already-mounted PCM must survive the audio flush.
+     * A broad time-only window can mistakenly preserve stale PCM when the user seeks immediately
+     * after opening; match the expected target position and consume the token on the next callback.
+     */
+    @Volatile private var startupMountedBusPositionMs = -1L
+    @Volatile private var startupMountedBusExpiresAtNanos = 0L
+
+    /**
+     * 开播：先把起播位置附近的配音挂到混流总线，再让播放器音频管线从起播位置重读一遍，最后 play。
+     *
+     * 播放器在点播放之前就会预读并混好开头一小段音频（几百毫秒）。如果那时第一句配音还没挂上
+     * 总线，这一段就只有原声，配音只能等预读之后才开口——表现为"视频已经开始说话了，中文
+     * 配音还没开始，中途才接上"。所以必须：挂好第一批句子 → flush 一次音频管线（保留总线）→
+     * 播放，让开头的音频带着配音重新混一遍。
+     *
+     * @param seekToMs 非空表示需要先跳到该位置（续播）；为空表示从播放器当前位置开始。
+     * @param ensureCurrent 每次等待之后检查会话是否仍然有效，失效时抛出取消。
+     */
+    private fun isDubbingPlaybackBlocked(state: PlayerUiState): Boolean =
+        // Never let a pending seek/resume or external media-control action start the source
+        // while ASR is waiting for the user to select/install/configure a transcription engine.
+        state.waitingForTranscriptionEngine ||
+            (state.dubbingOn && (
+                state.waitingForDubbingEngine ||
+                    state.dubbingHasErrors ||
+                    state.phase == Phase.ERROR
+                ))
+
+    private fun startPlaybackHintMonitor() {
+        playbackHintJob?.cancel()
+        playbackHintJob = scope.launch(Dispatchers.Main.immediate) {
+            while (playerReady && ::pm.isInitialized) {
+                refreshPlaybackHint()
+                delay(250L)
+            }
+        }
+    }
+
+    private fun publishPlaybackHintCandidate(candidate: PlaybackHint?, force: Boolean = false) {
+        val current = _playbackHint.value
+        if (candidate == current) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val elapsed = if (playbackHintShownAtMs <= 0L) Long.MAX_VALUE
+            else (now - playbackHintShownAtMs).coerceAtLeast(0L)
+        if (!force && PlaybackHintPolicy.shouldKeepCurrent(current, candidate, elapsed)) return
+        _playbackHint.value = candidate
+        playbackHintShownAtMs = if (candidate == null) 0L else now
+    }
+
+    /**
+     * Detect a frozen playback timeline, not just a missing first frame or a buffering state.
+     * A user-paused video, audio-only playback, source switch, active recovery, and the final
+     * 1.5 seconds are excluded. This also catches playWhenReady=true while READY never transitions
+     * into actual playback, which otherwise leaves the play button apparently unresponsive.
+     */
+    private fun isPlaybackStalled(
+        state: PlayerUiState,
+        player: androidx.media3.common.Player,
+        nowMs: Long,
+        playWhenReady: Boolean,
+        hasRenderedFirstFrame: Boolean,
+        hasMedia: Boolean,
+    ): Boolean {
+        val positionMs = runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+        val durationMs = runCatching { player.duration }.getOrDefault(0L)
+        val nearEnd = durationMs > 0L && durationMs - positionMs <= 1_500L
+        val shouldWatch = state.phase in setOf(Phase.READY, Phase.SYNTHESIZING) &&
+            hasMedia &&
+            hasRenderedFirstFrame &&
+            playWhenReady &&
+            !state.audioOnly &&
+            player.playbackState == androidx.media3.common.Player.STATE_READY &&
+            !pm.isBuffering.value &&
+            player.playbackParameters.speed > 0f &&
+            !playbackRecoveryInProgress &&
+            playbackRecoveryFailure == null &&
+            !playbackRestoreRequested &&
+            !nearEnd
+
+        if (!shouldWatch) {
+            playbackStallWatchSessionKey = ""
+            playbackStallWatchPositionMs = -1L
+            playbackStallWatchLastProgressAtMs = 0L
+            return false
+        }
+
+        if (
+            playbackStallWatchSessionKey != state.key ||
+            playbackStallWatchPositionMs < 0L ||
+            positionMs != playbackStallWatchPositionMs
+        ) {
+            playbackStallWatchSessionKey = state.key
+            playbackStallWatchPositionMs = positionMs
+            playbackStallWatchLastProgressAtMs = nowMs
+            return false
+        }
+
+        return playbackStallWatchLastProgressAtMs > 0L &&
+            nowMs - playbackStallWatchLastProgressAtMs >= 8_000L
+    }
+
+    private fun refreshPlaybackHint() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            processingNotificationHandler.post { refreshPlaybackHint() }
+            return
+        }
+        if (!playerReady || !::pm.isInitialized) return
+        val state = ui.value
+        val player = pm.player
+        val isPlaying = runCatching { player.isPlaying }.getOrDefault(false)
+        val firstFrame = pm.hasRenderedFirstFrame.value
+        val mediaAttached = runCatching { player.mediaItemCount > 0 }.getOrDefault(false)
+        // The player may be mounted during stage 5; PlayerScreen keeps the processing page
+        // in front until the startup PCM buffer is ready and playback actually begins.
+        val waitsForCompleteDubbing = VideoProcessingFlowPolicy.requiresCompleteDubbingBeforePlayback(
+            VideoProcessingFlowPolicy.sourceKind(state.key),
+        )
+        val playerPhase = state.phase == Phase.READY ||
+            (state.phase == Phase.SYNTHESIZING && !waitsForCompleteDubbing)
+        val screenEligible = playerPhase || playbackRecoveryInProgress ||
+            playbackRecoveryFailure != null || playbackRestoreRequested ||
+            (state.key == videoKey && state.playBlockedHint != null)
+        val playWhenReady = runCatching { player.playWhenReady }.getOrDefault(false)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val playbackStalled = isPlaybackStalled(
+            state = state,
+            player = player,
+            nowMs = now,
+            playWhenReady = playWhenReady,
+            hasRenderedFirstFrame = firstFrame,
+            hasMedia = mediaAttached,
+        )
+
+        if (firstFrame && isPlaying && !playbackStalled) {
+            playbackRecoveryInProgress = false
+            playbackRecoveryMessage = null
+            playbackRecoveryFailure = null
+            expiredAddressRecoveryAttempted = false
+            qualityRecoveryAttempted = false
+            playbackRecoveryWasPlayerVisible = false
+            playbackRestoreRequested = false
+            noFrameWaitStartedAtMs = 0L
+            noFrameWaitSessionKey = state.key
+            idleRecoveryAttemptedKey = ""
+            if (blackScreenErrorLoggedKey == state.key || PlayerRebuildCoordinator.wasRebuilt(state.key)) {
+                // The picture is back: close the black-screen error (once) and allow a future rebuild.
+                blackScreenErrorLoggedKey = ""
+                PlayerRebuildCoordinator.clear(state.key)
+                pm.resolveBlackScreenError(
+                    mapOf("视频会话指纹" to safeDiagnosticSessionFingerprint(state.key)),
+                )
+            }
+            firstFrameEscalationKey = state.key
+            firstFrameEscalationStage = FirstFrameTimeoutPolicy.SOFT_RELOAD_STAGE
+            publishPlaybackHintCandidate(null, force = true)
+            return
+        }
+
+        val sourceGeneration = pm.sourceGeneration.value
+        if (sourceGeneration != lastObservedSourceGeneration) {
+            lastObservedSourceGeneration = sourceGeneration
+            noFrameWaitStartedAtMs = 0L
+            noFrameWaitSessionKey = state.key
+            idleRecoveryAttemptedKey = ""
+        }
+
+        val failure = pm.playbackFailure.value
+        val playerError = failure?.message ?: pm.errorSink.value
+        val isIdleWithMedia = mediaAttached &&
+            player.playbackState == androidx.media3.common.Player.STATE_IDLE
+        if (
+            playerPhase && isIdleWithMedia &&
+            failure == null && playbackRecoveryFailure == null &&
+            idleRecoveryAttemptedKey != state.key
+        ) {
+            idleRecoveryAttemptedKey = state.key
+            playbackRestoreRequested = true
+            val autoPlay = runCatching { player.playWhenReady }.getOrDefault(false) || state.isPlaying
+            pm.prepareIfIdle(autoPlay = autoPlay)
+        }
+        if (
+            playbackRestoreRequested &&
+            player.playbackState == androidx.media3.common.Player.STATE_READY &&
+            !player.playWhenReady && !isPlaying
+        ) {
+            playbackRestoreRequested = false
+        }
+
+        // A prepared player renders its first frame even while paused, so a bound video view that
+        // never gets one is a black screen whether or not playback intent was ever applied. Waiting
+        // for playWhenReady here missed the case where play silently never took effect.
+        val surfaceView = requestedVideoSurface?.get()
+        val surfaceReady = surfaceView?.let { view ->
+            view.isAttachedToWindow && view.isAvailable && view.width > 0 && view.height > 0
+        } == true
+        if (VideoPresentationModePolicy.shouldRebindVideoSurface(videoPresentationMode) &&
+            surfaceReady && boundVideoSurface?.get() !== surfaceView
+        ) {
+            // A visible, ready TextureView that is not connected to this service's player is a
+            // binding problem, not a decoder failure. Repair the binding before starting the
+            // first-frame timeout so it cannot force an unnecessary player/service rebuild.
+            surfaceView?.let(::attachSurface)
+        }
+        val videoViewBound = surfaceView != null && boundVideoSurface?.get() === surfaceView
+        val noFirstFrameTimedOut = if (
+            VideoPresentationModePolicy.shouldMonitorVideo(videoPresentationMode) &&
+                surfaceReady && videoViewBound &&
+                (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
+        ) {
+            if (noFrameWaitSessionKey != state.key || noFrameWaitStartedAtMs <= 0L) {
+                noFrameWaitSessionKey = state.key
+                noFrameWaitStartedAtMs = now
+            }
+            now - noFrameWaitStartedAtMs >= 10_000L
+        } else {
+            noFrameWaitStartedAtMs = 0L
+            false
+        }
+        // A real player error already has its own hint and log; this targets the silent case where
+        // the player reports no error yet never shows a picture (black screen, play does nothing).
+        if (noFirstFrameTimedOut && playerPhase && failure == null && !playbackRecoveryInProgress) {
+            handleFirstFrameTimeout(state, now)
+        }
+
+        val blocked = state.playBlockedHint?.takeIf { state.key == videoKey }
+            ?: if (playerPhase && (
+                state.waitingForTranscriptionEngine ||
+                    state.waitingForDubbingEngine ||
+                    state.dubbingHasErrors
+            )) {
+                PlaybackBlockedHintPolicy.hintFor(
+                    waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
+                    dubbingOn = state.dubbingOn,
+                    waitingForDubbingEngine = state.waitingForDubbingEngine,
+                    dubbingHasErrors = state.dubbingHasErrors,
+                    phaseIsError = state.phase == Phase.ERROR,
+                    ttsEngineName = state.ttsEngineName,
+                    failureDetail = state.noModelHint ?: state.dubbingStatus ?: state.error,
+                )?.message
+            } else null
+        val blockedOffersOriginal = state.playBlockedOffersOriginalOnly ||
+            (state.dubbingOn && (state.waitingForDubbingEngine || state.dubbingHasErrors))
+        val input = PlaybackHintInput(
+            screenEligible = screenEligible,
+            isPlaying = isPlaying,
+            hasRenderedFirstFrame = firstFrame,
+            isBuffering = pm.isBuffering.value,
+            bufferingDurationMs = pm.bufferingDurationMs(),
+            loadRetryCount = pm.loadRetryCount.value,
+            hasMedia = mediaAttached,
+            idleRecovery = playbackRestoreRequested || isIdleWithMedia,
+            recoveryInProgress = playbackRecoveryInProgress,
+            recoveryMessage = playbackRecoveryMessage,
+            recoveryFailure = playbackRecoveryFailure,
+            httpStatusCode = failure?.httpStatusCode,
+            networkFailure = failure?.isNetworkFailure == true ||
+                playerError?.contains("网络连接失败") == true ||
+                playerError?.contains("超时") == true,
+            failureMessage = playerError,
+            blockedMessage = blocked,
+            blockedOffersOriginalOnly = blockedOffersOriginal,
+            noFirstFrameTimedOut = noFirstFrameTimedOut,
+            playbackStalled = playbackStalled,
+        )
+        publishPlaybackHintCandidate(PlaybackHintPolicy.hintFor(input))
+    }
+
+    /**
+     * No first frame after the wait window although the player reported no error. Log it as an
+     * ERROR (same "视频播放：…" title family as other player logs), then escalate: reload the
+     * player, then rebuild the whole playback service once per video, then give up with a hint.
+     */
+    private fun handleFirstFrameTimeout(state: PlayerUiState, now: Long) {
+        if (firstFrameEscalationKey != state.key) {
+            firstFrameEscalationKey = state.key
+            firstFrameEscalationStage = FirstFrameTimeoutPolicy.SOFT_RELOAD_STAGE
+        }
+        val action = FirstFrameTimeoutPolicy.nextAction(
+            stage = firstFrameEscalationStage,
+            isBuffering = pm.isBuffering.value,
+            bufferingDurationMs = pm.bufferingDurationMs(),
+            rebuildAlreadyUsed = PlayerRebuildCoordinator.wasRebuilt(state.key),
+        )
+        if (action == FirstFrameTimeoutAction.WAIT || action == FirstFrameTimeoutAction.DONE) return
+
+        // A surface can legitimately disappear while Android backgrounds the Activity. Never
+        // escalate a hidden audio/dubbing session into a player reload or service rebuild.
+        if (!VideoPresentationModePolicy.shouldMonitorVideo(videoPresentationMode)) {
+            noFrameWaitStartedAtMs = 0L
+            return
+        }
+        val surfaceView = requestedVideoSurface?.get()
+        val context = mapOf(
+            "视频来源" to diagnosticMediaSourceType(state),
+            "视频会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+            "当前处理阶段" to state.phase.name,
+            "视频呈现模式" to videoPresentationMode.name,
+            "画面控件是否存在" to (surfaceView != null).toString(),
+            "画面控件是否附着" to (surfaceView?.isAttachedToWindow?.toString() ?: "无画面控件"),
+            "画面控件是否可用" to (surfaceView?.isAvailable?.toString() ?: "无画面控件"),
+            "画面控件尺寸" to (surfaceView?.let { "${it.width}x${it.height}" } ?: "无画面控件"),
+            "画面是否已绑定播放器" to (boundVideoSurface?.get() === surfaceView && surfaceView != null).toString(),
+            "自动处理阶段" to firstFrameEscalationStage.toString(),
+            "此前是否已自动重建" to PlayerRebuildCoordinator.wasRebuilt(state.key).toString(),
+        )
+        blackScreenErrorLoggedKey = state.key
+        when (action) {
+            FirstFrameTimeoutAction.SOFT_RELOAD -> {
+                pm.logBlackScreenError(
+                    "画面黑屏或播放无响应，正在自动重新加载",
+                    context + ("自动处理" to "重新准备播放器并继续播放"),
+                )
+                // Give the reloaded player a fresh wait window before the next escalation step.
+                noFrameWaitStartedAtMs = now
+                pm.retryPlayback()
+            }
+            FirstFrameTimeoutAction.REBUILD_PLAYER -> {
+                pm.logBlackScreenError(
+                    "画面黑屏或播放无响应，已自动重建播放器",
+                    context + ("自动处理" to "重启播放服务并重新打开当前视频"),
+                )
+                noFrameWaitStartedAtMs = now
+                PlayerRebuildCoordinator.requestRebuild(state.key)
+            }
+            else -> pm.logBlackScreenError(
+                "画面黑屏或播放无响应，自动重建后仍无画面，请完全退出应用后重试",
+                context + ("自动处理" to "已用尽自动恢复手段，保留手动重试提示"),
+            )
+        }
+        firstFrameEscalationStage = FirstFrameTimeoutPolicy.stageAfter(firstFrameEscalationStage, action)
+    }
+
+    private fun markPlaybackRecoveryFailed(
+        sessionKey: String,
+        pipelineGeneration: Long,
+        reason: String,
+    ) {
+        playbackRecoveryInProgress = false
+        playbackRecoveryFailure = PlaybackHintPolicy.safeReason(reason)
+        updateUiForSession(sessionKey, pipelineGeneration) { state ->
+            state.copy(
+                phase = if (playbackRecoveryWasPlayerVisible) Phase.READY else Phase.ERROR,
+                progress = "",
+                error = playbackRecoveryFailure,
+            )
+        }
+        refreshPlaybackHint()
+    }
+
+    private fun startExpiredAddressRecovery(
+        sessionKey: String,
+        originalError: String,
+        pipelineGeneration: Long,
+    ) {
+        if (expiredAddressRecoveryAttempted) {
+            markPlaybackRecoveryFailed(
+                sessionKey,
+                pipelineGeneration,
+                "地址已失效，自动重新获取失败：$originalError",
+            )
+            return
+        }
+        expiredAddressRecoveryAttempted = true
+        playbackRecoveryInProgress = true
+        playbackRecoveryMessage = "视频地址已失效，正在重新获取…"
+        playbackRecoveryFailure = null
+        val currentState = ui.value
+        playbackRecoveryWasPlayerVisible =
+            currentState.phase in setOf(Phase.READY, Phase.SYNTHESIZING) ||
+                currentState.isPlaying || pm.hasRenderedFirstFrame.value
+        noFrameWaitStartedAtMs = 0L
+        updateUiForSession(sessionKey, pipelineGeneration) { state ->
+            if (state.key == sessionKey) state.copy(
+                progress = "视频地址已失效，正在重新获取…",
+                error = null,
+            ) else state
+        }
+
+        val failedVideoId = videoId
+            ?: sessionKey.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+        if (failedVideoId != null && qualitySources.isNotEmpty() && !qualityRecoveryAttempted) {
+            qualityRecoveryAttempted = true
+            qualityRecoveryJob = scope.launch {
+                recoverYouTubePlayback(sessionKey, failedVideoId, originalError, pipelineGeneration)
+            }
+            return
+        }
+
+        scope.launch(Dispatchers.Main.immediate) {
+            try {
+                if (!playerReady || !::pm.isInitialized || ui.value.key != sessionKey) {
+                    throw IllegalStateException("当前播放会话已失效")
+                }
+                if (failedVideoId != null) NewPipeRepo.invalidate(failedVideoId)
+                pm.errorSink.value = null
+                val resumeSnapshot = ui.value
+                open(
+                    key = sessionKey,
+                    videoId = failedVideoId,
+                    localUri = localUri,
+                    importedLines = importedLines,
+                    resumeState = resumeSnapshot,
+                    remoteMediaUrl = if (failedVideoId != null) null else remoteMediaUrl,
+                    remoteMediaTitle = remoteMediaTitle,
+                    remoteMediaReferrer = remoteMediaReferrer,
+                    remoteMediaCookie = remoteMediaCookie,
+                    remoteMediaUserAgent = remoteMediaUserAgent,
+                    requestToken = activeOpenRequestToken,
+                    forceRegenerateDubbing = false,
+                )
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                markPlaybackRecoveryFailed(
+                    sessionKey,
+                    pipelineGeneration,
+                    "地址已失效，自动重新获取失败：${error.message ?: error.javaClass.simpleName}",
+                )
+            }
+        }
+    }
+
+    internal fun performPlaybackHintAction(action: PlaybackHintAction) {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.performPlaybackHintAction(action)
+            return
+        }
+        if (!playerReady || !::pm.isInitialized) {
+            publishPlaybackHintCandidate(
+                PlaybackHint(
+                    key = "restoring",
+                    message = "正在恢复播放…",
+                    showSpinner = true,
+                    priority = 55,
+                ),
+                force = true,
+            )
+            return
+        }
+        when (action) {
+            PlaybackHintAction.OPEN_SETTINGS -> Unit
+            PlaybackHintAction.PLAY_ORIGINAL_ONLY -> playOriginalOnly()
+            PlaybackHintAction.REPARSE -> {
+                val failure = pm.playbackFailure.value
+                playbackRecoveryFailure = null
+                if (failure?.isExpiredAddress == true) {
+                    expiredAddressRecoveryAttempted = false
+                    playbackRecoveryInProgress = false
+                    startExpiredAddressRecovery(
+                        sessionKey = ui.value.key,
+                        originalError = failure.message,
+                        pipelineGeneration = activePipelineGeneration,
+                    )
+                } else {
+                    // Generic stream recovery failed; restart the source-processing route instead
+                    // of falsely labeling every playback failure as an expired signed URL.
+                    playbackRecoveryInProgress = true
+                    playbackRecoveryMessage = "正在重新获取视频资源…"
+                    playbackRecoveryWasPlayerVisible = ui.value.phase in setOf(Phase.READY, Phase.SYNTHESIZING)
+                    reparseCurrentPlayback()
+                }
+            }
+            PlaybackHintAction.RETRY, PlaybackHintAction.RELOAD -> {
+                playbackRecoveryFailure = null
+                playbackRecoveryInProgress = false
+                playbackRecoveryMessage = null
+                val failure = pm.playbackFailure.value
+                if (failure?.isExpiredAddress == true) {
+                    expiredAddressRecoveryAttempted = false
+                    startExpiredAddressRecovery(
+                        sessionKey = ui.value.key,
+                        originalError = failure.message,
+                        pipelineGeneration = activePipelineGeneration,
+                    )
+                } else if (!pm.retryPlayback()) {
+                    reparseCurrentPlayback()
+                }
+            }
+        }
+    }
+
+    private fun reparseCurrentPlayback() {
+        val state = ui.value
+        if (state.key.isBlank()) {
+            playbackRecoveryFailure = "没有可重新加载的视频"
+            refreshPlaybackHint()
+            return
+        }
+        scope.launch(Dispatchers.Main.immediate) {
+            try {
+                if (videoId != null) NewPipeRepo.invalidate(videoId!!)
+                open(
+                    key = state.key,
+                    videoId = videoId,
+                    localUri = localUri,
+                    importedLines = importedLines,
+                    resumeState = state,
+                    remoteMediaUrl = remoteMediaUrl,
+                    remoteMediaTitle = remoteMediaTitle,
+                    remoteMediaReferrer = remoteMediaReferrer,
+                    remoteMediaCookie = remoteMediaCookie,
+                    remoteMediaUserAgent = remoteMediaUserAgent,
+                    requestToken = activeOpenRequestToken,
+                    forceRegenerateDubbing = false,
+                )
+            } catch (error: Exception) {
+                markPlaybackRecoveryFailed(
+                    state.key,
+                    activePipelineGeneration,
+                    "重新加载视频失败：${error.message ?: error.javaClass.simpleName}",
+                )
+            }
+        }
+    }
+
+    /** 点播放被拦住时，把真实原因写到状态供统一 PlaybackHint 流显示。 */
+    private fun publishPlayBlockedHint() {
+        val st = ui.value
+        val hint = PlaybackBlockedHintPolicy.hintFor(
+            waitingForTranscriptionEngine = st.waitingForTranscriptionEngine,
+            dubbingOn = st.dubbingOn,
+            waitingForDubbingEngine = st.waitingForDubbingEngine,
+            dubbingHasErrors = st.dubbingHasErrors,
+            phaseIsError = st.phase == Phase.ERROR,
+            ttsEngineName = st.ttsEngineName,
+            failureDetail = if (st.phase == Phase.ERROR) st.error else (st.noModelHint ?: st.dubbingStatus),
+        ) ?: return
+        ui.update { state ->
+            if (state.key == st.key) {
+                state.copy(
+                    playBlockedHint = hint.message,
+                    playBlockedOffersOriginalOnly = hint.offersOriginalOnly,
+                )
+            } else state
+        }
+    }
+
+    fun dismissPlayBlockedHint() {
+        ui.update { it.copy(playBlockedHint = null, playBlockedOffersOriginalOnly = false) }
+    }
+
+    /** 用户明确选择"仅播放原声"：关闭中文配音并直接开始播放，不再被配音问题拦住。 */
+    fun playOriginalOnly() {
+        if (ui.value.dubbingOn) toggleDub()
+        dismissPlayBlockedHint()
+        playPlayback()
+    }
+
+    private suspend fun startPlaybackWithMountedDubbing(
+        seekToMs: Long?,
+        ensureCurrent: suspend () -> Unit,
+    ) {
+        val entryState = ui.value
+        if (isDubbingPlaybackBlocked(entryState)) {
+            cancelPendingSeekResume()
+            pm.pause()
+            safelyControlDubbing("配音引擎未就绪或合成失败，阻止自动播放") { dubbing?.stop() }
+            ui.update { current ->
+                if (current.key == entryState.key) {
+                    current.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1)
+                } else current
+            }
+            return
+        }
+        val startMs = (seekToMs ?: pm.position()).coerceAtLeast(0L)
+        val engine = dubbing
+        val mountsOnBus = engine != null && ui.value.dubbingOn && !engine.usesImmediateTimelinePlayback
+        if (engine != null && mountsOnBus) {
+            // 预读已经把读头推到开头之后：归零，让第一批句子按各自的期望时间挂载。
+            pm.dubbingBus.rewindReadHead(freezeMs = STARTUP_READ_HEAD_FREEZE_MS)
+            engine.remountForPlaybackStart(startMs + subtitleTimingOffsetMs())
+            engine.primeUpcomingCuesAndWait(
+                startMs + subtitleTimingOffsetMs(),
+                lookAheadMs = 2_500L,
+                waitMs = STARTUP_MOUNT_WAIT_MS,
+            )
+            ensureCurrent()
+            startupMountedBusPositionMs = startMs
+            startupMountedBusExpiresAtNanos = System.nanoTime() + STARTUP_FLUSH_KEEP_BUS_NANOS
+            pm.seekTo(startMs)
+        } else if (seekToMs != null) {
+            pm.seekTo(startMs)
+        }
+        primeSubtitleHighlightAtPlaybackStart(pm.position())
+        pm.play()
+    }
+
+    private fun diagnosticMediaSourceType(state: PlayerUiState): String = when {
+        state.key.isBlank() -> "无活动会话"
+        state.key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+        remoteMediaUrl?.isNotBlank() == true -> "网页视频/远程媒体"
+        localUri != null -> "本地视频/文件"
+        state.key.startsWith("import:", ignoreCase = true) -> "字幕导入"
+        else -> "其他或历史会话"
+    }
+
+    private fun notificationRuntimeSnapshot(): Map<String, String> {
+        val state = ui.value
+        val now = android.os.SystemClock.elapsedRealtime()
+        val lastPostedAt = lastProcessingNotificationPostedAtMs
+        val pendingState = synchronized(processingNotificationUpdateLock) {
+            "已排队=$processingNotificationUpdateScheduled；有待合并更新=$processingNotificationUpdatePending"
+        }
+        return linkedMapOf(
+            "进度通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+            "前台启动占位通知 ID" to "1001",
+            "媒体控制通知默认 ID" to "1001",
+            "媒体通知与进度通知是否使用独立 ID" to (PROCESSING_NOTIFICATION_ID != 1001).toString(),
+            "进度通知使用的样式" to "NotificationCompat.BigTextStyle",
+            "进度通知成功提交次数" to processingNotificationPostCount.toString(),
+            "距最近一次进度通知成功提交的毫秒数" to if (lastPostedAt > 0L) (now - lastPostedAt).coerceAtLeast(0L).toString() else "尚未成功提交",
+            "最近一次通知审计状态签名" to (lastProcessingNotificationAuditSignature ?: "暂无"),
+            "Media3 媒体通知更新次数" to mediaNotificationUpdateCount.toString(),
+            "距最近一次 Media3 通知更新的毫秒数" to if (lastMediaNotificationUpdatedAtMs > 0L) (now - lastMediaNotificationUpdatedAtMs).coerceAtLeast(0L).toString() else "尚未触发",
+            "最近一次 Media3 通知状态签名" to (lastMediaNotificationAuditSignature ?: "暂无"),
+            "通知专属审计轨迹（最近 24 条）" to notificationAuditTrailSnapshot().ifBlank { "暂无通知审计事件" },
+            "进度通知更新排队状态" to pendingState,
+            "当前会话阶段" to state.phase.name,
+            "当前播放服务是否已就绪" to playerReady.toString(),
+        )
+    }
+
+    private fun updateProcessingNotification(state: PlayerUiState) {
+        if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
+        val delayMs = synchronized(processingNotificationUpdateLock) {
+            processingNotificationUpdatePending = true
+            if (processingNotificationUpdateScheduled) return
+            processingNotificationUpdateScheduled = true
+            nextProcessingNotificationDelayLocked()
+        }
+        processingNotificationHandler.postDelayed(processingNotificationUpdateRunnable, delayMs)
+    }
+
+    private fun nextProcessingNotificationDelayLocked(): Long {
+        val lastPostedAt = lastProcessingNotificationPostedAtMs
+        if (lastPostedAt <= 0L) return 0L
+        return (lastPostedAt + PROCESSING_NOTIFICATION_MIN_INTERVAL_MS -
+            android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+    }
+
+    private fun drainProcessingNotificationUpdate() {
+        val shouldPublish = synchronized(processingNotificationUpdateLock) {
+            if (!processingNotificationUpdatePending) {
+                processingNotificationUpdateScheduled = false
+                false
+            } else {
+                processingNotificationUpdatePending = false
+                true
+            }
+        }
+        if (!shouldPublish || processingNotificationShuttingDown) return
+
+        // Read the current StateFlow value at execution time, not an older queued emission. This
+        // prevents a late progress update from the previous URL replacing the new session status.
+        publishProcessingNotification(ui.value)
+
+        synchronized(processingNotificationUpdateLock) {
+            if (processingNotificationUpdatePending && !processingNotificationShuttingDown) {
+                processingNotificationHandler.postDelayed(
+                    processingNotificationUpdateRunnable,
+                    nextProcessingNotificationDelayLocked(),
+                )
+            } else {
+                processingNotificationUpdateScheduled = false
+                processingNotificationUpdatePending = false
+            }
+        }
+    }
+
+    /**
+     * Keep CPU time available for the entire active processing pipeline, not just network
+     * downloads. Local ASR/translation and speech preparation can continue with the screen off.
+     * Pausing or finishing processing releases the lock to avoid unnecessary battery use.
+     */
+    private fun syncProcessingWakeLock(state: PlayerUiState) {
+        val speakerRecognitionActive = state.speakerRecognition.isActive
+        val hasActiveWork = isProcessingPhase(state.phase) ||
+            (state.phase == Phase.READY && isDubbingPreparationIncomplete(state)) ||
+            speakerRecognitionActive
+        val shouldHold = !processingNotificationShuttingDown &&
+            hasActiveWork &&
+            (speakerRecognitionActive || !state.isProcessingPaused)
+        synchronized(processingWakeLockLock) {
+            val existing = processingWakeLock
+            if (!shouldHold) {
+                if (existing?.isHeld == true) runCatching { existing.release() }
+                return
+            }
+            if (existing?.isHeld == true) return
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+            val lock = existing ?: powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "TranslateTube:Processing",
+            ).apply {
+                setReferenceCounted(false)
+            }.also {
+                processingWakeLock = it
+            }
+            // A wake-lock failure must not fail or cancel the media extraction itself.
+            runCatching { lock.acquire() }
+        }
+    }
+
+    /**
+     * Keep long-running work independent from the visible Activity. The normal StateFlow
+     * notification path remains the primary updater; this watchdog is a recovery path for
+     * devices/Media3 transitions that temporarily demote the service or drop its CPU lock.
+     *
+     * It covers parsing, audio extraction, local/cloud transcription, translation, dubbing and
+     * user-triggered speaker recognition. It never invents progress: it republishes the latest state.
+     */
+    private fun startBackgroundProcessingGuard() {
+        if (backgroundProcessingGuardJob?.isActive == true) return
+        backgroundProcessingGuardJob = scope.launch(Dispatchers.Default) {
+            while (!processingNotificationShuttingDown) {
+                delay(BACKGROUND_PROCESSING_GUARD_INTERVAL_MS)
+                if (processingNotificationShuttingDown) break
+
+                val observed = ui.value
+                if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                        observed.phase,
+                        isDubbingPreparationIncomplete(observed),
+                        secondaryPlayerTaskInProgress = observed.speakerRecognition.isActive,
+                    )
+                ) continue
+
+                // Speaker recognition is independent from pipeline pause and keeps the CPU awake
+                // while the display is off; ordinary paused pipeline work still releases the lock.
+                syncProcessingWakeLock(observed)
+
+                // Foreground-service promotion and notification updates are serialized on main,
+                // alongside Media3's notification callbacks.
+                processingNotificationHandler.post {
+                    if (processingNotificationShuttingDown) return@post
+                    val current = ui.value
+                    if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                            current.phase,
+                            isDubbingPreparationIncomplete(current),
+                            secondaryPlayerTaskInProgress = current.speakerRecognition.isActive,
+                        )
+                    ) return@post
+
+                    val previousPostCount = processingNotificationPostCount
+                    publishProcessingNotification(current)
+
+                    // A new notification fingerprint already promotes the service. When nothing
+                    // changed, explicitly reassert foreground status anyway; an unchanged
+                    // fingerprint must not be mistaken for proof that Android still keeps us foreground.
+                    if (processingNotificationPostCount == previousPostCount) {
+                        latestProcessingNotification?.let { notice ->
+                            promoteProcessingForeground(
+                                notice,
+                                current,
+                                "后台处理保护定时校验",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun releaseProcessingWakeLock() {
+        synchronized(processingWakeLockLock) {
+            val lock = processingWakeLock
+            if (lock?.isHeld == true) runCatching { lock.release() }
+            processingWakeLock = null
+        }
+    }
+
+    private fun promoteProcessingForeground(
+        notification: Notification,
+        state: PlayerUiState,
+        reason: String,
+    ) {
+        try {
+            // API translation is a long-running data operation, not media playback itself.
+            // Declare/use dataSync while processing so background API requests remain covered by
+            // the proper foreground-service type. Include mediaPlayback only while playback is
+            // actually active (or still requested and not ended).
+            val playerNeedsForeground = if (playerReady && ::pm.isInitialized) {
+                val player = pm.player
+                player.playWhenReady &&
+                    player.playbackState != androidx.media3.common.Player.STATE_IDLE &&
+                    player.playbackState != androidx.media3.common.Player.STATE_ENDED
+            } else {
+                state.isPlaying
+            }
+            val foregroundServiceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+                (if (playerNeedsForeground) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                } else {
+                    0
+                })
+            ServiceCompat.startForeground(
+                this,
+                PROCESSING_NOTIFICATION_ID,
+                notification,
+                foregroundServiceTypes,
+            )
+            processingForegroundActive = true
+            lastProcessingForegroundFailureKey = null
+        } catch (failure: Throwable) {
+            if (failure is VirtualMachineError || failure is ThreadDeath) throw failure
+            processingForegroundActive = false
+            runCatching {
+                (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                    ?.notify(PROCESSING_NOTIFICATION_ID, notification)
+            }
+            val failureKey = safeDiagnosticSessionFingerprint(state.key) + "|" +
+                state.phase.name + "|" + failure.javaClass.name
+            if (lastProcessingForegroundFailureKey != failureKey) {
+                lastProcessingForegroundFailureKey = failureKey
+                io.translatetube.local.util.AppLogStore.error(
+                    this,
+                    "ProcessingForeground",
+                    "无法将处理进度通知提升为前台服务；已回退为普通进度通知",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "调用位置" to reason,
+                        "当前处理阶段" to state.phase.name,
+                        "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                        "服务类型" to "dataSync" + if (state.isPlaying) "+mediaPlayback" else "",
+                        "异常类型" to failure.javaClass.name,
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "ProcessingForeground",
+                        failureKey,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun releaseProcessingForegroundIfSafe(state: PlayerUiState) {
+        // READY can mean video playback has started while later subtitle cues are still
+        // synthesizing. Keep the dataSync foreground service until that queue is actually done.
+        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                state.phase,
+                isDubbingPreparationIncomplete(state),
+                secondaryPlayerTaskInProgress = state.speakerRecognition.isActive,
+            )
+        ) return
+        if (!processingForegroundActive) return
+        val playerNeedsForeground = if (playerReady && ::pm.isInitialized) {
+            val player = pm.player
+            player.playWhenReady &&
+                player.playbackState != androidx.media3.common.Player.STATE_IDLE &&
+                player.playbackState != androidx.media3.common.Player.STATE_ENDED
+        } else {
+            state.isPlaying
+        }
+        if (playerNeedsForeground) {
+            // Media3 should keep the service in the foreground for playback.
+            processingForegroundActive = false
+            return
+        }
+        runCatching {
+            stopForeground(android.app.Service.STOP_FOREGROUND_DETACH)
+        }
+        processingForegroundActive = false
+    }
+
+    private fun publishProcessingNotification(state: PlayerUiState) {
+        syncProcessingWakeLock(state)
+        if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
+        val preparationIncomplete = isDubbingPreparationIncomplete(state)
+        val speakerRecognitionActive = state.speakerRecognition.isActive
+        val shouldShowProcessingNotification = speakerRecognitionActive || when (state.phase) {
+            Phase.IDLE -> false
+            Phase.READY -> state.waitingForTranscriptionEngine || state.waitingForDubbingEngine ||
+                preparationIncomplete || state.dubbingHasErrors
+            else -> true
+        }
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (!shouldShowProcessingNotification) {
+            latestProcessingNotification = null
+            releaseProcessingForegroundIfSafe(state)
+            manager.cancel(PROCESSING_NOTIFICATION_ID)
+            if (lastProcessingNotificationFingerprint != null) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this,
+                    "NotificationDiagnostics",
+                    "处理结束或进入空闲状态，已清除独立进度通知",
+                    diagnosticContext = mapOf(
+                        "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+                        "当前处理阶段" to state.phase.name,
+                        "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                        "原因" to if (state.phase == Phase.IDLE) "空闲状态" else "处理已完成且无需继续显示进度通知",
+                    ),
+                )
+            }
+            lastProcessingNotificationFingerprint = null
+            lastProcessingNotificationAuditSignature = null
+            return
+        }
+        val (title, detail) = if (speakerRecognitionActive) {
+            "人物区分 · ${state.speakerRecognition.stageTitle}" to state.speakerRecognition.message
+                .ifBlank { state.progress.removePrefix("人物识别 · ").ifBlank { "正在分析音频" } }
+        } else when (state.phase) {
+            Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
+            Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
+            Phase.TRANSCRIBING -> "正在转写原文字幕" to state.progress.ifBlank { "正在生成与视频时间轴对齐的原文字幕" }
+            Phase.TRANSLATING -> "正在将原文字幕翻译成中文" to state.progress.ifBlank {
+                if (state.totalLines > 0) "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
+            }
+            Phase.SYNTHESIZING -> "正在按时间轴生成中文配音" to if (state.totalLines > 0) {
+                "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
+                    (if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else "")
+            } else state.progress.ifBlank { "正在准备语音" }
+            Phase.READY -> {
+                val waitTitle = VideoProcessingFlowPolicy.readyNotificationWaitTitle(
+                    waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
+                    waitingForDubbingEngine = state.waitingForDubbingEngine,
+                )
+                val failureTitle = VideoProcessingFlowPolicy.readyNotificationFailureTitle(state.dubbingHasErrors)
+                when {
+                    waitTitle != null -> waitTitle to state.noModelHint
+                        ?.takeIf { it.isNotBlank() }
+                        .orEmpty()
+                        .ifBlank {
+                            state.progress.ifBlank {
+                                "已可以播放视频；配置对应引擎后重新打开视频以继续处理"
+                            }
+                        }
+                    preparationIncomplete ->
+                        (if (state.dubbingHasErrors) "配音部分失败 · 仍在准备" else if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
+                            "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
+                                (if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else "") +
+                                if (state.dubbingHasErrors) "；失败字幕暂用原声" else ""
+                        } else state.progress.ifBlank { "正在生成中文配音" }
+                    failureTitle != null -> failureTitle to (
+                        state.noModelHint?.takeIf { it.isNotBlank() }
+                            ?: "部分字幕配音失败，相关片段已恢复原声。打开应用查看详情。"
+                    )
+                    state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
+                    else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
+                }
+            }
+            Phase.ERROR -> "处理遇到问题" to (state.error ?: "打开应用查看详情")
+            else -> "大象翻译" to "等待开始"
+        }
+
+        // Only publish determinate progress when it comes from a measurable source:
+        // downloaded bytes, completed ASR segments, translated lines, or prepared TTS lines.
+        // Do not use Android's indeterminate notification animation as a fake progress display.
+        val measuredPercent: Int? = if (speakerRecognitionActive) {
+            state.speakerRecognition.progressPercent
+        } else when (state.phase) {
+            Phase.DOWNLOADING_AUDIO -> percentFromProgress(state.progress)
+                ?: ratioPercentFromProgress(state.progress)
+            Phase.TRANSCRIBING -> ratioPercentFromProgress(state.progress)
+                ?: percentFromProgress(state.progress)
+            Phase.TRANSLATING -> ratioPercentFromProgress(state.progress)
+                ?: if (state.totalLines > 0) {
+                    (state.translatedLineCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+                } else null
+            Phase.SYNTHESIZING -> if (state.totalLines > 0) {
+                (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+            } else ratioPercentFromProgress(state.progress)
+            Phase.READY -> if (preparationIncomplete && state.totalLines > 0) {
+                (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+            } else null
+            else -> null
+        }
+        val speakerCounterDetail = if (speakerRecognitionActive) {
+            val recognition = state.speakerRecognition
+            val completed = recognition.completedUnits
+            val total = recognition.totalUnits
+            if (
+                completed != null && total != null && total > 0L &&
+                recognition.progressItem == null &&
+                recognition.stage in setOf(
+                    SpeakerRecognitionStage.ANALYZING_AUDIO,
+                    SpeakerRecognitionStage.LINKING_SUBTITLES,
+                )
+            ) {
+                val unit = if (recognition.stage == SpeakerRecognitionStage.ANALYZING_AUDIO) "段" else "行"
+                "已完成 ${completed.coerceIn(0L, total)}/$total$unit"
+            } else null
+        } else null
+        val detailWithSpeakerCount = if (speakerCounterDetail != null) {
+            "$detail · $speakerCounterDetail"
+        } else detail
+        val displayDetail = if (
+            measuredPercent != null &&
+            !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detailWithSpeakerCount)
+        ) "$detailWithSpeakerCount · $measuredPercent%" else detailWithSpeakerCount
+        val ongoing = state.isPlaying || preparationIncomplete || speakerRecognitionActive ||
+            state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
+        val hasProcessingActions = isProcessingPhase(state.phase)
+        val canCancelSpeakerRecognition = speakerRecognitionActive &&
+            speakerJob?.isActive == true &&
+            state.speakerRecognition.phase != SpeakerRecognitionPhase.CANCELLING
+        val notificationFingerprint = listOf(
+            state.phase.name,
+            state.key,
+            title,
+            displayDetail,
+            measuredPercent?.toString().orEmpty(),
+            state.speakerRecognition.phase.name,
+            state.speakerRecognition.stage.name,
+            state.speakerRecognition.completedUnits?.toString().orEmpty(),
+            state.speakerRecognition.totalUnits?.toString().orEmpty(),
+            state.speakerRecognition.progressItem.orEmpty(),
+            state.speakerRecognition.taskToken?.toString().orEmpty(),
+            speakerRecognitionActive.toString(),
+            state.isProcessingPaused.toString(),
+            ongoing.toString(),
+            hasProcessingActions.toString(),
+            canCancelSpeakerRecognition.toString(),
+        ).joinToString("\\u001f")
+        if (notificationFingerprint == lastProcessingNotificationFingerprint) {
+            if (!VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                    state.phase,
+                    preparationIncomplete,
+                    secondaryPlayerTaskInProgress = speakerRecognitionActive,
+                )
+            ) {
+                releaseProcessingForegroundIfSafe(state)
+            } else if (preparationIncomplete && latestProcessingNotification != null && !processingForegroundActive) {
+                promoteProcessingForeground(
+                    latestProcessingNotification!!,
+                    state,
+                    "仍有配音队列待处理，恢复前台保护",
+                )
+            }
+            return
+        }
+
+        val notification = NotificationCompat.Builder(this, CH_MAIN)
+            .setSmallIcon(R.drawable.ic_stat_brand)
+            .setContentTitle(if (state.isProcessingPaused && !speakerRecognitionActive) "已暂停 · $title" else title)
+            .setContentText(if (state.isProcessingPaused && !speakerRecognitionActive) "已暂停 · $displayDetail" else displayDetail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(displayDetail))
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setOngoing(ongoing)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0,
+                    Intent(this, io.translatetube.local.MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            .apply {
+                val processingPendingFlags =
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                if (hasProcessingActions) {
+                    val toggleIntent = Intent(this@PlaybackService, PlaybackService::class.java)
+                        .setAction(ACTION_TOGGLE_PROCESSING_PAUSE)
+                        .setData(Uri.parse("translate-tube://processing/pause/" + Uri.encode(state.key)))
+                        .putExtra(EXTRA_PROCESSING_SESSION_KEY, state.key)
+                    val togglePending = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@PlaybackService, 1002, toggleIntent, processingPendingFlags)
+                    } else {
+                        PendingIntent.getService(this@PlaybackService, 1002, toggleIntent, processingPendingFlags)
+                    }
+                    addAction(
+                        if (state.isProcessingPaused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
+                        if (state.isProcessingPaused) "继续" else "暂停",
+                        togglePending,
+                    )
+                    val cancelIntent = Intent(this@PlaybackService, PlaybackService::class.java)
+                        .setAction(ACTION_CANCEL_PROCESSING)
+                        .setData(Uri.parse("translate-tube://processing/cancel/" + Uri.encode(state.key)))
+                        .putExtra(EXTRA_PROCESSING_SESSION_KEY, state.key)
+                    val cancelPending = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@PlaybackService, 1003, cancelIntent, processingPendingFlags)
+                    } else {
+                        PendingIntent.getService(this@PlaybackService, 1003, cancelIntent, processingPendingFlags)
+                    }
+                    addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
+                }
+                if (canCancelSpeakerRecognition) {
+                    val cancelSpeakerIntent = Intent(this@PlaybackService, PlaybackService::class.java)
+                        .setAction(ACTION_CANCEL_SPEAKER_RECOGNITION)
+                        .setData(Uri.parse("translate-tube://speaker/cancel/" + Uri.encode(state.key)))
+                        .putExtra(EXTRA_PROCESSING_SESSION_KEY, state.key)
+                    val cancelSpeakerPending = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@PlaybackService, 1005, cancelSpeakerIntent, processingPendingFlags)
+                    } else {
+                        PendingIntent.getService(this@PlaybackService, 1005, cancelSpeakerIntent, processingPendingFlags)
+                    }
+                    addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消区分", cancelSpeakerPending)
+                }
+                // Recognition shows a determinate bar only for measured percentages/counters.
+                // During model initialization or speaker assignment, use an indeterminate bar instead.
+                if (measuredPercent != null) {
+                    setProgress(100, measuredPercent.coerceIn(0, 100), false)
+                } else if (speakerRecognitionActive) {
+                    setProgress(0, 0, true)
+                } else {
+                    setProgress(0, 0, false)
+                }
+            }
+            .build()
+        rememberNotificationAudit(
+            "BEFORE processing notice id=" + PROCESSING_NOTIFICATION_ID + " phase=" + state.phase.name +
+                " actions=" + ((if (hasProcessingActions) 2 else 0) + (if (canCancelSpeakerRecognition) 1 else 0)) +
+                " determinateProgress=" + (measuredPercent != null) +
+                " speakerRecognition=" + speakerRecognitionActive +
+                " session=" + safeDiagnosticSessionFingerprint(state.key),
+        )
+        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                state.phase,
+                preparationIncomplete,
+                secondaryPlayerTaskInProgress = speakerRecognitionActive,
+            )
+        ) {
+            latestProcessingNotification = notification
+            promoteProcessingForeground(notification, state, "处理进度通知更新")
+        } else {
+            latestProcessingNotification = null
+            releaseProcessingForegroundIfSafe(state)
+            try {
+                manager.notify(PROCESSING_NOTIFICATION_ID, notification)
+            } catch (failure: Throwable) {
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.error(
+                        this,
+                        "NotificationDiagnostics",
+                        "提交处理进度通知时同步抛出异常",
+                        failure,
+                        diagnosticContext = mapOf(
+                            "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+                            "通知样式" to "NotificationCompat.BigTextStyle",
+                            "当前处理阶段" to state.phase.name,
+                            "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                            "是否包含暂停/取消操作" to hasProcessingActions.toString(),
+                            "是否包含进度条" to (measuredPercent != null).toString(),
+                            "提交线程" to Thread.currentThread().name,
+                        ),
+                    )
+                }
+                throw failure
+            }
+        }
+        lastProcessingNotificationFingerprint = notificationFingerprint
+        lastProcessingNotificationPostedAtMs = android.os.SystemClock.elapsedRealtime()
+        processingNotificationPostCount += 1L
+        rememberNotificationAudit(
+            "AFTER processing notice id=" + PROCESSING_NOTIFICATION_ID + " phase=" + state.phase.name +
+                " count=" + processingNotificationPostCount + " session=" + safeDiagnosticSessionFingerprint(state.key),
+        )
+
+        // Audit only layout/state transitions, not every counter tick. This creates a compact
+        // timeline that can be matched to RemoteServiceException's notification tag/id.
+        val auditSignature = listOf(
+            safeDiagnosticSessionFingerprint(state.key),
+            state.phase.name,
+            ongoing.toString(),
+            hasProcessingActions.toString(),
+            (measuredPercent != null).toString(),
+            state.isProcessingPaused.toString(),
+        ).joinToString("|")
+        if (auditSignature != lastProcessingNotificationAuditSignature) {
+            lastProcessingNotificationAuditSignature = auditSignature
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "处理进度通知状态已提交（布局/阶段变更）",
+                diagnosticContext = mapOf(
+                    "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+                    "通知用途" to "视频解析/转写/翻译/配音进度，不是 Media3 媒体控制通知",
+                    "通知样式" to "NotificationCompat.BigTextStyle",
+                    "当前处理阶段" to state.phase.name,
+                    "会话类型" to diagnosticMediaSourceType(state),
+                    "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                    "是否 ongoing" to ongoing.toString(),
+                    "操作按钮数" to if (hasProcessingActions) "2" else "0",
+                    "是否有确定进度条" to (measuredPercent != null).toString(),
+                    "是否已暂停处理" to state.isProcessingPaused.toString(),
+                    "本次服务进程内成功提交序号" to processingNotificationPostCount.toString(),
+                    "提交线程" to Thread.currentThread().name,
+                ),
+            )
+        }
+    }
+
+    private fun percentFromProgress(progress: String): Int? {
+        val match = Regex("(\\d+(?:\\.\\d+)?)%").find(progress) ?: return null
+        return match.groupValues[1].toFloatOrNull()?.toInt()?.coerceIn(0, 100)
+    }
+
+    private fun ratioPercentFromProgress(progress: String): Int? {
+        val match = Regex("(\\d+)\\s*/\\s*(\\d+)").find(progress) ?: return null
+        val current = match.groupValues[1].toIntOrNull() ?: return null
+        val total = match.groupValues[2].toIntOrNull() ?: return null
+        if (total <= 0) return null
+        return (current * 100f / total).toInt().coerceIn(0, 100)
+    }
+
+    /** Stable per-session correlation ID without persisting the original URL or local file path. */
+    private fun safeDiagnosticSessionFingerprint(sessionKey: String): String = runCatching {
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(sessionKey.toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }.getOrDefault("unavailable")
+
+    /** Normalize changing counters/percentages so progress ticks do not flood the diagnostic log. */
+    private fun progressLogSignature(progress: String): String = progress
+        .replace(Regex("\\d+(?:\\.\\d+)?\\s*%"), "%")
+        .replace(Regex("\\d+\\s*/\\s*\\d+"), "#/#")
+        .replace(Regex("\\b\\d+(?:\\.\\d+)?\\b"), "#")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(160)
+
+    private fun rememberNotificationAudit(event: String) {
+        val elapsed = android.os.SystemClock.elapsedRealtime()
+        val line = ("uptimeMs=" + elapsed + " " + event).take(320)
+        synchronized(notificationAuditLock) {
+            recentNotificationAuditTrail.addLast(line)
+            while (recentNotificationAuditTrail.size > MAX_NOTIFICATION_AUDIT_EVENTS) {
+                recentNotificationAuditTrail.removeFirst()
+            }
+        }
+    }
+
+    private fun notificationAuditTrailSnapshot(): String = synchronized(notificationAuditLock) {
+        recentNotificationAuditTrail.joinToString(separator = " || ")
+    }
+
+    /**
+     * Media3 owns the media-control notification (default ID 1001). Record its state transitions
+     * separately from our processing-progress notification (ID 1004), so a future system-side
+     * RemoteServiceException can be correlated to the notification being refreshed at that time.
+     */
+    override fun onUpdateNotification(
+        session: MediaSession,
+        startInForegroundRequired: Boolean,
+    ) {
+        val player = session.player
+        val state = ui.value
+        val sessionFingerprint = state.key.takeIf { it.isNotBlank() }
+            ?.let(::safeDiagnosticSessionFingerprint).orEmpty().ifBlank { "no-active-session" }
+        val signature = listOf(
+            player.playbackState.toString(),
+            player.playWhenReady.toString(),
+            player.isPlaying.toString(),
+            startInForegroundRequired.toString(),
+            state.phase.name,
+            sessionFingerprint,
+        ).joinToString("|")
+        val changed = signature != lastMediaNotificationAuditSignature
+        val updateNumber = mediaNotificationUpdateCount + 1L
+        val event = "Media3 media notice update #" + updateNumber + " id=1001 phase=" + state.phase.name +
+            " playbackState=" + player.playbackState + " playWhenReady=" + player.playWhenReady +
+            " isPlaying=" + player.isPlaying + " foregroundRequired=" + startInForegroundRequired +
+            " session=" + sessionFingerprint
+        rememberNotificationAudit("BEFORE " + event)
+
+        if (changed) {
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "Media3 即将更新媒体控制通知",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001（Media3 默认媒体通知 ID）",
+                    "通知用途" to "媒体控制/播放状态",
+                    "Media3 更新序号" to updateNumber.toString(),
+                    "播放器状态码" to player.playbackState.toString(),
+                    "playWhenReady" to player.playWhenReady.toString(),
+                    "播放器 isPlaying" to player.isPlaying.toString(),
+                    "是否需要前台服务" to startInForegroundRequired.toString(),
+                    "当前处理阶段" to state.phase.name,
+                    "会话指纹" to sessionFingerprint,
+                    "当前线程" to Thread.currentThread().name,
+                ),
+            )
+        }
+        try {
+            super.onUpdateNotification(session, startInForegroundRequired)
+        } catch (failure: Throwable) {
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    this,
+                    "NotificationDiagnostics",
+                    "Media3 更新媒体控制通知时同步抛出异常",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "通知 ID" to "1001（Media3 默认媒体通知 ID）",
+                        "Media3 更新序号" to updateNumber.toString(),
+                        "播放器状态码" to player.playbackState.toString(),
+                        "是否需要前台服务" to startInForegroundRequired.toString(),
+                        "当前处理阶段" to state.phase.name,
+                        "会话指纹" to sessionFingerprint,
+                    ),
+                )
+            }
+            throw failure
+        }
+        // Media3 may demote this service when the video is not actively playing. Processing is
+        // independent of the visible Activity, so restore the progress notification as the FGS
+        // notification after Media3 has finished updating its own media-control notification.
+        val currentProcessingState = ui.value
+        syncProcessingWakeLock(currentProcessingState)
+        if (VideoProcessingFlowPolicy.shouldKeepProcessingForeground(
+                currentProcessingState.phase,
+                isDubbingPreparationIncomplete(currentProcessingState),
+                secondaryPlayerTaskInProgress = currentProcessingState.speakerRecognition.isActive,
+            )
+        ) {
+            val processingNotice = latestProcessingNotification
+            if (processingNotice != null) {
+                promoteProcessingForeground(
+                    processingNotice,
+                    currentProcessingState,
+                    "Media3 媒体通知更新后恢复前台状态",
+                )
+            } else {
+                publishProcessingNotification(currentProcessingState)
+            }
+        } else if (startInForegroundRequired) {
+            // Media3 now owns foreground status for active playback.
+            processingForegroundActive = false
+        } else {
+            releaseProcessingForegroundIfSafe(currentProcessingState)
+        }
+
+        mediaNotificationUpdateCount = updateNumber
+        lastMediaNotificationUpdatedAtMs = android.os.SystemClock.elapsedRealtime()
+        lastMediaNotificationAuditSignature = signature
+        rememberNotificationAudit("AFTER Media3 media notice update #" + updateNumber + " id=1001 returned")
+        if (changed) {
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "Media3 媒体控制通知更新调用已返回",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001（Media3 默认媒体通知 ID）",
+                    "Media3 更新序号" to updateNumber.toString(),
+                    "当前处理阶段" to state.phase.name,
+                    "会话指纹" to sessionFingerprint,
+                    "当前线程" to Thread.currentThread().name,
+                ),
+            )
+        }
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+    /** Prevent a canceled pipeline from publishing progress/results into a newer video session. */
+    private fun updateUiForSession(
+        sessionKey: String,
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
+        transform: (PlayerUiState) -> PlayerUiState,
+    ) {
+        val publish = {
+            ui.update { current ->
+                if (
+                    !PlaybackSessionGuard.isCurrent(
+                        sessionKey = sessionKey,
+                        activeVideoKey = videoKey,
+                        activeUiKey = current.key,
+                        expectedPipelineGeneration = pipelineGeneration,
+                        activePipelineGeneration = activePipelineGeneration,
+                        expectedDubbingMutationGeneration = dubbingMutationGeneration,
+                        activeDubbingMutationGeneration = activeDubbingMutationGeneration,
+                    )
+                ) {
+                    current
+                } else {
+                    val updated = transform(current)
+                    when {
+                        updated.phase == Phase.ERROR && current.phase != Phase.ERROR ->
+                            updated.copy(failedPhase = current.phase, failedProgress = current.progress)
+                        updated.phase != Phase.ERROR ->
+                            updated.copy(
+                                failedPhase = null,
+                                failedProgress = "",
+                                cloudAsrSubmissionUncertain = false,
+                            )
+                        else -> updated
+                    }
+                }
+            }
+        }
+        val before = ui.value
+        if (pipelineGeneration == null) {
+            publish()
+        } else {
+            // Serialize generation changes with publication so an old same-key task cannot
+            // slip a final progress/error update into the newly opened session.
+            synchronized(pipelineGenerationLock) {
+                if (pipelineGeneration != activePipelineGeneration) return
+                publish()
+            }
+        }
+
+        val after = ui.value
+        if (after.key == sessionKey) {
+            val phaseChanged = before.phase != after.phase
+            val stepChanged = after.progress.isNotBlank() &&
+                progressLogSignature(before.progress) != progressLogSignature(after.progress)
+            if (phaseChanged || stepChanged) {
+                val operation = if (phaseChanged) {
+                    "处理阶段变更：${before.phase.name} -> ${after.phase.name}"
+                } else {
+                    "处理步骤：${after.progress.take(160)}"
+                }
+                val contextSnapshot = mapOf(
+                    "前一阶段" to before.phase.name,
+                    "当前阶段" to after.phase.name,
+                    "当前处理步骤" to after.progress.ifBlank { after.failedProgress }.take(200),
+                    "出错前阶段" to after.failedPhase?.name.orEmpty().ifBlank { "未记录" },
+                    "当前错误提示" to after.error.orEmpty().take(200),
+                    "翻译引擎" to after.engineName.ifBlank { "未确定" },
+                    "配音引擎" to after.ttsEngineName.ifBlank { "未确定" },
+                    "源语言" to after.sourceLang.ifBlank { "未确定" },
+                    "字幕已发布行数" to after.lines.size.toString(),
+                    "字幕总行数" to after.totalLines.toString(),
+                    "已准备配音行数" to after.preparedCount.toString(),
+                    "当前字幕索引" to after.currentLine.toString(),
+                    "等待转写引擎" to after.waitingForTranscriptionEngine.toString(),
+                    "等待配音引擎" to after.waitingForDubbingEngine.toString(),
+                    "处理代数" to (pipelineGeneration?.toString() ?: "未指定"),
+                    "视频来源" to when {
+                        sessionKey.startsWith("youtube:") -> "YouTube"
+                        sessionKey.startsWith("remote:") -> "网页视频"
+                        sessionKey.startsWith("webpage:") -> "网页"
+                        sessionKey.startsWith("local:") -> "本地视频"
+                        else -> "其他来源"
+                    },
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                    "播放器初始化状态" to playerReady.toString(),
+                )
+                // File I/O must not run on the UI thread; the event is queued on the service scope.
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val statePrefs = getSharedPreferences("settings", MODE_PRIVATE)
+                    val sourceKind = when {
+                        after.key.startsWith("youtube:") -> "youtube"
+                        after.key.startsWith("remote:") -> "web"
+                        after.key.startsWith("local:") -> "local"
+                        after.key.startsWith("webpage:") -> "webpage"
+                        else -> "other"
+                    }
+                    val compactProcessState = listOf(
+                        "p=${after.phase.name}",
+                        "src=$sourceKind",
+                        "tts=" + DubbingConfigPreferencePolicy.normalizeEngineId(statePrefs.getString("tts_engine", "edge")),
+                        "api=${statePrefs.getLong("active_api_id", -1L)}",
+                        "tr=${after.translatedLineCount}/${after.totalLines}",
+                        "dub=${after.preparedCount}",
+                        "pause=${if (after.isProcessingPaused) 1 else 0}",
+                        "play=${if (after.isPlaying) 1 else 0}",
+                        "err=${if (after.phase == Phase.ERROR) 1 else 0}",
+                    ).joinToString(";")
+                    // This platform API is intentionally updated only when the processing
+                    // phase changes. The system may throttle frequent writes; detailed step logs
+                    // remain in the local file log and don't need to be sent to ActivityManager.
+                    if (phaseChanged) {
+                        io.translatetube.local.util.AppLogStore.updateProcessStateSummary(
+                            this@PlaybackService,
+                            compactProcessState,
+                        )
+                    }
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackTrace",
+                        operation,
+                        diagnosticContext = contextSnapshot,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun isCurrentDubbingEngine(engine: DubbingEngine, sessionKey: String): Boolean =
+        videoKey == sessionKey && ui.value.key == sessionKey && dubbing === engine
+
+    /** Publish an initialized engine only if the workflow still owns the active session. */
+    private fun publishDubbingEngine(
+        engine: DubbingEngine,
+        sessionKey: String,
+        pipelineGeneration: Long,
+        mutationGeneration: Long? = null,
+    ): Boolean = synchronized(pipelineGenerationLock) {
+        if (
+            !PlaybackSessionGuard.isCurrent(
+                sessionKey = sessionKey,
+                activeVideoKey = videoKey,
+                activeUiKey = ui.value.key,
+                expectedPipelineGeneration = pipelineGeneration,
+                activePipelineGeneration = activePipelineGeneration,
+                expectedDubbingMutationGeneration = mutationGeneration,
+                activeDubbingMutationGeneration = activeDubbingMutationGeneration,
+            )
+        ) {
+            false
+        } else {
+            dubbing = engine
+            cancelDubbingDrainAfterVideoEnd()
+            clearDubbingCatchUpQueue(
+                sessionKey = sessionKey,
+                positionMs = if (::pm.isInitialized) pm.position() else -1L,
+            )
+            true
+        }
+    }
+
+    /** Ignore late callbacks from a replaced engine, including when the same video key is reused. */
+    private fun updateUiForCurrentDubbingEngine(
+        engine: DubbingEngine,
+        sessionKey: String,
+        transform: (PlayerUiState) -> PlayerUiState,
+    ) {
+        ui.update { current ->
+            if (current.key == sessionKey && videoKey == sessionKey && dubbing === engine) {
+                transform(current)
+            } else {
+                current
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        // Drop queued surface work before the player is released; no stale view may be rebound.
+        surfaceAttachHandler.removeCallbacksAndMessages(null)
+        requestedVideoSurface = null
+        boundVideoSurface = null
+        processingNotificationShuttingDown = true
+        backgroundProcessingGuardJob?.cancel()
+        backgroundProcessingGuardJob = null
+        releaseProcessingWakeLock()
+        latestProcessingNotification = null
+        processingForegroundActive = false
+        processingNotificationHandler.removeCallbacks(processingNotificationUpdateRunnable)
+        synchronized(processingNotificationUpdateLock) {
+            processingNotificationUpdatePending = false
+            processingNotificationUpdateScheduled = false
+        }
+        runCatching {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.cancel(PROCESSING_NOTIFICATION_ID)
+        }
+        enginePreferenceRestartJob?.cancel()
+        enginePreferenceRestartJob = null
+        enginePreferencesListener?.let { listener ->
+            runCatching {
+                getSharedPreferences("settings", MODE_PRIVATE)
+                    .unregisterOnSharedPreferenceChangeListener(listener)
+            }
+        }
+        enginePreferencesListener = null
+        // Cancel work before releasing services it may still be using. In particular, the
+        // local ASR JNI recognizer must not be released while a synchronous decode call is active.
+        cancelDubbingDrainAfterVideoEnd()
+        val speakerSnapshot = ui.value
+        if (
+            speakerSnapshot.speakerRecognition.isActive &&
+            speakerSnapshot.speakerRecognition.taskToken != null
+        ) {
+            SpeakerRecognitionTaskJournal.save(
+                this,
+                speakerSnapshot.key,
+                speakerSnapshot.speakerRecognition,
+            )
+        }
+        val activePipeline = prepJob
+        prepJob?.cancel()
+        // Keep the interrupted-task journal written above. The completion callback only clears
+        // user-cancelled tasks while the job still owns speakerJob; detach before service teardown.
+        val activeSpeakerJob = speakerJob
+        speakerJob = null
+        activeSpeakerJob?.cancel()
+        qualityJob?.cancel()
+        qualityRecoveryJob?.cancel()
+        dubCollectJob?.cancel()
+        scope.cancel()
+
+        runCatching { retireCurrentDubbing() }
+        // Previously retired engines have already received release(); their barriers remain
+        // registered until a live processing task can join them.
+        if (activePipeline != null && !activePipeline.isCompleted) {
+            // Cancellation is cooperative around blocking JNI calls. Close the recognizer only
+            // after the owning pipeline has completed. Do cleanup off-main because older canceled
+            // jobs may still be returning from a synchronous native decode.
+            activePipeline.invokeOnCompletion { releaseLocalAsrOffMainThread() }
+        } else {
+            releaseLocalAsrOffMainThread()
+        }
+        runCatching { session?.release() }
+        if (::pm.isInitialized) runCatching { pm.release() }
+        playerReady = false
+        videoPresentationMode = VideoPresentationMode.BACKGROUND_AUDIO
+        if (instance === this) {
+            // The companion StateFlow outlives this Service. Release subtitle and preview lists
+            // here so a stopped player cannot retain a large prior session in process memory.
+            clearSubtitleHighlightTimeline()
+            ui.value = PlayerUiState()
+            _playbackHint.value = null
+            instance = null
+        }
+        super.onDestroy()
+    }
+
+
+    private fun shouldReleaseLocalAsrForMemoryPressure(): Boolean {
+        val manager = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            ?: return false
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(memoryInfo)
+        return AsrMemoryPolicy.shouldReleaseRecognizer(
+            isLowRamDevice = manager.isLowRamDevice,
+            memoryClassMb = manager.memoryClass,
+            systemLowMemory = memoryInfo.lowMemory,
+            availableMemoryBytes = memoryInfo.availMem,
+            totalMemoryBytes = memoryInfo.totalMem,
+        )
+    }
+
+    private fun releaseLocalAsrOffMainThread() {
+        Thread(
+            { releaseLocalAsr() },
+            "tt-local-asr-release",
+        ).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun releaseLocalAsr() {
+        val engine = localAsrEngine
+        localAsrEngine = null
+        localAsrEngineModelId = null
+        runCatching { engine?.close() }
+            .onFailure { android.util.Log.w("PlaybackService", "Local ASR recognizer cleanup failed", it) }
+    }
+
+    /**
+     * Local ASR recognizers hold native model memory after transcription. Release that memory
+     * before constructing a TTS engine: replaying a cached video can reach synthesis almost
+     * immediately, while the previous Whisper/SenseVoice session is still resident in this
+     * long-lived service. This shared path covers YouTube, web video, local video and imports.
+     */
+    private suspend fun releaseLocalAsrBeforeDubbing(
+        sessionKey: String,
+        pipelineGeneration: Long,
+    ) {
+        withContext(Dispatchers.IO) {
+            localAsrMutex.withLock {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (localAsrEngine != null) {
+                    releaseLocalAsr()
+                    android.util.Log.i(
+                        "PlaybackService",
+                        "Released local ASR model before TTS initialization for session=$sessionKey",
+                    )
+                }
+            }
+        }
+    }
+
+    // ============ 管线入口 ============
+    fun open(
+        key: String,
+        videoId: String?,
+        localUri: Uri?,
+        importedLines: List<SubLine>? = null,
+        resumeState: PlayerUiState? = null,
+        remoteMediaUrl: String? = null,
+        remoteMediaTitle: String = "",
+        remoteMediaReferrer: String = "",
+        remoteMediaCookie: String? = null,
+        remoteMediaUserAgent: String? = null,
+        selectedWebMediaMetadata: SelectedWebMediaMetadata? = null,
+        requestToken: Long = 0L,
+        reuseMountedMediaForRestart: Boolean = false,
+        restoreReadySnapshot: Boolean = false,
+        forceRegenerateDubbing: Boolean = false,
+        forceRegenerateFromStage: EngineRestartStage? = null,
+        reuseMatchingDubbingCache: Boolean = false,
+        forceYouTubeSubtitleRefresh: Boolean = false,
+        resumeYouTubeSubtitleMode: String? = null,
+        precomputedLocalMediaIdentityKey: String? = null,
+        localIdentityResolutionToken: Long? = null,
+        skipInProgressCheckpointRestore: Boolean = false,
+    ) {
+        val verifiedSelectedWebMediaMetadata = selectedWebMediaMetadata?.takeIf { metadata ->
+            !remoteMediaUrl.isNullOrBlank() &&
+                SelectedWebMediaMetadataIdentityPolicy.matches(
+                    metadata = metadata,
+                    mediaUrl = remoteMediaUrl,
+                    referrer = remoteMediaReferrer,
+                    cookie = remoteMediaCookie,
+                )
+        }
+        if (selectedWebMediaMetadata != null && verifiedSelectedWebMediaMetadata == null) {
+            android.util.Log.w(
+                "PlaybackService",
+                "Discarded webpage source metadata because its media/session identity did not match the active request",
+            )
+        }
+        val previousYouTubeProcessingFlow =
+            resumeState?.processingFlow
+                ?: ui.value.takeIf { it.key == key }?.processingFlow
+                ?: ReadyHistorySessionConfigStore.savedProcessingFlow(this, key)
+        val resumeModeBaseline = resumeYouTubeSubtitleMode
+            ?: if (resumeState != null && ui.value.key == key) {
+                activeProcessingYouTubeSubtitleMode
+            } else {
+                null
+            }
+        val resumeSubtitleModeChanged = when {
+            resumeModeBaseline != null ->
+                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.hasModeChanged(
+                    resumeModeBaseline,
+                    selectedYouTubeSubtitleMode(),
+                )
+            resumeState != null ->
+                ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, key)
+            else -> false
+        }
+        val refreshYouTubeSubtitleSource =
+            forceYouTubeSubtitleRefresh ||
+                (resumeState != null &&
+                    videoId != null &&
+                    (importedLines == null || importedLines.isEmpty()) &&
+                    key.startsWith("youtube:", ignoreCase = true) &&
+                    ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                        resumeState.processingFlow,
+                    ) &&
+                    resumeSubtitleModeChanged)
+        val checkpointLookupToken = if (skipInProgressCheckpointRestore) {
+            processingCheckpointRestoreGeneration.get()
+        } else {
+            processingCheckpointRestoreGeneration.incrementAndGet()
+        }
+        val incomingSessionKey = ui.value.key
+        if (incomingSessionKey != key) {
+            playbackRecoveryInProgress = false
+            playbackRecoveryMessage = null
+            playbackRecoveryFailure = null
+            expiredAddressRecoveryAttempted = false
+            playbackRecoveryWasPlayerVisible = false
+            playbackRestoreRequested = false
+            playbackHintShownAtMs = 0L
+            noFrameWaitStartedAtMs = 0L
+            noFrameWaitSessionKey = key
+            idleRecoveryAttemptedKey = ""
+            lastObservedSourceGeneration = -1L
+            _playbackHint.value = null
+        }
+        if (precomputedLocalMediaIdentityKey == null) {
+            val identityToken = localMediaIdentityResolutionGeneration.incrementAndGet()
+            if (localUri != null) {
+                val importedLinesSnapshot = importedLines?.toList()
+                // Invalidate the older pipeline now. URI metadata can block on SAF or cloud storage.
+                beginPipelineGeneration()
+                cancelPendingSeekResume()
+                prepJob?.cancel()
+                subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
+                speakerJob?.cancel(); speakerJob = null
+                dubCollectJob?.cancel(); dubCollectJob = null
+                qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
+                enginePreferenceRestartJob?.cancel()
+                processingNotificationHandler.post {
+                    if (::pm.isInitialized) runCatching { pm.pause() }
+                }
+                ui.update { state ->
+                    state.copy(
+                        phase = Phase.PARSING,
+                        progress = "正在检查本地视频…",
+                        key = key,
+                        title = remoteMediaTitle,
+                        lines = emptyList(),
+                        transcriptionPreviewLines = emptyList(),
+                        translationPreviewLines = emptyList(),
+                        translatedLineCount = 0,
+                        totalLines = 0,
+                        preparedUntil = 0,
+                        preparedCount = 0,
+                        audioReadyCount = 0,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
+                        captionOverride = null,
+                        error = null,
+                        failedPhase = null,
+                        failedProgress = "",
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                        dubbingHasErrors = false,
+                    )
+                }
+                scope.launch {
+                    val identity = withContext(Dispatchers.IO) {
+                        runCatching {
+                            LocalMediaCacheIdentity.identityKey(this@PlaybackService, localUri)
+                        }.getOrElse {
+                            LocalMediaCacheIdentity.createIdentityKey(
+                                uri = localUri.toString(),
+                                sizeBytes = null,
+                                lastModifiedMs = null,
+                                displayName = null,
+                            )
+                        }
+                    }
+                    if (localMediaIdentityResolutionGeneration.get() != identityToken) return@launch
+                    withContext(Dispatchers.Main.immediate) {
+                        if (localMediaIdentityResolutionGeneration.get() != identityToken) return@withContext
+                        open(
+                            key = key,
+                            videoId = videoId,
+                            localUri = localUri,
+                            importedLines = importedLinesSnapshot,
+                            resumeState = resumeState,
+                            remoteMediaUrl = remoteMediaUrl,
+                            remoteMediaTitle = remoteMediaTitle,
+                            remoteMediaReferrer = remoteMediaReferrer,
+                            remoteMediaCookie = remoteMediaCookie,
+                            remoteMediaUserAgent = remoteMediaUserAgent,
+                            selectedWebMediaMetadata = verifiedSelectedWebMediaMetadata,
+                            requestToken = requestToken,
+                            reuseMountedMediaForRestart = reuseMountedMediaForRestart,
+                            restoreReadySnapshot = restoreReadySnapshot,
+                            forceRegenerateDubbing = forceRegenerateDubbing,
+                            forceRegenerateFromStage = forceRegenerateFromStage,
+                            reuseMatchingDubbingCache = reuseMatchingDubbingCache,
+                            forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
+                            resumeYouTubeSubtitleMode = resumeYouTubeSubtitleMode,
+                            precomputedLocalMediaIdentityKey = identity,
+                            localIdentityResolutionToken = identityToken,
+                            skipInProgressCheckpointRestore = skipInProgressCheckpointRestore,
+                        )
+                    }
+                }
+                return
+            }
+        } else if (
+            localIdentityResolutionToken == null ||
+            localIdentityResolutionToken != localMediaIdentityResolutionGeneration.get()
+        ) {
+            return
+        }
+        val localMediaIdentityKey = precomputedLocalMediaIdentityKey
+        val readySnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey = key,
+            remoteMediaUrl = remoteMediaUrl,
+            referrer = remoteMediaReferrer,
+            cookie = remoteMediaCookie,
+            localMediaIdentityKey = localMediaIdentityKey,
+        )
+
+        // A process restart loses PlaybackService.ui, but an unfinished source timeline and its
+        // partial translations must survive. Load that bounded checkpoint off the main thread
+        // before entering runPipeline; supplying resumeState makes the pipeline skip metadata
+        // discovery, webpage audio extraction and ASR entirely.
+        if (
+            !skipInProgressCheckpointRestore &&
+            resumeState == null &&
+            importedLines == null &&
+            !restoreReadySnapshot &&
+            !refreshYouTubeSubtitleSource
+        ) {
+            scope.launch {
+                val checkpointLoadResult = withContext(Dispatchers.IO) {
+                    InProgressProcessingCheckpointStore.loadWithResult(
+                        this@PlaybackService,
+                        key,
+                        readySnapshotIdentityKey,
+                    )
+                }
+                val checkpoint = checkpointLoadResult.checkpoint
+                if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
+                    return@launch
+                }
+                if (
+                    checkpointLoadResult.status in setOf(
+                        InProgressCheckpointLoadStatus.FAILED,
+                        InProgressCheckpointLoadStatus.DISCARDED,
+                    )
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "PlaybackCheckpoint",
+                        "处理中间检查点无法恢复，已回退到来源缓存",
+                        checkpointLoadResult.failure,
+                        diagnosticContext = mapOf(
+                            "视频来源" to when {
+                                key.startsWith("remote:", ignoreCase = true) -> "网页视频"
+                                key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                                else -> "本地视频"
+                            },
+                            "恢复状态" to checkpointLoadResult.status.name,
+                            "失败阶段" to checkpointLoadResult.stage.orEmpty(),
+                            "恢复原因" to checkpointLoadResult.reason.orEmpty(),
+                            "文件大小字节" to checkpointLoadResult.fileBytes?.toString().orEmpty(),
+                            "解压大小字节" to checkpointLoadResult.uncompressedBytes?.toString().orEmpty(),
+                            "检查点年龄 ms" to checkpointLoadResult.ageMs?.toString().orEmpty(),
+                            "回退策略" to "复用已有来源缓存，按需重新处理",
+                        ),
+                    )
+                }
+                val checkpointUsesYouTubeSubtitleSelection =
+                    checkpoint != null &&
+                        videoId != null &&
+                        key.startsWith("youtube:", ignoreCase = true) &&
+                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                            checkpoint.state.processingFlow,
+                        )
+                val checkpointSubtitleModeChanged = checkpoint?.let { saved ->
+                    checkpointUsesYouTubeSubtitleSelection &&
+                        (saved.youtubeSubtitleMode == null ||
+                            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.hasModeChanged(
+                                saved.youtubeSubtitleMode,
+                                selectedYouTubeSubtitleMode(),
+                            ))
+                } == true
+                val refreshAfterCheckpointMiss =
+                    checkpoint == null &&
+                        videoId != null &&
+                        (importedLines == null || importedLines.isEmpty()) &&
+                        previousYouTubeProcessingFlow != null &&
+                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                            previousYouTubeProcessingFlow,
+                        ) &&
+                        ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(
+                            this@PlaybackService,
+                            key,
+                        )
+                val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                val fingerprintRestartStage = when {
+                    checkpointSubtitleModeChanged -> EngineRestartStage.TRANSCRIPTION
+                    checkpoint != null -> chooseEngineRestartStage(
+                        previous = checkpoint.fingerprints,
+                        current = currentDomains,
+                        state = checkpoint.state,
+                        ignoreTranscription = false,
+                        skipSavedYouTubeSubtitleModeCheck = checkpointUsesYouTubeSubtitleSelection,
+                    )
+                    else -> null
+                }
+                val checkpointRestartStage = EngineRestartStagePolicy.checkpointRestartStage(
+                    fingerprintStage = fingerprintRestartStage,
+                    requireFreshTranslation = checkpoint?.requireFreshTranslation == true,
+                    requireFreshDubbing = checkpoint?.requireFreshDubbing == true,
+                )
+                val effectiveCheckpointRestartStage =
+                    if (refreshAfterCheckpointMiss) {
+                        EngineRestartStage.TRANSCRIPTION
+                    } else {
+                        checkpointRestartStage
+                    }
+                val checkpointState = when (effectiveCheckpointRestartStage) {
+                    // A YouTube subtitle-mode change must discard the old source timeline. The
+                    // source cache path will try the newly selected caption track before ASR fallback.
+                    EngineRestartStage.TRANSCRIPTION -> null
+                    EngineRestartStage.TRANSLATION ->
+                        checkpoint?.let { stateForEngineRestart(it.state, EngineRestartStage.TRANSLATION) }
+                    EngineRestartStage.DUBBING,
+                    null -> checkpoint?.state
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
+                        return@withContext
+                    }
+                    if (checkpointState != null) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "跨进程恢复未完成的字幕处理，跳过网页音轨提取和重复转写",
+                            diagnosticContext = mapOf(
+                                "视频来源" to when {
+                                    key.startsWith("remote:") -> "网页视频"
+                                    key.startsWith("youtube:") -> "YouTube"
+                                    else -> "本地视频"
+                                },
+                                "恢复字幕行数" to checkpointState.lines.size.toString(),
+                                "已完成译文行数" to checkpointState.lines.count { !it.zh.isNullOrBlank() }.toString(),
+                                "恢复阶段" to if (checkpointState.lines.any { needsSubtitleTranslation(it, checkpointState.sourceLang) }) {
+                                    "翻译"
+                                } else {
+                                    "配音"
+                                },
+                                "引擎配置变化" to when (effectiveCheckpointRestartStage) {
+                                    EngineRestartStage.TRANSCRIPTION -> "转写"
+                                    EngineRestartStage.TRANSLATION -> "翻译"
+                                    EngineRestartStage.DUBBING -> "配音"
+                                    null -> "无"
+                                },
+                            ),
+                        )
+                    } else if (checkpoint != null) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "未复用旧的处理中间结果，按当前转写配置重新校验来源缓存",
+                            diagnosticContext = mapOf(
+                                "视频来源" to if (key.startsWith("remote:")) "网页视频" else if (key.startsWith("youtube:")) "YouTube" else "本地视频",
+                                "恢复原因" to "转写配置已变化",
+                                "音频缓存策略" to "优先复用原媒体音频缓存",
+                            ),
+                        )
+                    }
+                    open(
+                        key = key,
+                        videoId = videoId,
+                        localUri = localUri,
+                        importedLines = importedLines,
+                        resumeState = checkpointState,
+                        remoteMediaUrl = remoteMediaUrl,
+                        remoteMediaTitle = remoteMediaTitle,
+                        remoteMediaReferrer = remoteMediaReferrer,
+                        remoteMediaCookie = remoteMediaCookie,
+                        remoteMediaUserAgent = remoteMediaUserAgent,
+                        selectedWebMediaMetadata = verifiedSelectedWebMediaMetadata,
+                        requestToken = requestToken,
+                        reuseMountedMediaForRestart = reuseMountedMediaForRestart,
+                        restoreReadySnapshot = restoreReadySnapshot,
+                        // Persisted stage flags survive process death even when the checkpoint
+                        // fingerprint baseline already reflects the newly selected downstream engine.
+                        forceRegenerateDubbing = forceRegenerateDubbing ||
+                            effectiveCheckpointRestartStage != null ||
+                            checkpoint?.requireFreshDubbing == true,
+                        forceRegenerateFromStage = effectiveCheckpointRestartStage ?: forceRegenerateFromStage,
+                        reuseMatchingDubbingCache = false,
+                        forceYouTubeSubtitleRefresh =
+                            refreshYouTubeSubtitleSource || checkpointSubtitleModeChanged || refreshAfterCheckpointMiss,
+                        resumeYouTubeSubtitleMode = checkpointState?.let {
+                            checkpoint?.youtubeSubtitleMode
+                        },
+                        precomputedLocalMediaIdentityKey = localMediaIdentityKey,
+                        localIdentityResolutionToken = localIdentityResolutionToken,
+                        skipInProgressCheckpointRestore = true,
+                    )
+                }
+            }
+            return
+        }
+        val localMediaChangedForActiveSession =
+            localUri != null &&
+                key == videoKey &&
+                activeLocalMediaIdentityKey != null &&
+                activeLocalMediaIdentityKey != localMediaIdentityKey
+        // Engine-setting restarts may carry a subtitle snapshot from the mounted local file.
+        // If the URI now resolves to different metadata, that snapshot belongs to the prior file.
+        val requestedResumeState = if (
+            localMediaChangedForActiveSession || refreshYouTubeSubtitleSource
+        ) null else resumeState
+        val engineConfigChangedSinceLastSuccess =
+            ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
+        val canFindCompletedSnapshotBaseline =
+            requestedResumeState == null &&
+                importedLines == null &&
+                key.isNotBlank() &&
+                forceRegenerateFromStage == null
+        val canRestoreStoredResult =
+            canFindCompletedSnapshotBaseline && !engineConfigChangedSinceLastSuccess
+        // Restrict persisted restoration to flows that can actually be produced by this source.
+        // YouTube may legitimately use either captions or ASR; webpage/local media use their own ASR flow.
+        val expectedSnapshotFlows = when {
+            videoId != null || key.startsWith("youtube:", ignoreCase = true) ->
+                setOf(
+                    ProcessingFlow.YOUTUBE_SUBTITLES,
+                    ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                    ProcessingFlow.AUTO,
+                    ProcessingFlow.IMPORTED_SUBTITLES,
+                    ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                )
+            remoteMediaUrl != null -> setOf(
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                ProcessingFlow.AUTO,
+                ProcessingFlow.IMPORTED_SUBTITLES,
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            )
+            localUri != null -> setOf(
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                ProcessingFlow.AUTO,
+                ProcessingFlow.IMPORTED_SUBTITLES,
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            )
+            else -> null
+        }
+        // A matching snapshot may belong to an older run of the current configuration. Compare
+        // against the latest successful run first; if any engine domain changed, restart from the
+        // latest successful snapshot instead of treating that older matching snapshot as "unchanged".
+        // Exact snapshots from an older engine combination are intentionally not eligible after
+        // an engine switch; the latest successful output is the baseline for stage selection.
+        val reusableSnapshot = if (ReadySessionSnapshotReusePolicy.canReuseExactSnapshot(
+            canRestoreStoredResult = canRestoreStoredResult,
+            forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
+        )) {
+            ReadySessionSnapshotStore.findForCurrentConfig(
+                this,
+                key,
+                identityKey = readySnapshotIdentityKey,
+                expectedProcessingFlows = expectedSnapshotFlows,
+            ) { ignore ->
+                ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
+            }
+        } else null
+        val fallbackSnapshot = if (
+            canFindCompletedSnapshotBaseline &&
+            reusableSnapshot == null &&
+            !refreshYouTubeSubtitleSource
+        ) {
+            // A successful snapshot from the previous subtitle mode is not a valid fallback:
+            // the caller intentionally needs to discover/download the newly preferred caption track.
+            ReadySessionSnapshotStore.findLatestForVideo(
+                this,
+                key,
+                identityKey = readySnapshotIdentityKey,
+                expectedProcessingFlows = expectedSnapshotFlows,
+            )
+        } else null
+        val fallbackPreviousDomains = fallbackSnapshot?.let { snapshot ->
+            val hasSnapshotFingerprints = snapshot.transcriptionFingerprint.isNotBlank() &&
+                snapshot.translationFingerprint.isNotBlank() &&
+                snapshot.dubbingFingerprint.isNotBlank()
+            when {
+                hasSnapshotFingerprints -> EngineConfigFingerprints(
+                    transcription = snapshot.transcriptionFingerprint,
+                    translation = snapshot.translationFingerprint,
+                    dubbing = snapshot.dubbingFingerprint,
+                )
+                ReadyHistorySessionConfigStore.savedCompositeFingerprint(this, key) == snapshot.fingerprint ->
+                    ReadyHistorySessionConfigStore.savedFingerprints(this, key)
+                else -> null
+            }
+        }
+        val fallbackCurrentDomains = fallbackSnapshot?.let {
+            ReadyHistorySessionConfigStore.fingerprints(this)
+        }
+        val fallbackRestartStage = if (
+            fallbackSnapshot != null &&
+            fallbackPreviousDomains != null &&
+            fallbackCurrentDomains != null
+        ) {
+            chooseEngineRestartStage(
+                previous = fallbackPreviousDomains,
+                current = fallbackCurrentDomains,
+                state = fallbackSnapshot.state,
+                ignoreTranscription = fallbackSnapshot.ignoreTranscription,
+            )
+        } else null
+        val fallbackCanBeCompared = fallbackPreviousDomains != null && fallbackCurrentDomains != null
+        val effectiveForceRegenerateFromStage =
+            if (refreshYouTubeSubtitleSource) {
+                EngineRestartStage.TRANSCRIPTION
+            } else {
+                forceRegenerateFromStage ?: fallbackRestartStage
+            }
+        val fallbackResumeState = when {
+            fallbackSnapshot == null || !fallbackCanBeCompared -> null
+            fallbackRestartStage != null ->
+                stateForEngineRestart(fallbackSnapshot.state, fallbackRestartStage)
+            else -> fallbackSnapshot.state
+        }
+        val effectiveResumeState = requestedResumeState ?: reusableSnapshot?.state ?: fallbackResumeState
+        val restoreCompletedSnapshot = effectiveForceRegenerateFromStage == null && (
+            (restoreReadySnapshot && !localMediaChangedForActiveSession) ||
+                reusableSnapshot != null ||
+                ReadySessionSnapshotReusePolicy.canRestoreComparableFallbackSnapshot(
+                    fallbackSnapshotAvailable = fallbackSnapshot != null,
+                    fallbackConfigComparable = fallbackCanBeCompared,
+                    fallbackRestartStage = fallbackRestartStage,
+                )
+        )
+        // Restore an exact current-config result only when no relevant engine switch was detected.
+        // An explicit stage restart always takes precedence and bypasses the old downstream outputs.
+        val regenerateDubbingThisRun =
+            EngineRestartStagePolicy.requiresFreshDubbing(effectiveForceRegenerateFromStage) ||
+                ReadySessionSnapshotReusePolicy.shouldRegenerateDubbingForFallback(
+                    forceRegenerateDubbing = forceRegenerateDubbing,
+                    restoreReadySnapshot = restoreReadySnapshot,
+                    hasReusableSnapshot = reusableSnapshot != null,
+                    fallbackSnapshotAvailable = fallbackSnapshot != null,
+                    fallbackConfigComparable = fallbackCanBeCompared,
+                    fallbackRestartStage = fallbackRestartStage,
+                    engineConfigChangedSinceLastSuccess = engineConfigChangedSinceLastSuccess,
+                )
+        // Keep the current source mounted during a same-video stage restart. In particular,
+        // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
+        val reuseMountedMedia = !localMediaChangedForActiveSession &&
+            (effectiveResumeState != null || reuseMountedMediaForRestart) &&
+            key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
+        // Invalidate prior work even when the same History row reopens the same video key.
+        val pipelineGeneration = beginPipelineGeneration()
+        // This service can live across many videos. Drop the prior session's interval arrays and
+        // source-list reference as soon as a new open request owns the playback pipeline.
+        clearSubtitleHighlightTimeline()
+        forceFreshDubbingPipelineGeneration = if (regenerateDubbingThisRun) pipelineGeneration else 0L
+        forceFreshTranslationPipelineGeneration =
+            if (EngineRestartStagePolicy.requiresFreshTranslation(effectiveForceRegenerateFromStage)) {
+                pipelineGeneration
+            } else {
+                0L
+            }
+        // A delayed resume from an earlier seek must not restart the previous playback while this
+        // request is rebuilding the subtitle/dubbing pipeline.
+        cancelPendingSeekResume()
+        if (!playerReady || !::pm.isInitialized) {
+            ui.update {
+                it.copy(phase = Phase.ERROR, progress = "", error = it.error ?: "播放器服务未初始化成功，请返回主页后重试")
+            }
+            return
+        }
+        for (oldKey in manualTranslationRequestedKeys.toList()) {
+            if (oldKey != key) manualTranslationRequestedKeys.remove(oldKey)
+        }
+        for (oldKey in manualTranslationInterrupts.keys.toList()) {
+            if (oldKey != key) manualTranslationInterrupts.remove(oldKey)
+        }
+        for (oldKey in manualTranslationWaiters.keys.toList()) {
+            if (oldKey != key) {
+                manualTranslationWaiters.remove(oldKey)?.cancel()
+                manualTranslationSources.remove(oldKey)
+            }
+        }
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = key)
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        activeProcessingCheckpointIdentityKey = readySnapshotIdentityKey
+        activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+        processingPaused = false
+        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        val previousPrepJob = prepJob
+        previousPrepJob?.cancel()
+        subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
+        speakerJob?.cancel(); speakerJob = null
+        dubCollectJob?.cancel(); dubCollectJob = null
+        qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
+        retireCurrentDubbing()
+        this.videoKey = key; this.videoId = videoId; this.localUri = localUri
+        this.activeLocalMediaIdentityKey = localMediaIdentityKey
+        this.remoteMediaUrl = remoteMediaUrl
+        this.remoteMediaTitle = remoteMediaTitle
+        this.remoteMediaReferrer = remoteMediaReferrer
+        this.remoteMediaUserAgent = remoteMediaUserAgent.orEmpty()
+        if (!reuseMountedMedia) adaptiveQualitySourceReady = false
+        // Publish the request token after its associated media identity.
+        activeOpenRequestToken = requestToken
+        // 兜底防护：blob:/data: 等网页内嵌地址绝不能进入 ExoPlayer（会以
+        // PARSING_CONTAINER_UNSUPPORTED 失败甚至崩溃），必须在此拦截并给出可操作的提示。
+        if (remoteMediaUrl != null && !remoteMediaUrl.startsWith("http://", true) &&
+            !remoteMediaUrl.startsWith("https://", true)
+        ) {
+            ui.update {
+                it.copy(
+                    phase = Phase.ERROR,
+                    progress = "",
+                    error = "该视频使用网页内嵌流（blob/MSE）播放，无法直接播放或提取音频。请回到「网页视频」页等待检测到可访问的视频地址，或点击「用 yt-dlp 解析本页视频」重试。"
+                )
+            }
+            return
+        }
+        this.remoteMediaCookie = remoteMediaCookie
+        val importedLinesSnapshot = importedLines?.toList()
+        this.importedLines = importedLinesSnapshot
+        // Preserve parsed metadata/subtitles when resuming a translation failure.
+        if (videoId != null && effectiveResumeState == null) NewPipeRepo.invalidate(videoId)
+        qualityJob?.cancel()
+        if (!reuseMountedMedia) {
+            qualitySources = emptyList()
+            qualityAudioUrl = ""
+        }
+        val configuredTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
+        val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+        // Match the session isolation used by the downloaded-audio cache. A signed URL can
+        // serve different private media to different cookie sessions or page origins.
+        val cacheKeyBase = when {
+            remoteMediaUrl != null ->
+                MediaUrlCacheIdentity.remoteSessionKey(requireNotNull(remoteMediaUrl), remoteMediaReferrer, remoteMediaCookie)
+            localMediaIdentityKey != null -> localMediaIdentityKey
+            else -> key
+        }
+        val currentAudioMetadataSourceIdentity = remoteMediaUrl?.let {
+            SelectedWebMediaMetadataIdentityPolicy.identity(it, remoteMediaReferrer, remoteMediaCookie)
+        }
+        // A same-key retry can still arrive with a different Cookie session. Reuse old metadata
+        // only when the previous state was explicitly bound to this exact source/session identity.
+        val reusableAudioMetadataState = effectiveResumeState?.takeIf { previous ->
+            remoteMediaUrl == null ||
+                (!currentAudioMetadataSourceIdentity.isNullOrBlank() &&
+                    previous.audioMetadataSourceIdentity == currentAudioMetadataSourceIdentity)
+        }
+        val effectiveTranslationCacheKey = TranslationCacheIdentity.forProvider(
+            baseKey = cacheKeyBase,
+            activeId = activeTranslationId,
+            importedLines = importedLines,
+            previousKey = effectiveResumeState?.translationCacheKey,
+        )
+        val configuredTtsName = ttsDisplayName(configuredTts)
+        val audioPrefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val originalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 1f).coerceIn(0f, 1f)
+        val dubbingVolume = audioPrefs.getFloat(PREF_PLAYER_DUBBING_VOLUME, 1f).coerceIn(0f, 1f)
+        val interruptedSpeakerRecognition =
+            SpeakerRecognitionTaskJournal.restoreInterrupted(this, key)
+        ui.value = PlayerUiState(
+            phase = when {
+                restoreCompletedSnapshot -> Phase.READY
+                effectiveResumeState == null || effectiveResumeState.lines.isEmpty() -> Phase.PARSING
+                !isChineseLanguage(effectiveResumeState.sourceLang) &&
+                    effectiveResumeState.lines.any { needsSubtitleTranslation(it, effectiveResumeState.sourceLang) } ->
+                    Phase.TRANSLATING
+                else -> Phase.SYNTHESIZING
+            },
+            processingFlow = effectiveResumeState?.processingFlow ?: when {
+                !importedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
+                videoId != null -> ProcessingFlow.AUTO
+                remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
+                localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
+                else -> ProcessingFlow.AUTO
+            },
+            isProcessingPaused = false,
+            key = key,
+            speakerRecognition = interruptedSpeakerRecognition ?: SpeakerRecognitionUiState(),
+            progress = when {
+                restoreCompletedSnapshot -> ""
+                effectiveResumeState == null -> "解析中…"
+                effectiveResumeState.lines.isEmpty() -> "复用现有视频资源，准备重新转写…"
+                !isChineseLanguage(effectiveResumeState.sourceLang) &&
+                    effectiveResumeState.lines.any { needsSubtitleTranslation(it, effectiveResumeState.sourceLang) } ->
+                    "恢复已获取的原文字幕，继续翻译…"
+                else -> "原文与中文字幕已就绪，正在准备配音…"
+            },
+            title = effectiveResumeState?.title.orEmpty(),
+            channel = effectiveResumeState?.channel.orEmpty(),
+            thumbUrl = effectiveResumeState?.thumbUrl,
+            durationMs = effectiveResumeState?.durationMs ?: 0L,
+            lines = effectiveResumeState?.lines ?: emptyList(),
+            totalLines = effectiveResumeState?.totalLines ?: 0,
+            // The dubbing timeline remains active for background preparation even at 0% output.
+            dubbingOn = true,
+            muteOriginal = originalVolume <= 0f,
+            originalVolume = originalVolume,
+            dubbingVolume = dubbingVolume,
+            audioOnly = effectiveResumeState?.audioOnly ?: false,
+            videoAspect = effectiveResumeState?.videoAspect ?: (16f / 9f),
+            qualityOptions = effectiveResumeState?.qualityOptions ?: emptyList(),
+            selectedQuality = effectiveResumeState?.selectedQuality.orEmpty(),
+            audioTrackLanguage = reusableAudioMetadataState?.audioTrackLanguage.orEmpty(),
+            audioTrackMimeType = reusableAudioMetadataState?.audioTrackMimeType.orEmpty(),
+            audioTrackCodecLabel = reusableAudioMetadataState?.audioTrackCodecLabel
+                ?.takeIf { it.isNotBlank() }
+                ?: verifiedSelectedWebMediaMetadata?.audioCodecLabel.orEmpty(),
+            audioMetadataSourceIdentity = currentAudioMetadataSourceIdentity
+                ?: reusableAudioMetadataState?.audioMetadataSourceIdentity.orEmpty(),
+            audioTrackDurationMs = reusableAudioMetadataState?.audioTrackDurationMs
+                ?.takeIf { it > 0L }
+                ?: (verifiedSelectedWebMediaMetadata?.mediaDurationMs ?: 0L),
+            audioTrackChannelCount = reusableAudioMetadataState?.audioTrackChannelCount
+                ?.takeIf { it > 0 }
+                ?: (verifiedSelectedWebMediaMetadata?.audioChannelCount ?: 0),
+            audioTrackSampleRateHz = reusableAudioMetadataState?.audioTrackSampleRateHz
+                ?.takeIf { it > 0 }
+                ?: (verifiedSelectedWebMediaMetadata?.audioSampleRateHz ?: 0),
+            audioTrackSourceType = reusableAudioMetadataState?.audioTrackSourceType
+                ?.takeIf { it.isNotBlank() }
+                ?: verifiedSelectedWebMediaMetadata?.audioSourceType.orEmpty(),
+            videoResolution = reusableAudioMetadataState?.videoResolution
+                ?.takeIf { it.isNotBlank() }
+                ?: verifiedSelectedWebMediaMetadata?.videoResolution.orEmpty(),
+            availableSubtitleTracks = effectiveResumeState?.availableSubtitleTracks ?: emptyList(),
+            subtitleTrackStatus = effectiveResumeState?.subtitleTrackStatus.orEmpty(),
+            sourceLang = effectiveResumeState?.sourceLang.orEmpty(),
+            engineName = effectiveResumeState?.engineName.orEmpty(),
+            translationCacheKey = effectiveTranslationCacheKey,
+            ttsEngineName = configuredTtsName,
+            manualTranslationModeEnabled = manualTranslationRequestedKeys.contains(key),
+            manualTranslationWaiting = false,
+        )
+        if (::pm.isInitialized) {
+            pm.originalVolume = originalVolume
+            pm.dubbingVolume = dubbingVolume
+            pm.dubbingBus.setDubbingEnabled(ui.value.dubbingOn)
+        }
+        io.translatetube.local.util.AppLogStore.info(
+            this@PlaybackService,
+            "PlaybackFlow",
+            if (restoreCompletedSnapshot) "恢复该视频已成功的配置结果" else if (effectiveResumeState != null) "恢复历史任务并重新进入处理管线" else "开始新的视频处理任务",
+            diagnosticContext = mapOf(
+                "视频来源" to when {
+                    !importedLinesSnapshot.isNullOrEmpty() -> "导入字幕"
+                    videoId != null -> "YouTube"
+                    remoteMediaUrl != null -> "网页视频/远程媒体"
+                    localUri != null -> "本地视频"
+                    else -> "未知来源"
+                },
+                "初始阶段" to if (restoreCompletedSnapshot) Phase.READY.name else if (effectiveResumeState != null) Phase.TRANSLATING.name else Phase.PARSING.name,
+                "处理流程" to ui.value.processingFlow.name,
+                "本次处理代数" to pipelineGeneration.toString(),
+                "播放请求标记" to requestToken.toString(),
+                "是否使用历史结果恢复" to (effectiveResumeState != null).toString(),
+                "是否直接恢复完整成功会话" to restoreCompletedSnapshot.toString(),
+                "是否发现旧配置成功快照" to (fallbackSnapshot != null).toString(),
+                "跨重启恢复阶段" to when {
+                    reusableSnapshot != null -> "完整成功结果：跳过前四阶段"
+                    fallbackSnapshot == null -> "没有可恢复成功快照"
+                    fallbackRestartStage != null -> fallbackRestartStage.name
+                    fallbackCanBeCompared -> "引擎配置未变化：恢复完整成功结果"
+                    else -> "旧快照缺少配置指纹：安全地重新解析"
+                },
+                "自上次成功处理后引擎配置是否变化" to engineConfigChangedSinceLastSuccess.toString(),
+                "本次是否强制重新合成中文配音" to regenerateDubbingThisRun.toString(),
+                "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString(),
+                "已导入字幕行数" to (importedLinesSnapshot?.size ?: 0).toString(),
+                "恢复的源语言" to effectiveResumeState?.sourceLang.orEmpty().ifBlank { "未确定" },
+                "本次选择的配音引擎" to configuredTtsName,
+                "翻译服务配置编号" to activeTranslationId.toString(),
+            ),
+        )
+        pm.pause()
+        prepJob = scope.launch {
+            pipelineExecutionMutex.withLock {
+                ensureCurrentSession(key, pipelineGeneration)
+                var pipelineResumeState = effectiveResumeState
+                var pipelineRestoresCompleteSnapshot = restoreCompletedSnapshot
+                var pipelineMustRegenerateDubbing = regenerateDubbingThisRun
+
+                // Any restored subtitle-based YouTube state can bypass normal source-cache
+                // validation, including a restart at TRANSLATION after an engine setting changes.
+                // Check the original text before reusing it; never let a stale English-caption
+                // snapshot survive just because this run is not restoring a complete READY result.
+                if (
+                    videoId != null &&
+                    pipelineResumeState != null &&
+                    pipelineResumeState.lines.isNotEmpty() &&
+                    (pipelineResumeState.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
+                        pipelineResumeState.processingFlow == ProcessingFlow.AUTO)
+                ) {
+                    try {
+                        val originalAudioLanguage = io.translatetube.local.yt.NewPipeRepo
+                            .sourceAudioLanguageHint(videoId)
+                        val expectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                            .normalizeLanguageCode(originalAudioLanguage)
+                        val sourceCues = pipelineResumeState.lines.asSequence().map { it.text }.asIterable()
+                        val scriptDetectedLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
+                            .detectFromCues(sourceCues)
+                        val scriptLanguageCode = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                            .normalizeLanguageCode(scriptDetectedLanguage)
+                        val savedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                            .normalizeLanguageCode(pipelineResumeState.sourceLang)
+                        // For Latin-script captions, the conservative detector often returns auto.
+                        // Run ML Kit only when metadata can anchor the comparison and the saved label
+                        // agrees with it. A known label conflict already proves the snapshot is stale.
+                        val detectedTextLanguage = if (
+                            expectedLanguage != null &&
+                            scriptLanguageCode == null &&
+                            savedLanguage == expectedLanguage
+                        ) {
+                            try {
+                                io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(sourceCues)
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                scriptDetectedLanguage
+                            }
+                        } else {
+                            scriptDetectedLanguage
+                        }
+                        val detectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                            .normalizeLanguageCode(detectedTextLanguage)
+                        if (
+                            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(
+                                expectedSourceLanguage = expectedLanguage,
+                                detectedTextLanguage = detectedLanguage,
+                                savedSourceLanguage = savedLanguage,
+                                // This branch only validates YouTube subtitle/AUTO resume states;
+                                // fallback tracks can legitimately use a non-original language.
+                                allowSubtitleLanguageFallback = true,
+                            )
+                        ) {
+                            val restoredFlow = pipelineResumeState.processingFlow.name
+                            val staleTranslationCacheKey = pipelineResumeState.translationCacheKey
+                            val removedStaleSnapshotCount =
+                                ReadySessionSnapshotStore.removeMatchingYouTubeCaptionSource(
+                                    context = this@PlaybackService,
+                                    videoKey = key,
+                                    identityKey = readySnapshotIdentityKey,
+                                    invalidState = pipelineResumeState,
+                                )
+                            io.translatetube.local.util.AppLogStore.warning(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "YouTube 原文语言与原声音轨不匹配或无法验证，丢弃恢复结果并重新检查字幕",
+                                diagnosticContext = mapOf(
+                                    "视频 ID" to videoId,
+                                    "原声音频语言" to expectedLanguage.orEmpty().ifBlank { "未知" },
+                                    "恢复原文检测语言" to detectedLanguage.orEmpty().ifBlank { "未知" },
+                                    "恢复结果语言标签" to savedLanguage.orEmpty().ifBlank { "未知" },
+                                    "原处理流程" to restoredFlow,
+                                    "已清理同一来源失效快照数" to removedStaleSnapshotCount.toString(),
+                                ),
+                            )
+                            // Switch the active run to a fresh parse before touching the cache so a
+                            // storage error cannot silently continue with the stale ready snapshot.
+                            pipelineResumeState = null
+                            pipelineRestoresCompleteSnapshot = false
+                            pipelineMustRegenerateDubbing = true
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(
+                                    phase = Phase.PARSING,
+                                    progress = "原字幕语言与原声音轨不一致，正在重新检查字幕…",
+                                    lines = emptyList(),
+                                    transcriptionPreviewLines = emptyList(),
+                                    translationPreviewLines = emptyList(),
+                                    translatedLineCount = 0,
+                                    totalLines = 0,
+                                    currentLine = -1,
+                                    activeDubbingLine = -1,
+                                    preparedUntil = 0,
+                                    preparedCount = 0,
+                                    audioReadyCount = 0,
+                                    sourceLang = "",
+                                    translationCacheKey = "",
+                                    processingFlow = ProcessingFlow.AUTO,
+                                    error = null,
+                                )
+                            }
+                            staleTranslationCacheKey.takeIf { it.isNotBlank() }?.let { staleKey ->
+                                try {
+                                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().delete(staleKey)
+                                } catch (deleteFailure: Exception) {
+                                    android.util.Log.w(
+                                        "PlaybackService",
+                                        "Could not remove stale YouTube translation cache; source will be revalidated",
+                                        deleteFailure,
+                                    )
+                                }
+                            }
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Could not validate restored YouTube subtitle snapshot; keep the existing successful result",
+                            failure,
+                        )
+                    }
+                }
+
+                runPipeline(
+                    key = key,
+                    pipelineGeneration = pipelineGeneration,
+                    requestedVideoId = videoId,
+                    localUri = localUri,
+                    requestedLocalMediaIdentityKey = localMediaIdentityKey,
+                    resumeState = pipelineResumeState,
+                    sourceImportedLines = importedLinesSnapshot,
+                    requestedRemoteMediaUrl = remoteMediaUrl,
+                    requestedRemoteMediaTitle = remoteMediaTitle,
+                    requestedRemoteMediaReferrer = remoteMediaReferrer,
+                    requestedRemoteMediaCookie = remoteMediaCookie,
+                    reuseMountedMedia = reuseMountedMedia,
+                    restoreCompletedSnapshot = pipelineRestoresCompleteSnapshot,
+                    forceRegenerateDubbing = pipelineMustRegenerateDubbing,
+                    forceRegenerateFromStage = effectiveForceRegenerateFromStage,
+                    reuseMatchingDubbingCache = reuseMatchingDubbingCache,
+                    forceYouTubeSubtitleRefresh = refreshYouTubeSubtitleSource,
+                )
+                ensureCurrentSession(key, pipelineGeneration)
+                val finishedState = ui.value
+                // READY may only mean the first few cues are prepared. Retain the full
+                // translated checkpoint until the background dubbing queue has finished.
+                clearInProgressCheckpointAfterDubbing(key, pipelineGeneration)
+                if (
+                    finishedState.key == key &&
+                    finishedState.phase == Phase.READY &&
+                    !finishedState.waitingForTranscriptionEngine &&
+                    !finishedState.waitingForDubbingEngine
+                ) {
+                    // Imported subtitles never depend on ASR. YouTube captions are also
+                    // independent of ASR, but YouTube speech-recognition runs are not.
+                    val ignoreTranscription = EngineRestartStagePolicy.ignoresTranscriptionConfig(
+                        processingFlow = finishedState.processingFlow,
+                        isYouTube = key.startsWith("youtube:", ignoreCase = true),
+                    )
+                    val completedFingerprint = processingEnginePreferenceFingerprint(
+                        ignoreTranscription = ignoreTranscription,
+                        forVideoKey = key,
+                        youtubeSubtitleModeOverride = activeProcessingYouTubeSubtitleMode.takeIf {
+                            ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                                finishedState.processingFlow,
+                            )
+                        },
+                    )
+                    val completedDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                    val youtubeSubtitleModeChangedDuringRun =
+                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                            finishedState.processingFlow,
+                        ) && io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.hasModeChanged(
+                            activeProcessingYouTubeSubtitleMode,
+                            selectedYouTubeSubtitleMode(),
+                        )
+                    val pipelineConfigurationChanged =
+                        youtubeSubtitleModeChangedDuringRun ||
+                            EngineRestartStagePolicy.hasRelevantConfigChange(
+                                previous = processingEngineDomainFingerprints,
+                                current = completedDomainFingerprints,
+                                processingFlow = finishedState.processingFlow,
+                                ignoreTranscription = ignoreTranscription,
+                            )
+                    if (pipelineConfigurationChanged) {
+                        // An engine preference can change after the stage selected its engine but
+                        // before the 850 ms watcher restarts it. Never store this output as a success
+                        // produced by the newly selected configuration.
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "处理期间引擎配置发生变化，未登记当前配置成功快照",
+                            diagnosticContext = mapOf(
+                                "处理流程" to finishedState.processingFlow.name,
+                                "转写配置是否忽略" to ignoreTranscription.toString(),
+                                "本次结果是否登记为当前配置成功结果" to "否",
+                                "恢复策略" to "配置变更监听按最早受影响阶段继续处理",
+                            ),
+                        )
+                    } else {
+                        val translationsComplete = ReadySessionCompletionPolicy.hasCompleteTranslations(
+                            hasUntranslatedLines = finishedState.lines.any {
+                                needsSubtitleTranslation(it, finishedState.sourceLang)
+                            },
+                        )
+                        if (
+                            ReadySessionCompletionPolicy.canRegisterSuccessfulResult(
+                                phase = finishedState.phase,
+                                lineCount = finishedState.lines.size,
+                                dubbingOn = finishedState.dubbingOn,
+                                dubbingHasErrors = finishedState.dubbingHasErrors,
+                                waitingForTranscriptionEngine = finishedState.waitingForTranscriptionEngine,
+                                waitingForDubbingEngine = finishedState.waitingForDubbingEngine,
+                                translationsComplete = translationsComplete,
+                            )
+                        ) {
+                            val snapshotSaved = ReadySessionSnapshotStore.save(
+                                context = this@PlaybackService,
+                                videoKey = key,
+                                fingerprint = completedFingerprint,
+                                ignoreTranscription = ignoreTranscription,
+                                state = finishedState,
+                                transcriptionFingerprint = completedDomainFingerprints.transcription,
+                                translationFingerprint = completedDomainFingerprints.translation,
+                                dubbingFingerprint = completedDomainFingerprints.dubbing,
+                                identityKey = readySnapshotIdentityKey,
+                            )
+                            if (snapshotSaved) {
+                                completedReadySessionKey = key
+                                completedReadySessionIgnoresTranscription = ignoreTranscription
+                                completedReadySessionEngineFingerprint = completedFingerprint
+                                ReadyHistorySessionConfigStore.save(
+                                    this@PlaybackService,
+                                    key,
+                                    completedFingerprint,
+                                    ignoreTranscription,
+                                    completedDomainFingerprints,
+                                    finishedState.processingFlow,
+                                    youtubeSubtitleMode = activeProcessingYouTubeSubtitleMode.takeIf {
+                                        ReadySessionSnapshotInvalidationPolicy.isYouTubeSubtitleSelectionFlow(
+                                            finishedState.processingFlow,
+                                        )
+                                    },
+                                )
+                            } else {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    this@PlaybackService,
+                                    "PlaybackFlow",
+                                    "成功结果快照保存失败，未登记可恢复配置",
+                                    diagnosticContext = mapOf(
+                                        "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                                        "处理流程" to finishedState.processingFlow.name,
+                                        "字幕行数" to finishedState.lines.size.toString(),
+                                        "处理结果是否登记为可恢复成功" to "否",
+                                    ),
+                                )
+                            }
+                        } else {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "处理结果未完整，未登记成功快照",
+                                diagnosticContext = mapOf(
+                                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                                    "字幕行数" to finishedState.lines.size.toString(),
+                                    "译文是否完整" to translationsComplete.toString(),
+                                    "配音是否启用" to finishedState.dubbingOn.toString(),
+                                    "配音是否存在失败" to finishedState.dubbingHasErrors.toString(),
+                                    "处理结果是否登记为成功" to "否",
+                                    "恢复策略" to "保留已有成功快照，不将本次未完整结果登记为成功",
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * HLS/DASH 和其他多轨媒体由 Media3 管理清晰度。只暴露实际存在的多分辨率轨道，
+     * 避免把普通单分辨率 MP4 误显示成可切换画质。
+     */
+    private fun refreshAdaptiveVideoQualityOptions() {
+        if (!::pm.isInitialized || !adaptiveQualitySourceReady || videoId != null) return
+        if (remoteMediaUrl == null && localUri == null) return
+
+        val stateBefore = ui.value
+        if (stateBefore.key != videoKey) return
+        val actualOptions = pm.availableVideoQualityLabels()
+        val options = actualOptions.takeIf { it.size > 1 } ?: emptyList()
+        val actualSelected = pm.currentVideoQualityLabel().takeIf { it in options }.orEmpty()
+        if (stateBefore.qualityOptions == options && stateBefore.selectedQuality == actualSelected) return
+
+        ui.update { state ->
+            if (state.key == videoKey && videoId == null && adaptiveQualitySourceReady) {
+                state.copy(qualityOptions = options, selectedQuality = actualSelected)
+            } else {
+                state
+            }
+        }
+        if (stateBefore.qualityOptions != options) {
+            val logMessage = if (options.isEmpty()) {
+                "当前网页/本地视频没有可手动切换的多档画质"
+            } else {
+                "已发现可切换的视频画质"
+            }
+            val diagnostics = mapOf(
+                "媒体来源" to if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                "视频轨道清晰度" to (actualOptions.joinToString(",").ifBlank { "未检测到" }),
+                "可切换档位数量" to options.size.toString(),
+                "选择方式" to "Media3 视频轨覆盖，不重载媒体源",
+                "播放位置毫秒" to (if (::pm.isInitialized) pm.position() else -1L).toString(),
+            )
+            // 播放器轨道回调可能在主线程触发，日志文件写入转移到 IO，避免卡顿。
+            scope.launch(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackQuality",
+                    logMessage,
+                    diagnosticContext = diagnostics,
+                )
+            }
+        }
+    }
+
+    /** 网页/本地自适应视频只改变视频轨选择；不重新加载媒体源，因此不重置播放时间轴。 */
+    private fun selectAdaptiveVideoQuality(sessionKey: String, label: String) {
+        if (!adaptiveQualitySourceReady || label !in ui.value.qualityOptions) return
+        if (label == ui.value.selectedQuality) return
+        val pipelineGeneration = activePipelineGeneration
+
+        qualityJob?.cancel()
+        qualityJob = scope.launch {
+            try {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (videoId != null || !adaptiveQualitySourceReady) {
+                    throw kotlinx.coroutines.CancellationException("视频来源已改变，取消画质切换")
+                }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(progress = "正在切换清晰度至 $label…", error = null)
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    if (!pm.selectVideoQuality(label)) {
+                        throw IllegalStateException("当前媒体清单未能选择 $label 视频轨")
+                    }
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(selectedQuality = label, progress = "")
+                }
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackQuality",
+                    "网页/本地视频画质切换请求已应用",
+                    diagnosticContext = mapOf(
+                        "目标清晰度" to label,
+                        "切换方式" to "Media3 视频轨覆盖",
+                        "是否重新加载媒体源" to "否",
+                        "当前播放位置毫秒" to withContext(Dispatchers.Main) { pm.position() }.toString(),
+                        "字幕配音时间轴" to "沿用同一播放器时间轴",
+                    ),
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) return@launch
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "PlaybackQuality",
+                    "网页/本地视频画质切换失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "目标清晰度" to label,
+                        "媒体来源" to if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                        "视频会话标识" to safeDiagnosticSessionFingerprint(sessionKey),
+                        "当前播放位置毫秒" to (if (::pm.isInitialized) pm.position() else -1L).toString(),
+                        "视频轨道清晰度" to (if (::pm.isInitialized) pm.availableVideoQualityLabels().joinToString(",") else "播放器未初始化"),
+                    ),
+                )
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        progress = "",
+                        error = "切换到 $label 失败；当前网页可能未公开该清晰度的视频轨。",
+                    )
+                }
+            }
+        }
+    }
+
+    /** 切换清晰度：YouTube 使用提取出的独立流地址，网页/本地媒体使用 Media3 视频轨选择。 */
+    fun selectQuality(label: String) {
+        val sessionKey = ui.value.key
+        if (!::pm.isInitialized || sessionKey.isBlank()) return
+        val pipelineGeneration = activePipelineGeneration
+        val sessionVideoId = videoId
+        if (sessionVideoId == null) {
+            selectAdaptiveVideoQuality(sessionKey, label)
+            return
+        }
+        val source = qualitySources.firstOrNull { it.label == label } ?: return
+        if (!::pm.isInitialized || sessionKey.isBlank() || source.label == ui.value.selectedQuality) return
+        val previousSource = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }
+        val previousAudioUrl = qualityAudioUrl
+        val selectedAudioUrl = previousAudioUrl
+        qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
+        qualityJob?.cancel()
+        qualityJob = scope.launch {
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
+            val positionMs = withContext(Dispatchers.Main) { pm.position() }
+            // isPlaying is false while buffering even when the user intends playback.
+            // Preserve playWhenReady so switching quality does not accidentally pause the video.
+            val wasPlaying = withContext(Dispatchers.Main) { pm.player.playWhenReady }
+            updateUiForSession(sessionKey, pipelineGeneration) { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
+            try {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                withContext(Dispatchers.Main) {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
+                    val accepted = pm.setYouTubeQuality(
+                        videoUrl = source.url,
+                        audioUrl = selectedAudioUrl,
+                        muxed = source.muxed,
+                        title = ui.value.title,
+                        artist = ui.value.channel,
+                        artworkUrl = ui.value.thumbUrl,
+                    )
+                    if (!accepted) {
+                        throw IllegalStateException(pm.errorSink.value ?: "播放器拒绝了所选清晰度")
+                    }
+                    pm.seekTo(positionMs)
+                    if (wasPlaying) pm.play() else pm.pause()
+                    updateUiForSession(sessionKey, pipelineGeneration) { it.copy(selectedQuality = source.label, progress = "") }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey ||
+                    videoId != sessionVideoId
+                ) return@launch
+                io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService, "PlaybackQuality", "切换 YouTube 清晰度失败", e,
+)
+android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
+                // setYouTubeQuality can reject a stream without throwing. Restore the last known
+                // working stream and playback position rather than leaving a half-switched player.
+                if (previousSource != null) {
+                    try {
+                        withContext(Dispatchers.Main) {
+                            if (
+                                activePipelineGeneration == pipelineGeneration &&
+                                videoKey == sessionKey && ui.value.key == sessionKey && videoId == sessionVideoId
+                            ) {
+                                val restored = pm.setYouTubeQuality(
+                                    videoUrl = previousSource.url,
+                                    audioUrl = previousAudioUrl,
+                                    muxed = previousSource.muxed,
+                                    title = ui.value.title,
+                                    artist = ui.value.channel,
+                                    artworkUrl = ui.value.thumbUrl,
+                                )
+                                if (restored) {
+                                    pm.seekTo(positionMs)
+                                    if (wasPlaying) pm.play() else pm.pause()
+                                } else {
+                                    android.util.Log.w(
+                                        "PlaybackService",
+                                        "Unable to restore previous YouTube quality: ${pm.errorSink.value}",
+                                    )
+                                }
+                            }
+                        }
+                    } catch (rollbackCancellation: kotlinx.coroutines.CancellationException) {
+                        throw rollbackCancellation
+                    } catch (rollbackError: Exception) {
+                        android.util.Log.w("PlaybackService", "Quality-switch rollback failed", rollbackError)
+                    }
+                }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        progress = "",
+                        error = "切换清晰度失败：${e.message ?: e.javaClass.simpleName}",
+                    )
+                }
+            }
+        }
+    }
+
+    /** 将选中的 YouTube 字幕轨保存到用户指定位置；下载失败只更新提示，不打断播放任务。 */
+    fun downloadSubtitle(track: SubtitleTrackOption, outputUri: Uri) {
+        val sessionKey = ui.value.key
+        val sessionVideoId = videoId
+        val pipelineGeneration = activePipelineGeneration
+        subtitleDownloadJob?.cancel()
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            try {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…")
+                }
+                if (sessionVideoId != videoId) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
+                }
+                val content = NewPipeRepo.downloadSubtitleContent(track)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (sessionVideoId != videoId) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
+                }
+                val cueCount = SubtitleParsers.parseAutoCancellable(content) {
+                    ownerJob?.ensureActive()
+                }.size
+                if (cueCount == 0) throw IllegalStateException("字幕文件没有可用的时间轴")
+                withContext(Dispatchers.IO) {
+                    ownerJob?.ensureActive()
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    if (sessionVideoId != videoId || ui.value.key != sessionKey) {
+                        throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕写入")
+                    }
+                    val output = contentResolver.openOutputStream(outputUri, "wt")
+                        ?: throw IllegalStateException("无法写入所选文件")
+                    OutputStreamWriter(output, Charsets.UTF_8).use { writer ->
+                        // Write in bounded chunks: avoid allocating a second full-size UTF-8 byte
+                        // array for a large subtitle, and let task cancellation stop the save promptly.
+                        var offset = 0
+                        while (offset < content.length) {
+                            ownerJob?.ensureActive()
+                            val count = minOf(8 * 1024, content.length - offset)
+                            writer.write(content, offset, count)
+                            offset += count
+                        }
+                        ownerJob?.ensureActive()
+                    }
+                }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        subtitleTrackStatus = "已保存 " + track.languageTag + " 字幕（" + cueCount +
+                            " 条）。翻译时请保留时间戳，完成后可上传并直接配音。",
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey ||
+                    videoId != sessionVideoId
+                ) return@launch
+                io.translatetube.local.util.AppLogStore.warning(
+    this@PlaybackService, "Subtitles", "下载原字幕失败", e,
+)
+android.util.Log.w("PlaybackService", "Subtitle download failed", e)
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(subtitleTrackStatus = "字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
+                }
+            } finally {
+                if (subtitleDownloadJob === ownerJob) subtitleDownloadJob = null
+            }
+        }
+        subtitleDownloadJob = job
+        job.start()
+    }
+
+
+    /**
+     * Pause the active five-stage pipeline after its source subtitle rows become available,
+     * allowing the user to export them, translate externally, and resume by importing the result.
+     */
+    fun enableManualSubtitleTranslation() {
+        val current = ui.value
+        val key = current.key
+        if (key.isBlank()) return
+        if (current.phase !in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING)) {
+            android.widget.Toast.makeText(
+                this,
+                "请在原文字幕转写或翻译阶段启用外部翻译模式。",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        manualTranslationRequestedKeys.add(key)
+        manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() }.complete(Unit)
+        ui.update { state ->
+            if (state.key == key) state.copy(
+                manualTranslationModeEnabled = true,
+                subtitleTrackStatus = "已启用外部翻译模式；原文字幕生成后将暂停等待导入译文。",
+            ) else state
+        }
+        io.translatetube.local.util.AppLogStore.info(
+            this,
+            "Subtitles",
+            "已启用外部翻译模式",
+            diagnosticContext = mapOf("字幕任务键类型" to when {
+                key.startsWith("youtube:") -> "YouTube"
+                key.startsWith("remote:") -> "网页视频/远程媒体"
+                key.startsWith("local:") -> "本地视频"
+                else -> "其他"
+            }),
+        )
+    }
+
+    /**
+     * Leave external-translation waiting and continue with the configured in-app translator.
+     * Prefer releasing the live waiter so the existing pipeline resumes without reparsing.
+     * If the UI says it is waiting but the waiter/pipeline is gone, reopen at TRANSLATING with
+     * the original cues and the already-mounted media instead of leaving the task permanently stuck.
+     */
+    fun cancelManualSubtitleTranslation() {
+        val current = ui.value
+        val key = current.key
+        if (key.isBlank()) return
+
+        val waiter = manualTranslationWaiters[key]
+        val savedSourceLines = manualTranslationSources[key]
+        val requested = manualTranslationRequestedKeys.remove(key)
+        manualTranslationInterrupts.remove(key)
+        val wasEnabled = current.manualTranslationModeEnabled || current.manualTranslationWaiting
+        if (!requested && !wasEnabled) return
+
+        // Completing with null means "continue through the in-app translation branch", not
+        // "external translation succeeded". Do not cancel a live prepJob: it owns the full pipeline.
+        waiter?.complete(null)
+        manualTranslationSources.remove(key)
+
+        val waitingForExternalResult = current.manualTranslationWaiting
+        val pipelineAlive = prepJob?.isActive == true
+        val shouldRestartTranslationStage =
+            (waitingForExternalResult || (current.phase == Phase.TRANSLATING && !pipelineAlive)) &&
+                (waiter == null || !pipelineAlive) &&
+                videoKey == key &&
+                ui.value.key == key
+
+        updateUiForSession(key) {
+            it.copy(
+                manualTranslationModeEnabled = false,
+                manualTranslationWaiting = false,
+                subtitleTrackStatus = "已切回应用内翻译",
+                progress = if (waitingForExternalResult) "正在恢复应用内翻译…" else it.progress,
+                translatedLineCount = if (waitingForExternalResult) 0 else it.translatedLineCount,
+            )
+        }
+
+        if (shouldRestartTranslationStage) {
+            // The waiter may be stale if its owning pipeline already ended. Remove only that
+            // exact instance, then restart from the source cues; never keep the old completed
+            // deferred around for a later attempt on the same video key.
+            if (waiter != null) manualTranslationWaiters.remove(key, waiter)
+            val sourceLines = (savedSourceLines ?: current.lines).mapIndexed { index, line ->
+                line.copy(index = index, zh = null)
+            }
+            val resumeState = current.copy(
+                phase = Phase.TRANSLATING,
+                lines = sourceLines,
+                totalLines = sourceLines.size,
+                translatedLineCount = 0,
+                manualTranslationModeEnabled = false,
+                manualTranslationWaiting = false,
+                progress = "正在启动应用内翻译…",
+                subtitleTrackStatus = "已切回应用内翻译",
+                error = null,
+            )
+            io.translatetube.local.util.AppLogStore.warning(
+                this,
+                "Translation",
+                "外部翻译等待任务已失效，重新启动应用内翻译阶段",
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        key.startsWith("youtube:") -> "YouTube"
+                        key.startsWith("remote:") -> "网页视频/远程媒体"
+                        key.startsWith("local:") -> "本地视频"
+                        else -> "其他"
+                    },
+                    "原文字幕行数" to sourceLines.size.toString(),
+                    "是否复用当前媒体" to "true",
+                ),
+            )
+            open(
+                key = key,
+                videoId = videoId,
+                localUri = localUri,
+                resumeState = resumeState,
+                remoteMediaUrl = remoteMediaUrl,
+                remoteMediaTitle = remoteMediaTitle,
+                remoteMediaReferrer = remoteMediaReferrer,
+                remoteMediaCookie = remoteMediaCookie,
+                remoteMediaUserAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                requestToken = activeOpenRequestToken,
+                reuseMountedMediaForRestart = true,
+                forceRegenerateDubbing = true,
+            )
+        }
+
+        io.translatetube.local.util.AppLogStore.info(
+            this,
+            "Subtitles",
+            "已取消外部翻译并恢复应用内翻译",
+            diagnosticContext = mapOf(
+                "字幕任务键" to key,
+                "原翻译任务是否仍在运行" to pipelineAlive.toString(),
+                "是否重新启动翻译阶段" to shouldRestartTranslationStage.toString(),
+                "是否释放外部等待任务" to (waiter != null).toString(),
+            ),
+        )
+    }
+
+    /** Import the externally translated file into the waiting pipeline, retaining the original timeline. */
+    fun importManualTranslatedSubtitle(uri: Uri) {
+        val sessionKey = ui.value.key
+        val pipelineGeneration = activePipelineGeneration
+        val waiter = manualTranslationWaiters[sessionKey]
+        if (sessionKey.isBlank() || waiter == null || !ui.value.manualTranslationWaiting) {
+            android.widget.Toast.makeText(
+                this,
+                "请先启用外部翻译模式，等待原文字幕生成后再导入译文。",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+
+        // Keep a pending playback-resume retry from waking the old timeline while the imported
+        // external translation is matched and fresh dubbing is prepared.
+        cancelPendingSeekResume()
+        scope.launch {
+            try {
+                val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val decoded = withContext(Dispatchers.IO) {
+                    val input = contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取选中的字幕文件")
+                    input.use {
+                        val bytes = io.translatetube.local.yt.BoundedTextPayload.readBytes(
+                            it,
+                            maxBytes = 8L * 1024L * 1024L,
+                            resourceLabel = "外部翻译字幕文件",
+                            checkActive = { ownerJob?.ensureActive() },
+                        )
+                        io.translatetube.local.subs.SubtitleFileDecoder.decode(bytes)
+                    }
+                }
+                val translated = withContext(Dispatchers.Default) {
+                    SubtitleParsers.parseAutoCancellable(decoded) {
+                        ownerJob?.ensureActive()
+                    }.filter { line ->
+                        line.startMs >= 0L && line.endMs > line.startMs && line.text.isNotBlank()
+                    }
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                val source = manualTranslationSources[sessionKey]
+                    ?: throw IllegalStateException("原文字幕等待状态已失效，请重新启动该流程")
+                val merged = io.translatetube.local.subs.ManualSubtitleTranslationMerger.merge(source, translated)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (manualTranslationWaiters[sessionKey] !== waiter || waiter.isCompleted) {
+                    throw kotlinx.coroutines.CancellationException("外部翻译导入任务已过期")
+                }
+                // The imported external translation supersedes any previous successful subtitle
+                // snapshot. Remove it before resuming synthesis so an interruption cannot restore
+                // the old translated result on the next history open.
+                ReadyHistorySessionConfigStore.remove(this@PlaybackService, sessionKey)
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        AppDatabase.get(this@PlaybackService).videoDao().setWatched(sessionKey, 0L)
+                    }
+                }.onFailure {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Unable to reset watch position before external-translation synthesis",
+                        it,
+                    )
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (manualTranslationWaiters[sessionKey] !== waiter) {
+                    throw kotlinx.coroutines.CancellationException("外部翻译等待任务已被替换")
+                }
+                if (!waiter.complete(merged)) {
+                    throw IllegalStateException("当前字幕等待任务已结束，请重新启用外部翻译模式")
+                }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        subtitleTrackStatus = "已导入外部译文，正在沿用原字幕时间轴继续处理。",
+                        progress = "已匹配译文时间轴，正在继续配音准备…",
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey ||
+                    manualTranslationWaiters[sessionKey] !== waiter ||
+                    waiter.isCompleted
+                ) return@launch
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "Subtitles",
+                    "导入外部翻译字幕失败",
+                    e,
+                )
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    if (!manualTranslationRequestedKeys.contains(sessionKey) || waiter.isCompleted) {
+                        it
+                    } else {
+                        it.copy(
+                            manualTranslationWaiting = true,
+                            manualTranslationModeEnabled = true,
+                            subtitleTrackStatus = "导入失败，可重新选择译文文件：" + (e.message ?: e.javaClass.simpleName),
+                            progress = "译文导入失败，请检查字幕时间轴后重试。",
+                        )
+                    }
+                }
+                if (manualTranslationRequestedKeys.contains(sessionKey) && !waiter.isCompleted) {
+                    withContext(Dispatchers.Main) {
+                        android.widget.Toast.makeText(
+                            this@PlaybackService,
+                            "译文导入失败：" + (e.message ?: e.javaClass.simpleName),
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun awaitManualSubtitleTranslation(
+        sessionKey: String,
+        originalLines: List<SubLine>,
+        sourceLang: String,
+        pipelineGeneration: Long?,
+    ): List<SubLine>? {
+        if (!manualTranslationRequestedKeys.contains(sessionKey)) return null
+        val sourceOnly = originalLines.mapIndexed { index, line ->
+            line.copy(index = index, zh = null)
+        }
+        if (sourceOnly.isEmpty()) return null
+        val newWaiter = kotlinx.coroutines.CompletableDeferred<List<SubLine>?>()
+        val existing = manualTranslationWaiters.putIfAbsent(sessionKey, newWaiter)
+        val waiter = existing ?: newWaiter
+        manualTranslationSources[sessionKey] = sourceOnly
+        // Enabling and cancelling can race between the initial membership check and waiter
+        // registration. In that case, release the newly registered waiter immediately.
+        if (!manualTranslationRequestedKeys.contains(sessionKey)) waiter.complete(null)
+        updateUiForSession(sessionKey, pipelineGeneration) {
+            if (!manualTranslationRequestedKeys.contains(sessionKey)) {
+                it
+            } else {
+                it.copy(
+                    phase = Phase.TRANSLATING,
+                    lines = sourceOnly,
+                    totalLines = sourceOnly.size,
+                    sourceLang = sourceLang,
+                    translatedLineCount = 0,
+                    translationPreviewLines = emptyList(),
+                    manualTranslationModeEnabled = true,
+                    manualTranslationWaiting = true,
+                    progress = "原文字幕已生成（" + sourceOnly.size + " 条），请导出后外部翻译，再导入译文继续。",
+                    subtitleTrackStatus = "正在等待外部翻译字幕文件；当前视频与原文时间轴已保留。",
+                )
+            }
+        }
+        try {
+            val merged = waiter.await()
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            if (merged == null) {
+                manualTranslationRequestedKeys.remove(sessionKey)
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        manualTranslationModeEnabled = false,
+                        manualTranslationWaiting = false,
+                        progress = "已取消外部翻译，正在继续应用内翻译…",
+                        subtitleTrackStatus = "已取消外部翻译模式，继续使用应用内翻译。",
+                    )
+                }
+                return null
+            }
+            manualTranslationRequestedKeys.remove(sessionKey)
+            updateUiForSession(sessionKey, pipelineGeneration) {
+                it.copy(
+                    lines = merged,
+                    totalLines = merged.size,
+                    translationPreviewLines = merged.takeLast(12).mapNotNull { line ->
+                        SubtitleParsers.preferredTranslationText(line)?.let { line.copy(zh = it) }
+                    }.takeLast(2),
+                    translatedLineCount = merged.count { line -> !line.zh.isNullOrBlank() },
+                    manualTranslationModeEnabled = false,
+                    manualTranslationWaiting = false,
+                    progress = "外部译文已载入，继续准备视频字幕与配音…",
+                    subtitleTrackStatus = "外部译文已匹配到原文时间轴。",
+                )
+            }
+            return merged
+        } finally {
+            manualTranslationWaiters.remove(sessionKey, waiter)
+            manualTranslationSources.remove(sessionKey)
+            manualTranslationInterrupts.remove(sessionKey)
+            if (!waiter.isCompleted) manualTranslationRequestedKeys.remove(sessionKey)
+        }
+    }
+
+    /**
+     * 导入已经翻译好的字幕：保留上传文件的时间轴，把译文作为配音文本，不再调用翻译引擎。
+     * 支持 SRT/VTT/ASS；双语 cue 会优先取含中文的行作为译文。
+     */
+    fun importTranslatedSubtitles(uri: Uri) {
+        // Capture the state before cancelling the old pipeline or publishing the import stage.
+        // A translation-only task has no TTS engine to protect, so subtitle import can prepare a
+        // new TTS engine without waiting for a blocking translation call to unwind.
+        val stateBeforeImport = ui.value
+        val importMayOverlapCancelledTranslation =
+            ImportedTranslatedSubtitleConcurrencyPolicy.canBypassPipelineMutex(
+                previousPhase = stateBeforeImport.phase,
+                hasActiveDubbingEngine = dubbing != null,
+                hasRetiringDubbingEngine = retiringDubbingEngines.isNotEmpty(),
+            )
+        val pipelineGeneration = beginPipelineGeneration()
+        val sessionKey = videoKey
+        // Explicit imports bypass open(); reset the watcher baseline to this request's selected engines.
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = sessionKey)
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        completedReadySessionKey = ""
+        completedReadySessionEngineFingerprint = ""
+        completedReadySessionIgnoresTranscription = false
+        // Prevent a previously queued seek-resume callback from restarting playback during import.
+        cancelPendingSeekResume()
+        // An explicit subtitle import starts a new synthesis run, even when its content matches
+        // the previous import. Remove the ready snapshot first so an interrupted import cannot
+        // silently restore the old imported result.
+        if (sessionKey.isNotBlank()) {
+            ReadyHistorySessionConfigStore.remove(this, sessionKey)
+        }
+        this.importedLines = null
+        val resumePlaybackAfterImport = ::pm.isInitialized &&
+            runCatching { pm.player.playWhenReady }.getOrDefault(false)
+        if (::pm.isInitialized) {
+            pm.pause()
+            // Re-imported subtitles are a fresh full synthesis, not a continuation at the old
+            // playhead. Reset before attaching the new engine so queue prioritization starts at row 1.
+            runCatching { pm.seekTo(0L) }
+        }
+        processingPaused = false
+        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        enginePreferenceRestartJob?.cancel()
+        enginePreferenceRestartJob = null
+        subtitleDownloadJob?.cancel()
+        subtitleDownloadJob = null
+        prepJob?.cancel(kotlinx.coroutines.CancellationException("切换到导入已翻译字幕配音"))
+        prepJob = null
+        manualTranslationWaiters.remove(sessionKey)?.cancel()
+        manualTranslationSources.remove(sessionKey)
+        manualTranslationRequestedKeys.remove(sessionKey)
+        speakerJob?.cancel()
+        speakerJob = null
+        qualityJob?.cancel()
+        qualityJob = null
+        qualityRecoveryJob?.cancel()
+        qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
+        dubCollectJob?.cancel()
+        dubCollectJob = null
+        lastLineIdx = Int.MIN_VALUE
+        updateUiForSession(sessionKey, pipelineGeneration) {
+            it.copy(
+                phase = Phase.PARSING,
+                progress = "正在读取已翻译字幕文件…",
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                dubbingOn = true,
+                error = null,
+                noModelHint = null,
+                dubbingHasErrors = false,
+                translatedLineCount = 0,
+                preparedUntil = 0,
+                preparedCount = 0,
+                audioReadyCount = 0,
+                activeDubbingLine = -1,
+                currentLine = -1,
+                waitingForTranscriptionEngine = false,
+                waitingForDubbingEngine = false,
+                manualTranslationModeEnabled = false,
+                manualTranslationWaiting = false,
+                isProcessingPaused = false,
+                subtitleTrackStatus = "正在导入已翻译字幕",
+            )
+        }
+        retireCurrentDubbing()
+        prepJob = scope.launch {
+            try {
+                if (sessionKey.isNotBlank()) {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            AppDatabase.get(this@PlaybackService).videoDao().setWatched(sessionKey, 0L)
+                        }
+                    } catch (positionResetError: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Could not reset stored watch position before imported-subtitle regeneration",
+                            positionResetError,
+                        )
+                    }
+                }
+                // Parsing user-provided subtitle text is independent of the shared TTS runtime.
+                // Do it before taking the pipeline mutex so a canceled translation/native
+                // inference can unwind in parallel instead of making the import appear stuck.
+                val importOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val text = withContext(Dispatchers.IO) {
+                    val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    val input = contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取字幕文件")
+                    input.use {
+                        SubtitleFileDecoder.decode(
+                            BoundedTextPayload.readBytes(
+                                it,
+                                maxBytes = 8L * 1024L * 1024L,
+                                resourceLabel = "导入的已翻译字幕文件",
+                                checkActive = { ownerJob?.ensureActive() },
+                            ),
+                        )
+                    }
+                }
+                val parsed = SubtitleParsers.parseAutoCancellable(text) {
+                    importOwnerJob?.ensureActive()
+                }.filter { it.startMs >= 0L && it.endMs > it.startMs }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
+                val translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
+                    val cue = io.translatetube.local.subs.ImportedSubtitlePolicy.splitBilingualCue(line.text)
+                    line.copy(
+                        index = index,
+                        text = cue.originalText,
+                        zh = cue.translationText,
+                    )
+                })
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "source audio fallback")
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.SYNTHESIZING,
+                        progress = "已载入 " + translatedLines.size + " 条已翻译字幕，正在准备中文配音…",
+                        lines = translatedLines,
+                        totalLines = translatedLines.size,
+                        translatedLineCount = translatedLines.size,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
+                        preparedUntil = 0,
+                        preparedCount = 0,
+                        audioReadyCount = 0,
+                        sourceLang = "zh",
+                        error = null,
+                        noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
+                        subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
+                    )
+                }
+
+                // Serialize only engine replacement and synthesis. The translated cues and their
+                // timestamps are already validated, so the UI can leave the old translation stage
+                // while a previous native inference finishes unwinding.
+                var pipelineLockAcquired = false
+                try {
+                    if (!importMayOverlapCancelledTranslation) {
+                        pipelineExecutionMutex.lock()
+                        pipelineLockAcquired = true
+                    }
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    if (::pm.isInitialized) {
+                        // The bus may still be disabled from the previously playing session.
+                        pm.dubbingBus.setDubbingEnabled(true)
+                    }
+                    awaitRetiredDubbingEngines()
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    val tts = makeTtsOffMainThread()
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    runCatching { tts.close() }
+                    throw e
+                }
+                val d = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
+                } catch (e: Throwable) {
+                    // Also release the initialized TTS runtime when DubbingEngine allocation fails
+                    // with OutOfMemoryError; the outer import handler then restores source playback.
+                    runCatching { tts.close() }
+                    throw e
+                }
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
+                registerDubbingFailureHandler(d, tts, sessionKey)
+                try {
+                    d.attach(
+                        tts,
+                        translatedLines,
+                        forceRegenerateDubbing = true,
+                    )
+                } catch (e: Throwable) {
+                    // A failed attach may be an allocation error, not just an Exception.
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(d)
+                    throw e
+                }
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
+                    retireDubbing(d)
+                    throw kotlinx.coroutines.CancellationException("已翻译字幕导入任务已过期")
+                }
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    if (dubbing === d) dubbing = null
+                    retireDubbing(d)
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
+                }
+                dubCollectJob = scope.launch {
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
+                            updateUiForCurrentDubbingEngine(d, sessionKey) {
+                                it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
+                            }
+                        }
+                }
+                lastLineIdx = Int.MIN_VALUE
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                awaitInitialDubbingBufferBeforePlayback(
+                    sessionKey = sessionKey,
+                    pipelineGeneration = pipelineGeneration,
+                    engine = d,
+                    lines = translatedLines,
+                )
+                withContext(Dispatchers.Main) {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    startPlaybackWithMountedDubbing(0L) {
+                        ensureCurrentSession(sessionKey, pipelineGeneration)
+                    }
+                }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.READY,
+                        progress = "",
+                        lines = translatedLines,
+                        totalLines = translatedLines.size,
+                        preparedUntil = d.preparedUntil.value,
+                        preparedCount = d.preparedCount.value,
+                        audioReadyCount = d.audioReadyCount.value,
+                        sourceLang = "zh",
+                    )
+                }
+
+                // This import path does not return through open()'s normal pipeline completion
+                // handler. Persist its successful result here as well, otherwise re-entering the
+                // same video cannot find the imported translated subtitles and starts auto-translation.
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                val finishedState = ui.value
+                if (
+                    finishedState.key == sessionKey &&
+                    finishedState.phase == Phase.READY &&
+                    finishedState.lines.isNotEmpty() &&
+                    !finishedState.dubbingHasErrors &&
+                    !finishedState.waitingForTranscriptionEngine &&
+                    !finishedState.waitingForDubbingEngine
+                ) {
+                    val completedFingerprint = processingEnginePreferenceFingerprint(
+                        ignoreTranscription = true,
+                        forVideoKey = sessionKey,
+                    )
+                    val completedDomainFingerprints =
+                        ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                    val pipelineConfigurationChanged = EngineRestartStagePolicy.hasRelevantConfigChange(
+                        previous = processingEngineDomainFingerprints,
+                        current = completedDomainFingerprints,
+                        processingFlow = finishedState.processingFlow,
+                        ignoreTranscription = true,
+                    )
+                    if (pipelineConfigurationChanged) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "导入字幕合成期间配音配置发生变化，未登记当前配置成功快照",
+                            diagnosticContext = mapOf(
+                                "处理流程" to finishedState.processingFlow.name,
+                                "处理代数" to pipelineGeneration.toString(),
+                                "本次结果是否登记为当前配置成功结果" to "否",
+                                "恢复策略" to "配置变更监听按配音阶段重新合成",
+                            ),
+                        )
+                    } else {
+                        val snapshotSaved = ReadySessionSnapshotStore.save(
+                        context = this@PlaybackService,
+                        videoKey = sessionKey,
+                        fingerprint = completedFingerprint,
+                        // Imported translated subtitles do not depend on the selected ASR engine.
+                        ignoreTranscription = true,
+                        state = finishedState,
+                        transcriptionFingerprint = completedDomainFingerprints.transcription,
+                        translationFingerprint = completedDomainFingerprints.translation,
+                        dubbingFingerprint = completedDomainFingerprints.dubbing,
+                        identityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+                            videoKey = sessionKey,
+                            remoteMediaUrl = this@PlaybackService.remoteMediaUrl,
+                            referrer = this@PlaybackService.remoteMediaReferrer,
+                            cookie = this@PlaybackService.remoteMediaCookie,
+                            localMediaIdentityKey = this@PlaybackService.activeLocalMediaIdentityKey,
+                        ),
+                    )
+                    if (snapshotSaved) {
+                        completedReadySessionKey = sessionKey
+                        completedReadySessionIgnoresTranscription = true
+                        completedReadySessionEngineFingerprint = completedFingerprint
+                        ReadyHistorySessionConfigStore.save(
+                            this@PlaybackService,
+                            sessionKey,
+                            completedFingerprint,
+                            true,
+                            completedDomainFingerprints,
+                            finishedState.processingFlow,
+                        )
+                    }
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        if (snapshotSaved) "导入已翻译字幕的成功结果已保存" else "导入已翻译字幕处理完成",
+                        diagnosticContext = mapOf(
+                            "处理流程" to finishedState.processingFlow.name,
+                            "字幕行数" to finishedState.lines.size.toString(),
+                            "快照是否保存成功" to snapshotSaved.toString(),
+                            "恢复时是否跳过转写" to "true",
+                            "恢复时是否跳过应用内翻译" to "true（复用已导入译文）",
+                        ),
+                    )
+                    }
+                }
+                } finally {
+                    if (pipelineLockAcquired) pipelineExecutionMutex.unlock()
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                // Recover from synthesis/model allocation failure without letting an obsolete import
+                // retire the current session's engine or change its playback state.
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "Subtitles",
+                        "已忽略过期字幕导入任务的内存恢复操作",
+                        e,
+                        diagnosticContext = mapOf(
+                            "当前处理代数" to pipelineGeneration.toString(),
+                            "活动处理代数" to activePipelineGeneration.toString(),
+                            "处理流程" to ui.value.processingFlow.name,
+                        ),
+                    )
+                    return@launch
+                }
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "Subtitles",
+                    "导入字幕配音时内存不足，已恢复视频原声",
+                    e,
+                    diagnosticContext = mapOf(
+                        "字幕行数" to ui.value.lines.size.toString(),
+                        "当前配音引擎" to ui.value.ttsEngineName.ifBlank { "未确定" },
+                        "处理阶段" to ui.value.phase.name,
+                        "内存恢复策略" to "释放当前配音引擎并恢复原声，不自动切换其他引擎",
+                    ),
+                )
+                runCatching { retireCurrentDubbing() }
+                runCatching {
+                    withContext(Dispatchers.IO) { awaitRetiredDubbingEngines() }
+                }
+                runCatching { System.gc() }
+                runCatching { safelySetOriginalVolume(1f, "translated subtitle import OOM recovery") }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "设备可用内存不足，无法合成已导入字幕的中文配音。",
+                        noModelHint = "已恢复视频原声。请关闭其他应用后重试；不会自动切换配音引擎。",
+                        muteOriginal = false,
+                        dubbingHasErrors = true,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                    )
+                }
+                if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) {
+                        if (
+                            activePipelineGeneration == pipelineGeneration &&
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey
+                        ) pm.play()
+                    }
+                }
+            } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "Subtitles",
+                        "已忽略过期字幕导入任务异常",
+                        e,
+                        diagnosticContext = mapOf(
+                            "旧处理代数" to pipelineGeneration.toString(),
+                            "当前处理代数" to activePipelineGeneration.toString(),
+                            "处理流程" to ui.value.processingFlow.name,
+                        ),
+                    )
+                    return@launch
+                }
+                io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService, "Subtitles", "导入已翻译字幕失败", e,
+)
+android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
+                if (videoKey == sessionKey && ui.value.key == sessionKey) {
+                    runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
+                }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "已翻译字幕导入失败：" + (e.message ?: e.javaClass.simpleName),
+                        muteOriginal = false,
+                    )
+                }
+                if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) {
+                        if (
+                            activePipelineGeneration == pipelineGeneration &&
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey
+                        ) pm.play()
+                    }
+                }
+            }
+        }
+    }
+
+    /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
+    fun importSubtitles(uri: Uri) {
+        val pipelineGeneration = beginPipelineGeneration()
+        val sessionKey = videoKey
+        // Explicit imports bypass open(); make engine-change decisions relative to this new task.
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = sessionKey)
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        completedReadySessionKey = ""
+        completedReadySessionEngineFingerprint = ""
+        completedReadySessionIgnoresTranscription = false
+        // Prevent a delayed resume callback from restarting source playback during fresh translation/synthesis.
+        cancelPendingSeekResume()
+        // Explicit subtitle import replaces the previous ready result for this video.
+        if (sessionKey.isNotBlank()) {
+            ReadyHistorySessionConfigStore.remove(this, sessionKey)
+        }
+        this.importedLines = null
+        val resumePlaybackAfterImport = ::pm.isInitialized &&
+            runCatching { pm.player.playWhenReady }.getOrDefault(false)
+        if (::pm.isInitialized) {
+            pm.pause()
+            runCatching { pm.seekTo(0L) }
+        }
+        subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
+        prepJob?.cancel()
+        prepJob = null
+        speakerJob?.cancel()
+        speakerJob = null
+        qualityJob?.cancel()
+        qualityJob = null
+        qualityRecoveryJob?.cancel()
+        qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
+        dubCollectJob?.cancel()
+        dubCollectJob = null
+        retireCurrentDubbing()
+        safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "source audio fallback")
+        lastLineIdx = Int.MIN_VALUE
+
+        prepJob = scope.launch {
+            pipelineExecutionMutex.withLock {
+            try {
+                if (sessionKey.isNotBlank()) {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            AppDatabase.get(this@PlaybackService).videoDao().setWatched(sessionKey, 0L)
+                        }
+                    }.onFailure {
+                        android.util.Log.w("PlaybackService", "Unable to reset watch position before subtitle import", it)
+                    }
+                }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.PARSING,
+                        progress = "正在读取字幕文件…",
+                        processingFlow = ProcessingFlow.IMPORTED_SUBTITLES,
+                        error = null,
+                        noModelHint = null,
+                        dubbingHasErrors = false,
+                        translatedLineCount = 0,
+                        preparedUntil = 0,
+                        preparedCount = 0,
+                        audioReadyCount = 0,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                    )
+                }
+                // Subtitle files can be large. Keep file I/O and parsing off the main thread so
+                // importing a long SRT/VTT/ASS file cannot freeze player controls.
+                val parsedLines = withContext(Dispatchers.IO) {
+                    val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    val input = contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取字幕文件")
+                    val text = input.use {
+                        SubtitleFileDecoder.decode(
+                            BoundedTextPayload.readBytes(
+                                it,
+                                maxBytes = 8L * 1024L * 1024L,
+                                resourceLabel = "导入的字幕文件",
+                                checkActive = { ownerJob?.ensureActive() },
+                            ),
+                        )
+                    }
+                    SubtitleParsers.parseAutoCancellable(text) {
+                        ownerJob?.ensureActive()
+                    }.filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+                        .mapIndexed { index, line -> line.copy(index = index) }
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (parsedLines.isEmpty()) {
+                    throw IllegalStateException("字幕文件为空或格式不支持")
+                }
+
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.TRANSLATING,
+                        progress = "翻译导入的字幕（${parsedLines.size} 行）…",
+                    )
+                }
+                val importedCueTexts = parsedLines.map { it.text }
+                val srcLang = resolveSourceLanguageForCues(
+                    importedCueTexts,
+                    io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(importedCueTexts),
+                )
+                val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
+                    .getLong("active_api_id", -1L)
+                val providerFingerprint = translationProviderFingerprint(activeTranslationId)
+                val importedCacheKey = importedTranslationCacheKey(
+                    sessionKey,
+                    activeTranslationId,
+                    parsedLines,
+                    providerFingerprint,
+                )
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                // Preserve the imported source identity if this translation is later retried.
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                    state.copy(
+                        translationCacheKey = importedCacheKey,
+                        lines = parsedLines,
+                        totalLines = parsedLines.size,
+                        translatedLineCount = 0,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
+                        sourceLang = srcLang,
+                    )
+                }
+                // Reuse a matching translation cache when the same subtitle file is imported again.
+                // Only valid rows are restored; missing or placeholder rows remain eligible for retry.
+                val cachedImportedLines = if (isChineseLanguage(srcLang)) {
+                    null
+                } else {
+                    val cachedEntry = AppDatabase.get(this@PlaybackService)
+                        .subtitleCacheDao().get(importedCacheKey)
+                    if (cachedEntry == null) {
+                        null
+                    } else {
+                        val cacheLoadJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        val restored = runCatching {
+                            val cacheRows = org.json.JSONArray(cachedEntry.linesJson)
+                            if (cacheRows.length() > 500_000) {
+                                throw IllegalArgumentException("字幕缓存条数超过安全上限")
+                            }
+                            val rows = ArrayList<SubtitleCacheValidationPolicy.CachedTranslationRow>(cacheRows.length())
+                            for (index in 0 until cacheRows.length()) {
+                                if ((index and 0xff) == 0) cacheLoadJob?.ensureActive()
+                                val row = cacheRows.optJSONObject(index)
+                                    ?: throw IllegalArgumentException("字幕缓存第 ${index + 1} 行不是对象")
+                                rows += SubtitleCacheValidationPolicy.CachedTranslationRow(
+                                    startMs = row.optLong("s", Long.MIN_VALUE),
+                                    endMs = row.optLong("e", Long.MIN_VALUE),
+                                    sourceText = row.optString("t", ""),
+                                    // JSONObject.NULL.toString() can become the literal "null";
+                                    // treat absent/null translations as missing so they are retried.
+                                    translatedText = row.optString("zh", "").takeIf { it.isNotBlank() },
+                                )
+                            }
+                            SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+                                parsedLines,
+                                rows,
+                                sourceLanguage = srcLang,
+                                targetLanguage = "zh-CN",
+                            ) {
+                                cacheLoadJob?.ensureActive()
+                            }
+                        }.getOrNull()
+                        if (restored == null) {
+                            android.util.Log.w(
+                                "PlaybackService",
+                                "Ignoring imported subtitle translation cache that failed source/timeline validation",
+                            )
+                            AppDatabase.get(this@PlaybackService).subtitleCacheDao().delete(importedCacheKey)
+                        } else {
+                            android.util.Log.i(
+                                "PlaybackService",
+                                "Reusing imported subtitle translation cache; unfinished rows will be retried",
+                            )
+                        }
+                        restored
+                    }
+                }
+                // Use immutable copies so StateFlow/Compose sees translated subtitle text.
+                val translatedLines = applySavedLineOverrides(
+                    if (isChineseLanguage(srcLang)) {
+                        SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(parsedLines)
+                    } else {
+                        translateLines(
+                            sessionKey,
+                            cachedImportedLines ?: parsedLines,
+                            srcLang,
+                            importedCacheKey,
+                            activeTranslationId,
+                            pipelineGeneration,
+                        )
+                    }
+                )
+                awaitRetiredDubbingEngines()
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                val selectedImportTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+                    getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+                )
+                val importEngineReady = when (selectedImportTts) {
+                    "kokoro" -> kokoroRuntimeReady()
+                    "piper" -> piperModelReadyForChinese()
+                    "edge" -> true
+                    "google" -> true
+                    "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
+                    else -> selectedImportTts == "system"
+                }
+                if (!importEngineReady) {
+                    // 中文源 + 所选 TTS 引擎未就绪（模型未下载/未知引擎）：直接显示原文并保留原声。
+                    // 引擎就绪时（含系统 TTS 与已装模型）仍按时间轴朗读中文字幕。
+                    val translatedCount = translatedLines.count {
+                        SubtitleParsers.cleanTranslatedText(it.zh) != null
+                    }
+                    val arr = org.json.JSONArray()
+                    for (line in translatedLines) arr.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                            .put("zh", line.zh ?: "")
+                            .put("sp", line.speakerId)
+                    )
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    if (translatedCount > translatedLines.size / 2) {
+                        AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                            io.translatetube.local.data.SubtitleCacheEntity(
+                                importedCacheKey,
+                                srcLang,
+                                arr.toString(),
+                                System.currentTimeMillis(),
+                                videoKey = sessionKey,
+                            )
+                        )
+                    }
+                    updateUiForSession(sessionKey, pipelineGeneration) {
+                        val unavailableEngineName = ttsDisplayName(selectedImportTts)
+                        val unavailableHint = when (selectedImportTts) {
+                            "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。请在设置 → 配音设置中下载完整模型后重新打开或处理此视频。"
+                            "piper" -> {
+                                val modelId = getSharedPreferences("settings", MODE_PRIVATE)
+                                    .getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                                val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
+                                when {
+                                    definition == null -> "当前 Piper 模型编号无效，请在设置中重新选择中文 Piper 模型。"
+                                    !definition.supportsChineseOutput -> "当前 Piper 模型不支持中文输出，请在设置中选择中文模型。"
+                                    else -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
+                                }
+                            }
+                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key。"
+                            else -> "所选配音引擎「$unavailableEngineName」尚未就绪，请先检查设置和引擎配置。"
+                        }
+                        it.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            ttsEngineName = unavailableEngineName,
+                            dubbingStatus = "$unavailableEngineName 尚未就绪，视频已暂停",
+                            muteOriginal = it.originalVolume <= 0f,
+                            noModelHint = unavailableHint,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = true,
+                            lines = translatedLines,
+                            totalLines = translatedLines.size,
+                            translatedLineCount = translatedCount,
+                            activeDubbingLine = -1,
+                            currentLine = -1,
+                            error = null,
+                        )
+                    }
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    return@launch
+                }
+                val tts = makeTtsOffMainThread()
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    runCatching { tts.close() }
+                    throw e
+                }
+                val d = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
+                } catch (e: Exception) {
+                    runCatching { tts.close() }
+                    throw e
+                }
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
+                registerDubbingFailureHandler(d, tts, sessionKey)
+                try {
+                    d.attach(
+                        tts,
+                        translatedLines,
+                        sourceLanguage = srcLang,
+                        forceRegenerateDubbing = true,
+                    )
+                } catch (e: Exception) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(d)
+                    throw e
+                }
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
+                    retireDubbing(d)
+                    throw kotlinx.coroutines.CancellationException("字幕导入任务已过期")
+                }
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    if (dubbing === d) dubbing = null
+                    retireDubbing(d)
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
+                }
+                dubCollectJob = scope.launch {
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
+                            updateUiForCurrentDubbingEngine(d, sessionKey) {
+                                it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
+                            }
+                        }
+                }
+
+                // Store a cache only after import + translation produced useful subtitle rows.
+                val arr = org.json.JSONArray()
+                for (line in translatedLines) arr.put(
+                    org.json.JSONObject()
+                        .put("s", line.startMs)
+                        .put("e", line.endMs)
+                        .put("t", line.text)
+                        .put("zh", line.zh ?: "")
+                        .put("sp", line.speakerId)
+                )
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (translatedLines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } >
+                    translatedLines.size / 2
+                ) {
+                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            importedCacheKey,
+                            srcLang,
+                            arr.toString(),
+                            System.currentTimeMillis(),
+                            videoKey = sessionKey,
+                        )
+                    )
+                }
+                awaitInitialDubbingBufferBeforePlayback(
+                    sessionKey = sessionKey,
+                    pipelineGeneration = pipelineGeneration,
+                    engine = d,
+                    lines = translatedLines,
+                )
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        lines = translatedLines,
+                        totalLines = translatedLines.size,
+                        phase = Phase.READY,
+                        progress = "",
+                        error = null,
+                    )
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                lastLineIdx = Int.MIN_VALUE
+                if (resumePlaybackAfterImport) {
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(sessionKey, pipelineGeneration)
+                        startPlaybackWithMountedDubbing(0L) {
+                            ensureCurrentSession(sessionKey, pipelineGeneration)
+                        }
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "Subtitles",
+                        "已忽略过期字幕导入任务异常",
+                        e,
+                        diagnosticContext = mapOf(
+                            "旧处理代数" to pipelineGeneration.toString(),
+                            "当前处理代数" to activePipelineGeneration.toString(),
+                            "处理流程" to ui.value.processingFlow.name,
+                        ),
+                    )
+                    return@launch
+                }
+                io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService, "Subtitles", "导入字幕并启动处理流程失败", e,
+)
+android.util.Log.e("PlaybackService", "Subtitle import failed", e)
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "字幕导入失败: ${e.message ?: e.javaClass.simpleName}",
+                    )
+                }
+                if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) {
+                        if (
+                            activePipelineGeneration == pipelineGeneration &&
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey
+                        ) pm.play()
+                    }
+                }
+            }
+            }
+        }
+    }
+
+    /** Snapshot all fields that can change translation output, without exposing the API key in cache names. */
+    private suspend fun translationProviderFingerprint(activeId: Long): String {
+        val settings = getSharedPreferences("settings", MODE_PRIVATE)
+        val sourceLanguageMode = settings.getString("translation_source_language", "auto")
+            .orEmpty()
+            .ifBlank { "auto" }
+
+        // Free Gemini/DeepSeek settings live in SharedPreferences rather than Room. Their
+        // translation cache identity must include the effective model and endpoint, otherwise a
+        // model switch restarts stage 3 but can still restore translations cached for the old model.
+        fun decryptedSetting(key: String): String {
+            val stored = settings.getString(key, "").orEmpty()
+            if (stored.isBlank()) return ""
+            return runCatching { Crypto.decrypt(stored) }.getOrElse { stored }
+        }
+        BuiltInTranslationCacheIdentityPolicy.fingerprint(
+            activeId = activeId,
+            sourceLanguageMode = sourceLanguageMode,
+            geminiModel = settings.getString("free_gemini_model", null),
+            geminiApiKey = decryptedSetting("free_gemini_key"),
+            deepSeekModel = settings.getString("free_deepseek_model", null),
+            deepSeekBaseUrl = settings.getString("free_deepseek_base_url", null),
+            deepSeekApiKey = decryptedSetting("free_deepseek_key"),
+        )?.let { return it }
+
+        val profiles = AppDatabase.get(this).apiProfileDao().enabled()
+        val active = profiles.firstOrNull { it.id == activeId }
+        val providerKind = when (activeId) {
+            -1L, -2L -> "google-hybrid"
+            EngineFactory.ID_MICROSOFT -> "microsoft-web"
+            EngineFactory.ID_BAIDU -> "baidu-web"
+            EngineFactory.ID_DEEPL -> "deepl-web"
+            EngineFactory.ID_FREE_GEMINI -> "free-gemini"
+            EngineFactory.ID_FREE_DEEPSEEK -> "free-deepseek"
+            EngineFactory.ID_LOCAL_MLKIT -> "mlkit-local"
+            EngineFactory.ID_LOCAL_OPUS -> "opus-mt-en-zh-4dc37af-onnx-quantized-v2"
+            EngineFactory.ID_LOCAL_SMALL100 -> "small100-multilingual-onnx"
+            EngineFactory.ID_LOCAL_HYMT ->
+                "hymt-1.8b-2bit-q2_0c-model-${io.translatetube.local.translate.HyMtModelManager.MODEL_REVISION}" +
+                    "-runtime-${io.translatetube.local.translate.HyMtModelManager.RUNTIME_SOURCE_REVISION}" +
+                    "-adapter-${io.translatetube.local.translate.HyMtModelManager.NATIVE_ADAPTER_REVISION}"
+            else -> when {
+                EngineFactory.isLocalTranslationEngine(activeId) -> "local-model-$activeId"
+                active != null -> "api-profile"
+                else -> "unregistered-engine-$activeId"
+            }
+        }
+        val cacheScopedProviderKind = if (SourceLanguagePolicy.isUndetermined(sourceLanguageMode)) {
+            providerKind
+        } else {
+            "$providerKind|source=$sourceLanguageMode"
+        }
+        return TranslationCacheIdentity.providerFingerprintFromStoredCredentials(
+            activeId = activeId,
+            providerKind = cacheScopedProviderKind,
+            type = active?.type.orEmpty(),
+            baseUrl = active?.baseUrl.orEmpty(),
+            storedApiKey = active?.apiKey.orEmpty(),
+            model = active?.model.orEmpty(),
+            region = active?.region.orEmpty(),
+            storedCredentialsJson = active?.credentialsJson.orEmpty(),
+            decrypt = io.translatetube.local.translate.Crypto::decrypt,
+        )
+    }
+
+    /** Imported subtitles get their own source fingerprint and active-provider identity. */
+    private suspend fun resolveSourceLanguageForCues(
+        cues: Iterable<String>,
+        detectedLanguage: String,
+    ): String {
+        val preferred = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("translation_source_language", "auto")
+            .orEmpty()
+            .ifBlank { "auto" }
+        if (!SourceLanguagePolicy.isUndetermined(preferred)) {
+            return preferred
+        }
+
+        // Strong script detection first (Japanese, Korean, Chinese, etc.).
+        val scriptDetected = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(cues)
+        if (!SourceLanguagePolicy.isUndetermined(scriptDetected)) {
+            return scriptDetected
+        }
+
+        // Run bundled on-device language identification for ambiguous Latin-script subtitles,
+        // including cases where an ASR provider's language hint may be wrong.
+        val identified = io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(cues)
+        if (!SourceLanguagePolicy.isUndetermined(identified)) {
+            return identified
+        }
+
+        // If the model cannot confidently identify the text, preserve the provider's hint.
+        return io.translatetube.local.subs.SubtitleLanguageDetector
+            .resolveTranscriptionLanguageFromCues(detectedLanguage, cues)
+    }
+
+    private fun importedTranslationCacheKey(
+        key: String,
+        activeId: Long,
+        lines: List<SubLine>,
+        providerFingerprint: String? = null,
+    ): String = TranslationCacheIdentity.importedKey(key, activeId, lines, providerFingerprint)
+
+    /** Compare source text and timing before trusting a legacy video-level translation cache. */
+    private fun translationCacheMatchesSource(linesJson: String, sourceLines: List<SubLine>): Boolean = try {
+        val rows = org.json.JSONArray(linesJson)
+        if (rows.length() != sourceLines.size) {
+            false
+        } else {
+            sourceLines.indices.all { i ->
+                val row = rows.optJSONObject(i) ?: return@all false
+                row.optLong("s", Long.MIN_VALUE) == sourceLines[i].startMs &&
+                    row.optLong("e", Long.MIN_VALUE) == sourceLines[i].endMs &&
+                    row.optString("t") == sourceLines[i].text
+            }
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("PlaybackService", "Unable to compare source lines to translation cache", e)
+        false
+    }
+
+    /** Chinese subtitle tracks must not be translated into Chinese again. */
+    private fun isChineseLanguage(tag: String): Boolean =
+        SourceLanguagePolicy.isChinese(tag)
+
+    /**
+     * Treat a non-Chinese cue whose cached "translation" exactly mirrors its source as unfinished.
+     * This repairs older caches where source text was mistakenly saved to the Chinese field.
+     */
+    private fun needsSubtitleTranslation(line: SubLine, srcLang: String): Boolean {
+        if (line.text.isBlank()) return false
+        val translated = SubtitleParsers.cleanTranslatedText(line.zh)
+        if (translated.isNullOrBlank()) return true
+        if (isChineseLanguage(srcLang)) return false
+        return io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+            .isSourceEcho(line.text, translated, srcLang)
+    }
+
+    /** Reject corrupt timelines and progress/status placeholders before restoring translated rows. */
+    private fun isUsableTranslationCache(linesJson: String): Boolean = try {
+        val rows = org.json.JSONArray(linesJson)
+        if (rows.length() == 0) {
+            false
+        } else {
+            val translations = ArrayList<String?>(rows.length())
+            val timelineRows = ArrayList<Triple<Long, Long, String>>(rows.length())
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i)
+                    ?: throw IllegalArgumentException("字幕缓存第 ${i + 1} 行不是对象")
+                val startMs = row.optLong("s", Long.MIN_VALUE)
+                val endMs = row.optLong("e", Long.MIN_VALUE)
+                val originalText = row.optString("t").trim()
+                timelineRows += Triple(startMs, endMs, originalText)
+
+                translations += row.optString("zh", "")
+            }
+            if (!SubtitleCacheValidationPolicy.hasValidTimeline(timelineRows)) {
+                throw IllegalArgumentException("字幕缓存时间轴无效或未按开始时间排序")
+            }
+            // Keep any valid completed rows; restore logic cleans placeholder rows to null and
+            // translates only those missing cues on retry.
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(translations)
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON or timeline", e)
+        false
+    }
+
+    /**
+     * Message for the processing page when the pipeline throws. A network failure while still
+     * parsing used to surface as a bare host name or a timeout in English; describe those in
+     * Chinese. Later stages already wrap their own errors with specific text, so leave those.
+     */
+    private fun pipelineFailureMessage(error: Exception, failedPhase: Phase, fallback: String): String {
+        val described = if (failedPhase == Phase.PARSING) {
+            io.translatetube.local.yt.YouTubeParseFailurePolicy.toUserFacing(error)
+        } else {
+            error
+        }
+        return described.message ?: fallback
+    }
+
+    private suspend fun runPipeline(
+        key: String,
+        pipelineGeneration: Long,
+        requestedVideoId: String?,
+        localUri: Uri?,
+        requestedLocalMediaIdentityKey: String? = null,
+        resumeState: PlayerUiState? = null,
+        sourceImportedLines: List<SubLine>? = null,
+        requestedRemoteMediaUrl: String? = null,
+        requestedRemoteMediaTitle: String = "",
+        requestedRemoteMediaReferrer: String = "",
+        requestedRemoteMediaCookie: String? = null,
+        reuseMountedMedia: Boolean = false,
+        restoreCompletedSnapshot: Boolean = false,
+        forceRegenerateDubbing: Boolean = false,
+        forceRegenerateFromStage: EngineRestartStage? = null,
+        reuseMatchingDubbingCache: Boolean = false,
+        forceYouTubeSubtitleRefresh: Boolean = false,
+    ) {
+        // The NewPipe path remains preferred. If YouTube explicitly blocks anonymous watch access,
+        // switch this session to the existing yt-dlp media URL pipeline and continue with audio ASR.
+        var videoId = requestedVideoId
+        var remoteMediaUrl = requestedRemoteMediaUrl
+        var remoteMediaTitle = requestedRemoteMediaTitle
+        var remoteMediaReferrer = requestedRemoteMediaReferrer
+        var remoteMediaCookie = requestedRemoteMediaCookie
+
+        // Restarting playback at 0 and forcing new PCM are separate decisions. Engine/voice changes
+        // may reuse only a cache with the exact active synthesis identity; imported external
+        // translations still force fresh PCM even when their text happens to match an old cache.
+        var restartPlaybackFromBeginningForThisRun = forceRegenerateDubbing
+        var forceFreshPcmSynthesisForThisRun =
+            DubbingCacheFreshnessPolicy.shouldForceFreshSynthesis(
+                forceRegenerateDubbing = forceRegenerateDubbing ||
+                    EngineRestartStagePolicy.requiresFreshDubbing(forceRegenerateFromStage),
+                reuseMatchingDubbingCache = reuseMatchingDubbingCache,
+            )
+        val forceFreshAsrTranscriptForThisRun =
+            EngineRestartStagePolicy.requiresFreshTranscription(forceRegenerateFromStage) &&
+                !forceYouTubeSubtitleRefresh &&
+                sourceImportedLines.isNullOrEmpty()
+        val forceFreshTranslationForThisRun =
+            EngineRestartStagePolicy.requiresFreshTranslation(forceRegenerateFromStage)
+        fun mustRegenerateTranslation(): Boolean =
+            forceFreshTranslationForThisRun ||
+                forceFreshTranslationPipelineGeneration == pipelineGeneration
+        // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
+        var transientAudio: File? = null
+        var transientPcmFile: AudioExtract.PcmFile? = null
+        // Keep local PCM protected from concurrent pruning while the current ASR pass reads it.
+        var leasedLocalPcmCachePath: String? = null
+        var transientCloudUploadAudio: File? = null
+        // True once the pipeline reaches the dubbing-engine step. Only a failure from that point
+        // on may be blamed on the text-to-speech setup; an earlier parse/download/transcribe/
+        // translate failure used to show the same "check your TTS service" banner.
+        var dubbingStageEntered = false
+        try {
+            awaitProcessingResumed(key, pipelineGeneration)
+            awaitRetiredDubbingEngines()
+            awaitProcessingResumed(key, pipelineGeneration)
+            var meta = VideoEntity(
+                key = key, videoId = videoId, localUri = localUri?.toString() ?: remoteMediaUrl,
+                title = resumeState?.title.orEmpty(), channel = resumeState?.channel.orEmpty(),
+                durationSec = (resumeState?.durationMs ?: 0L) / 1000,
+                thumbUrl = resumeState?.thumbUrl,
+                sourceType = if (videoId != null) SourceType.YOUTUBE else SourceType.LOCAL,
+                addedAt = System.currentTimeMillis(), lastPlayedAt = System.currentTimeMillis(),
+            )
+
+            // ---- 1. 元信息 ----
+            var srcLang = resumeState?.sourceLang.orEmpty()
+            suspend fun resolveMetadataStage() {
+            if (restoreCompletedSnapshot && resumeState != null) {
+                // A complete snapshot is already translated and synthesized. Keep the playback
+                // page in READY while the media source and cached dubbing queue are reattached.
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(phase = Phase.READY, progress = "", sourceLang = srcLang, error = null)
+                }
+            } else if (resumeState != null) {
+                // Keep current metadata for selective restarts. An empty snapshot means the ASR
+                // stage is rerunning; populated captions resume at translation only when their
+                // Chinese text is missing, otherwise go straight to dubbing.
+                val restartingTranscription = resumeState.lines.isEmpty()
+                val restartingTranslation = !restartingTranscription &&
+                    !isChineseLanguage(srcLang) &&
+                    resumeState.lines.any { needsSubtitleTranslation(it, srcLang) }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = when {
+                            restartingTranscription -> Phase.PARSING
+                            restartingTranslation -> Phase.TRANSLATING
+                            else -> Phase.SYNTHESIZING
+                        },
+                        progress = when {
+                            restartingTranscription -> "复用已有视频信息，准备重新转写…"
+                            restartingTranslation -> "恢复已获取的原文字幕，继续翻译…"
+                            else -> "原文与中文字幕已就绪，正在准备配音…"
+                        },
+                        sourceLang = srcLang,
+                        error = null,
+                    )
+                }
+            } else if (videoId != null) {
+                awaitProcessingResumed(key, pipelineGeneration)
+                val requestedId = requireNotNull(videoId)
+                try {
+                    val m = NewPipeRepo.resolve(requestedId)
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000)
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (extractorError: Exception) {
+                    if (!io.translatetube.local.yt.YouTubeAccessFallbackPolicy.shouldTryYtDlp(extractorError)) {
+                        // Private / unavailable / offline: say so in plain Chinese instead of
+                        // showing the extractor's English text or just a host name.
+                        throw io.translatetube.local.yt.YouTubeParseFailurePolicy.toUserFacing(extractorError)
+                    }
+
+                    val watchUrl = "https://www.youtube.com/watch?v=$requestedId"
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            progress = "YouTube 限制匿名访问，正在尝试 yt-dlp 备用解析…",
+                            error = null,
+                        )
+                    }
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    val cookieHeader = runCatching {
+                        android.webkit.CookieManager.getInstance().getCookie(watchUrl)
+                    }.getOrNull()
+                    val fallback = try {
+                        io.translatetube.local.yt.YtDlpRepo.resolve(
+                            this@PlaybackService,
+                            watchUrl,
+                            cookieHeader,
+                        )
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (fallbackError: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "YouTube anonymous-access fallback via yt-dlp failed",
+                            fallbackError,
+                        )
+                        throw IllegalStateException(
+                            "YouTube 拒绝当前网络的匿名访问，已自动尝试 yt-dlp 备用解析但仍失败。" +
+                                "请稍后重试，或在应用网页视频页打开 YouTube 并登录后再解析。" +
+                                "备用解析错误：${fallbackError.message ?: fallbackError.javaClass.simpleName}",
+                            fallbackError,
+                        ).also { it.addSuppressed(extractorError) }
+                    }
+                    awaitProcessingResumed(key, pipelineGeneration)
+
+                    // From this point on, use the web-media branch: stream the resolved URL for
+                    // playback and extract/cache its audio for ASR instead of calling NewPipe again.
+                    videoId = null
+                    this.videoId = null
+                    remoteMediaUrl = fallback.mediaUrl
+                    remoteMediaTitle = fallback.title
+                    remoteMediaReferrer = fallback.referrer
+                    remoteMediaCookie = fallback.cookie.takeIf { it.isNotBlank() }
+                    this.remoteMediaUrl = remoteMediaUrl
+                    this.remoteMediaTitle = remoteMediaTitle
+                    this.remoteMediaReferrer = remoteMediaReferrer
+                    this.remoteMediaCookie = remoteMediaCookie
+                    this.remoteMediaUserAgent = io.translatetube.local.yt.YtDlpRepo.BROWSER_UA
+
+                    val thumbnail = "https://i.ytimg.com/vi/$requestedId/hqdefault.jpg"
+                    meta = meta.copy(
+                        title = fallback.title,
+                        channel = "",
+                        durationSec = fallback.durationSec.toLong(),
+                        thumbUrl = thumbnail,
+                        localUri = fallback.mediaUrl,
+                        sourceType = SourceType.YOUTUBE,
+                    )
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            title = fallback.title,
+                            channel = "",
+                            thumbUrl = thumbnail,
+                            durationMs = fallback.durationSec * 1000L,
+                            processingFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                            progress = "备用解析成功，正在继续处理视频音频…",
+                            error = null,
+                        )
+                    }
+                }
+            } else if (remoteMediaUrl != null && resumeState == null) {
+                val remoteUri = Uri.parse(remoteMediaUrl)
+                val title = remoteMediaTitle.takeIf { it.isNotBlank() }
+                    ?: remoteUri.lastPathSegment?.substringBefore('?')?.takeIf { it.isNotBlank() }
+                    ?: "网页视频"
+                meta = meta.copy(title = title, localUri = remoteMediaUrl)
+                updateUiForSession(key, pipelineGeneration) { it.copy(title = title, durationMs = 0L) }
+            } else if (resumeState == null) {
+                localUri?.let { u ->
+                    // MetadataRetriever can perform blocking container I/O. Keep it off the main
+                    // dispatcher so opening a large/slow local file cannot freeze playback UI.
+                    val (title, dur) = withContext(Dispatchers.IO) {
+                        var resolvedTitle = u.lastPathSegment ?: "本地视频"
+                        var durationMs = 0L
+                        var mmr: android.media.MediaMetadataRetriever? = null
+                        try {
+                            mmr = android.media.MediaMetadataRetriever()
+                            mmr.setDataSource(this@PlaybackService, u)
+                            resolvedTitle = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
+                                ?.takeIf { it.isNotBlank() } ?: resolvedTitle
+                            durationMs = (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                ?: "0").toLongOrNull() ?: 0L
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Some SAF providers do not expose retrievable metadata; keep the URI name.
+                        } finally {
+                            // A bad URI/unsupported container can throw before metadata is read.
+                            runCatching { mmr?.release() }
+                        }
+                        resolvedTitle to durationMs
+                    }
+                    meta = meta.copy(title = title, durationSec = dur / 1000)
+                    updateUiForSession(key, pipelineGeneration) { it.copy(title = title, durationMs = dur) }
+                }
+            }
+            }
+
+            resolveMetadataStage()
+
+            // 解析视频时先列出所有字幕轨。下载是可选操作，不影响自动翻译/配音流程。
+            if (videoId != null && (resumeState == null || resumeState.availableSubtitleTracks.isEmpty())) {
+                try {
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(progress = "正在查找视频包含的全部字幕轨…")
+                    }
+                    val tracks = NewPipeRepo.subtitleTracks(requireNotNull(videoId))
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            availableSubtitleTracks = tracks,
+                            subtitleTrackStatus = if (tracks.isEmpty()) {
+                                "未找到可下载的字幕轨；仍可导入自己的字幕文件。"
+                            } else {
+                                "找到 " + tracks.size + " 个字幕轨。下载是可选的，不下载也会继续处理视频。"
+                            },
+                        )
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.w("PlaybackService", "Could not list subtitle tracks", e)
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            availableSubtitleTracks = emptyList(),
+                            subtitleTrackStatus = "暂时无法读取字幕列表，可稍后重试或导入本地字幕。",
+                        )
+                    }
+                }
+            }
+
+            // ---- 2. 字幕行 ----
+            val db = AppDatabase.get(this)
+            var selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+            // Keep signed media URLs out of subtitle-cache keys. The playback/history identity
+            // remains unchanged so the original page can still be resumed from local history.
+            // Match the session isolation used by the downloaded-audio cache. A signed URL can
+            // serve different private media to different cookie sessions or page origins.
+            val cacheKeyBase = when {
+                remoteMediaUrl != null ->
+                    MediaUrlCacheIdentity.remoteSessionKey(requireNotNull(remoteMediaUrl), remoteMediaReferrer, remoteMediaCookie)
+                localUri != null ->
+                    requestedLocalMediaIdentityKey
+                        ?: LocalMediaCacheIdentity.identityKey(this@PlaybackService, localUri)
+                else -> key
+            }
+            val providerFingerprint = translationProviderFingerprint(selectedTranslationId)
+            val settingsPrefs = getSharedPreferences("settings", MODE_PRIVATE)
+            val storedAsrProvider = settingsPrefs.getString("asr_provider", "local") ?: "local"
+            val asrProvider = storedAsrProvider.takeIf {
+                it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
+            } ?: "local"
+            val allowCloudAsrResubmission = if (asrProvider == "elevenlabs" || asrProvider == "cartesia") {
+                cloudAsrResubmissionConsentKeys.remove(key)
+            } else false
+            val localAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this)
+            val transcriptionEngineDisplayName = when (asrProvider) {
+                "local" -> "本地 " + io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
+                "elevenlabs" -> "ElevenLabs 云端转写"
+                "cartesia" -> "Cartesia 云端转写"
+                "kawa" -> "Kawa 云端转写"
+                else -> "云端转写"
+            }
+            // A transcript is reusable for the same selected recognizer. API credentials,
+            // endpoint, language hints and decoder tuning are not engine switches.
+            val asrCacheIdentity = AsrTranscriptCacheIdentity.key(
+                provider = asrProvider,
+                localModelId = localAsrModelId,
+            )
+            val asrEngineCachePrefix = AsrTranscriptCacheIdentity.enginePrefix(
+                provider = asrProvider,
+                localModelId = localAsrModelId,
+            )
+            val baseTranslationCacheKey = TranslationCacheIdentity.forProvider(
+                baseKey = cacheKeyBase,
+                activeId = selectedTranslationId,
+                importedLines = sourceImportedLines,
+                previousKey = resumeState?.translationCacheKey,
+                providerFingerprint = providerFingerprint,
+            )
+            // An ASR provider switch must never reuse captions/translations generated by a different
+            // recognizer. Keep imported subtitle tasks independent of ASR settings.
+            val youtubeSubtitleMode = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeFromPreference(
+                settingsPrefs.getString(
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                ),
+            )
+            // Use the same source-aware key policy during initial lookup and configuration refresh.
+            // YouTube caption rows are validated separately; web/local ASR keys include the full ASR identity.
+            // When opening a new YouTube video, the source type is not known until we inspect
+            // caption caches/discovery. Use the ASR-bound key provisionally and defer its lookup
+            // until resolvedProcessingFlow is known; otherwise an ASR-generated translation can
+            // be reused as if it came from YouTube captions.
+            val initialYouTubeCaptionSource = resumeState?.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+            val baseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
+                baseTranslationCacheKey = baseTranslationCacheKey,
+                hasImportedLines = !sourceImportedLines.isNullOrEmpty(),
+                isYouTubeCaptionSource = initialYouTubeCaptionSource,
+                asrCacheIdentity = asrCacheIdentity,
+            )
+            var translationCacheKey = if (
+                videoId != null && sourceImportedLines.isNullOrEmpty() && initialYouTubeCaptionSource
+            ) {
+                "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+            } else {
+                baseModeAwareTranslationCacheKey
+            }
+            updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
+            // Downloaded captions live in their own mode-specific cache. These keys are for ASR
+            // transcripts, so every ASR-based source cache must use the same full config identity.
+            // ASR transcripts are produced from the audio, so caption-language preference must
+            // not split their cache. Keep old mode-scoped keys available for one-time migration.
+            val legacyYouTubeAsrSourceCacheKeys = if (videoId != null) {
+                YouTubeAsrSourceCacheIdentity.legacyKeys(
+                    videoKey = key,
+                    legacySourceCacheVersions = 1..io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                    subtitleModes = io.translatetube.local.yt.YouTubeSubtitleLanguageMode.values()
+                        .map { it.preferenceValue },
+                    asrCacheIdentity = asrCacheIdentity,
+                )
+            } else emptyList()
+            val sourceSubtitleCacheKey = when {
+                videoId != null ->
+                    YouTubeAsrSourceCacheIdentity.key(
+                        videoKey = key,
+                        asrCacheIdentity = asrCacheIdentity,
+                    )
+                remoteMediaUrl != null ->
+                    "$cacheKeyBase|source|remote-asr-$asrCacheIdentity-timed-v5"
+                localUri != null ->
+                    "$cacheKeyBase|source|local-asr-$asrCacheIdentity-timed-v5"
+                else -> "$key|source|asr-$asrCacheIdentity-timed-v5"
+            }
+            // Search legacy source-timeline keys by the selected engine prefix. Older versions
+            // also embedded language, credentials and decoder fingerprints in those keys.
+            val asrSourceCacheLookupPrefixes = when {
+                videoId != null -> buildList {
+                    add(
+                        "$key|source|youtube-asr-v${YouTubeAsrSourceCacheIdentity.CACHE_VERSION}|" +
+                            "asr-$asrEngineCachePrefix"
+                    )
+                    (1..io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION).forEach { version ->
+                        if (version != YouTubeAsrSourceCacheIdentity.CACHE_VERSION) {
+                            add("$key|source|youtube-asr-v$version|$asrEngineCachePrefix")
+                        }
+                        io.translatetube.local.yt.YouTubeSubtitleLanguageMode.values().forEach { mode ->
+                            add("$key|source|youtube-v$version-subtitle-${mode.preferenceValue}|$asrEngineCachePrefix")
+                        }
+                    }
+                }.distinct()
+                remoteMediaUrl != null ->
+                    listOf("$cacheKeyBase|source|remote-asr-$asrEngineCachePrefix")
+                localUri != null ->
+                    listOf("$cacheKeyBase|source|local-asr-$asrEngineCachePrefix")
+                else ->
+                    listOf("$key|source|asr-$asrEngineCachePrefix")
+            }
+            // Keep downloaded YouTube caption tracks separate from ASR transcripts. Fallback
+            // captions may legitimately differ from the spoken language, while ASR caches must
+            // still match the original audio language during validation.
+            // Caption files are source data, not ASR output. Their identity must not change with ASR.
+            val youtubeCaptionCachePrefix = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                YouTubeCaptionCacheIdentity.prefix(
+                    videoKey = key,
+                    sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                    subtitleMode = youtubeSubtitleMode.preferenceValue,
+                )
+            } else {
+                null
+            }
+            val youtubeCaptionCacheKey = youtubeCaptionCachePrefix?.let {
+                YouTubeCaptionCacheIdentity.key(
+                    videoKey = key,
+                    sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                    subtitleMode = youtubeSubtitleMode.preferenceValue,
+                )
+            }
+            // 首次处理显示字幕读取阶段；完整成功快照恢复时不再展示解析、转写和翻译阶段。
+            if (restoreCompletedSnapshot) {
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.READY, progress = "") }
+            } else if (resumeState == null || resumeState.lines.isEmpty()) {
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…")
+                }
+            } else {
+                val resumeNeedsTranslation = !isChineseLanguage(resumeState.sourceLang) &&
+                    resumeState.lines.any { needsSubtitleTranslation(it, resumeState.sourceLang) }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = if (resumeNeedsTranslation) Phase.TRANSLATING else Phase.SYNTHESIZING,
+                        progress = if (resumeNeedsTranslation) {
+                            "继续翻译尚未完成的字幕…"
+                        } else {
+                            "原文与中文字幕已就绪，正在准备配音…"
+                        },
+                    )
+                }
+            }
+            // YouTube caption and ASR flows share a video ID but must not share translation cache
+            // entries. Defer the YouTube lookup until the source cache/discovery identifies the flow.
+            val deferYouTubeTranslationCacheLookup =
+                resumeState == null && videoId != null && sourceImportedLines.isNullOrEmpty()
+            if (mustRegenerateTranslation()) {
+                runCatching { db.subtitleCacheDao().delete(translationCacheKey) }
+            }
+            var storedTranslationCache = if (
+                resumeState == null &&
+                !deferYouTubeTranslationCacheLookup &&
+                !mustRegenerateTranslation()
+            ) {
+                db.subtitleCacheDao().get(translationCacheKey)
+            } else null
+            // Older builds may have persisted a progress placeholder (for example, "正在翻译")
+            // as every row's Chinese text. Never trust such cache entries: retranslate from the
+            // cached original subtitles instead of displaying the placeholder as completed output.
+            var cached = if (manualTranslationRequestedKeys.contains(key)) {
+                null
+            } else {
+                storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+            }
+            if (storedTranslationCache != null && cached == null) {
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring invalid/stale translation cache for $key; will translate the source subtitles again"
+                )
+                db.subtitleCacheDao().delete(translationCacheKey)
+            }
+            var sourceCachedKey: String? = null
+            var sourceFetchAttempted = false
+            var fetchedSourceCacheResult: Pair<List<SubLine>, String>? = null
+            suspend fun fetchAndCacheSourceLines(): Pair<List<SubLine>, String>? {
+                if (sourceFetchAttempted) return fetchedSourceCacheResult
+                sourceFetchAttempted = true
+                val id = videoId ?: return null
+                awaitProcessingResumed(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
+                val fetched = NewPipeRepo.subtitles(id) { fallbackMessage ->
+                    // Surface every fallback to a lower-priority subtitle language in the active
+                    // five-stage UI so the user knows why the selected caption differs.
+                    ensureCurrentSession(key, pipelineGeneration)
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(phase = Phase.PARSING, progress = fallbackMessage)
+                    }
+                } ?: return null
+                awaitProcessingResumed(key, pipelineGeneration)
+                val lang = fetched.second.takeIf { it.isNotBlank() } ?: "auto"
+                val fetchedLines = fetched.first
+                    .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+                    .mapIndexed { index, line -> line.copy(index = index) }
+                if (fetchedLines.isEmpty()) return null
+
+                val sourceArr = org.json.JSONArray()
+                for ((index, line) in fetchedLines.withIndex()) {
+                    if ((index and 0xff) == 0) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    }
+                    sourceArr.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                    )
+                }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                ensureCurrentSession(key, pipelineGeneration)
+                val cacheKey = youtubeCaptionCacheKey ?: sourceSubtitleCacheKey
+                db.subtitleCacheDao().put(
+                    io.translatetube.local.data.SubtitleCacheEntity(
+                        cacheKey,
+                        lang,
+                        sourceArr.toString(),
+                        System.currentTimeMillis(),
+                        videoKey = key,
+                    )
+                )
+                sourceCachedKey = cacheKey
+                // A valid caption track supersedes any interrupted ASR transcript for this video.
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v2")
+                return (fetchedLines to lang).also { fetchedSourceCacheResult = it }
+            }
+
+            suspend fun loadCachedAsrSourceLines(): io.translatetube.local.data.SubtitleCacheEntity? {
+                val current = db.subtitleCacheDao().get(sourceSubtitleCacheKey)
+                if (current != null) {
+                    sourceCachedKey = sourceSubtitleCacheKey
+                    return current
+                }
+
+                // Keep exact YouTube migration keys as a fast path, then search all legacy key
+                // variants for this same engine. This covers YouTube, webpage and local media.
+                if (legacyYouTubeAsrSourceCacheKeys.isNotEmpty()) {
+                    val latestLegacy = db.subtitleCacheDao()
+                        .getLatestByCacheKeys(legacyYouTubeAsrSourceCacheKeys)
+                    if (latestLegacy != null) {
+                        sourceCachedKey = latestLegacy.cacheKey
+                        return latestLegacy
+                    }
+                }
+
+                var latestCompatible: io.translatetube.local.data.SubtitleCacheEntity? = null
+                for (prefix in asrSourceCacheLookupPrefixes) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    val candidate = db.subtitleCacheDao().getLatestCompletedByCacheKeyPrefix(prefix)
+                    if (candidate != null &&
+                        AsrTranscriptCacheLookupPolicy.isCompletedSourceTranscriptCacheKey(
+                            cacheKey = candidate.cacheKey,
+                            keyPrefix = prefix,
+                        ) &&
+                        (latestCompatible == null || candidate.updatedAt > latestCompatible.updatedAt)
+                    ) {
+                        latestCompatible = candidate
+                    }
+                }
+                latestCompatible?.let { sourceCachedKey = it.cacheKey }
+                return latestCompatible
+            }
+
+            if (forceFreshAsrTranscriptForThisRun) {
+                runCatching { db.subtitleCacheDao().delete(sourceSubtitleCacheKey) }
+            }
+            var sourceCached = if (
+                !forceFreshAsrTranscriptForThisRun &&
+                    resumeState == null &&
+                    (videoId != null || localUri != null || remoteMediaUrl != null) &&
+                    sourceImportedLines.isNullOrEmpty()
+            ) {
+                val captionCache = youtubeCaptionCacheKey?.let { db.subtitleCacheDao().get(it) }
+                    ?: youtubeCaptionCachePrefix?.let {
+                        // Reuse v1 caption rows saved below the old ASR-specific key.
+                        db.subtitleCacheDao().getLatestYouTubeCaptionCache(it)
+                    }
+                if (forceYouTubeSubtitleRefresh && videoId != null) {
+                    // A changed subtitle preference must actually re-run caption discovery.
+                    // Only fall back to the mode-specific cached captions if discovery returns no
+                    // usable track; then reuse the ASR cache as the final fallback.
+                    if (fetchAndCacheSourceLines() != null) {
+                        null
+                    } else if (captionCache != null) {
+                        sourceCachedKey = captionCache.cacheKey
+                        captionCache
+                    } else {
+                        loadCachedAsrSourceLines()
+                    }
+                } else if (captionCache != null) {
+                    sourceCachedKey = captionCache.cacheKey
+                    captionCache
+                } else {
+                    loadCachedAsrSourceLines()
+                }
+            } else null
+            var restoredSourceLines: List<SubLine>? = sourceCached?.let { source ->
+                runCatching {
+                    val sourceArr = org.json.JSONArray(source.linesJson)
+                    val restored = ArrayList<SubLine>(sourceArr.length())
+                    for (i in 0 until sourceArr.length()) {
+                        if ((i and 0xff) == 0) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        }
+                        val o = sourceArr.getJSONObject(i)
+                        restored += SubLine(i, o.getLong("s"), o.getLong("e"), o.getString("t"))
+                    }
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    restored.takeIf { rows ->
+                        SubtitleCacheValidationPolicy.hasValidTimeline(
+                            rows.map { row -> Triple(row.startMs, row.endMs, row.text) }
+                        )
+                    }
+                }.getOrNull()
+            } ?: fetchedSourceCacheResult?.first
+            var restoredSourceLang: String? = when {
+                sourceCached != null && restoredSourceLines != null ->
+                    sourceCached.srcLang.takeIf { it.isNotBlank() }
+                        ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
+                            restoredSourceLines.asSequence().map { cue -> cue.text }.asIterable()
+                        )
+                fetchedSourceCacheResult != null -> fetchedSourceCacheResult?.second
+                else -> null
+            }
+
+            // Caption caches and ASR transcript caches use separate keys: a selected fallback
+            // caption may differ from the original audio language, while a transcript must match
+            // the spoken language. Validate each cache according to its actual origin.
+            if (videoId != null && sourceCached != null && restoredSourceLines != null) {
+                val originalAudioLanguage = try {
+                    io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(requireNotNull(videoId))
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Could not validate cached YouTube source language; preserving cache",
+                        failure,
+                    )
+                    null
+                }
+                val detectedCacheLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
+                    .detectFromCues(restoredSourceLines.asSequence().map { cue -> cue.text }.asIterable())
+                val detectedCacheLanguageCode =
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(detectedCacheLanguage)
+                val cachedContentLanguage = detectedCacheLanguageCode
+                    ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(sourceCached.srcLang)
+                val expectedContentLanguage =
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(originalAudioLanguage)
+                val isCachedCaption =
+                    YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey)
+                if (
+                    YouTubeAsrSourceCacheValidationPolicy.shouldInvalidate(
+                        expectedSourceLanguage = expectedContentLanguage,
+                        detectedTextLanguage = detectedCacheLanguageCode,
+                        savedSourceLanguage = sourceCached.srcLang,
+                        isCaptionCache = isCachedCaption,
+                    )
+                ) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Discarding cached YouTube source text because its language does not match original audio " +
+                            "(audio=$expectedContentLanguage, cache=$cachedContentLanguage)",
+                    )
+                    db.subtitleCacheDao().delete(sourceCachedKey ?: sourceSubtitleCacheKey)
+                    sourceCached = null
+                    sourceCachedKey = null
+                    restoredSourceLines = null
+                    restoredSourceLang = null
+                    if (cached != null) {
+                        db.subtitleCacheDao().delete(translationCacheKey)
+                        cached = null
+                    }
+                } else {
+                    // Use the validated text language when it is stronger than cached metadata.
+                    // This also prevents a temporary failure to read the audio-language hint from
+                    // carrying a stale "auto"/old language label into the translation stage.
+                    YouTubeAsrSourceCacheValidationPolicy.resolvedCachedLanguage(
+                        expectedSourceLanguage = expectedContentLanguage,
+                        detectedTextLanguage = detectedCacheLanguageCode,
+                        savedSourceLanguage = sourceCached.srcLang,
+                        isCaptionCache = isCachedCaption,
+                    )?.let { restoredSourceLang = it }
+                }
+            }
+
+            val loadedSourceCacheKey = sourceCachedKey
+            val loadedCacheIsCompatibleAsr = loadedSourceCacheKey != null && (
+                loadedSourceCacheKey == sourceSubtitleCacheKey ||
+                    legacyYouTubeAsrSourceCacheKeys.contains(loadedSourceCacheKey) ||
+                    asrSourceCacheLookupPrefixes.any { loadedSourceCacheKey.startsWith(it) }
+                )
+            val loadedCacheIsCaption = videoId != null &&
+                YouTubeCaptionCacheIdentity.isCaptionCacheKey(loadedSourceCacheKey)
+            if (
+                sourceCached != null &&
+                restoredSourceLines != null &&
+                loadedSourceCacheKey != null &&
+                loadedSourceCacheKey != sourceSubtitleCacheKey &&
+                loadedCacheIsCompatibleAsr &&
+                !loadedCacheIsCaption
+            ) {
+                // The source rows have passed JSON/timeline validation (and YouTube language
+                // validation where applicable). Promote the old same-engine cache to the stable key.
+                val migrated = sourceCached.copy(
+                    cacheKey = sourceSubtitleCacheKey,
+                    updatedAt = System.currentTimeMillis(),
+                    videoKey = key,
+                )
+                val migrationSucceeded = runCatching {
+                    db.subtitleCacheDao().put(migrated)
+                }.isSuccess
+                if (migrationSucceeded) {
+                    db.subtitleCacheDao().delete(loadedSourceCacheKey)
+                    db.subtitleCacheDao().deleteByCacheKeyPrefix(
+                        "$loadedSourceCacheKey|asr-progress-v2",
+                    )
+                    sourceCached = migrated
+                    sourceCachedKey = sourceSubtitleCacheKey
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "已复用并升级同一转写引擎的原文字幕缓存",
+                        diagnosticContext = mapOf(
+                            "视频来源" to when {
+                                videoId != null -> "YouTube"
+                                remoteMediaUrl != null -> "网页视频"
+                                localUri != null -> "本地视频"
+                                else -> "其他"
+                            },
+                            "原文字幕行数" to restoredSourceLines.orEmpty().size.toString(),
+                            "恢复策略" to "不重新语音转写",
+                        ),
+                    )
+                }
+            }
+
+            if (sourceCached != null && restoredSourceLines != null) {
+                // The completed source cache is authoritative if a crash happened between its
+                // write and deletion of the partial-ASR checkpoint.
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v2")
+            }
+            if (sourceCached != null && restoredSourceLines == null) {
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring malformed source subtitle cache for $videoId; fetching subtitles/ASR again"
+                )
+                db.subtitleCacheDao().delete(sourceCachedKey ?: sourceSubtitleCacheKey)
+                sourceCachedKey = null
+                // A legacy video-level translation cache cannot be proven to belong to this source.
+                if (sourceImportedLines.isNullOrEmpty()) {
+                    if (cached != null) db.subtitleCacheDao().delete(translationCacheKey)
+                    cached = null
+                }
+            } else if (
+                cached != null &&
+                sourceImportedLines.isNullOrEmpty() &&
+                restoredSourceLines != null &&
+                !translationCacheMatchesSource(cached.linesJson, restoredSourceLines)
+            ) {
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring translation cache for $videoId because it belongs to different source subtitle cues"
+                )
+                db.subtitleCacheDao().delete(translationCacheKey)
+                cached = null
+            } else if (
+                cached != null &&
+                sourceImportedLines.isNullOrEmpty() &&
+                videoId != null &&
+                sourceCached == null
+            ) {
+                // Old versions may have stored an imported subtitle translation under this generic
+                // video key. Fetch the source once to validate it before trusting that legacy cache.
+                val fetched = fetchAndCacheSourceLines()
+                if (fetched == null) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Cannot validate legacy translation cache for $videoId without source cues"
+                    )
+                    db.subtitleCacheDao().delete(translationCacheKey)
+                    cached = null
+                } else {
+                    restoredSourceLines = fetched.first
+                    restoredSourceLang = fetched.second
+                    if (!translationCacheMatchesSource(cached.linesJson, fetched.first)) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Discarding legacy translation cache for $videoId; source subtitle cues do not match"
+                        )
+                        db.subtitleCacheDao().delete(translationCacheKey)
+                        cached = null
+                    }
+                }
+            }
+
+            if (
+                cached != null &&
+                SubtitleCacheRestorePolicy.shouldInvalidateUnverifiedMediaTranslationCache(
+                    hasImportedSource = !sourceImportedLines.isNullOrEmpty(),
+                    isYouTube = videoId != null,
+                    hasMediaSource = localUri != null || remoteMediaUrl != null,
+                    hasValidatedSourceTimeline = restoredSourceLines != null,
+                )
+            ) {
+                // Local/web translation caches are only safe when the matching original timeline
+                // is still available. Without it, the media at the same URI/URL may have changed
+                // or its source cache may have been evicted; re-run ASR instead of dubbing stale text.
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring local/web translation cache because the source timeline is unavailable",
+                )
+                db.subtitleCacheDao().delete(translationCacheKey)
+                cached = null
+            }
+
+            if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
+            var sourceTranscriptProducedInThisRun = false
+            var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
+            if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
+                (videoId != null || localUri != null || remoteMediaUrl != null)) {
+                if (restoredSourceLines != null) {
+                    lines = restoredSourceLines
+                    srcLang = restoredSourceLang
+                        ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
+                            restoredSourceLines.asSequence().map { it.text }.asIterable()
+                        )
+                    android.util.Log.i(
+                        "PlaybackService",
+                        "Using cached/validated source subtitles for $key (${restoredSourceLines.size} cues)"
+                    )
+                } else {
+                    fetchAndCacheSourceLines()?.let { (fetchedLines, lang) ->
+                        restoredSourceLines = fetchedLines
+                        restoredSourceLang = lang
+                        lines = fetchedLines
+                        srcLang = lang
+                    }
+                }
+            }
+
+            val resolvedProcessingFlow = when {
+                resumeState != null -> resumeState.processingFlow
+                !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
+                videoId != null && restoredSourceLines != null &&
+                    YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey) ->
+                    ProcessingFlow.YOUTUBE_SUBTITLES
+                videoId != null && restoredSourceLines != null &&
+                    (sourceCachedKey == sourceSubtitleCacheKey ||
+                        legacyYouTubeAsrSourceCacheKeys.contains(sourceCachedKey) ||
+                        sourceCachedKey?.let { cachedKey ->
+                            asrSourceCacheLookupPrefixes.any { prefix -> cachedKey.startsWith(prefix) }
+                        } == true) ->
+                    ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+                videoId != null && restoredSourceLines != null ->
+                    ReadyHistorySessionConfigStore.savedProcessingFlow(this@PlaybackService, key)
+                        ?.takeIf { it == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION || it == ProcessingFlow.YOUTUBE_SUBTITLES }
+                        ?: ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+                videoId != null && lines == null && cached == null -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+                videoId != null -> ProcessingFlow.YOUTUBE_SUBTITLES
+                remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
+                localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
+                else -> ProcessingFlow.AUTO
+            }
+            updateUiForSession(key, pipelineGeneration) { it.copy(processingFlow = resolvedProcessingFlow) }
+
+            if (deferYouTubeTranslationCacheLookup) {
+                val isResolvedYouTubeCaptionSource =
+                    resolvedProcessingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+                val resolvedBaseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
+                    baseTranslationCacheKey = baseTranslationCacheKey,
+                    hasImportedLines = false,
+                    isYouTubeCaptionSource = isResolvedYouTubeCaptionSource,
+                    asrCacheIdentity = asrCacheIdentity,
+                )
+                val resolvedModeSuffix = if (isResolvedYouTubeCaptionSource) {
+                    "|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+                } else {
+                    ""
+                }
+                translationCacheKey = resolvedBaseModeAwareTranslationCacheKey + resolvedModeSuffix
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(translationCacheKey = translationCacheKey)
+                }
+                if (mustRegenerateTranslation()) {
+                    runCatching { db.subtitleCacheDao().delete(translationCacheKey) }
+                    storedTranslationCache = null
+                    cached = null
+                } else {
+                    storedTranslationCache = db.subtitleCacheDao().get(translationCacheKey)
+                    cached = if (manualTranslationRequestedKeys.contains(key)) {
+                        null
+                    } else {
+                        storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                    }
+                }
+                if (storedTranslationCache != null && cached == null) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Ignoring invalid/stale YouTube translation cache for $key; will translate the source subtitles again",
+                    )
+                    db.subtitleCacheDao().delete(translationCacheKey)
+                }
+            }
+
+            // The stable ASR engine key supersedes older translation-cache keys that also
+            // contained language/credential/decoder settings. Reuse an old translation only after
+            // its original cue timeline is matched against the validated source transcript.
+            val canRestoreLegacyAsrTranslation =
+                !mustRegenerateTranslation() &&
+                    cached == null &&
+                    !manualTranslationRequestedKeys.contains(key) &&
+                    sourceImportedLines.isNullOrEmpty() &&
+                    !restoredSourceLines.isNullOrEmpty() &&
+                    resolvedProcessingFlow in setOf(
+                        ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                        ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                        ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                    )
+            if (canRestoreLegacyAsrTranslation) {
+                val legacyTranslationPrefix = "$baseTranslationCacheKey|asr-$asrEngineCachePrefix"
+                val legacyTranslation = db.subtitleCacheDao()
+                    .getLatestCompletedByCacheKeyPrefix(legacyTranslationPrefix)
+                    ?.takeIf { entry ->
+                        isUsableTranslationCache(entry.linesJson) &&
+                            translationCacheMatchesSource(entry.linesJson, restoredSourceLines.orEmpty())
+                    }
+                if (legacyTranslation != null) {
+                    val migratedTranslation = legacyTranslation.copy(
+                        cacheKey = translationCacheKey,
+                        updatedAt = System.currentTimeMillis(),
+                        videoKey = key,
+                    )
+                    db.subtitleCacheDao().put(migratedTranslation)
+                    storedTranslationCache = migratedTranslation
+                    cached = migratedTranslation
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "已复用旧版同一转写引擎的字幕翻译缓存",
+                        diagnosticContext = mapOf(
+                            "原文字幕行数" to restoredSourceLines.orEmpty().size.toString(),
+                            "恢复策略" to "跳过重复翻译",
+                        ),
+                    )
+                }
+            }
+
+            suspend fun runTranscriptionStage(): Boolean {
+                val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
+                val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
+                val kawaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_kawa_language", "auto") ?: "auto"
+                val youtubeAudioLanguage = if (videoId != null) {
+                    try {
+                        io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(requireNotNull(videoId))
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Unable to read YouTube original audio language before ASR",
+                            failure,
+                        )
+                        null
+                    }
+                } else null
+                val cloudLanguage = if (videoId != null) {
+                    io.translatetube.local.asr.CloudTranscription.youtubeSourceLanguageHint(
+                        provider = asrProvider,
+                        audioLanguage = youtubeAudioLanguage,
+                    ) ?: "auto"
+                } else {
+                    when (asrProvider) {
+                        "kawa" -> kawaLanguage
+                        "cartesia" -> cartesiaLanguage
+                        else -> "auto" // ElevenLabs has no separate language setting in this UI.
+                    }
+                }
+                if (videoId != null) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "YouTube 音轨转写语言已按原声音频信息确定",
+                        diagnosticContext = mapOf(
+                            "原声音频语言提示" to youtubeAudioLanguage.orEmpty().ifBlank { "未知" },
+                            "最终云端转写语言参数" to cloudLanguage,
+                            "转写服务商" to asrProvider,
+                            "语言策略" to if (cloudLanguage == "auto") "自动检测，避免默认英语" else "优先使用原声音频语言",
+                        ),
+                    )
+                }
+                val missingLocalModel = asrProvider == "local" &&
+                    !io.translatetube.local.data.ModelFiles.asrReady(this)
+                val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
+                // ---- 2b. 无字幕 → 先提取音频（落缓存），再判断转写引擎是否就绪 ----
+                // 音频提取无条件先执行：转写模型没装也要把音频准备好，这样用户装完
+                // 模型重新打开本视频时直接复用缓存开始转写，不需要再次联网提取。
+                awaitProcessingResumed(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "无字幕，正在提取视频音频…",
+                        audioProgress = null,
+                        // Keep values already discovered on the selected webpage source card.
+                        // Extraction progress is not the same operation as metadata probing.
+                        audioTrackLanguage = it.audioTrackLanguage,
+                        audioTrackMimeType = it.audioTrackMimeType,
+                        audioTrackCodecLabel = it.audioTrackCodecLabel,
+                        audioTrackDurationMs = it.audioTrackDurationMs,
+                        audioTrackChannelCount = it.audioTrackChannelCount,
+                        audioTrackSampleRateHz = it.audioTrackSampleRateHz,
+                        audioTrackSourceType = it.audioTrackSourceType,
+                        transcriptionEngineName = transcriptionEngineDisplayName,
+                        transcriptionProgressPercent = null,
+                    )
+                }
+                val audioFile: Any = when {
+                    videoId != null -> obtainAsrAudioFile(
+                        requireNotNull(videoId), key, "复用已下载音频，避免重复下载…",
+                        pipelineGeneration = pipelineGeneration,
+                    )
+                    remoteMediaUrl != null -> obtainRemoteMediaAsrFile(
+                        requireNotNull(remoteMediaUrl),
+                        remoteMediaReferrer,
+                        remoteMediaCookie,
+                        key,
+                        "复用网页视频音频缓存，避免重复下载…",
+                        pipelineGeneration = pipelineGeneration,
+                    )
+                    else -> localUri ?: throw IllegalStateException("无音频源")
+                }
+                val localPcmCacheFile = if (
+                    audioFile is Uri && localUri != null &&
+                    !cacheKeyBase.startsWith("local-media-unverified-v1:")
+                ) {
+                    localAsrPcmCacheFile("$cacheKeyBase|local-asr-pcm16-v1")
+                } else null
+                val leasedAudioPath = (audioFile as? File)
+                    ?.takeIf { videoId != null || remoteMediaUrl != null }
+                    ?.absolutePath
+                // Reuse the selected source-card metadata; do not run a second display probe
+                // after extraction. Missing source-card fields intentionally remain absent.
+                if (missingLocalModel || missingCloudKey) {
+                    val hint = when (asrProvider) {
+                        "local" -> {
+                            val modelName = io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
+                            "视频音频已提取并缓存（约 ${((audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 转写引擎中下载$modelName；安装后重新打开本视频，直接复用已提取的音频自动转写并配音。"
+                        }
+                        "elevenlabs" -> "视频音频已提取并缓存。已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
+                        "cartesia" -> "视频音频已提取并缓存。已选择 Cartesia 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
+                        else -> "视频音频已提取并缓存。已选择 Kawa 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
+                    }
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            noModelHint = hint,
+                            waitingForTranscriptionEngine = true,
+                            waitingForDubbingEngine = false,
+                            isPlaying = false,
+                            phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
+                            progress = "视频音频已提取完成；转写等待引擎就绪" +
+                                if (asrProvider == "local") "（设置 → 转写引擎 → 本地转写）" else "（设置 → 转写引擎）",
+                        )
+                    }
+                    // Stop here instead of falling through with an empty transcript. Falling
+                    // through skipped transcription/translation/dubbing and reached the final
+                    // auto-play block, which started a local video as original-audio playback.
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main.immediate) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        pm.pause()
+                    }
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "转写引擎未就绪，已暂停视频并停在转写阶段等待设置",
+                        diagnosticContext = mapOf(
+                            "视频来源" to if (localUri != null) "本地视频" else if (remoteMediaUrl != null) "网页视频" else "YouTube",
+                            "当前阶段" to Phase.TRANSCRIBING.name,
+                            "转写引擎配置" to asrProvider,
+                            "等待本地模型" to missingLocalModel.toString(),
+                            "等待云端 API Key" to missingCloudKey.toString(),
+                            "自动播放" to "禁止；设置变更后重新处理并进入第五阶段",
+                        ),
+                    )
+                    return false
+                } else {
+                val stablePartialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
+                val hasStablePartialAsrCache = db.subtitleCacheDao().get(stablePartialAsrCacheKey) != null
+                val legacyPartialAsrCacheKey = if (
+                    videoId != null && !hasStablePartialAsrCache
+                ) {
+                    db.subtitleCacheDao()
+                        .getLatestByCacheKeys(
+                            legacyYouTubeAsrSourceCacheKeys.map { "$it|asr-progress-v2" },
+                        )
+                        ?.cacheKey
+                } else null
+                val partialAsrCacheKey = legacyPartialAsrCacheKey ?: stablePartialAsrCacheKey
+
+                val asrLines: List<Triple<Long, Long, String>>
+                val detectedAsrLang: String
+                val asrTimelineDurationMs: Long
+                val directCloudPreparation: Triple<io.translatetube.local.asr.CloudTranscription.EncodedAudioInput, Long, File?>? =
+                    if (asrProvider == "elevenlabs" || asrProvider == "cartesia") {
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                phase = Phase.TRANSCRIBING,
+                                progress = "检查云端可直传音轨格式…",
+                                transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
+                                noModelHint = null,
+                                waitingForTranscriptionEngine = false,
+                                waitingForDubbingEngine = false,
+                            )
+                        }
+                        val preparationOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        try {
+                            withContext(Dispatchers.IO) {
+                                var stagedCloudAudio: File? = null
+                                var transferredTempFile = false
+                                try {
+                                    if (audioFile is File) {
+                                        val encodedSource =
+                                            io.translatetube.local.asr.CloudTranscription.detectEncodedAudioInput(
+                                                audioFile,
+                                                asrProvider,
+                                            )
+                                        if (encodedSource != null) {
+                                            val mediaInfo = runCatching {
+                                                AudioExtract.probeMediaFile(audioFile)
+                                            }.getOrNull()
+                                            if (mediaInfo != null &&
+                                                mediaInfo.audioTrackCount == 1 &&
+                                                mediaInfo.videoTrackCount == 0 &&
+                                                mediaInfo.durationMs > 0L
+                                            ) {
+                                                return@withContext Triple(
+                                                    encodedSource,
+                                                    mediaInfo.durationMs,
+                                                    null,
+                                                )
+                                            }
+                                        }
+                                        stagedCloudAudio = AudioExtract.remuxAacAudioTrackToM4a(
+                                            this@PlaybackService,
+                                            file = audioFile,
+                                            checkActive = { preparationOwnerJob?.ensureActive() },
+                                            onProgressPercent = { percent ->
+                                                updateUiForSession(key, pipelineGeneration) { state ->
+                                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%", transcriptionProgressPercent = percent)
+                                                    } else state
+                                                }
+                                            },
+                                        )
+                                    } else if (audioFile is Uri) {
+                                        stagedCloudAudio = AudioExtract.remuxAacAudioTrackToM4a(
+                                            this@PlaybackService,
+                                            src = audioFile,
+                                            checkActive = { preparationOwnerJob?.ensureActive() },
+                                            onProgressPercent = { percent ->
+                                                updateUiForSession(key, pipelineGeneration) { state ->
+                                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%", transcriptionProgressPercent = percent)
+                                                    } else state
+                                                }
+                                            },
+                                        )
+                                    }
+
+                                    val preparedFile = stagedCloudAudio ?: return@withContext null
+                                    val encodedInput =
+                                        io.translatetube.local.asr.CloudTranscription.detectEncodedAudioInput(
+                                            preparedFile,
+                                            asrProvider,
+                                        )
+                                    val mediaInfo = runCatching {
+                                        AudioExtract.probeMediaFile(preparedFile)
+                                    }.getOrNull()
+                                    if (encodedInput != null &&
+                                        mediaInfo != null &&
+                                        mediaInfo.audioTrackCount == 1 &&
+                                        mediaInfo.videoTrackCount == 0 &&
+                                        mediaInfo.durationMs > 0L
+                                    ) {
+                                        transferredTempFile = true
+                                        Triple(encodedInput, mediaInfo.durationMs, preparedFile)
+                                    } else {
+                                        null
+                                    }
+                                } finally {
+                                    if (!transferredTempFile) runCatching { stagedCloudAudio?.delete() }
+                                }
+                            }
+                        } catch (cancelled: java.util.concurrent.CancellationException) {
+                            releaseActiveAsrAudio(leasedAudioPath)
+                            throw cancelled
+                        } catch (error: Exception) {
+                            android.util.Log.i(
+                                "PlaybackService",
+                                "Encoded cloud audio is not suitable for direct upload; using PCM fallback",
+                                error,
+                            )
+                            null
+                        }
+                    } else {
+                        null
+                    }
+                transientCloudUploadAudio = directCloudPreparation?.third
+
+                if (directCloudPreparation != null) {
+                    val encodedInput = directCloudPreparation.first
+                    asrTimelineDurationMs = directCloudPreparation.second
+                    val directResult = try {
+                        withContext(Dispatchers.IO) {
+                            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                            val result = io.translatetube.local.asr.CloudTranscription.transcribe(
+                                provider = asrProvider,
+                                apiKey = asrApiKey,
+                                language = cloudLanguage,
+                                wavFile = encodedInput.file,
+                                durationMs = directCloudPreparation.second,
+                                checkActive = { ownerJob?.ensureActive() },
+                                onProgress = { message ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(
+                                                progress = message,
+                                                transcriptionProgressPercent = null,
+                                                transcriptionCompletedSegments = 0,
+                                                transcriptionTotalSegments = 0,
+                                            )
+                                        } else state
+                                    }
+                                },
+                                encodedAudio = encodedInput,
+                                checkpointIdentity = sourceSubtitleCacheKey,
+                                checkpointDirectory = cacheDir,
+                                allowUncertainRetry = allowCloudAsrResubmission,
+                                submissionGuardIdentity = cacheKeyBase,
+                            )
+                            ownerJob?.ensureActive()
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(
+                                progress = "云端转写完成，正在整理字幕…",
+                                transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
+                            )
+                            }
+                            val language = io.translatetube.local.subs.SubtitleLanguageDetector
+                                .resolveTranscriptionLanguageFromCues(
+                                    result.language,
+                                    result.cues.asSequence().take(120).map { it.third }.asIterable(),
+                                )
+                            result.cues to language
+                        }
+                    } finally {
+                        releaseActiveAsrAudio(leasedAudioPath)
+                        transientCloudUploadAudio?.delete()
+                        transientCloudUploadAudio = null
+                    }
+                    asrLines = directResult.first
+                    detectedAsrLang = directResult.second
+                    if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
+                        withContext(Dispatchers.IO) {
+                            HlsAudioDownloader.cleanupSegmentCache(audioFile)
+                        }
+                    }
+                } else {
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.TRANSCRIBING,
+                        progress = "解码音频…",
+                        transcriptionProgressPercent = null,
+                        transcriptionCompletedSegments = 0,
+                        transcriptionTotalSegments = 0,
+                        noModelHint = null,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                    )
+                }
+                val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                // A prompt cancellation can discard a successful withContext result before its
+                // caller receives it. Keep a temporary ownership reference so that PCM file can
+                // still be deleted in that narrow race instead of lingering until stale cleanup.
+                val decodedPcmHolder =
+                    java.util.concurrent.atomic.AtomicReference<AudioExtract.PcmFile?>(null)
+                val pcmFile = try {
+                    withContext(Dispatchers.IO) {
+                        val decoded = if (audioFile is File) {
+                            val decodeDownloadedAudio = {
+                                AudioExtract.decodeTo16kMonoFile(
+                                    this@PlaybackService, null, audioFile,
+                                    checkActive = { pcmOwnerJob?.ensureActive() },
+                                    onProgressPercent = { percent ->
+                                        updateUiForSession(key, pipelineGeneration) { state ->
+                                            if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
+                                            } else state
+                                        }
+                                    },
+                                )
+                            }
+                            // Keep the decoded PCM of downloaded audio in the shared PCM cache so
+                            // person recognition (and a re-run) does not decode the same track again.
+                            val sharedPcmIdentity = when {
+                                videoId != null -> AsrPcmCacheIdentity.youtube(requireNotNull(videoId))
+                                remoteMediaUrl != null -> AsrPcmCacheIdentity.remote(
+                                    MediaUrlCacheIdentity.audioKey(
+                                        requireNotNull(remoteMediaUrl),
+                                        remoteMediaReferrer,
+                                        remoteMediaCookie,
+                                    ),
+                                )
+                                else -> null
+                            }
+                            if (sharedPcmIdentity != null) {
+                                val prepared = obtainLocalAsrPcmFile(
+                                    cacheFile = localAsrPcmCacheFile(sharedPcmIdentity),
+                                    sessionKey = key,
+                                    pipelineGeneration = pipelineGeneration,
+                                ) { decodeDownloadedAudio() }
+                                leasedLocalPcmCachePath = prepared.second
+                                prepared.first
+                            } else {
+                                decodeDownloadedAudio()
+                            }
+                        } else if (localPcmCacheFile != null) {
+                            val prepared = obtainLocalAsrPcmFile(
+                                cacheFile = localPcmCacheFile,
+                                sessionKey = key,
+                                pipelineGeneration = pipelineGeneration,
+                            ) {
+                                AudioExtract.decodeTo16kMonoFile(
+                                    this@PlaybackService, audioFile as Uri, null,
+                                    checkActive = { pcmOwnerJob?.ensureActive() },
+                                    onProgressPercent = { percent ->
+                                        updateUiForSession(key, pipelineGeneration) { state ->
+                                            if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
+                                            } else state
+                                        }
+                                    },
+                                )
+                            }
+                            leasedLocalPcmCachePath = prepared.second
+                            prepared.first
+                        } else {
+                            AudioExtract.decodeTo16kMonoFile(
+                                this@PlaybackService, audioFile as Uri, null,
+                                checkActive = { pcmOwnerJob?.ensureActive() },
+                                onProgressPercent = { percent ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = "解码音频 ${percent}%", transcriptionProgressPercent = percent)
+                                        } else state
+                                    }
+                                },
+                            )
+                        }
+                        decodedPcmHolder.set(decoded)
+                        decoded
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    decodedPcmHolder.getAndSet(null)?.file?.delete()
+                    // Cancellation is not evidence of a corrupt download; keep it for resumption.
+                    throw cancelled
+                } catch (error: Exception) {
+                    decodedPcmHolder.getAndSet(null)?.file?.delete()
+                    // A remote download that the platform cannot decode must not stay in the cache
+                    // forever. Otherwise every user retry reuses the same unusable bytes and fails
+                    // before ASR can start. Successful decodes still retain audio for ASR retries.
+                    if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
+                        val removed = if (!audioFile.exists()) {
+                            true
+                        } else {
+                            // This pipeline owns one lease. Retire the failed file only if no
+                            // concurrent ASR/diarization reader owns an additional lease.
+                            activeAsrAudioPaths.deleteIfLeaseCountAtMost(
+                                audioFile.absolutePath,
+                                allowedLeaseCount = 1,
+                            ) { audioFile.delete() }
+                        }
+                        File(audioFile.parentFile, audioFile.name + ".part").delete()
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Discarded remote audio cache after decode failure (removed=$removed)",
+                            error,
+                        )
+                        val recoveryAdvice = if (removed) {
+                            "已清理无法解码的音频缓存；重试时会重新获取音轨。"
+                        } else {
+                            "音频解码失败，且缓存文件无法删除；重试可能再次遇到同一错误，请清理应用缓存后重试。"
+                        }
+                        throw IllegalStateException(
+                            "$recoveryAdvice 原因：${error.message ?: error.javaClass.simpleName}",
+                            error,
+                        )
+                    }
+                    throw error
+                } finally {
+                    releaseActiveAsrAudio(leasedAudioPath)
+                }
+                // Claim ownership before any further suspension point; the outer finally block
+                // now cleans this file if HLS-cache cleanup or later ASR work is cancelled.
+                transientPcmFile = pcmFile.takeUnless { pcm ->
+                    leasedLocalPcmCachePath != null && pcm.file.absolutePath == leasedLocalPcmCachePath
+                }
+                decodedPcmHolder.set(null)
+                // Keep HLS parts when decoding fails so the next attempt can reuse downloaded
+                // segments. Once MediaExtractor has accepted the merged file, discard the copies.
+                if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
+                    withContext(Dispatchers.IO) {
+                        HlsAudioDownloader.cleanupSegmentCache(audioFile)
+                    }
+                }
+                ensureCurrentSession(key, pipelineGeneration)
+                // The transcript clock must use the duration of the exact PCM file sent to ASR.
+                // Provider timestamps are relative to this full recording, not to each displayed line.
+                asrTimelineDurationMs = pcmFile.durationMs
+                val (decodedAsrLines, decodedAsrLang) = if (asrProvider == "local") {
+updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        progress = "语音分段 0%",
+                        transcriptionProgressPercent = 0,
+                        transcriptionCompletedSegments = 0,
+                        transcriptionTotalSegments = 0,
+                    )
+                }
+                val firstPassSegs = withContext(Dispatchers.IO) {
+                    vadSegmentsFromFile(
+                        this@PlaybackService,
+                        pcmFile,
+                        checkActive = { pcmOwnerJob?.ensureActive() },
+                        onProgressPercent = { percent ->
+                            updateUiForSession(key, pipelineGeneration) { state ->
+                                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                    state.copy(
+                                        progress = "语音分段 ${percent}%",
+                                        transcriptionProgressPercent = percent,
+                                        transcriptionCompletedSegments = 0,
+                                        transcriptionTotalSegments = 0,
+                                    )
+                                } else state
+                            }
+                        },
+                    )
+                }
+                ensureCurrentSession(key, pipelineGeneration)
+                // 说话声音很小的录音，默认灵敏度可能一段语音都检测不到：提高灵敏度再试一次，
+                // 而不是直接报"未检测到语音内容"。
+                val segs = if (firstPassSegs.isEmpty()) {
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            progress = "声音较小，正在提高灵敏度重新检测语音…",
+                            transcriptionProgressPercent = null,
+                            transcriptionCompletedSegments = 0,
+                            transcriptionTotalSegments = 0,
+                        )
+                    }
+                    withContext(Dispatchers.IO) {
+                        vadSegmentsFromFile(
+                            this@PlaybackService,
+                            pcmFile,
+                            checkActive = { pcmOwnerJob?.ensureActive() },
+                            onProgressPercent = { percent ->
+                                updateUiForSession(key, pipelineGeneration) { state ->
+                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                        state.copy(
+                                            progress = "提高灵敏度重新检测 ${percent}%",
+                                            transcriptionProgressPercent = percent,
+                                            transcriptionCompletedSegments = 0,
+                                            transcriptionTotalSegments = 0,
+                                        )
+                                    } else state
+                                }
+                            },
+                            threshold = VAD_QUIET_AUDIO_THRESHOLD,
+                        )
+                    }.also { ensureCurrentSession(key, pipelineGeneration) }
+                } else {
+                    firstPassSegs
+                }
+                if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
+                // PCM stays on disk; VAD timestamps and the current segment are loaded as needed.
+                val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs) {
+                    pcmOwnerJob?.ensureActive()
+                }
+                var restoredProcessedSegments = 0
+                var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
+                var restoredAsrLanguage = ""
+                val asrChunkKeyPrefix = AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(partialAsrCacheKey)
+                if (forceFreshAsrTranscriptForThisRun) {
+                    db.subtitleCacheDao().delete(partialAsrCacheKey)
+                    db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
+                }
+                val storedPartialAsr = if (
+                    !forceFreshAsrTranscriptForThisRun &&
+                    (videoId != null || localUri != null || remoteMediaUrl != null) &&
+                    sourceImportedLines.isNullOrEmpty()
+                ) {
+                    db.subtitleCacheDao().get(partialAsrCacheKey)
+                } else null
+                if (storedPartialAsr == null &&
+                    (videoId != null || localUri != null || remoteMediaUrl != null) &&
+                    sourceImportedLines.isNullOrEmpty()
+                ) {
+                    // A shard written just before a crash may exist without a valid manifest.
+                    // When there is no manifest, none of the old shards can be trusted.
+                    db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
+                }
+                if (storedPartialAsr != null) {
+                    val restored = try {
+                        val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
+                        val checkpointVersion = checkpoint.optInt("version", -1)
+                        if (checkpointVersion !in 2..4) {
+                            throw IllegalStateException("ASR 检查点版本不兼容")
+                        }
+                        val processed = checkpoint.optInt("processedSegments", -1)
+                        val total = checkpoint.optInt("totalSegments", -1)
+                        val savedSignature = checkpoint.optString("signature")
+                        if (!AsrTranscriptCheckpointPolicy.canResume(
+                                savedSignature,
+                                asrSignature,
+                                total,
+                                segs.size,
+                                processed,
+                            )
+                        ) {
+                            throw IllegalStateException("ASR 分段检查点与当前音频不匹配")
+                        }
+
+                        fun readCheckpointRows(
+                            savedRows: org.json.JSONArray,
+                            maxRows: Int,
+                        ): List<Triple<Long, Long, String>> {
+                            if (savedRows.length() > maxRows) {
+                                throw IllegalStateException("ASR 检查点字幕数量异常")
+                            }
+                            return (0 until savedRows.length()).map { index ->
+                                if ((index and 0xff) == 0) pcmOwnerJob?.ensureActive()
+                                val row = savedRows.optJSONObject(index)
+                                    ?: throw IllegalStateException("ASR 检查点第 ${index + 1} 行格式无效")
+                                Triple(
+                                    row.optLong("s", Long.MIN_VALUE),
+                                    row.optLong("e", Long.MIN_VALUE),
+                                    row.optString("t").trim(),
+                                )
+                            }
+                        }
+
+                        val savedChunkSize = checkpoint.optInt("chunkSize", -1)
+                        val checkpointChunkSize = AsrTranscriptCheckpointPolicy.checkpointChunkSize(
+                            checkpointVersion,
+                            savedChunkSize.takeIf { it > 0 },
+                        ) ?: throw IllegalStateException("ASR 分段检查点大小不兼容")
+                        if (processed != total && processed % checkpointChunkSize != 0) {
+                            throw IllegalStateException("ASR 检查点进度未对齐分段边界")
+                        }
+                        val restoredRows = when (checkpointVersion) {
+                            2 -> {
+                                val savedRows = checkpoint.optJSONArray("rows")
+                                    ?: throw IllegalStateException("ASR 检查点缺少字幕列表")
+                                val maxRows = minOf(processed.toLong() * 64L, 100_000L).toInt()
+                                readCheckpointRows(savedRows, maxRows)
+                            }
+                            3, 4 -> {
+                                val useLegacyKeys = AsrTranscriptCheckpointPolicy.usesLegacyChunkKeys(
+                                    checkpointVersion,
+                                )
+                                val combinedRows = ArrayList<Triple<Long, Long, String>>()
+                                var chunkStart = 0
+                                while (chunkStart < processed) {
+                                    pcmOwnerJob?.ensureActive()
+                                    val chunkEnd = minOf(chunkStart + checkpointChunkSize, processed)
+                                    val chunkKey = if (useLegacyKeys) {
+                                        AsrTranscriptCheckpointPolicy.legacyChunkCacheKey(
+                                            partialAsrCacheKey, chunkStart,
+                                        )
+                                    } else {
+                                        AsrTranscriptCheckpointPolicy.chunkCacheKey(
+                                            partialAsrCacheKey, chunkStart,
+                                        )
+                                    }
+                                    val chunkEntity = db.subtitleCacheDao().get(chunkKey)
+                                        ?: throw IllegalStateException("ASR 分段检查点缺少第 ${chunkStart} 段的数据")
+                                    val chunk = org.json.JSONObject(chunkEntity.linesJson)
+                                    if (chunk.optInt("version", -1) != 1 ||
+                                        chunk.optString("signature") != savedSignature ||
+                                        chunk.optInt("startSegment", -1) != chunkStart ||
+                                        chunk.optInt("endSegment", -1) != chunkEnd
+                                    ) {
+                                        throw IllegalStateException("ASR 分段检查点元数据不匹配")
+                                    }
+                                    val savedRows = chunk.optJSONArray("rows")
+                                        ?: throw IllegalStateException("ASR 分段检查点缺少字幕列表")
+                                    val maxRows = minOf(
+                                        (chunkEnd - chunkStart).toLong() *
+                                            if (checkpointVersion == 4) 256L else 64L,
+                                        100_000L,
+                                    ).toInt()
+                                    combinedRows.addAll(readCheckpointRows(savedRows, maxRows))
+                                    chunkStart = chunkEnd
+                                }
+                                combinedRows
+                            }
+                            else -> throw IllegalStateException("ASR 检查点版本不兼容")
+                        }
+
+                        // Validate once after all shard payloads have been loaded. Chunked storage
+                        // keeps checkpoint writes small; this full check protects recovery from
+                        // missing, duplicated, out-of-order or cross-segment rows.
+                        if (!AsrTranscriptCheckpointPolicy.areRowsValid(restoredRows, segs.take(processed))) {
+                            throw IllegalStateException("ASR 检查点包含重复、无效或未完成的字幕行")
+                        }
+
+                        if (checkpointVersion in 2..3) {
+                            // Convert v2 monolithic rows and v3 three-segment shards into isolated
+                            // one-segment v4 shards. New keys keep the old manifest recoverable
+                            // until every new shard is committed and the v4 manifest is installed.
+                            val rowsBySegment = mutableMapOf<Int, MutableList<Triple<Long, Long, String>>>()
+                            var segmentCursor = 0
+                            for (row in restoredRows) {
+                                pcmOwnerJob?.ensureActive()
+                                while (segmentCursor < processed && row.second > segs[segmentCursor].second) {
+                                    segmentCursor++
+                                }
+                                if (segmentCursor >= processed) {
+                                    throw IllegalStateException("旧版 ASR 检查点字幕无法映射到已完成语音段")
+                                }
+                                rowsBySegment.getOrPut(segmentCursor) { mutableListOf() }.add(row)
+                            }
+                            for (segmentIndex in 0 until processed) {
+                                pcmOwnerJob?.ensureActive()
+                                val chunkRowsJson = org.json.JSONArray()
+                                for ((rowIndex, row) in rowsBySegment[segmentIndex].orEmpty().withIndex()) {
+                                    if ((rowIndex and 0xff) == 0) pcmOwnerJob?.ensureActive()
+                                    chunkRowsJson.put(
+                                        org.json.JSONObject()
+                                            .put("s", row.first)
+                                            .put("e", row.second)
+                                            .put("t", row.third)
+                                    )
+                                }
+                                db.subtitleCacheDao().put(
+                                    io.translatetube.local.data.SubtitleCacheEntity(
+                                        AsrTranscriptCheckpointPolicy.chunkCacheKey(
+                                            partialAsrCacheKey, segmentIndex,
+                                        ),
+                                        storedPartialAsr.srcLang,
+                                        org.json.JSONObject()
+                                            .put("version", 1)
+                                            .put("signature", savedSignature)
+                                            .put("startSegment", segmentIndex)
+                                            .put("endSegment", segmentIndex + 1)
+                                            .put("rows", chunkRowsJson)
+                                            .toString(),
+                                        System.currentTimeMillis(),
+                                        videoKey = key,
+                                    )
+                                )
+                            }
+                            val migratedManifest = org.json.JSONObject()
+                                .put("version", 4)
+                                .put("signature", savedSignature)
+                                .put("totalSegments", total)
+                                .put("processedSegments", processed)
+                                .put(
+                                    "chunkSize",
+                                    AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT,
+                                )
+                            pcmOwnerJob?.ensureActive()
+                            db.subtitleCacheDao().put(
+                                storedPartialAsr.copy(
+                                    linesJson = migratedManifest.toString(),
+                                    updatedAt = System.currentTimeMillis(),
+                                )
+                            )
+                            // Manifest switch is the commit point; stale v2/v3 keys are now removable.
+                            db.subtitleCacheDao().deleteByCacheKeyPrefix(
+                                AsrTranscriptCheckpointPolicy.legacyChunkCacheKeyPrefix(partialAsrCacheKey),
+                            )
+                        }
+
+                        PartialAsrTranscript(processed, restoredRows, storedPartialAsr.srcLang)
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        // Cancellation is control flow, not corrupt checkpoint data. Keep the
+                        // saved progress intact so the next attempt can resume without redoing ASR.
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (restored == null) {
+                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key")
+                        db.subtitleCacheDao().delete(partialAsrCacheKey)
+                        db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
+                    } else {
+                        restoredProcessedSegments = restored.processedSegments
+                        restoredAsrRows = restored.rows
+                        restoredAsrLanguage = restored.sourceLang
+                        android.util.Log.i(
+                            "PlaybackService",
+                            "Resuming ASR for $key at segment ${restoredProcessedSegments}/${segs.size}",
+                        )
+                    }
+                }
+
+                val localAsrResult = localAsrMutex.withLock {
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.IO) {
+                        val selectedModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this@PlaybackService)
+                        val engine = localAsrEngine?.takeIf { localAsrEngineModelId == selectedModelId }
+                            ?: run {
+                                releaseLocalAsr()
+                                val playbackState = ui.value
+                                val asrThreads = LocalAsrPerformancePolicy.recommendedThreadCount(
+                                    modelId = selectedModelId,
+                                    processorCount = Runtime.getRuntime().availableProcessors(),
+                                    isPlaying = playbackState.isPlaying,
+                                    dubbingEnabled = playbackState.dubbingOn,
+                                )
+                                android.util.Log.i(
+                                    "PlaybackService",
+                                    "Local ASR engine=$selectedModelId threads=$asrThreads " +
+                                        "cpuCount=${Runtime.getRuntime().availableProcessors()} " +
+                                        "playing=${playbackState.isPlaying} dubbing=${playbackState.dubbingOn}",
+                                )
+                                val created: LocalAsrEngine = if (selectedModelId == "sensevoice") {
+                                    SenseVoiceEngine(this@PlaybackService, asrThreads)
+                                } else {
+                                    WhisperEngine(this@PlaybackService, asrThreads)
+                                }
+                                localAsrEngine = created
+                                localAsrEngineModelId = selectedModelId
+                                created
+                            }
+                        if (restoredProcessedSegments < segs.size) {
+                            // A shared engine may remember the previous video's detected language.
+                            // Reset it for this transcript, then use the saved checkpoint language as fallback.
+                            engine.clearDetectedLanguage()
+                        }
+                        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        val rows = restoredAsrRows.toMutableList()
+                        var processed = restoredProcessedSegments
+                        fun publishTranscriptionPreview() {
+                            val previewStart = (rows.size - 2).coerceAtLeast(0)
+                            val preview = (previewStart until rows.size).mapNotNull { rowIndex ->
+                                val row = rows[rowIndex]
+                                val cleanedText = SubtitleParsers.cleanSpokenText(row.third)
+                                cleanedText.takeIf { it.isNotEmpty() }?.let { text ->
+                                    SubLine(rowIndex, row.first, row.second, text)
+                                }
+                            }
+                            updateUiForSession(key, pipelineGeneration) { state ->
+                                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                    state.copy(transcriptionPreviewLines = preview)
+                                } else state
+                            }
+                        }
+                        publishTranscriptionPreview()
+                        // Keep one file descriptor and byte buffer for the entire local-ASR pass.
+                        // Checkpoint writes still happen after every small segment group below.
+                        pcmFile.openReader { ownerJob?.ensureActive() }.use { sharedPcmReader ->
+                            while (processed < segs.size) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                val chunkStart = processed
+                                val chunkEnd = minOf(
+                                    chunkStart + AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT,
+                                    segs.size,
+                                )
+                                val chunkRows = engine.transcribeBySegments(
+                                    pcmFile,
+                                    segs.subList(chunkStart, chunkEnd),
+                                    checkActive = { ownerJob?.ensureActive() },
+                                    sharedPcmReader = sharedPcmReader,
+                                ) { done, _ ->
+                                    val completedSegment = segs.getOrNull((chunkStart + done - 1).coerceAtLeast(0))
+                                    val progressTimeMs = completedSegment?.second ?: 0L
+                                    val progressMinutes = progressTimeMs / 60_000L
+                                    val progressSeconds = (progressTimeMs / 1_000L) % 60L
+                                    val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
+                                    updateUiForSession(key, pipelineGeneration) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(
+                                                progress = progressLabel,
+                                                transcriptionProgressPercent = null,
+                                                transcriptionCompletedSegments = chunkStart + done,
+                                                transcriptionTotalSegments = segs.size,
+                                            )
+                                        } else state
+                                    }
+                                }
+                                rows.addAll(chunkRows)
+                                processed = chunkEnd
+                                publishTranscriptionPreview()
+
+                                if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    // Persist this single completed speech segment before advancing
+                                    // the manifest. A crash can only require retrying the current segment.
+                                    val chunkRowsJson = org.json.JSONArray()
+                                    for ((rowIndex, row) in chunkRows.withIndex()) {
+                                        if ((rowIndex and 0xff) == 0) ownerJob?.ensureActive()
+                                        chunkRowsJson.put(
+                                            org.json.JSONObject()
+                                                .put("s", row.first)
+                                                .put("e", row.second)
+                                                .put("t", row.third)
+                                        )
+                                    }
+                                    ownerJob?.ensureActive()
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    val language = engine.lastLang.takeIf { it.isNotBlank() }
+                                        ?: restoredAsrLanguage
+                                    val chunkKey = AsrTranscriptCheckpointPolicy.chunkCacheKey(
+                                        partialAsrCacheKey, chunkStart,
+                                    )
+                                    val chunkJson = org.json.JSONObject()
+                                        .put("version", 1)
+                                        .put("signature", asrSignature)
+                                        .put("startSegment", chunkStart)
+                                        .put("endSegment", chunkEnd)
+                                        .put("rows", chunkRowsJson)
+                                    db.subtitleCacheDao().put(
+                                        io.translatetube.local.data.SubtitleCacheEntity(
+                                            chunkKey,
+                                            language,
+                                            chunkJson.toString(),
+                                            System.currentTimeMillis(),
+                                            videoKey = key,
+                                        )
+                                    )
+                                    ownerJob?.ensureActive()
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    val manifestJson = org.json.JSONObject()
+                                        .put("version", 4)
+                                        .put("signature", asrSignature)
+                                        .put("totalSegments", segs.size)
+                                        .put("processedSegments", processed)
+                                        .put(
+                                            "chunkSize",
+                                            AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT,
+                                        )
+                                    db.subtitleCacheDao().put(
+                                        io.translatetube.local.data.SubtitleCacheEntity(
+                                            partialAsrCacheKey,
+                                            language,
+                                            manifestJson.toString(),
+                                            System.currentTimeMillis(),
+                                            videoKey = key,
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        val language = if (restoredProcessedSegments >= segs.size) {
+                            restoredAsrLanguage.takeIf { it.isNotBlank() }
+                                ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
+                                    rows.asSequence().map { it.third }.asIterable()
+                                )
+                        } else {
+                            engine.lastLang.takeIf { it.isNotBlank() }
+                                ?: restoredAsrLanguage.takeIf { it.isNotBlank() }
+                                ?: "en"
+                        }
+                        if (shouldReleaseLocalAsrForMemoryPressure() && localAsrEngine === engine) {
+                            // The recognizer is native-memory heavy. Release only under reported
+                            // memory pressure; healthy phones can keep it warm for another ASR job.
+                            localAsrEngine = null
+                            localAsrEngineModelId = null
+                            runCatching { engine.close() }
+                                .onFailure { android.util.Log.w("PlaybackService", "Local ASR release under memory pressure failed", it) }
+                            android.util.Log.i("PlaybackService", "Released local ASR recognizer after transcription because of memory pressure")
+                        }
+                        rows to language
+                    }
+                }
+                    localAsrResult
+                } else {
+                    val providerName = when (asrProvider) { "elevenlabs" -> "ElevenLabs"; "cartesia" -> "Cartesia"; else -> "Kawa" }
+                    updateUiForSession(key, pipelineGeneration) { it.copy(progress = "正在准备 " + providerName + " 云端转写音频…") }
+                    val removedStaleCloudWavs = runCatching {
+                        io.translatetube.local.asr.CloudTranscription.cleanupStaleWavStages(cacheDir)
+                    }.onFailure {
+                        android.util.Log.w("PlaybackService", "Stale cloud transcription WAV cleanup failed", it)
+                    }.getOrDefault(0)
+                    if (removedStaleCloudWavs > 0) {
+                        android.util.Log.i("PlaybackService", "Removed $removedStaleCloudWavs stale cloud transcription WAV file(s)")
+                    }
+                    val cloudWav = File.createTempFile("asr-cloud-", ".wav", cacheDir)
+                    try {
+                        withContext(Dispatchers.IO) {
+                            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                            io.translatetube.local.asr.CloudTranscription.writeWavFile(
+                                pcmFile,
+                                cloudWav,
+                                checkActive = { ownerJob?.ensureActive() },
+                                onProgressPercent = { percent ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = "封装云端音频 ${percent}%", transcriptionProgressPercent = percent)
+                                        } else state
+                                    }
+                                },
+                            )
+                            val result = io.translatetube.local.asr.CloudTranscription.transcribe(
+                                provider = asrProvider,
+                                apiKey = asrApiKey,
+                                language = cloudLanguage,
+                                wavFile = cloudWav,
+                                durationMs = pcmFile.durationMs,
+                                checkActive = { ownerJob?.ensureActive() },
+                                onProgress = { message ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(
+                                                progress = message,
+                                                transcriptionProgressPercent = null,
+                                                transcriptionCompletedSegments = 0,
+                                                transcriptionTotalSegments = 0,
+                                            )
+                                        } else state
+                                    }
+                                },
+                                checkpointIdentity = sourceSubtitleCacheKey,
+                                checkpointDirectory = cacheDir,
+                                allowUncertainRetry = allowCloudAsrResubmission,
+                                submissionGuardIdentity = cacheKeyBase,
+                            )
+                            ownerJob?.ensureActive()
+                            updateUiForSession(key, pipelineGeneration) { it.copy(
+                                progress = "云端转写完成，正在整理字幕…",
+                                transcriptionProgressPercent = null,
+                                transcriptionCompletedSegments = 0,
+                                transcriptionTotalSegments = 0,
+                            ) }
+                            // Sample timed cues directly instead of allocating a concatenated transcript.
+                            val language = io.translatetube.local.subs.SubtitleLanguageDetector
+                                .resolveTranscriptionLanguageFromCues(
+                                    result.language,
+                                    result.cues.asSequence().take(120).map { it.third }.asIterable(),
+                                )
+                            result.cues to language
+                        }
+                    } finally {
+                        cloudWav.delete()
+                    }
+                }
+                asrLines = decodedAsrLines
+                detectedAsrLang = decodedAsrLang
+                ensureCurrentSession(key, pipelineGeneration)
+                if (asrProvider != "local") {
+                    transientPcmFile?.file?.delete()
+                    transientPcmFile = null
+                }
+                }
+                // Only disposable local temporary files may be removed before the transcript checkpoint.
+                // YouTube audio remains cached until its ASR subtitles have been saved successfully.
+                if (audioFile is File && videoId == null && remoteMediaUrl == null) {
+                    audioFile.delete()
+                    if (transientAudio == audioFile) transientAudio = null
+                }
+                // Some providers/segment boundaries can return cues out of order or with an end
+                // slightly beyond the uploaded PCM duration. Normalize once before caching,
+                // translating, highlighting, and dubbing so every consumer shares the same timeline.
+                val timelineOwnerJob = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+                val normalizedAsrLines = io.translatetube.local.asr.TranscriptTimelinePolicy.normalize(
+                    asrLines,
+                    asrTimelineDurationMs,
+                    checkActive = { timelineOwnerJob?.ensureActive() },
+                )
+                // 网页/本地视频的转写结果：去掉 [Music]、♪ 和 uh/um，清理后为空的条目直接丢弃，
+                // 避免把音效标注和口头语送去翻译、再被配音读出来。
+                val transcribedLines = normalizedAsrLines
+                    .mapNotNull { (startMs, endMs, text) ->
+                        SubtitleParsers.cleanSpokenText(text).takeIf { it.isNotEmpty() }
+                            ?.let { Triple(startMs, endMs, it) }
+                    }
+                    .mapIndexed { index, (startMs, endMs, text) ->
+                        SubLine(index, startMs, endMs, text)
+                    }
+                if (transcribedLines.isEmpty()) {
+                    if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
+                        db.subtitleCacheDao().delete(partialAsrCacheKey)
+                        db.subtitleCacheDao().deleteByCacheKeyPrefix(
+                            AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(partialAsrCacheKey),
+                        )
+                    }
+                    throw IllegalStateException(
+                        when {
+                            videoId != null ->
+                                "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存，不会再次下载。"
+                            remoteMediaUrl != null ->
+                                "网页视频语音识别没有生成有效字幕。请确认媒体源包含可读取的语音音轨；加密或不完整的分片流暂不支持。"
+                            else ->
+                                "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
+                        }
+                    )
+                }
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                        state.copy(transcriptionPreviewLines = transcribedLines.takeLast(2))
+                    } else state
+                }
+                lines = transcribedLines
+                // The decoded ASR PCM is no longer needed after the transcript has been produced.
+                transientPcmFile?.file?.delete()
+                transientPcmFile = null
+                leasedLocalPcmCachePath?.let(::releaseLocalAsrPcmFile)
+                leasedLocalPcmCachePath = null
+                sourceTranscriptProducedInThisRun = true
+                srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
+                    .resolveTranscriptionLanguageFromCues(
+                        detectedAsrLang,
+                        transcribedLines.asSequence().map { it.text }.asIterable(),
+                    )
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "Transcription",
+                        "原文语音转写与字幕时间轴整理完成",
+                        diagnosticContext = mapOf(
+                            "视频来源" to when {
+                                videoId != null -> "YouTube"
+                                remoteMediaUrl != null -> "网页视频/远程媒体"
+                                localUri != null -> "本地视频"
+                                else -> "其他"
+                            },
+                            "转写服务/引擎配置" to asrProvider,
+                            "选中的本地转写模型" to (localAsrEngineModelId ?: "未使用或未确定"),
+                            "服务商返回的语言" to detectedAsrLang.ifBlank { "未提供" },
+                            "时间轴确认后的源语言" to srcLang,
+                            "转写阶段原始有效时间片数量" to normalizedAsrLines.size.toString(),
+                            "清理音效和口头语后的字幕行数" to transcribedLines.size.toString(),
+                            "被清理掉的空/非语音字幕行数" to (normalizedAsrLines.size - transcribedLines.size).coerceAtLeast(0).toString(),
+                            "转写音频时长 ms" to asrTimelineDurationMs.toString(),
+                            "首句开始时间 ms" to (transcribedLines.firstOrNull()?.startMs?.toString() ?: "无"),
+                            "末句结束时间 ms" to (transcribedLines.lastOrNull()?.endMs?.toString() ?: "无"),
+                            "字幕时间轴是否有效" to "已通过 TranscriptTimelinePolicy.normalize",
+                            "是否准备缓存原文字幕" to ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()).toString(),
+                        ),
+                    )
+                }
+
+                // Keep the completed ASR transcript as an independent checkpoint. The bounded
+                // source-audio cache is retained for retries and later speaker diarization, while
+                // this subtitle cache lets translation retry without running ASR again.
+                ensureCurrentSession(key, pipelineGeneration)
+                if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
+                    val sourceArr = org.json.JSONArray()
+                    for ((index, line) in transcribedLines.withIndex()) {
+                        if ((index and 0xff) == 0) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        }
+                        sourceArr.put(
+                            org.json.JSONObject()
+                                .put("s", line.startMs)
+                                .put("e", line.endMs)
+                                .put("t", line.text)
+                        )
+                    }
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    ensureCurrentSession(key, pipelineGeneration)
+                    db.subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            sourceSubtitleCacheKey,
+                            srcLang,
+                            sourceArr.toString(),
+                            System.currentTimeMillis(),
+                            videoKey = key,
+                        )
+                    )
+                    db.subtitleCacheDao().delete(partialAsrCacheKey)
+                    db.subtitleCacheDao().deleteByCacheKeyPrefix(
+                        AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(partialAsrCacheKey),
+                    )
+                    // Keep the bounded source-audio cache after ASR as well: user-triggered
+                    // speaker diarization can reuse it without downloading the same media again.
+                    if (videoId != null && audioFile is File) {
+                        audioFile.setLastModified(System.currentTimeMillis())
+                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = audioFile)
+                    }
+                    android.util.Log.i(
+                        "PlaybackService",
+                        "Cached ${transcribedLines.size} ASR source subtitle cues for retry reuse",
+                    )
+                }
+                }
+                return true
+            }
+
+            if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
+                if (!runTranscriptionStage()) return
+            }
+
+            // 用户导入的字幕优先（SRT/VTT 导入入口）
+            if (sourceImportedLines != null && sourceImportedLines!!.isNotEmpty()) {
+                lines = sourceImportedLines
+                srcLang = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
+                    sourceImportedLines!!.asSequence().map { it.text }.asIterable()
+                )
+            }
+
+            if (sourceTranscriptProducedInThisRun) {
+                // The ASR result and its source cache are now durable. Publish the timeline and
+                // move the UI into TRANSLATING before reading downstream settings. Otherwise a
+                // translator change in this narrow gap is mistaken for an in-flight ASR change,
+                // and the watcher may defer it even though the translator/cache key was already read.
+                val completedSourceLines = lines.orEmpty()
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key) {
+                        state.copy(
+                            phase = Phase.TRANSLATING,
+                            lines = completedSourceLines,
+                            totalLines = completedSourceLines.size,
+                            translatedLineCount = completedSourceLines.count { !it.zh.isNullOrBlank() },
+                            sourceLang = srcLang,
+                            progress = "原文字幕已就绪，正在准备中文翻译…",
+                            error = null,
+                        )
+                    } else state
+                }
+                // The source timeline is durable before the first translator request begins.
+                persistInProgressProcessingCheckpoint(key, pipelineGeneration)
+            }
+
+            // The engine may change while subtitles are being discovered, fetched, or transcribed.
+            // Refresh the provider identity for every source path, not only the ASR path: otherwise
+            // an already-loaded translation cache from the previous engine can survive a deferred
+            // settings change and be shown as if it came from the newly selected engine.
+            val latestTranslationId = settingsPrefs.getLong("active_api_id", -1L)
+            val latestProviderFingerprint = translationProviderFingerprint(latestTranslationId)
+            val latestBaseTranslationCacheKey = TranslationCacheIdentity.forProvider(
+                baseKey = cacheKeyBase,
+                activeId = latestTranslationId,
+                importedLines = sourceImportedLines,
+                previousKey = resumeState?.translationCacheKey,
+                providerFingerprint = latestProviderFingerprint,
+            )
+            // Keep refresh-time identity exactly aligned with the initial cache lookup above.
+            val latestBaseModeAwareTranslationCacheKey = TranslationCacheModePolicy.baseModeAwareKey(
+                baseTranslationCacheKey = latestBaseTranslationCacheKey,
+                hasImportedLines = !sourceImportedLines.isNullOrEmpty(),
+                isYouTubeCaptionSource =
+                    ui.value.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES,
+                asrCacheIdentity = asrCacheIdentity,
+            )
+            val latestTranslationCacheKey = if (
+                videoId != null &&
+                sourceImportedLines.isNullOrEmpty() &&
+                ui.value.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+            ) {
+                "$latestBaseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+            } else {
+                latestBaseModeAwareTranslationCacheKey
+            }
+            val forceFreshTranslationNow = mustRegenerateTranslation()
+            val translationIdentityChanged = latestTranslationId != selectedTranslationId ||
+                latestProviderFingerprint != providerFingerprint ||
+                latestTranslationCacheKey != translationCacheKey
+            selectedTranslationId = latestTranslationId
+            if (translationIdentityChanged) {
+                val previousTranslationCacheKey = translationCacheKey
+                translationCacheKey = latestTranslationCacheKey
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(translationCacheKey = latestTranslationCacheKey)
+                }
+
+                // A cache queried under the old provider identity is never eligible after a switch.
+                // Check only the new provider's cache; if it is missing, continue from source rows.
+                if (
+                    !forceFreshTranslationNow &&
+                    resumeState == null &&
+                    previousTranslationCacheKey != latestTranslationCacheKey
+                ) {
+                    val latestStoredTranslationCache = db.subtitleCacheDao().get(latestTranslationCacheKey)
+                    cached = latestStoredTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                    if (latestStoredTranslationCache != null && cached == null) {
+                        db.subtitleCacheDao().delete(latestTranslationCacheKey)
+                    }
+                    if (
+                        cached == null &&
+                        lines == null &&
+                        sourceImportedLines.isNullOrEmpty() &&
+                        !restoredSourceLines.isNullOrEmpty()
+                    ) {
+                        lines = restoredSourceLines
+                        srcLang = restoredSourceLang
+                            ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
+                                restoredSourceLines.asSequence().map { it.text }.asIterable()
+                            )
+                    }
+                }
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackFlow",
+                    if (sourceTranscriptProducedInThisRun) {
+                        "转写期间翻译配置已变更，翻译阶段应用最新配置"
+                    } else {
+                        "字幕准备期间翻译配置已变更，缓存已按新配置重新校验"
+                    },
+                    diagnosticContext = mapOf(
+                        "处理流程" to ui.value.processingFlow.name,
+                        "翻译配置身份已刷新" to "是",
+                        "原文时间轴" to if (lines != null) "已保留" else "未生成新的原文行",
+                        "是否沿用旧翻译缓存" to "否",
+                        "是否命中新配置缓存" to (cached != null).toString(),
+                    ),
+                )
+            }
+
+            if (forceFreshTranslationNow) {
+                runCatching { db.subtitleCacheDao().delete(translationCacheKey) }
+                cached = null
+            }
+
+            suspend fun prepareTranslatedLines(): List<SubLine> {
+                val restoredProcessingFlow = resumeState?.processingFlow ?: ui.value.processingFlow
+                val isImportedTranslatedSnapshot =
+                    restoredProcessingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+
+                if (cached != null && SubtitleCacheRestorePolicy.shouldUseCachedRows(
+                        hasAuthoritativeImportedTranslation = isImportedTranslatedSnapshot,
+                    )
+                ) {
+                    // 缓存命中：直接还原双语行
+                    val arr = org.json.JSONArray(cached.linesJson)
+                    val restored = ArrayList<SubLine>(arr.length())
+                    for (i in 0 until arr.length()) {
+                        if ((i and 0xff) == 0) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        }
+                        val o = arr.getJSONObject(i)
+                        val originalText = o.getString("t")
+                        val cachedTranslation = o.optString("zh")
+                            .takeIf { it.isNotBlank() }
+                            ?.let { SubtitleParsers.cleanTranslatedText(it) }
+                        restored += SubLine(
+                            i, o.getLong("s"), o.getLong("e"),
+                            originalText, cachedTranslation, o.optInt("sp", -1),
+                        )
+                    }
+                    // A legacy cache can have a blank source-language field. Preserve a trusted
+                    // language from the source cache, or re-detect from the restored original captions,
+                    // rather than accidentally treating Chinese source subtitles as foreign text.
+                    srcLang = cached.srcLang.takeIf { it.isNotBlank() }
+                        ?: restoredSourceLang
+                        ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(restored.asSequence().map { it.text }.asIterable())
+                    // Re-check cached language against the original transcript too. Older releases
+                    // may have persisted a provider's incorrect "zh" hint for non-Chinese speech.
+                    srcLang = resolveSourceLanguageForCues(
+                        restored.map { it.text },
+                        io.translatetube.local.subs.SubtitleLanguageDetector
+                            .resolveTranscriptionLanguageFromCues(
+                                srcLang,
+                                restored.asSequence().map { it.text }.asIterable(),
+                            ),
+                    )
+                    lines = if (isChineseLanguage(srcLang)) {
+                        SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(restored)
+                    } else {
+                        restored
+                    }
+                    val manualRestoredLines = awaitManualSubtitleTranslation(
+                        key, lines.orEmpty(), srcLang, pipelineGeneration,
+                    )
+                    if (manualRestoredLines != null) {
+                        lines = manualRestoredLines
+                        restartPlaybackFromBeginningForThisRun = true
+                        forceFreshPcmSynthesisForThisRun = true
+                    } else if (!isChineseLanguage(srcLang) && restored.any { line ->
+                        needsSubtitleTranslation(line, srcLang)
+                    }) {
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                phase = Phase.TRANSLATING,
+                                sourceLang = srcLang,
+                                progress = "继续翻译缓存中尚未完成的字幕…",
+                            )
+                        }
+                        lines = translateLines(key, restored, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
+                    }
+                } else if (lines != null) {
+                    // ---- 3. 翻译 ----
+                    var translatedLines = lines!!
+                    if (isImportedTranslatedSnapshot) {
+                        // "导入已翻译字幕并配音" is an authoritative translated input. Do not infer
+                        // the source language from its original-language display row and send it to the
+                        // active translation engine again. Keep the imported zh text and timestamps.
+                        translatedLines = io.translatetube.local.subs.ImportedSubtitlePolicy
+                            .preserveImportedTranslations(translatedLines)
+                        srcLang = "zh"
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
+                                sourceLang = "zh",
+                                translatedLineCount = translatedLines.count { line -> !line.zh.isNullOrBlank() },
+                                progress = if (restoreCompletedSnapshot) "" else "复用已导入译文，正在准备配音…",
+                            )
+                        }
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "恢复已导入译文，跳过应用内翻译",
+                            diagnosticContext = mapOf(
+                                "字幕行数" to translatedLines.size.toString(),
+                                "复用导入译文行数" to translatedLines.count { !it.zh.isNullOrBlank() }.toString(),
+                                "恢复成功快照" to restoreCompletedSnapshot.toString(),
+                                "处理流程" to ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES.name,
+                            ),
+                        )
+                    } else {
+                        // Validate the selected/source-cache language against the actual transcript before
+                        // deciding that translation can be skipped.
+                        srcLang = resolveSourceLanguageForCues(
+                            translatedLines.map { it.text },
+                            io.translatetube.local.subs.SubtitleLanguageDetector
+                                .resolveTranscriptionLanguageFromCues(
+                                    srcLang,
+                                    translatedLines.asSequence().map { it.text }.asIterable(),
+                                ),
+                        )
+                        val externalTranslatedLines = awaitManualSubtitleTranslation(
+                            key, translatedLines, srcLang, pipelineGeneration,
+                        )
+                        if (externalTranslatedLines != null) {
+                            translatedLines = externalTranslatedLines
+                            restartPlaybackFromBeginningForThisRun = true
+                            forceFreshPcmSynthesisForThisRun = true
+                        } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
+                            val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
+                            if (needsTranslation) {
+                                updateUiForSession(key, pipelineGeneration) {
+                                    it.copy(
+                                        phase = Phase.TRANSLATING,
+                                        progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…",
+                                    )
+                                }
+                                translatedLines = translateLines(
+                                    key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration,
+                                )
+                            }
+                        } else if (translatedLines.isNotEmpty()) {
+                            // Source captions are not translator output: preserve repeated words and text that
+                            // happens to resemble a progress label instead of running translation cleanup on it.
+                            translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
+                        }
+                    }
+                    lines = translatedLines
+
+                    // An imported translated file is persisted as a ready-session snapshot instead of
+                    // being written under the currently selected translator's cache identity.
+                    if (!isImportedTranslatedSnapshot) {
+                        // Persist only when more than half of rows have usable Chinese output.
+                        ensureCurrentSession(key, pipelineGeneration)
+                        var translatedRowCount = 0
+                        for ((index, line) in translatedLines.withIndex()) {
+                            if ((index and 0xff) == 0) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            }
+                            if (!line.zh.isNullOrEmpty()) translatedRowCount++
+                        }
+                        if (translatedRowCount > translatedLines.size / 2) {
+                            val arr = org.json.JSONArray()
+                            for ((rowIndex, line) in translatedLines.withIndex()) {
+                                if ((rowIndex and 0xff) == 0) {
+                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                }
+                                arr.put(
+                                    org.json.JSONObject()
+                                        .put("s", line.startMs)
+                                        .put("e", line.endMs)
+                                        .put("t", line.text)
+                                        .put("zh", line.zh ?: "")
+                                )
+                            }
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            ensureCurrentSession(key, pipelineGeneration)
+                            db.subtitleCacheDao().put(
+                                io.translatetube.local.data.SubtitleCacheEntity(
+                                    translationCacheKey, srcLang, arr.toString(),
+                                    System.currentTimeMillis(), videoKey = key,
+                                )
+                            )
+                        }
+                    }
+                }
+
+                ensureCurrentSession(key, pipelineGeneration)
+                // 仅 YouTube：把第一句起点校准到人声真正开口的时间（网页/本地不走这里）。
+                val baseLines = lines ?: emptyList()
+                val importedTranslatedFlow =
+                    resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                val calibratedLines = if (videoId != null && !importedTranslatedFlow) {
+                    calibrateYouTubeFirstCue(requireNotNull(videoId), baseLines)
+                } else {
+                    baseLines
+                }
+                ensureCurrentSession(key, pipelineGeneration)
+                val finalLines = applySavedLineOverrides(calibratedLines, key)
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
+                        progress = "", phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
+                    )
+                }
+                // The new translation result is now durable. Clear only the translation restart
+                // marker before checkpointing so a later dubbing interruption resumes at stage 5.
+                if (forceFreshTranslationPipelineGeneration == pipelineGeneration) {
+                    forceFreshTranslationPipelineGeneration = 0L
+                }
+                if (!restoreCompletedSnapshot) {
+                    // Covers sessions that needed no translation calls, as well as the small gap
+                    // between the final translated line and stage-5 synthesis.
+                    persistInProgressProcessingCheckpoint(key, pipelineGeneration)
+                }
+
+                return finalLines
+            }
+
+            val finalLines = prepareTranslatedLines()
+
+            suspend fun assembleAndPlay() {
+                // ---- 4. 流装配 ----
+                if (!reuseMountedMedia) {
+                if (videoId != null) {
+                    val streamInfo = NewPipeRepo.streams(requireNotNull(videoId))
+                    ensureCurrentSession(key, pipelineGeneration)
+                    val choices = buildYouTubeStreamChoices(streamInfo)
+                    val candidates = choices.sources
+                    val audioUrl = choices.audioUrl
+                    val defaultQuality = choices.defaultQuality
+                    qualitySources = candidates
+                    qualityAudioUrl = audioUrl
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            qualityOptions = candidates.map { q -> q.label },
+                        )
+                    }
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        val accepted = pm.setYouTubeQuality(
+                            videoUrl = defaultQuality.url,
+                            audioUrl = audioUrl,
+                            muxed = defaultQuality.muxed,
+                            title = meta.title,
+                            artist = meta.channel,
+                            artworkUrl = meta.thumbUrl,
+                        )
+                        if (!accepted) {
+                            throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
+                        }
+                        updateUiForSession(key, pipelineGeneration) { it.copy(selectedQuality = defaultQuality.label) }
+                    }
+                } else {
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        val sourceUri = remoteMediaUrl?.let(Uri::parse) ?: localUri
+                        ?: throw IllegalStateException("无可播放的视频地址")
+                    val requestHeaders = buildMap {
+                        remoteMediaReferrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                            ?.let { put("Referer", it) }
+                        remoteMediaCookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+                    }
+                    pm.setUriSource(
+                        sourceUri,
+                        meta.title,
+                        if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                        null,
+                        requestHeaders,
+                        userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                    )
+                    adaptiveQualitySourceReady = true
+                    refreshAdaptiveVideoQualityOptions()
+                    }
+                }
+                } // Keep the existing stream for a selective stage restart.
+
+                // Drain any retired speech engine and unload the native ASR model before
+                // allocating the selected TTS runtime. Reopening a history item can reuse ASR and
+                // translation checkpoints, so it may arrive here quickly while memory is still high.
+                awaitProcessingResumed(key, pipelineGeneration)
+                awaitRetiredDubbingEngines()
+                releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
+                awaitProcessingResumed(key, pipelineGeneration)
+
+                // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
+                dubbingStageEntered = true
+                if (finalLines.isNotEmpty()) {
+                    val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+                        getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+                    )
+                    val selectedTtsName = ttsDisplayName(selectedTts)
+                    updateUiForSession(key, pipelineGeneration) { it.copy(ttsEngineName = selectedTtsName) }
+
+                    val selectedEngineReady = when (selectedTts) {
+                        "system" -> true
+                        "edge" -> true
+                        "google" -> true
+                        "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
+                        "kokoro" -> kokoroRuntimeReady()
+                        "piper" -> piperModelReadyForChinese()
+                        else -> false
+                    }
+                    // Chinese source material still respects the explicitly selected TTS engine.
+                    // If the selected engine is unavailable, the common waiting state below blocks
+                    // playback instead of silently degrading to source-only narration.
+                    if (selectedEngineReady) {
+                        try {
+                            // Pass the saved selection explicitly so a settings change during parsing
+                            // cannot cause the readiness check and actual engine to disagree.
+                            val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
+                            try {
+                                ensureCurrentSession(key, pipelineGeneration)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            val d = try {
+                                DubbingEngine(this, key, scope, pm.dubbingBus)
+                            } catch (e: Exception) {
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            try {
+                                ensureCurrentSession(key, pipelineGeneration)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                retireDubbing(d)
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            registerDubbingFailureHandler(d, tts, key)
+                            try {
+                                // Re-read the generation marker immediately before stage 5. A
+                                // translation/TTS change may have been deferred while ASR was
+                                // running, after this local pipeline variable was initialized.
+                                val forceFreshForCurrentGeneration =
+                                    forceFreshPcmSynthesisForThisRun ||
+                                        forceFreshDubbingPipelineGeneration == pipelineGeneration
+                                forceFreshPcmSynthesisForThisRun = forceFreshForCurrentGeneration
+                                if (forceFreshForCurrentGeneration) {
+                                    restartPlaybackFromBeginningForThisRun = true
+                                }
+                                d.attach(
+                            tts,
+                            finalLines,
+                            sourceLanguage = srcLang,
+                            forceRegenerateDubbing = forceFreshForCurrentGeneration,
+                        )
+                            } catch (e: Exception) {
+                                retireDubbing(d)
+                                runCatching { tts.close() }
+                                throw e
+                            }
+                            try {
+                                ensureCurrentSession(key, pipelineGeneration)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                retireDubbing(d)
+                                throw e
+                            }
+                            if (!publishDubbingEngine(d, key, pipelineGeneration)) {
+                                retireDubbing(d)
+                                throw kotlinx.coroutines.CancellationException(
+                                    "视频处理任务已被新的打开请求替代，取消旧的配音引擎初始化",
+                                )
+                            }
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(
+                                    ttsEngineName = tts.name,
+                                    dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
+                                    noModelHint = null,
+                                    waitingForTranscriptionEngine = false,
+                                    waitingForDubbingEngine = false,
+                                )
+                            }
+                            dubCollectJob = scope.launch {
+                                kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                                    .collect { (prefix, readyCount, audioReadyCount) ->
+                                        updateUiForCurrentDubbingEngine(d, key) {
+                                            it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
+                                        }
+                                        clearInProgressCheckpointAfterDubbing(key, pipelineGeneration)
+                                    }
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            val failureState = ui.value
+                            io.translatetube.local.util.AppLogStore.error(
+                                this@PlaybackService,
+                                "TTS",
+                                "所选配音引擎初始化失败：$selectedTtsName",
+                                e,
+                                diagnosticContext = mapOf(
+                                    "视频来源" to when {
+                                        videoId != null -> "YouTube"
+                                        remoteMediaUrl != null -> "网页视频/远程媒体"
+                                        localUri != null -> "本地视频"
+                                        else -> "本地或已导入字幕任务"
+                                    },
+                                    "配音引擎 ID" to selectedTts,
+                                    "配音引擎名称" to selectedTtsName,
+                                    "系统 TTS 合成模式" to getSharedPreferences("settings", MODE_PRIVATE).getString("system_tts_mode", "generated").orEmpty(),
+                                    "Piper 模型 ID" to getSharedPreferences("settings", MODE_PRIVATE).getString("piper_model", "未选择").orEmpty(),
+                                    "当前处理阶段" to failureState.phase.name,
+                                    "当前处理进度" to failureState.progress.take(180),
+                                    "字幕总数" to failureState.totalLines.toString(),
+                                    "当前已发布字幕行数" to failureState.lines.size.toString(),
+                                    "已准备配音行数" to failureState.preparedCount.toString(),
+                                    "处理代数" to pipelineGeneration.toString(),
+                                ),
+                            )
+    android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
+                            val reason = e.message ?: e.javaClass.simpleName
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(
+                                    ttsEngineName = selectedTtsName,
+                                    dubbingStatus = "${selectedTtsName} 初始化失败",
+                                    noModelHint = when (selectedTts) {
+                                        "system" -> "系统 TTS 初始化失败：$reason。当前严格使用手机系统 TTS，未切换本地模型。请检查手机的文字转语音服务、中文语音数据和可用音色，然后重试。"
+                                        "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
+                                        "edge" -> "微软 Edge TTS 初始化失败：$reason。请检查网络连接后重试。"
+                                        "google" -> "谷歌在线语音初始化失败：$reason。请检查网络连接后重试。"
+                                        "gemini" -> "Gemini TTS 初始化失败：$reason。请检查设置中的 Gemini API Key 和网络连接后重试。"
+                                        else -> "所选配音引擎「$selectedTtsName」初始化失败：$reason。请检查对应引擎配置后重试。"
+                                    },
+                                    waitingForTranscriptionEngine = false,
+                                    waitingForDubbingEngine = true,
+                                    // A constructor failure means there is no dubbing output to replace
+                                    // the source track; never keep the entire video muted.
+                                    muteOriginal = false,
+                                    error = null
+                                )
+                            }
+                            withContext(Dispatchers.Main) {
+                                if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
+                            }
+                        }
+                    } else {
+                        val message = when (selectedTts) {
+                            "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。应用不会自动切换到系统 TTS；下载完整的配音模型后再试。"
+                            "piper" -> {
+                                val modelId = getSharedPreferences("settings", MODE_PRIVATE)
+                                    .getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                                val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
+                                when {
+                                    definition == null -> "当前 Piper 模型编号无效，请在设置中重新选择中文 Piper 模型。"
+                                    !definition.supportsChineseOutput -> "当前视频的配音目标是中文，所选 Piper 模型为「${definition.langLabel}」，不能用于中文配音。请在设置中选择中文 Piper 模型。"
+                                    !io.translatetube.local.tts.PiperModels.modelReady(this, modelId) -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
+                                    else -> "Piper 中文配音初始化失败，请检查模型文件后重试。"
+                                }
+                            }
+                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key 后再试。"
+                            else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择配音引擎。应用不会擅自切换引擎。"
+                        }
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
+                                dubbingStatus = "${selectedTtsName} 尚未就绪",
+                                noModelHint = message,
+                                waitingForTranscriptionEngine = false,
+                                waitingForDubbingEngine = true,
+                                // The selected local model is unavailable, so no voice can be heard.
+                                // Keep the selected engine unchanged but return to audible source audio.
+                                muteOriginal = false,
+                            )
+                        }
+                        withContext(Dispatchers.Main) {
+                            if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
+                        }
+                    }
+                }
+                // Generated-PCM engines wait only for an adaptive startup buffer; later cues
+                // continue synthesizing while playback advances. Direct System TTS uses its live timeline.
+                val startupDubbing = dubbing
+                if (startupDubbing != null) {
+                    val immediateMode = startupDubbing.usesImmediateTimelinePlayback
+                    if (!immediateMode) {
+                        awaitInitialDubbingBufferBeforePlayback(
+                            sessionKey = key,
+                            pipelineGeneration = pipelineGeneration,
+                            engine = startupDubbing,
+                            lines = finalLines,
+                        )
+                    } else {
+                        val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
+                        val startupBuffer = DubbingStartupBufferPolicy.plan(
+                            lines = finalLines,
+                            spokenCueIndices = startupSpeechCueIndices,
+                            immediateMode = true,
+                            synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
+                            synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
+                        )
+                        if (startupBuffer.lineIndices.isNotEmpty()) {
+                            fun cueFinished(index: Int): Boolean =
+                                startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
+
+                            val waitStartedNs = System.nanoTime()
+                            val deadlineNs = waitStartedNs +
+                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                                    // 用户要求视频立即开播：首句直播缓冲最多 1 秒（原 3 秒），
+                                    // 未就绪的句先原声，TTS 引擎就绪后自然接上时间轴。
+                                    startupBuffer.waitTimeoutMs.coerceAtMost(1_000L),
+                                )
+                            startupDubbing.prioritizeAround(
+                                startupBuffer.lineIndices.first(),
+                                lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
+                            )
+                            while (true) {
+                                awaitProcessingResumed(key, pipelineGeneration)
+                                ensureCurrentSession(key, pipelineGeneration)
+                                val ready = startupBuffer.lineIndices
+                                    .take(startupBuffer.minimumCueCount)
+                                    .all(::cueFinished)
+                                if (ready || System.nanoTime() >= deadlineNs) break
+                                kotlinx.coroutines.delay(100L)
+                            }
+                            val firstSpeechReady = startupSpeechCueIndices.firstOrNull()?.let(::cueFinished) ?: true
+                            if (!firstSpeechReady) {
+                                updateUiForSession(key, pipelineGeneration) {
+                                    it.copy(progress = "首句系统 TTS 尚未就绪，开始播放后会按时间轴朗读")
+                                }
+                            }
+                        }
+                    }
+                }
+                ensureCurrentSession(key, pipelineGeneration)
+                saveHistory(meta)
+                ensureCurrentSession(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.READY,
+                        engineName = it.engineName.ifEmpty { "本地引擎" },
+                        progress = VideoProcessingFlowPolicy.readyProgress(
+                            waitingForTranscriptionEngine = it.waitingForTranscriptionEngine,
+                            waitingForDubbingEngine = it.waitingForDubbingEngine,
+                        ),
+                    )
+                }
+                io.translatetube.local.util.AppLogStore.resolveIssue(
+                    context = this@PlaybackService,
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
+                    message = "视频处理流程已重新成功完成",
+                    diagnosticContext = mapOf(
+                        "恢复阶段" to Phase.READY.name,
+                        "恢复证据" to "本次视频处理管线完成并进入 READY 阶段",
+                        "字幕行数" to ui.value.lines.size.toString(),
+                    ),
+                )
+                // A changed ASR/translation/TTS configuration requires a fully fresh speech timeline.
+                // Never restore the previous watch position for that run: play the newly synthesized
+                // Chinese dubbing from the beginning, consistently for YouTube, remote web media and local files.
+                val resumeSec = try {
+                    db.videoDao().byKey(key)?.watchedSec ?: 0L
+                } catch (_: Exception) { 0L }
+                val totalMs = meta.durationSec * 1000
+                if (restartPlaybackFromBeginningForThisRun) {
+                    // Do not leave the prior run's watch position as the history resume point after
+                    // changing engines or importing an external translation. The new subtitle/voice
+                    // timeline is about to start at zero.
+                    try {
+                        db.videoDao().setWatched(key, 0L)
+                    } catch (error: Exception) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "重置本轮续播位置失败",
+                            error,
+                            diagnosticContext = mapOf(
+                                "视频来源" to diagnosticMediaSourceType(ui.value),
+                                "本次要求起播位置 ms" to "0",
+                                "保留的旧续播位置秒" to resumeSec.toString(),
+                            ),
+                        )
+                    }
+                }
+                if (
+                    !restartPlaybackFromBeginningForThisRun &&
+                    resumeSec > 10 &&
+                    (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)
+                ) {
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        startPlaybackWithMountedDubbing(resumeSec * 1000) {
+                            ensureCurrentSession(key, pipelineGeneration)
+                        }
+                    }
+                } else {
+                    val startPositionMs = if (restartPlaybackFromBeginningForThisRun) 0L else null
+                    if (restartPlaybackFromBeginningForThisRun) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "本轮处理后从视频开头起播",
+                            diagnosticContext = mapOf(
+                                "视频来源" to when {
+                                    key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                                    key.startsWith("remote:", ignoreCase = true) -> "网页视频/远程媒体"
+                                    localUri != null || key.startsWith("local:", ignoreCase = true) -> "本地视频"
+                                    else -> "其他视频源"
+                                },
+                                "本次起播位置" to "0 ms（视频开头）",
+                                "忽略的历史续播位置秒" to resumeSec.toString(),
+                                "本轮从头开始处理" to "true",
+                            ),
+                        )
+                    }
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        startPlaybackWithMountedDubbing(startPositionMs) {
+                            ensureCurrentSession(key, pipelineGeneration)
+                        }
+                    }
+                    if (restartPlaybackFromBeginningForThisRun) {
+                        // ExoPlayer may only be read on the main thread. Reading it from this worker
+                        // thread always threw, so the old log showed "读取失败" and position 0 even
+                        // when playback was healthy, hiding the real state of a black-screen start.
+                        val startState = withContext(Dispatchers.Main) {
+                            fun read(block: () -> String): String = runCatching(block).getOrDefault("读取失败")
+                            linkedMapOf(
+                                "起播调用后播放器位置 ms" to read { pm.player.currentPosition.toString() },
+                                "播放器播放意图 playWhenReady" to read { pm.player.playWhenReady.toString() },
+                                "是否正在播放 isPlaying" to read { pm.player.isPlaying.toString() },
+                                "播放器状态" to read {
+                                    when (val s = pm.player.playbackState) {
+                                        androidx.media3.common.Player.STATE_IDLE -> "IDLE（未准备）"
+                                        androidx.media3.common.Player.STATE_BUFFERING -> "BUFFERING（缓冲中）"
+                                        androidx.media3.common.Player.STATE_READY -> "READY（可播放）"
+                                        androidx.media3.common.Player.STATE_ENDED -> "ENDED（已结束）"
+                                        else -> s.toString()
+                                    }
+                                },
+                                "已挂载媒体数" to read { pm.player.mediaItemCount.toString() },
+                                "是否已渲染首帧" to read { pm.hasRenderedFirstFrame.value.toString() },
+                                "画面是否已绑定播放器" to (boundVideoSurface?.get() != null).toString(),
+                            )
+                        }
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "本轮起播位置检查完成",
+                            diagnosticContext = startState + mapOf(
+                                "视频来源" to diagnosticMediaSourceType(ui.value),
+                                "请求起播位置 ms" to "0",
+                                "是否从头起播" to "true",
+                            ),
+                        )
+                    }
+                }
+            }
+
+            assembleAndPlay()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The import path may bypass the old pipeline's broad mutex while a translation call
+            // unwinds. Never let a late failure from that obsolete generation unmute or otherwise
+            // alter the newly imported subtitle session.
+            if (
+                activePipelineGeneration != pipelineGeneration ||
+                videoKey != key ||
+                ui.value.key != key
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackPipeline",
+                    "已忽略过期处理任务异常",
+                    e,
+                    diagnosticContext = mapOf(
+                        "异常类型" to e.javaClass.name,
+                        "旧处理代数" to pipelineGeneration.toString(),
+                        "活动处理代数" to activePipelineGeneration.toString(),
+                        "当前处理流程" to ui.value.processingFlow.name,
+                    ),
+                )
+                return
+            }
+            val failureState = ui.value
+            val cloudAsrSubmissionUncertain =
+                e is io.translatetube.local.asr.CloudAsrSubmissionUncertainException
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService,
+                "PlaybackPipeline",
+                "视频解析、转写、翻译或配音流程失败",
+                e,
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        key.startsWith("youtube:") -> "YouTube"
+                        key.startsWith("remote:") -> "网页视频/远程媒体"
+                        key.startsWith("webpage:") -> "网页链接"
+                        key.startsWith("local:") -> "本地视频"
+                        else -> "未知来源"
+                    },
+                    "当前阶段" to failureState.phase.name,
+                    "当前处理进度/子步骤" to failureState.progress.take(240),
+                    "当前错误状态" to failureState.error.orEmpty().take(240),
+                    "当前转写引擎是否等待就绪" to failureState.waitingForTranscriptionEngine.toString(),
+                    "当前翻译引擎" to failureState.engineName.ifBlank { "未确定" },
+                    "当前配音引擎" to failureState.ttsEngineName.ifBlank { "未确定" },
+                    "字幕源语言" to failureState.sourceLang.ifBlank { "未确定" },
+                    "字幕已发布行数" to failureState.lines.size.toString(),
+                    "字幕总行数" to failureState.totalLines.toString(),
+                    "已准备配音行数" to failureState.preparedCount.toString(),
+                    "当前字幕索引" to failureState.currentLine.toString(),
+                    "原声是否静音" to (failureState.originalVolume <= 0f).toString(),
+                    "处理代数" to pipelineGeneration.toString(),
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
+                )
+android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
+            if (e is TranslationFailureException) {
+                if (ui.value.key == key && videoKey == key) {
+                    runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
+                }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = e.message ?: "API 翻译失败",
+                        noModelHint = null,
+                        muteOriginal = false,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                    )
+                }
+            } else {
+            // A TTS constructor can fail before the subtitle list is published to UI.
+            // Restore original volume immediately so default mute never silences the whole video.
+            if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
+                runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = if (cloudAsrSubmissionUncertain) {
+                            e.message ?: "云端转写状态不确定，请确认后再重新提交"
+                        } else pipelineFailureMessage(e, failureState.phase, "视频解析或配音初始化失败"),
+                        cloudAsrSubmissionUncertain = cloudAsrSubmissionUncertain,
+                        noModelHint = if (dubbingStageEntered) {
+                            "配音初始化失败，已恢复视频原声以避免无声播放。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。"
+                        } else {
+                            null
+                        },
+                        muteOriginal = false,
+                    )
+                }
+            } else {
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = if (cloudAsrSubmissionUncertain) {
+                            e.message ?: "云端转写状态不确定，请确认后再重新提交"
+                        } else pipelineFailureMessage(e, failureState.phase, "视频解析失败"),
+                        cloudAsrSubmissionUncertain = cloudAsrSubmissionUncertain,
+                    )
+                }
+            }
+            }
+        } catch (e: OutOfMemoryError) {
+            // A newer import can intentionally run while this canceled translation pipeline unwinds.
+            // A stale OOM handler must not retire the new pipeline's TTS engine or start its video
+            // before the imported subtitle synthesis is ready.
+            if (
+                activePipelineGeneration != pipelineGeneration ||
+                videoKey != key ||
+                ui.value.key != key
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackPipeline",
+                    "已忽略过期处理任务的内存恢复操作",
+                    e,
+                    diagnosticContext = mapOf(
+                        "当前处理代数" to pipelineGeneration.toString(),
+                        "活动处理代数" to activePipelineGeneration.toString(),
+                        "是否仍为当前视频" to (videoKey == key && ui.value.key == key).toString(),
+                        "处理阶段" to ui.value.phase.name,
+                        "处理流程" to ui.value.processingFlow.name,
+                    ),
+                )
+                return
+            }
+            // Native ASR/TTS engines can exhaust the app heap/native budget when a history replay
+            // switches engines in the same service process. Prefer original-audio playback and an
+            // actionable warning over letting this recoverable initialization failure kill the app.
+            val memoryFailureState = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackPipeline",
+                "视频处理或配音初始化时发生 OutOfMemoryError，已启动内存恢复流程",
+                e,
+                diagnosticContext = mapOf(
+                    "故障阶段" to memoryFailureState.phase.name,
+                    "最近处理步骤" to memoryFailureState.progress.ifBlank { memoryFailureState.failedProgress }.take(200),
+                    "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
+                    "字幕行数" to memoryFailureState.lines.size.toString(),
+                    "已翻译行数" to memoryFailureState.translatedLineCount.toString(),
+                    "已准备配音行数" to memoryFailureState.preparedCount.toString(),
+                    "当前字幕索引" to memoryFailureState.currentLine.toString(),
+                    "配音引擎" to memoryFailureState.ttsEngineName.ifBlank { "未确定" },
+                    "本次处理状态" to "捕获内存错误后释放本地转写、配音和音频缓存资源，尝试恢复原声",
+                ),
+            )
+            android.util.Log.e("PlaybackService", "Insufficient memory while preparing video/TTS for key=${key.substringBefore('?').take(80)}", e)
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    localAsrMutex.withLock { releaseLocalAsr() }
+                }
+            }
+            runCatching { retireCurrentDubbing() }
+            runCatching { withContext(Dispatchers.IO) { awaitRetiredDubbingEngines() } }
+            System.gc()
+            val memoryMessage =
+                "设备可用内存不足，已停止生成中文配音并恢复视频原声。请稍后重试，或在设置中选择占用更低的配音引擎。"
+            if (ui.value.key == key && videoKey == key) {
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = if (it.lines.isNotEmpty()) Phase.READY else Phase.ERROR,
+                        progress = "",
+                        error = if (it.lines.isNotEmpty()) null else memoryMessage,
+                        noModelHint = memoryMessage,
+                        dubbingStatus = "内存不足，配音已暂停",
+                        muteOriginal = false,
+                        activeDubbingLine = -1,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                        dubbingHasErrors = true,
+                    )
+                }
+                runCatching {
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == key && ui.value.key == key && ::pm.isInitialized) {
+                            safelySetOriginalVolume(1f, "source audio restore requested")
+                            pm.play()
+                        }
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            // A non-fatal Error (for example, an extractor/library linkage error) must be shown
+            // as a playback failure rather than escaping a Dispatchers.Default coroutine.
+            if (e is VirtualMachineError || e is ThreadDeath) throw e
+            val nonVmFailureState = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackPipeline",
+                "视频处理流程捕获到非虚拟机致命错误",
+                e,
+                diagnosticContext = mapOf(
+                    "故障阶段" to nonVmFailureState.phase.name,
+                    "最近处理步骤" to nonVmFailureState.progress.ifBlank { nonVmFailureState.failedProgress }.take(200),
+                    "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
+                    "配音引擎" to nonVmFailureState.ttsEngineName.ifBlank { "未确定" },
+                    "字幕行数" to nonVmFailureState.lines.size.toString(),
+                    "当前字幕索引" to nonVmFailureState.currentLine.toString(),
+                    "错误类型" to e.javaClass.name,
+                    "处理策略" to "将异常显示在播放器状态中，避免非 VM 错误逃逸到后台协程",
+                ),
+            )
+            android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=${key.substringBefore('?').take(80)}", e)
+            updateUiForSession(key, pipelineGeneration) {
+                it.copy(
+                    phase = Phase.ERROR,
+                    progress = "",
+                    error = "视频解析/播放器异常（${e.javaClass.simpleName}）：${e.message ?: "请查看崩溃日志"}"
+                )
+            }
+        } finally {
+            leasedLocalPcmCachePath?.let(::releaseLocalAsrPcmFile)
+            transientPcmFile?.file?.delete()
+            transientCloudUploadAudio?.delete()
+            transientAudio?.delete()
+        }
+    }
+
+    /** 按当前选定的翻译引擎处理字幕；配置不可用时明确报错，不静默替换引擎。 */
+    /** 按小批次翻译；每批完成就写入真实进度，避免整批请求期间进度停滞。 */
+    private suspend fun translateLines(
+        key: String,
+        lines: List<SubLine>,
+        srcLang: String,
+        cacheKeyOverride: String? = null,
+        activeIdOverride: Long? = null,
+        pipelineGeneration: Long? = null,
+    ): List<SubLine> {
+        val translationStartedAtNanos = System.nanoTime()
+        val earlyExternalTranslation = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
+        if (earlyExternalTranslation != null) {
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "Translation",
+                    "外部翻译字幕已准备完成，跳过自动翻译批次",
+                    diagnosticContext = mapOf(
+                        "输入字幕行数" to lines.size.toString(),
+                        "输出字幕行数" to earlyExternalTranslation.size.toString(),
+                        "源语言代码" to srcLang,
+                        "目标语言代码" to "zh",
+                        "流程" to "导入外部译文并沿用原时间轴",
+                    ),
+                )
+            }
+            return earlyExternalTranslation
+        }
+        // Keep previously published subtitle rows immutable so Compose observes every translated batch.
+        val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        updateUiForSession(key, pipelineGeneration) { state ->
+            if (state.key == key) {
+                state.copy(
+                    translatedLineCount = 0,
+                    translationPreviewLines = emptyList(),
+                    translationCurrentBatch = 0,
+                    translationTotalBatches = 0,
+                    translationRetryCount = 0,
+                )
+            } else state
+        }
+        fun checkTranslationActive(index: Int) {
+            if ((index and 0xff) == 0) translationJob?.ensureActive()
+        }
+        val initialRows = ArrayList<SubLine>(lines.size)
+        for ((index, line) in lines.withIndex()) {
+            checkTranslationActive(index)
+            initialRows += line
+        }
+        var updatedLines: List<SubLine> = initialRows
+        val db = AppDatabase.get(this)
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val activeId = activeIdOverride ?: prefs.getLong("active_api_id", -1L)
+        val profiles = db.apiProfileDao().enabled()
+        val tgt = "zh"
+        val plain = ArrayList<String>(lines.size)
+        for ((index, line) in lines.withIndex()) {
+            checkTranslationActive(index)
+            plain += line.text
+        }
+        // Resolve every built-in translation engine through the same factory. Adding a new
+        // local model to EngineFactory then automatically places it on the normal subtitle,
+        // cache, retry, and dubbing pipeline instead of requiring another hand-maintained list.
+        var engine: TranslationEngine? = EngineFactory.getBuiltinEngine(activeId, this)
+        var engineName = when (activeId) {
+            EngineFactory.ID_FREE_GEMINI -> "Google Gemini (免费)"
+            EngineFactory.ID_FREE_DEEPSEEK -> "DeepSeek (免费)"
+            else -> engine?.displayName.orEmpty()
+        }
+        val active = profiles.firstOrNull { it.id == activeId }
+        if (engine == null && active != null) {
+            engine = try {
+                EngineFactory.fromProfile(active).also { engineName = active.name }
+            } catch (failure: Exception) {
+                throw IllegalStateException(
+                    "所选翻译服务“${active.name}”配置无法初始化：${failure.message ?: failure.javaClass.simpleName}。" +
+                        "请检查 API 配置后重试；不会自动切换到其他翻译引擎。",
+                    failure,
+                )
+            }
+        }
+        if (engine == null) {
+            val localName = EngineFactory.localTranslationEngineName(activeId)
+            if (localName != null) {
+                throw IllegalStateException(
+                    "$localName 本地翻译引擎未能创建。请进入本地翻译管理页检查模型状态；不会自动改用其他引擎。"
+                )
+            }
+            throw IllegalStateException(
+                "当前选择的翻译引擎（配置编号 $activeId）不存在或已停用。请在 API 管理中重新选择；不会自动切换到其他翻译引擎。"
+            )
+        }
+        // Publish the selected engine before model/configuration preflight can fail. This keeps
+        // the five-stage processing UI and its error details aligned with the newly selected engine.
+        updateUiForSession(key, pipelineGeneration) { state ->
+            if (state.key == key) state.copy(engineName = engineName) else state
+        }
+        // The Google hybrid engine can fall back to offline ML Kit. For these Google paths,
+        // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
+        // to abort every subtitle and prevent the video from playing.
+        val sourceEchoAsUntranslatedFallback =
+            TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback(engine!!.id)
+        val pendingIndices = ArrayList<Int>()
+        val translationPreviewRows = ArrayList<SubLine>(2)
+        var completed = 0
+        for (index in lines.indices) {
+            checkTranslationActive(index)
+            val line = lines[index]
+            val existingTranslation = SubtitleParsers.preferredTranslationText(line)
+            if (existingTranslation != null) {
+                if (translationPreviewRows.size == 2) translationPreviewRows.removeAt(0)
+                translationPreviewRows += line.copy(zh = existingTranslation)
+            }
+            if (line.text.isBlank() || !needsSubtitleTranslation(line, srcLang)) {
+                completed++
+            } else {
+                pendingIndices += index
+            }
+        }
+
+        try {
+            // Run local-engine preflight before announcing translation progress or entering retries.
+            // The selected engine resolves an "auto" source using the full subtitle list.
+            var src = SourceLanguagePolicy.sourceForTranslation(srcLang)
+            val selectedMlKit = engine as? MlKitEngine
+            val selectedOpus = engine as? OpusMtEngine
+            val selectedSmall100 = engine as? Small100Engine
+            val selectedSinglePair = engine as? SinglePairTranslationEngine
+            if (pendingIndices.isNotEmpty()) {
+                val preferredSource = prefs.getString("translation_source_language", "auto")
+                    .orEmpty().ifBlank { "auto" }
+                val selectedLocalId = EngineFactory.isLocalTranslationEngine(activeId)
+                if (selectedLocalId && !SourceLanguagePolicy.isUndetermined(preferredSource)) {
+                    val scriptDetected = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(plain)
+                    val detectedSource = if (!SourceLanguagePolicy.isUndetermined(scriptDetected)) {
+                        scriptDetected
+                    } else {
+                        io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(plain)
+                    }
+                    if (!SourceLanguagePolicy.isUndetermined(detectedSource)) {
+                        fun primaryLanguageCode(tag: String): String {
+                            val primary = SourceLanguagePolicy.normalizeTag(tag)
+                                .substringBefore('-').lowercase(java.util.Locale.ROOT)
+                            return when (primary) {
+                                "iw" -> "he"
+                                "in" -> "id"
+                                "nb", "nn" -> "no"
+                                else -> primary
+                            }
+                        }
+                        if (primaryLanguageCode(preferredSource) != primaryLanguageCode(detectedSource)) {
+                            val zhLocale = java.util.Locale.SIMPLIFIED_CHINESE
+                            val preferredName = java.util.Locale.forLanguageTag(preferredSource)
+                                .getDisplayLanguage(zhLocale).ifBlank { preferredSource }
+                            val detectedName = java.util.Locale.forLanguageTag(detectedSource)
+                                .getDisplayLanguage(zhLocale).ifBlank { detectedSource }
+                            throw IllegalStateException(
+                                "手动选择的源语言是“$preferredName”，但字幕自动识别更像“$detectedName”。" +
+                                    "请到“API 管理 → 本地翻译”选择正确语言或改为自动识别后重试；不会自动切换其他翻译引擎。"
+                            )
+                        }
+                    }
+                }
+                when {
+                    selectedMlKit != null -> src = selectedMlKit.validateConfiguration(srcLang, tgt, plain)
+                    selectedOpus != null -> src = selectedOpus.validateConfiguration(srcLang, tgt, plain)
+                    selectedSmall100 != null -> src = selectedSmall100.validateConfiguration(srcLang, tgt, plain)
+                    selectedSinglePair != null -> src = selectedSinglePair.validateConfiguration(srcLang, tgt, plain)
+                }
+                if (src.isNotBlank()) {
+                    updateUiForSession(key, pipelineGeneration) { it.copy(sourceLang = src) }
+                }
+            }
+            val sourceLanguageForUi = src.ifBlank { srcLang }
+            val batchSize = 16
+            val translationVideoTitle = ui.value.takeIf { it.key == key }
+                ?.title?.trim()?.take(120)?.takeIf { it.isNotBlank() }
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "Translation",
+                    "中文字幕翻译任务已开始",
+                    diagnosticContext = mapOf(
+                        "视频来源" to when {
+                            key.startsWith("youtube:") -> "YouTube"
+                            key.startsWith("remote:") -> "网页视频/远程媒体"
+                            key.startsWith("local:") -> "本地视频"
+                            else -> "导入字幕/其他"
+                        },
+                        "翻译引擎名称" to engineName,
+                        "翻译引擎 ID" to (engine?.id ?: "未知"),
+                        "翻译配置编号" to activeId.toString(),
+                        "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
+                        "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                        "源语言代码" to sourceLanguageForUi,
+                        "目标语言代码" to tgt,
+                        "输入字幕行数" to lines.size.toString(),
+                        "本次需要翻译的字幕行数" to pendingIndices.size.toString(),
+                        "无需翻译/已具备有效译文行数" to completed.toString(),
+                        "翻译批次总数" to ((pendingIndices.size + batchSize - 1) / batchSize).toString(),
+                        "单批字幕行数" to batchSize.toString(),
+                        "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
+                        "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
+                    ),
+                )
+            }
+            val translationBatches = pendingIndices.chunked(batchSize)
+            updateUiForSession(key, pipelineGeneration) {
+                it.copy(
+                    engineName = engineName,
+                    sourceLang = sourceLanguageForUi,
+                    lines = updatedLines,
+                    totalLines = updatedLines.size,
+                    translationPreviewLines = translationPreviewRows.toList(),
+                    translatedLineCount = completed.coerceAtMost(updatedLines.size),
+                    translationCurrentBatch = 0,
+                    translationTotalBatches = translationBatches.size,
+                    translationRetryCount = 0,
+                    progress = if (translationBatches.isEmpty()) {
+                        "字幕已有可用译文，正在整理结果…"
+                    } else {
+                        "准备翻译 ${pendingIndices.size} 条字幕，共 ${translationBatches.size} 批"
+                    },
+                )
+            }
+            val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
+            // Checkpoint the first batch immediately, then every few successful batches and
+            // always at the end. This bounds crash recovery loss while avoiding serializing the full
+            // subtitle timeline to Room after every 16 translated cues.
+            for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
+                awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)?.let { return it }
+                awaitProcessingResumed(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    state.copy(
+                        translationCurrentBatch = batchIndex + 1,
+                        translationTotalBatches = translationBatches.size,
+                        translationRetryCount = 0,
+                        progress = "准备第 ${batchIndex + 1}/${translationBatches.size} 批字幕翻译…",
+                    )
+                }
+                val batchStartedAtNanos = System.nanoTime()
+                val lastBatchIndex = batchIndices.maxOrNull() ?: -1
+                val lookaheadSource = updatedLines.asSequence()
+                    .drop(lastBatchIndex + 1)
+                    .map { it.text }
+                    .filter { it.isNotBlank() }
+                    .take(3)
+                    .toList()
+                // Context is rebuilt for each attempt. On retries, already accepted rows from
+                // this batch become available to later missing cues instead of reusing stale context.
+                // Retry missing rows up to twice after the initial request. A failed cue is isolated
+                // so successful rows are retained and only the unresolved rows are requested again.
+                var unresolvedIndices = batchIndices
+                val resolvedBatch = linkedMapOf<Int, String>()
+                var attempt = 0
+                while (unresolvedIndices.isNotEmpty() && attempt < 3) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    val batch = unresolvedIndices.map { plain[it] }
+                    updateUiForSession(key, pipelineGeneration) { state ->
+                        state.copy(
+                            translationCurrentBatch = batchIndex + 1,
+                            translationTotalBatches = translationBatches.size,
+                            translationRetryCount = attempt,
+                            progress = if (attempt == 0) {
+                                "正在请求翻译服务 · 第 ${batchIndex + 1}/${translationBatches.size} 批"
+                            } else {
+                                "第 ${batchIndex + 1}/${translationBatches.size} 批译文不完整，正在重试第 ${attempt} 次"
+                            },
+                        )
+                    }
+                    val retryContext = unresolvedIndices.firstOrNull()?.let { firstIndex ->
+                        io.translatetube.local.translate.TranslationContextPolicy.mostRecentPairsBefore(
+                            size = updatedLines.size,
+                            beforeIndex = firstIndex,
+                            maxRows = 5,
+                            checkActive = { translationJob?.ensureActive() },
+                            sourceAt = { index -> updatedLines[index].text },
+                            translationAt = { index ->
+                                if (resolvedBatch.containsKey(index)) {
+                                    SubtitleParsers.cleanTranslatedText(resolvedBatch[index])
+                                } else {
+                                    SubtitleParsers.cleanTranslatedText(updatedLines[index].zh)
+                                }
+                            },
+                            isUsable = { source, translated ->
+                                !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                                    .isSourceEcho(source, translated, src) &&
+                                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                                        .isTargetLanguageMismatch(source, translated, src, tgt)
+                            },
+                        )
+                    }
+                    // 请求可能要几十秒：用户这时启用外部翻译，就放弃等待这一批，立刻进入"等待外部译文"。
+                    val racedBatch = try {
+                        runUntilInterrupted(
+                            manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
+                        ) {
+                            engine!!.translateWithContext(
+                                batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
+                            )
+                        }.also { translationJob?.ensureActive() }
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "Translation",
+                            "字幕翻译批次失败，正在执行恢复处理",
+                            e,
+                            diagnosticContext = mapOf(
+                                "翻译引擎 ID" to engine?.id.orEmpty(),
+                                "翻译服务商名称" to active?.name.orEmpty().ifBlank { "本地/Google" },
+                                "模型 ID" to active?.model.orEmpty().ifBlank { "未提供" },
+                                "源语言代码" to src,
+                                "目标语言代码" to tgt,
+                                "本次翻译批次大小" to batch.size.toString(),
+                                "本批起始字幕索引" to unresolvedIndices.firstOrNull().toString(),
+                                "本批结束字幕索引" to unresolvedIndices.lastOrNull().toString(),
+                                "当前重试次数" to attempt.toString(),
+                                "已成功翻译行数" to completed.toString(),
+                                "当前任务键类型" to when {
+                                    ui.value.key.startsWith("youtube:") -> "YouTube"
+                                    ui.value.key.startsWith("remote:") -> "网页视频/远程媒体"
+                                    ui.value.key.startsWith("local:") -> "本地视频"
+                                    else -> "其他"
+                                },
+                            ),
+                        )
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Translation batch failed for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
+                            e,
+                        )
+                        // Distinguish API provider failures from Google offline language-pack errors.
+                        val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                        val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
+                            detail.contains("Function", ignoreCase = true) &&
+                            detail.contains("Not found for account", ignoreCase = true)
+                        val message = if (active != null) {
+                            if (functionMissing) {
+                                "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
+                            } else {
+                                "API 翻译失败（" + active.name + "）：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
+                            }
+                        } else if (activeId == EngineFactory.ID_FREE_GEMINI) {
+                            if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                                "Google Gemini 翻译失败：需要有效 API Key。请在 API 管理中点击 Google Gemini 卡片右侧「•••」填入您的 Gemini API Key（可前往 Google AI Studio 免费获取）。"
+                            } else {
+                                "Google Gemini 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 Gemini 配置。"
+                            }
+                        } else if (activeId == EngineFactory.ID_FREE_DEEPSEEK) {
+                            if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                                "DeepSeek 翻译失败：需要有效 API Key。请在 API 管理中点击 DeepSeek 卡片右侧「•••」填入您的 DeepSeek API Key。"
+                            } else {
+                                "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
+                            }
+                        } else if (EngineFactory.isLocalTranslationEngine(activeId)) {
+                            val localName = EngineFactory.localTranslationEngineName(activeId) ?: "本地翻译模型"
+                            "$localName 本地翻译失败：$detail。请检查对应模型或源语言设置，或进入本地翻译管理页处理后重试。"
+                        } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL) {
+                            val name = when (activeId) {
+                                EngineFactory.ID_MICROSOFT -> "微软翻译"
+                                EngineFactory.ID_DEEPL -> "DeepL 翻译"
+                                else -> "百度翻译"
+                            }
+                            name + "失败：" + detail + "。这是免密钥的网页接口，可能被限流或已调整，请稍后重试，或在 API 管理中换用其他翻译引擎。"
+                        } else {
+                            "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
+                        }
+                        throw TranslationFailureException(message, e)
+                    }
+                    if (racedBatch is InterruptibleResult.Interrupted) {
+                        // 进入等待外部译文；若用户随后又取消外部模式，则回到应用内翻译，重新翻译这一批。
+                        awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)
+                            ?.let { return it }
+                        continue
+                    }
+                    val batchTranslations = (racedBatch as InterruptibleResult.Done).value
+
+                    val parsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
+                        indices = unresolvedIndices,
+                        rawTranslations = batchTranslations,
+                        sourceTexts = unresolvedIndices.associateWith { plain[it] },
+                        sourceLanguage = src,
+                        sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
+                        targetLanguage = tgt,
+                    )
+                    resolvedBatch.putAll(parsedBatch.translations)
+                    unresolvedIndices = parsedBatch.missingIndices
+                    attempt += 1
+                    if (unresolvedIndices.isNotEmpty() && attempt < 3) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Retrying incomplete translation response for ${unresolvedIndices.size} subtitle rows",
+                        )
+                        kotlinx.coroutines.delay(if (attempt == 1) 350L else 700L)
+                    }
+                }
+
+                // Judge fallback eligibility using this batch only. Earlier successful batches
+                // must not turn a completely failed current batch into an apparent partial success.
+                val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() }
+                if (
+                    TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                        unresolvedCount = unresolvedIndices.size,
+                        batchSize = batchIndices.size,
+                        hasUsableTranslation = hasUsableTranslation,
+                        sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
+                        isLocalTranslationEngine = EngineFactory.isLocalTranslationEngine(activeId),
+                        isApiLanguageModelEngine =
+                            TranslationBatchFallbackPolicy.isApiLanguageModelEngine(engine!!.id),
+                    )
+                ) {
+                    // If a batch contains useful translations but a small number of rows remain
+                    // invalid after retry, preserve only those rows on original audio. A completely
+                    // failed local model or a remote API failure still fails the batch.
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Keeping ${unresolvedIndices.size} unresolved subtitle cues on original audio",
+                    )
+                    unresolvedIndices.forEach { resolvedBatch[it] = "" }
+                    unresolvedIndices = emptyList()
+                }
+
+                if (unresolvedIndices.isNotEmpty()) {
+                    throw TranslationFailureException(
+                        "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。",
+                        IllegalStateException("Missing subtitle translation rows: ${unresolvedIndices.joinToString()}"),
+                    )
+                }
+
+                val nextRows = ArrayList<SubLine>(updatedLines.size)
+                for ((rowIndex, line) in updatedLines.withIndex()) {
+                    checkTranslationActive(rowIndex)
+                    nextRows += resolvedBatch[rowIndex]?.let { translation ->
+                        line.copy(zh = translation)
+                    } ?: line
+                }
+                translationJob?.ensureActive()
+                updatedLines = nextRows
+                completed += batchIndices.size
+                val completedBatchPreview = batchIndices.mapNotNull { rowIndex ->
+                    val line = updatedLines.getOrNull(rowIndex) ?: return@mapNotNull null
+                    val translation = SubtitleParsers.preferredTranslationText(line) ?: return@mapNotNull null
+                    line.copy(zh = translation)
+                }
+                if (completedBatchPreview.isNotEmpty()) {
+                    val combinedPreview = (translationPreviewRows + completedBatchPreview).takeLast(2)
+                    translationPreviewRows.clear()
+                    translationPreviewRows.addAll(combinedPreview)
+                }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        lines = updatedLines,
+                        totalLines = updatedLines.size,
+                        translationPreviewLines = translationPreviewRows.toList(),
+                        translatedLineCount = completed.coerceAtMost(updatedLines.size),
+                        sourceLang = src,
+                        translationCurrentBatch = batchIndex + 1,
+                        translationTotalBatches = translationBatches.size,
+                        translationRetryCount = 0,
+                        progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已翻译 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                    )
+                }
+                // Unlike the coarser Room cache checkpoint, persist each completed batch so
+                // force-stop recovery resumes from the exact remaining cue rather than from audio.
+                pipelineGeneration?.let { generation ->
+                    persistInProgressProcessingCheckpoint(key, generation)
+                }
+                // Keep structured logs bounded: record the first, final and periodic successful batches.
+                val completedBatchCount = batchIndex + 1
+                if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
+                    val batchResolvedCount = resolvedBatch.values.count { it.isNotBlank() }
+                    val batchFallbackCount = resolvedBatch.values.count { it.isBlank() }
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "Translation",
+                            "中文字幕翻译批次处理完成",
+                            diagnosticContext = mapOf(
+                                "翻译引擎名称" to engineName,
+                                "翻译引擎 ID" to (engine?.id ?: "未知"),
+                                "批次进度" to "${completedBatchCount}/${translationBatches.size}",
+                                "本批字幕行数" to batchIndices.size.toString(),
+                                "本批已获得有效译文行数" to batchResolvedCount.toString(),
+                                "本批空译文/原声兜底行数" to batchFallbackCount.toString(),
+                                "本批重试次数" to attempt.toString(),
+                                "本批处理耗时 ms" to (((System.nanoTime() - batchStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
+                                "源语言代码" to src,
+                                "目标语言代码" to tgt,
+                                "当前累计已完成行数" to completed.coerceAtMost(updatedLines.size).toString(),
+                                "字幕总行数" to updatedLines.size.toString(),
+                                "翻译失败后是否采用原声兜底" to (batchFallbackCount > 0).toString(),
+                            ),
+                        )
+                    }
+                }
+                // The first successful batch and final batch are always checkpointed.
+                if (!io.translatetube.local.translate.TranslationCheckpointPolicy.shouldPersistCheckpoint(
+                        completedBatchCount = completedBatchCount,
+                        totalBatches = translationBatches.size,
+                    )
+                ) {
+                    continue
+                }
+                // Persist only after the triggering batch is complete and every pending row is valid.
+                val cacheRows = org.json.JSONArray()
+                for ((rowIndex, line) in updatedLines.withIndex()) {
+                    if ((rowIndex and 0xff) == 0) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    }
+                    cacheRows.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                            .put("zh", line.zh ?: "")
+                            .put("sp", line.speakerId)
+                    )
+                }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                ensureCurrentSession(key, pipelineGeneration)
+                db.subtitleCacheDao().put(
+                    io.translatetube.local.data.SubtitleCacheEntity(
+                        translationCacheKey, src, cacheRows.toString(), System.currentTimeMillis(),
+                        videoKey = key,
+                    )
+                )
+            }
+            val externallyTranslatedFinal = awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)
+            if (externallyTranslatedFinal != null) {
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "Translation",
+                        "外部翻译字幕已导入并匹配到原字幕时间轴",
+                        diagnosticContext = mapOf(
+                            "输入原文字幕行数" to lines.size.toString(),
+                            "合并后字幕行数" to externallyTranslatedFinal.size.toString(),
+                            "源语言代码" to src,
+                            "目标语言代码" to "zh",
+                            "合并规则" to "以原字幕时间戳为准，匹配译文文本",
+                        ),
+                    )
+                }
+                return externallyTranslatedFinal
+            }
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "Translation",
+                    "中文字幕翻译任务完成",
+                    diagnosticContext = mapOf(
+                        "翻译引擎名称" to engineName,
+                        "翻译引擎 ID" to (engine?.id ?: "未知"),
+                        "翻译配置编号" to activeId.toString(),
+                        "源语言代码" to src,
+                        "目标语言代码" to "zh",
+                        "字幕总行数" to updatedLines.size.toString(),
+                        "已获得非空中文译文行数" to updatedLines.count { !it.zh.isNullOrBlank() }.toString(),
+                        "仍缺少中文译文行数" to updatedLines.count { needsSubtitleTranslation(it, src) && it.zh.isNullOrBlank() }.toString(),
+                        "处理批次数" to translationBatches.size.toString(),
+                        "累计耗时 ms" to (((System.nanoTime() - translationStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
+                        "本次是否有在线/本地引擎请求" to pendingIndices.isNotEmpty().toString(),
+                        "结果已写入字幕缓存的检查方式" to "由调用方根据译文填充率与缓存完整性另行判断",
+                    ),
+                )
+            }
+            return updatedLines
+        } finally {
+            // Release native resources on success, failure, or cancellation, keeping memory bounded.
+            runCatching { engine?.close() }
+        }
+    }
+
+    private fun buildYouTubeStreamChoices(
+        info: org.schabi.newpipe.extractor.stream.StreamInfo,
+    ): YouTubeStreamChoices {
+        val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
+            .distinctBy { stream -> "${stream.height}|${stream.content}|${stream.isVideoOnly}" }
+
+        android.util.Log.i(
+            "PlaybackService",
+            "YouTube stream inventory: muxed=" + info.videoStreams.size +
+                ", videoOnly=" + info.videoOnlyStreams.size +
+                ", muxedRes=" + info.videoStreams.map { it.height }.distinct().sorted() +
+                ", videoOnlyRes=" + info.videoOnlyStreams.map { it.height }.distinct().sorted()
+        )
+
+        val normalized = allVideoStreams.map { stream ->
+            YouTubeVideoCandidate(
+                height = stream.height,
+                url = stream.content,
+                videoOnly = stream.isVideoOnly,
+                formatSuffix = stream.format?.suffix,
+                bitrate = stream.bitrate,
+            )
+        }
+        val selectedAudio = YouTubeStreamSelector.chooseAudioStream(
+            input = info.audioStreams.map { stream ->
+                YouTubeAudioCandidate(
+                    url = stream.content,
+                    formatSuffix = stream.format?.suffix,
+                    bitrate = stream.averageBitrate,
+                    languageTag = stream.audioLocale?.toLanguageTag(),
+                    isOriginal = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.ORIGINAL,
+                    isDubbed = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.DUBBED,
+                    isDescriptive = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.DESCRIPTIVE,
+                    isSecondary = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.SECONDARY,
+                )
+            },
+            preferredLanguageTag = NewPipeRepo.sourceAudioLanguageHint(info),
+        )
+        val selected = YouTubeStreamSelector.chooseVideoStreams(
+            normalized,
+            separateAudioAvailable = selectedAudio != null,
+        )
+        val candidates = selected.map { stream ->
+            YouTubeQualitySource(
+                label = "${stream.height}p",
+                height = stream.height,
+                url = stream.url,
+                muxed = !stream.videoOnly,
+            )
+        }
+        if (candidates.isEmpty()) {
+            throw IllegalStateException(
+                if (selectedAudio == null)
+                    "YouTube 没有可安全使用的独立原声音轨，且没有带声音的合并视频流。为避免误用其他语言的配音，请稍后重试。"
+                else
+                    "YouTube 未提供可播放的视频流。请检查网络/VPN 后重试"
+            )
+        }
+        val audioUrl = selectedAudio?.url.orEmpty()
+
+        android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
+        val defaultIndex = YouTubeStreamSelector.defaultQualityIndex(selected)
+        val default = candidates.getOrNull(defaultIndex)
+            ?: throw IllegalStateException("没有可用的 YouTube 视频清晰度")
+        return YouTubeStreamChoices(candidates, audioUrl, default)
+    }
+
+    /**
+     * If an extracted YouTube URL has expired or cannot be decoded, refresh the extraction once,
+     * then try a compatible lower-resolution stream. The attempt is bounded to prevent retry loops.
+     */
+    private suspend fun recoverYouTubePlayback(
+        sessionKey: String,
+        failedVideoId: String,
+        originalError: String,
+        pipelineGeneration: Long,
+    ) {
+        val thisJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        try {
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            val oldHeight = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }?.height
+            updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                if (state.key == sessionKey) state.copy(
+                    phase = Phase.PARSING,
+                    progress = playbackRecoveryMessage ?: "YouTube 视频流加载失败，正在刷新播放地址…",
+                    error = null,
+                ) else state
+            }
+            val position = withContext(Dispatchers.Main) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                pm.position()
+            }
+            val shouldResume = withContext(Dispatchers.Main) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                pm.player.playWhenReady
+            }
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            NewPipeRepo.invalidate(failedVideoId)
+            val refreshedInfo = NewPipeRepo.streams(failedVideoId)
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            val choices = buildYouTubeStreamChoices(refreshedInfo)
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            val lowerCandidates = if (oldHeight != null) choices.sources.filter { it.height < oldHeight } else emptyList()
+            val fallback = lowerCandidates.firstOrNull { it.muxed }
+                ?: lowerCandidates.firstOrNull()
+                ?: choices.sources.firstOrNull { it.muxed }
+                ?: choices.defaultQuality
+
+            withContext(Dispatchers.Main) {
+                // A cancellation alone is insufficient if an extractor/network call returned
+                // after ignoring it. Generation validation prevents an old same-video recovery
+                // from replacing the source installed by a newer engine-processing run.
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (ui.value.key != sessionKey || videoId != failedVideoId) {
+                    throw kotlinx.coroutines.CancellationException("YouTube 播放恢复任务已过期")
+                }
+                qualitySources = choices.sources
+                qualityAudioUrl = choices.audioUrl
+                pm.errorSink.value = null
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                    state.copy(
+                        phase = Phase.PARSING,
+                        progress = "正在尝试兼容清晰度 ${fallback.label}…",
+                        error = null,
+                        qualityOptions = choices.sources.map { it.label },
+                    )
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                val accepted = pm.setYouTubeQuality(
+                    videoUrl = fallback.url,
+                    audioUrl = choices.audioUrl,
+                    muxed = fallback.muxed,
+                    title = ui.value.title,
+                    artist = ui.value.channel,
+                    artworkUrl = ui.value.thumbUrl,
+                )
+                if (!accepted) {
+                    throw IllegalStateException(pm.errorSink.value ?: "刷新后的视频流初始化失败")
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                pm.seekTo(position)
+                if (shouldResume) pm.play() else pm.pause()
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                    state.copy(
+                        phase = Phase.READY,
+                        progress = "",
+                        error = null,
+                        selectedQuality = fallback.label,
+                    )
+                }
+                playbackRecoveryInProgress = false
+                playbackRecoveryMessage = null
+                playbackRecoveryFailure = null
+                playbackRestoreRequested = false
+                // Keep the one-attempt guard until normal playback actually renders and starts.
+                // A source replacement being accepted does not prove the signed URL is valid.
+                refreshPlaybackHint()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Do not publish an old recovery error, unmute audio, or change phase after a newer
+            // same-key open() has already advanced the pipeline generation.
+            if (
+                activePipelineGeneration != pipelineGeneration ||
+                videoKey != sessionKey ||
+                ui.value.key != sessionKey ||
+                videoId != failedVideoId
+            ) {
+                return
+            }
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "YouTubePlayback", "刷新 YouTube 播放资源失败", e,
+            )
+            android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
+            withContext(Dispatchers.Main) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (ui.value.key == sessionKey && videoId == failedVideoId) {
+                    pm.errorSink.value = null
+                    runCatching {
+                        safelySetOriginalVolume(
+                            if (ui.value.originalVolume <= 0f) 0f else 1f,
+                            "source audio fallback",
+                        )
+                    }
+                    playbackRecoveryInProgress = false
+                    val detail = PlaybackHintPolicy.safeReason(e.message ?: originalError)
+                    playbackRecoveryFailure = if (playbackRecoveryMessage?.contains("地址已失效") == true) {
+                        "地址已失效，自动重新获取失败：$detail"
+                    } else {
+                        "重新获取视频流失败：$detail"
+                    }
+                    updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                        state.copy(
+                            phase = if (playbackRecoveryWasPlayerVisible) Phase.READY else Phase.ERROR,
+                            progress = "",
+                            error = playbackRecoveryFailure,
+                        )
+                    }
+                    refreshPlaybackHint()
+                }
+            }
+        } finally {
+            if (qualityRecoveryJob === thisJob) qualityRecoveryJob = null
+        }
+    }
+
+    private fun localAsrPcmCacheDirectory(): File =
+        File(cacheDir, "local_asr_pcm16").apply { mkdirs() }
+
+    private fun localAsrPcmCacheFile(identity: String): File {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(identity.toByteArray(Charsets.UTF_8))
+        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return File(localAsrPcmCacheDirectory(), "$safeId.pcm16")
+    }
+
+    /**
+     * Reuse the decoded 16 kHz mono PCM for a verified local-media identity. A cache miss still
+     * runs the normal bounded decoder, then atomically renames its completed scratch file into the
+     * cache. Unverified document providers deliberately bypass this cache.
+     */
+    private suspend fun obtainLocalAsrPcmFile(
+        cacheFile: File,
+        sessionKey: String,
+        pipelineGeneration: Long,
+        // Suspending so a caller can fetch its source audio only on a cache miss.
+        decode: suspend () -> AudioExtract.PcmFile,
+    ): Pair<AudioExtract.PcmFile, String?> {
+        val path = cacheFile.absolutePath
+        VideoHistoryCacheIndex.rememberLocalPcmCacheFile(this@PlaybackService, sessionKey, cacheFile.name)
+        return localAsrPcmLocks.withLock(path) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration)
+            activeAsrAudioPaths.acquire(path)
+            var keepLease = false
+            try {
+                val now = System.currentTimeMillis()
+                if (LocalPcmAudioCachePolicy.canReuse(
+                        isFile = cacheFile.isFile,
+                        sizeBytes = cacheFile.length(),
+                        lastModifiedMs = cacheFile.lastModified(),
+                        nowMs = now,
+                    )
+                ) {
+                    cacheFile.setLastModified(now)
+                    pruneLocalAsrPcmCache(keep = cacheFile)
+                    updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                        if (state.key == sessionKey && state.phase == Phase.TRANSCRIBING) {
+                            state.copy(progress = "复用已解码音频缓存，跳过重复提取…")
+                        } else state
+                    }
+                    keepLease = true
+                    return@withLock AudioExtract.PcmFile(
+                        file = cacheFile,
+                        sampleCount = cacheFile.length() / 2L,
+                        sampleRate = 16_000,
+                    ) to path
+                }
+
+                // Drop this caller's temporary lease before coordinated deletion of a stale file.
+                activeAsrAudioPaths.release(path)
+                activeAsrAudioPaths.deleteIfUnleased(path) { cacheFile.delete() }
+                File(cacheFile.parentFile, cacheFile.name + ".part").delete()
+                activeAsrAudioPaths.acquire(path)
+
+                val decoded = decode()
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val decodedFile = decoded.file
+                val payloadIsValid = decoded.sampleRate == 16_000 &&
+                    decoded.sampleCount > 0L &&
+                    decoded.sampleCount <= Long.MAX_VALUE / 2L &&
+                    decodedFile.isFile &&
+                    decodedFile.length() == decoded.sampleCount * 2L &&
+                    decodedFile.length() <= LocalPcmAudioCachePolicy.MAX_CACHE_BYTES
+                if (!payloadIsValid) return@withLock decoded to null
+
+                cacheFile.parentFile?.mkdirs()
+                if (!decodedFile.renameTo(cacheFile)) {
+                    // Keep the working PCM for this run; failing to persist a cache must not turn
+                    // a successful local decode into a failed transcription.
+                    return@withLock decoded to null
+                }
+                cacheFile.setLastModified(System.currentTimeMillis())
+                pruneLocalAsrPcmCache(keep = cacheFile)
+                keepLease = true
+                AudioExtract.PcmFile(
+                    file = cacheFile,
+                    sampleCount = decoded.sampleCount,
+                    sampleRate = decoded.sampleRate,
+                ) to path
+            } finally {
+                if (!keepLease) activeAsrAudioPaths.release(path)
+            }
+        }
+    }
+
+    private fun releaseLocalAsrPcmFile(path: String) {
+        if (path.isBlank()) return
+        activeAsrAudioPaths.release(path)
+        val file = File(path)
+        if (file.isFile) file.setLastModified(System.currentTimeMillis())
+        pruneLocalAsrPcmCache(keep = file.takeIf { it.isFile })
+    }
+
+    /** Keep local PCM bounded by age, entry count and total bytes; active readers are never evicted. */
+    private fun pruneLocalAsrPcmCache(keep: File? = null) {
+        val directory = localAsrPcmCacheDirectory()
+        val files = directory.listFiles()?.filter { it.isFile } ?: return
+        val now = System.currentTimeMillis()
+        files.filter { file ->
+            file.name.endsWith(".part") &&
+                LocalPcmAudioCachePolicy.isStalePartial(file.lastModified(), now)
+        }.forEach { file ->
+            val destinationPath = file.absolutePath.removeSuffix(".part")
+            activeAsrAudioPaths.deleteIfUnleased(destinationPath) { file.delete() }
+        }
+
+        var completeFiles = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".pcm16") }
+            .orEmpty()
+        completeFiles.filter { file ->
+            file.absolutePath != keep?.absolutePath &&
+                !LocalPcmAudioCachePolicy.canReuse(
+                    isFile = file.isFile,
+                    sizeBytes = file.length(),
+                    lastModifiedMs = file.lastModified(),
+                    nowMs = now,
+                )
+        }.forEach { file ->
+            activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+        }
+
+        completeFiles = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".pcm16") }
+            .orEmpty()
+        var totalBytes = completeFiles.sumOf { it.length() }
+        var fileCount = completeFiles.size
+        val oldestFirst = completeFiles
+            .filter { it.absolutePath != keep?.absolutePath }
+            .sortedBy { it.lastModified() }
+        for (file in oldestFirst) {
+            if (!LocalPcmAudioCachePolicy.exceedsBudget(totalBytes, fileCount)) break
+            val bytes = file.length()
+            if (activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }) {
+                totalBytes = (totalBytes - bytes).coerceAtLeast(0L)
+                fileCount = (fileCount - 1).coerceAtLeast(0)
+            }
+        }
+    }
+
+    private fun asrAudioCacheDirectory(): File =
+        AsrAudioCacheStorage.directory(this@PlaybackService)
+
+    private fun asrAudioCacheFile(identity: String, cacheNamespace: String? = null): File {
+        // YouTube's ASR cache namespace is versioned independently so audio fetched by the old
+        // bitrate-only selector (which could select a dubbed track) is never reused as original.
+        val cacheIdentity = cacheNamespace?.let { "$it|$identity" } ?: identity
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(cacheIdentity.toByteArray(Charsets.UTF_8))
+        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return File(asrAudioCacheDirectory(), "$safeId.bin")
+    }
+
+    /**
+     * Serialize the lookup/download per video so ASR and speaker recognition can never download
+     * the same source audio concurrently. The second caller rechecks the cache after acquiring it.
+     */
+    private suspend fun obtainAsrAudioFile(
+        videoId: String,
+        sessionKey: String,
+        cacheHitProgress: String,
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
+        speakerRecognitionOnly: Boolean = false,
+    ): File {
+        return asrAudioDownloadLocks.withLock(videoId) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+            reusableAsrAudioFile(videoId, cacheNamespace = "youtube-original-track-v2")?.let { cached ->
+                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                    if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
+                }
+                return@withLock cached
+            }
+            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "YouTube · 正在选择独立音轨…",
+                        audioProgress = null,
+                        transcriptionProgressPercent = null,
+                    )
+                } else state
+            }
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+            val stream = NewPipeRepo.audioForAsr(videoId)
+                ?: throw IllegalStateException(
+                    "无法安全确定与原声匹配的 YouTube 音轨。为避免误把其他语言的配音轨当作原声转写，本次已停止处理；请稍后重试。",
+                )
+            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "YouTube · 独立音轨 · 正在下载…",
+                        audioProgress = null,
+                    )
+                } else state
+            }
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+            val destination = asrAudioCacheFile(videoId, cacheNamespace = "youtube-original-track-v2")
+            VideoHistoryCacheIndex.rememberAudioCacheFile(
+                this@PlaybackService,
+                sessionKey,
+                destination.name,
+                sourceIdentity = "youtube-original-track-v2|$videoId",
+            )
+            suspend fun downloadStream(url: String): File = try {
+                downloadAudio(
+                    url, destination, sessionKey,
+                    progressLabel = "YouTube · 独立音轨",
+                    pipelineGeneration = pipelineGeneration,
+                    dubbingMutationGeneration = dubbingMutationGeneration,
+                    speakerRecognitionOnly = speakerRecognitionOnly,
+                )
+            } catch (manifest: HlsManifestPayloadException) {
+                HlsAudioDownloader.download(
+                    url,
+                    destination,
+                    awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
+                    userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                    initialSourceKind = HlsAudioDownloader.AudioSourceKind.INDEPENDENT,
+                ) { detail ->
+                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
+                        } else state
+                    }
+                }
+            }
+
+            // Lease the destination before publishing a completed cache file, preventing a
+            // concurrent cache prune from deleting it before the caller starts decoding.
+            activeAsrAudioPaths.acquire(destination.absolutePath)
+            var leaseTransferred = false
+            try {
+                val downloaded = try {
+                    downloadStream(stream.content)
+                } catch (firstError: Exception) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (!MediaDownloadRetryPolicy.shouldRefreshSignedStream(firstError)) throw firstError
+                    // StreamInfo caches expiring signed URLs. Invalidate and extract once before
+                    // asking the user to retry the same stale URL again.
+                    NewPipeRepo.invalidate(videoId)
+                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(
+                                phase = Phase.DOWNLOADING_AUDIO,
+                                progress = "音频链接已失效，正在刷新视频流…",
+                                audioProgress = null,
+                            )
+                        } else state
+                    }
+                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                    val refreshed = NewPipeRepo.audioForAsr(videoId) ?: throw firstError
+                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                    try {
+                        downloadStream(refreshed.content)
+                    } catch (refreshError: Exception) {
+                        refreshError.addSuppressed(firstError)
+                        throw refreshError
+                    }
+                }
+                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = downloaded)
+                leaseTransferred = true
+                downloaded
+            } finally {
+                if (!leaseTransferred) activeAsrAudioPaths.release(destination.absolutePath)
+            }
+        }
+    }
+
+
+    private fun remoteAudioBaseDiagnostics(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        stage: String,
+    ): Map<String, String> {
+        val uri = runCatching { android.net.Uri.parse(mediaUrl) }.getOrNull()
+        val extension = uri?.lastPathSegment.orEmpty().substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+        val mediaType = when (extension) {
+            "m3u8" -> "HLS/M3U8 清单"
+            "mpd" -> "DASH/MPD 清单"
+            "mp4", "m4v", "webm", "mkv", "mov", "flv", "ts" -> "视频或混合媒体"
+            "mp3", "m4a", "aac", "ogg", "opus", "flac", "wav" -> "纯音频候选"
+            else -> "扩展名无法确认"
+        }
+        val pathSegments = uri?.pathSegments.orEmpty()
+        val sensitivePathToken = Regex("""(?i)(token|signature|auth|secret|password|credential|session|jwt|expires|access.?key)""")
+        val safePath = pathSegments.map { segment ->
+            when {
+                sensitivePathToken.containsMatchIn(segment) -> "[疑似凭据路径段已隐藏]"
+                segment.length > 48 -> "[长路径段已隐藏:${segment.length}字符]"
+                else -> segment
+            }
+        }.joinToString("/", prefix = "/").take(240)
+        val queryNames = runCatching {
+            uri?.queryParameterNames.orEmpty().sorted().joinToString(", ").take(300)
+        }.getOrDefault("读取失败")
+        return mapOf(
+            "处理阶段" to stage.take(120),
+            "媒体源协议" to uri?.scheme.orEmpty().ifBlank { "未知" },
+            "媒体源主机名" to uri?.host?.take(120).orEmpty().ifBlank { "未知" },
+            "媒体地址路径（已脱敏）" to safePath,
+            "媒体地址查询参数名（不含值）" to queryNames.ifBlank { "无" },
+            "媒体地址是否带查询参数" to (!uri?.encodedQuery.isNullOrBlank()).toString(),
+            "媒体源类型" to mediaType,
+            "媒体源扩展名提示" to extension.ifBlank { "无" },
+            "媒体源诊断编号" to io.translatetube.local.util.AppLogStore.stableIssueKey("WebAudioSource", mediaUrl),
+            "页面主机名" to runCatching { android.net.Uri.parse(referrer).host }.getOrNull()?.take(120).orEmpty().ifBlank { "未知" },
+            "是否携带 Cookie" to (!cookie.isNullOrBlank()).toString(),
+            "是否携带 Referer" to referrer.startsWith("http", ignoreCase = true).toString(),
+        )
+    }
+
+    private fun logRemoteAudioFailure(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        stage: String,
+        failure: Throwable,
+        extra: Map<String, String> = emptyMap(),
+        tag: String = "WebAudioExtraction",
+    ) {
+        val diagnosis = RemoteAudioFailurePolicy.classify(failure)
+        val sourceUri = runCatching { android.net.Uri.parse(mediaUrl) }.getOrNull()
+        val sourceIdentity = listOf(sourceUri?.host.orEmpty(), sourceUri?.path.orEmpty(), diagnosis.code).joinToString("|")
+        val exceptionChain = generateSequence(failure) { it.cause }.take(12).toList()
+        val combinedExceptionMessages = exceptionChain.mapNotNull { it.message }.joinToString("\n")
+        val httpStatus = Regex("""(?i)HTTP\s+([0-9]{3})""")
+            .findAll(combinedExceptionMessages)
+            .lastOrNull()
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
+        io.translatetube.local.util.AppLogStore.error(
+            context = applicationContext,
+            tag = tag,
+            message = "网页视频音轨处理失败：${diagnosis.label}",
+            failure = failure,
+            diagnosticContext = remoteAudioBaseDiagnostics(mediaUrl, referrer, cookie, stage) + mapOf(
+                "失败分类代码" to diagnosis.code,
+                "可能原因" to diagnosis.likelyCause,
+                "建议排查方向" to diagnosis.nextStep,
+                "异常根因类型" to exceptionChain.lastOrNull()?.javaClass?.name.orEmpty().ifBlank { "未知" },
+                "异常链类型（外层到根因）" to exceptionChain.joinToString(" -> ") { it.javaClass.name }.take(1_200),
+                "从异常中提取的 HTTP 状态码" to httpStatus.ifBlank { "未找到 HTTP 状态码" },
+                "当前是否为 HLS/M3U8 地址" to HlsAudioDownloader.isManifestUrl(mediaUrl).toString(),
+            ) + extra,
+            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(tag, sourceIdentity),
+        )
+    }
+
+    private fun validateRemoteAudioFile(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        stage: String,
+        file: java.io.File,
+    ): io.translatetube.local.asr.AudioExtract.MediaProbe {
+        val probe = try {
+            io.translatetube.local.asr.AudioExtract.probeMediaFile(file)
+        } catch (error: Exception) {
+            val originalSizeBytes = file.length()
+            file.delete()
+            val wrapped = IllegalStateException(
+                "媒体数据已下载，但 Android MediaExtractor 无法读取缓存文件（${error.message ?: error.javaClass.simpleName}）",
+                error,
+            )
+            logRemoteAudioFailure(
+                mediaUrl, referrer, cookie, "$stage · 实际媒体文件复核", wrapped,
+                mapOf("缓存文件大小字节" to originalSizeBytes.toString()),
+                tag = "WebAudioTrackProbe",
+            )
+            throw wrapped
+        }
+        val details = mapOf(
+            "缓存文件大小字节" to file.length().toString(),
+            "实际检测到的音轨数" to probe.audioTrackCount.toString(),
+            "实际检测到的视频轨数" to probe.videoTrackCount.toString(),
+            "媒体时长毫秒" to probe.durationMs.toString(),
+            "全部音轨明细" to probe.audioTrackDetails.joinToString("；").ifBlank { "没有识别到音轨" },
+            "最终选中音频 MIME" to probe.selectedAudioMimeType.orEmpty().ifBlank { "未识别" },
+            "最终选中音频语言" to probe.selectedAudioLanguage.orEmpty().ifBlank { "未提供" },
+            "最终选中音频采样率" to (probe.selectedAudioSampleRateHz?.toString() ?: "未提供"),
+            "最终选中音频声道数" to (probe.selectedAudioChannelCount?.toString() ?: "未提供"),
+            "最终选中音频码率 bps" to (probe.selectedAudioBitrate?.toString() ?: "未提供"),
+            "Android 解码器兼容性" to when (probe.selectedAudioDecoderAvailable) {
+                true -> "已找到匹配解码器"
+                false -> "未找到匹配解码器"
+                null -> "无法明确判断"
+            },
+        )
+        if (probe.audioTrackCount <= 0) {
+            file.delete()
+            val failure = IllegalStateException("下载结果中没有可读取的音频轨，候选媒体源可能是纯视频或错误内容")
+            logRemoteAudioFailure(mediaUrl, referrer, cookie, "$stage · 实际媒体文件复核", failure, details, "WebAudioTrackProbe")
+            throw failure
+        }
+        if (probe.selectedAudioDecoderAvailable == false) {
+            file.delete()
+            val failure = IllegalStateException(
+                "音轨存在，但当前 Android 设备没有发现可用的音频解码器（${probe.selectedAudioMimeType ?: "未知编码"}）",
+            )
+            logRemoteAudioFailure(mediaUrl, referrer, cookie, "$stage · 音频解码器兼容性检查", failure, details, "WebAudioTrackProbe")
+            throw failure
+        }
+        io.translatetube.local.util.AppLogStore.info(
+            context = applicationContext,
+            tag = "WebAudioTrackProbe",
+            message = "网页媒体下载结果已通过真实音轨与编码兼容性检查",
+            diagnosticContext = remoteAudioBaseDiagnostics(mediaUrl, referrer, cookie, "$stage · 实际媒体文件复核") + details,
+        )
+        return probe
+    }
+
+    /**
+     * Download a direct or finite HLS webpage media URL into a bounded cache for Whisper.
+     * The referrer/cookie are obtained from the current WebView session and are never persisted.
+     */
+    /**
+     * 直链视频流式抽轨：MediaExtractor 以带请求头的 http 源直接读取（系统层自带
+     * Range 分块拉流），选音频轨经 MediaMuxer 写成独立音频文件——视频数据全程
+     * 不落盘，缓存里只有音频（几十 MB 视频换几 MB 音轨）。
+     */
+    private suspend fun extractAudioTrackStreaming(
+        mediaUrl: String,
+        destination: File,
+        headers: Map<String, String>,
+        awaitResume: suspend () -> Unit = {},
+        onSourceType: (HlsAudioDownloader.AudioSourceKind) -> Unit = {},
+        onProgressPercent: (Int?, Long, Long?, Boolean) -> Unit = { _, _, _, _ -> },
+    ): File {
+        val work = File(destination.parentFile, destination.name + ".part")
+        val extractor = android.media.MediaExtractor()
+        var muxer: android.media.MediaMuxer? = null
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        try {
+            // A process can be killed before the normal finally block runs. Remove its unfinished
+            // output before MediaMuxer opens the same path for a fresh extraction attempt.
+            work.parentFile?.mkdirs()
+            if (work.exists() && !work.delete()) {
+                throw IllegalStateException("无法清理上次未完成的音轨暂存文件，请稍后重试。")
+            }
+            awaitResume()
+            ownerJob?.ensureActive()
+            val streamHeaders = buildMap {
+                putAll(headers)
+                remoteMediaUserAgent.takeIf { it.isNotBlank() }?.let { put("User-Agent", it) }
+            }
+            withContext(Dispatchers.IO) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                // MediaExtractor 的 URL 读取是平台级同步 I/O；至少不要在任务已取消或暂停时启动它。
+                extractor.setDataSource(mediaUrl, streamHeaders)
+            }
+            ownerJob?.ensureActive()
+            val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
+            var audioTrackCount = 0
+            var videoTrackCount = 0
+            for (i in 0 until extractor.trackCount) {
+                val fmt = extractor.getTrackFormat(i)
+                val mime = fmt.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    videoTrackCount++
+                    continue
+                }
+                if (!mime.startsWith("audio/")) continue
+                audioTrackCount++
+                val channels = runCatching {
+                    fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+                }.getOrDefault(1)
+                val isDefault = runCatching {
+                    fmt.containsKey("is-default") && fmt.getInteger("is-default") != 0
+                }.getOrDefault(false)
+                audioCandidates += AudioTrackSelectionPolicy.Candidate(
+                    index = i,
+                    isDefault = isDefault,
+                    channelCount = channels,
+                )
+            }
+            val chosen = AudioTrackSelectionPolicy.choose(audioCandidates)
+                ?: throw IllegalStateException("该视频流中没有可提取的音频轨")
+            val sourceKind = when {
+                videoTrackCount > 0 && audioTrackCount > 0 ->
+                    HlsAudioDownloader.AudioSourceKind.MUXED
+                audioTrackCount > 0 && videoTrackCount == 0 ->
+                    HlsAudioDownloader.AudioSourceKind.INDEPENDENT
+                else -> HlsAudioDownloader.AudioSourceKind.UNKNOWN
+            }
+            onSourceType(sourceKind)
+            val trackFormat = extractor.getTrackFormat(chosen)
+            val mediaDurationUs = runCatching {
+                if (trackFormat.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                    trackFormat.getLong(android.media.MediaFormat.KEY_DURATION)
+                } else 0L
+            }.getOrDefault(0L).coerceAtLeast(0L)
+            var lastProgressPercent = -1
+            val audioBitRateBitsPerSecond = runCatching {
+                trackFormat.getInteger(android.media.MediaFormat.KEY_BIT_RATE).toLong()
+            }.getOrNull()
+            var lastReportedOutputBytes = 0L
+            var lastReportedProgressAtMs = android.os.SystemClock.elapsedRealtime()
+            val trackMime = trackFormat.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
+            val outputFormat = when (AudioTrackContainerPolicy.choose(trackMime)) {
+                AudioTrackContainerPolicy.Container.WEBM ->
+                    android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
+                AudioTrackContainerPolicy.Container.MP4 ->
+                    android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+                null -> throw IllegalStateException(
+                    "当前设备无法安全封装网页音频编码（$trackMime）；已停止直接抽轨，避免生成损坏的音频缓存。请重试或使用 yt-dlp 解析。"
+                )
+            }
+            muxer = android.media.MediaMuxer(work.absolutePath, outputFormat)
+            val muxerTrack = muxer.addTrack(trackFormat)
+            muxer.start()
+            extractor.selectTrack(chosen)
+            val buffer = java.nio.ByteBuffer.allocateDirect(2 * 1024 * 1024)
+            val info = android.media.MediaCodec.BufferInfo()
+            var extractedSampleBytes = 0L
+            withContext(Dispatchers.IO) {
+                while (true) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    awaitResume()
+                    val size = extractor.readSampleData(buffer, 0)
+                    if (size < 0) break
+                    if (!AsrAudioCachePolicy.canAppendBytes(extractedSampleBytes, size.toLong())) {
+                        throw IllegalStateException(
+                            "提取出的网页音轨大小超过文件系统可表示的范围，已停止处理。"
+                        )
+                    }
+                    info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
+                    muxer.writeSampleData(muxerTrack, buffer, info)
+                    extractedSampleBytes += size.toLong()
+                    val nextPercent = if (size > 0 && mediaDurationUs > 0L) {
+                        io.translatetube.local.asr.MediaTimelineProgressPolicy.nextPercent(
+                            positionUs = info.presentationTimeUs,
+                            durationUs = mediaDurationUs,
+                            previousPercent = lastProgressPercent,
+                        )
+                    } else {
+                        null
+                    }
+                    if (nextPercent != null) lastProgressPercent = nextPercent
+                    val outputBytes = work.length()
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    val shouldPublishByteProgress = outputBytes > lastReportedOutputBytes &&
+                        (outputBytes - lastReportedOutputBytes >= 512L * 1024L ||
+                            nowMs - lastReportedProgressAtMs >= 350L)
+                    if (nextPercent != null || shouldPublishByteProgress) {
+                        val estimatedTotalBytes =
+                            AudioDownloadProgressFormatter.estimateBytesFromBitrateAndDuration(
+                                bitRateBitsPerSecond = audioBitRateBitsPerSecond,
+                                durationUs = mediaDurationUs,
+                            ) ?: AudioDownloadProgressFormatter.estimateBytesFromObservedProgress(
+                                downloadedBytes = outputBytes,
+                                elapsedDurationUs = info.presentationTimeUs.coerceAtLeast(0L),
+                                totalDurationUs = mediaDurationUs,
+                            )
+                        val safeEstimatedTotalBytes = estimatedTotalBytes?.coerceAtLeast(outputBytes)
+                        onProgressPercent(
+                            nextPercent ?: lastProgressPercent.takeIf { it >= 0 },
+                            outputBytes,
+                            safeEstimatedTotalBytes,
+                            safeEstimatedTotalBytes != null,
+                        )
+                        lastReportedOutputBytes = outputBytes
+                        lastReportedProgressAtMs = nowMs
+                    }
+                    extractor.advance()
+                }
+            }
+            muxer.stop()
+            muxer.release()
+            muxer = null
+            if (!AsrAudioCachePolicy.isCompleteDownload(-1L, work.length())) {
+                throw IllegalStateException(
+                    "提取出的音轨为空，无法继续处理。"
+                )
+            }
+            // Flush the completed muxer output before publishing it as the reusable cache file.
+            java.io.RandomAccessFile(work, "rw").use { it.fd.sync() }
+            awaitResume()
+            ownerJob?.ensureActive()
+            if (!work.renameTo(destination)) {
+                // Never copy directly over the old cache: a failed/partial copy could destroy the
+                // last good file. The caller's catch removes only this .part file on failure.
+                throw IllegalStateException(
+                    "音轨提取完成，但无法原子保存缓存文件；原有缓存已保留，请重试。"
+                )
+            }
+            onProgressPercent(100, destination.length(), destination.length(), false)
+            return destination
+        } catch (t: Throwable) {
+            runCatching { muxer?.release() }
+            runCatching { work.delete() }
+            throw t
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    /**
+     * Inspect at most 512 bytes to identify an extension-less HLS playlist. This probe does not
+     * write the response to disk, even if a server ignores the Range request and returns HTTP 200.
+     */
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    private suspend fun probeHlsManifestPayload(
+        mediaUrl: String,
+        headers: Map<String, String>,
+    ): Boolean {
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        val probeHeaders = HlsAudioDownloader.headersWithoutInheritedRange(headers) +
+            ("Range" to "bytes=0-511")
+        return withContext(Dispatchers.IO) {
+            ownerJob?.ensureActive()
+            SafeMediaHttp.execute(
+                url = mediaUrl,
+                requestHeaders = probeHeaders,
+                userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }
+                    ?: SafeMediaHttp.DEFAULT_USER_AGENT,
+                ownerJob = ownerJob,
+            ).use responseUse@ { response ->
+                if (response.code !in setOf(200, 206)) {
+                    return@responseUse false
+                }
+                val body = response.body ?: return@responseUse false
+                val contentType = body.contentType()?.toString()
+                    ?.lowercase(java.util.Locale.ROOT)
+                    .orEmpty()
+                if (contentType.contains("mpegurl")) {
+                    return@responseUse true
+                }
+                val prefix = ByteArray(512)
+                val count = body.byteStream().use { input ->
+                    var total = 0
+                    while (total < prefix.size) {
+                        ownerJob?.ensureActive()
+                        val read = input.read(prefix, total, prefix.size - total)
+                        if (read <= 0) break
+                        total += read
+                        // "#EXTM3U" (including a possible UTF-8 BOM) is at most 10 bytes.
+                        if (isHlsManifestPayload(prefix, total)) break
+                    }
+                    total
+                }
+                isHlsManifestPayload(prefix, count)
+            }
+        }
+    }
+
+    private suspend fun obtainRemoteMediaAsrFile(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        sessionKey: String,
+        cacheHitProgress: String,
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
+        speakerRecognitionOnly: Boolean = false,
+    ): File {
+        awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+        // Reuse downloaded bytes across rotating signed URLs, but never across page origins or
+        // different WebView cookie sessions. The raw cookie/media URL is not written to this key.
+        val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
+        return asrAudioDownloadLocks.withLock(identity) {
+            val cachedAudio = reusableAsrAudioFile(identity)
+                ?: reusableHistoryRemoteAudioFile(
+                    sessionKey = sessionKey,
+                    currentIdentity = identity,
+                    currentSourceIdentity = MediaUrlCacheIdentity.canonicalUrl(mediaUrl),
+                    cookie = cookie,
+                )
+            if (cachedAudio != null) {
+                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                    if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
+                }
+                return@withLock cachedAudio
+            }
+            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "音轨类型待确认 · 正在检查网页媒体源…",
+                        audioProgress = null,
+                        transcriptionProgressPercent = null,
+                    )
+                } else state
+            }
+            val headers = buildMap {
+                referrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                    ?.let { put("Referer", it) }
+                cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+            }
+            val destination = asrAudioCacheFile(identity)
+            VideoHistoryCacheIndex.rememberAudioCacheFile(
+                this@PlaybackService,
+                sessionKey,
+                destination.name,
+                sourceIdentity = MediaUrlCacheIdentity.canonicalUrl(mediaUrl),
+            )
+            activeAsrAudioPaths.acquire(destination.absolutePath)
+            var leaseTransferred = false
+            var extractionStage = "网页媒体音轨获取"
+            try {
+                // yt-dlp 源优先：直接下纯音频（bestaudio）进转写，比流式拉整视频省流量省电；
+                // 失败（站点不支持纯音频/网络异常/产物异常）自动回落现有 HLS/直链管线。
+                val ytdlpOrigin = io.translatetube.local.yt.YtDlpRepo.claimForMediaUrl(mediaUrl)
+                if (ytdlpOrigin != null) {
+                    extractionStage = "yt-dlp bestaudio 纯音频下载"
+                    try {
+                        val directAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
+                            applicationContext,
+                            ytdlpOrigin.pageUrl,
+                            destination,
+                            onProgress = { percent, downloadedBytes, totalBytes ->
+                                kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) }
+                                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                    if (state.key == sessionKey) {
+                                        val progress = if (downloadedBytes > 0L || totalBytes != null) {
+                                            AudioDownloadProgressFormatter.formatProgress(
+                                                label = "独立音轨 · yt-dlp 正在下载",
+                                                downloadedBytes = downloadedBytes,
+                                                totalBytes = totalBytes,
+                                                percent = percent.takeIf { it >= 0 },
+                                            )
+                                        } else if (percent >= 0) {
+                                            "独立音轨 · yt-dlp 正在下载 $percent%"
+                                        } else {
+                                            "独立音轨 · yt-dlp 正在下载…"
+                                        }
+                                        state.copy(
+                                            phase = Phase.DOWNLOADING_AUDIO,
+                                            progress = progress,
+                                            audioProgress = if (downloadedBytes > 0L || totalBytes != null) {
+                                                AudioProgressSnapshot(
+                                                    downloadedBytes = downloadedBytes,
+                                                    totalBytes = totalBytes,
+                                                    percent = percent.takeIf { it >= 0 },
+                                                )
+                                            } else null,
+                                        )
+                                    } else state
+                                }
+                            },
+                            cookieHeader = ytdlpOrigin.cookie,
+                        )
+                        validateRemoteAudioFile(
+                            mediaUrl, referrer, cookie, "yt-dlp bestaudio 纯音频下载", directAudio,
+                        )
+                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = directAudio)
+                        leaseTransferred = true
+                        return@withLock directAudio
+                    } catch (cancel: kotlinx.coroutines.CancellationException) {
+                        throw cancel
+                    } catch (e: Exception) {
+                        val coroutineActive = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive != false
+                        if (!MediaDownloadRetryPolicy.shouldFallbackToStreaming(e, coroutineActive)) {
+                            // Preserve wrapped cancellation too: do not start network fallback when
+                            // the current session has already been cancelled or retired.
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            throw e
+                        }
+                        android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
+                        updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                            if (state.key == sessionKey) {
+                                state.copy(
+                                    progress = "独立音轨下载失败，正在检查网页媒体源并提取音轨…",
+                                    audioProgress = null,
+                                )
+                            } else state
+                        }
+                    }
+                }
+                val cachedAudio = try {
+                    if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
+                        extractionStage = "HLS 主清单音轨分段下载"
+                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
+                            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
+                                } else state
+                            }
+                        }
+                    } else {
+                        // 直链视频优先「流式抽轨」：系统 MediaExtractor 直接读取带请求头的
+                        // http 源，边拉边把音频轨写进 m4a/webm，不把整个视频下载到本地。
+                        extractionStage = "远程容器流式读取并提取音轨"
+                        try {
+                            var detectedSourceKind = HlsAudioDownloader.AudioSourceKind.UNKNOWN
+                            extractAudioTrackStreaming(
+                                mediaUrl,
+                                destination,
+                                headers,
+                                awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
+                                onSourceType = { kind ->
+                                    detectedSourceKind = kind
+                                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                        if (state.key == sessionKey && (speakerRecognitionOnly || state.phase == Phase.DOWNLOADING_AUDIO)) {
+                                            state.copy(
+                                                progress = "${kind.displayName} · 正在从网页媒体源提取音轨…",
+                                            )
+                                        } else state
+                                    }
+                                },
+                                onProgressPercent = { percent, extractedBytes, totalBytes, totalIsEstimate ->
+                                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                        if (state.key == sessionKey && (speakerRecognitionOnly || state.phase == Phase.DOWNLOADING_AUDIO)) {
+                                            state.copy(
+                                                progress = AudioDownloadProgressFormatter.formatProgress(
+                                                    label = "${detectedSourceKind.displayName} · 网页媒体流音轨提取",
+                                                    downloadedBytes = extractedBytes,
+                                                    totalBytes = totalBytes,
+                                                    percent = percent,
+                                                    totalIsEstimate = totalIsEstimate,
+                                                ),
+                                                audioProgress = AudioProgressSnapshot(
+                                                    downloadedBytes = extractedBytes,
+                                                    totalBytes = totalBytes,
+                                                    percent = percent,
+                                                    totalIsEstimate = totalIsEstimate,
+                                                ),
+                                            )
+                                        } else state
+                                    }
+                                },
+                            )
+                        } catch (streamingError: Exception) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            if (streamingError is kotlinx.coroutines.CancellationException) throw streamingError
+
+                            // Never download an entire MP4/WebM just because MediaExtractor failed.
+                            // A small Range probe preserves HLS support for URLs without an extension.
+                            val isOpaqueHlsManifest = try {
+                                probeHlsManifestPayload(mediaUrl, headers)
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (probeError: Exception) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                val sourceUri = runCatching { android.net.Uri.parse(mediaUrl) }.getOrNull()
+                                io.translatetube.local.util.AppLogStore.error(
+                                    context = this@PlaybackService,
+                                    tag = "WebHlsManifestProbe",
+                                    message = "流式音轨提取失败后，检测网页媒体是否为 HLS 清单时发生异常",
+                                    failure = probeError,
+                                    diagnosticContext = remoteAudioBaseDiagnostics(
+                                        mediaUrl,
+                                        referrer,
+                                        cookie,
+                                        "流式音轨提取失败后的 HLS 清单探测",
+                                    ) + mapOf(
+                                        "前序流式提取异常类型" to streamingError.javaClass.name,
+                                        "前序流式提取异常详情" to
+                                            (streamingError.message ?: "无异常消息").take(300),
+                                        "前序异常分类" to
+                                            io.translatetube.local.player.RemoteAudioFailurePolicy
+                                                .classify(streamingError).code,
+                                        "HLS 探测异常类型" to probeError.javaClass.name,
+                                        "HLS 探测异常详情" to
+                                            (probeError.message ?: "无异常消息").take(300),
+                                    ),
+                                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                        "WebHlsManifestProbe",
+                                        listOf(
+                                            sourceUri?.host.orEmpty(),
+                                            sourceUri?.path.orEmpty(),
+                                        ).joinToString("|"),
+                                    ),
+                                )
+                                android.util.Log.w(
+                                    "PlaybackService",
+                                    "检查网页媒体是否为 HLS 清单失败",
+                                    probeError,
+                                )
+                                false
+                            }
+
+                            if (isOpaqueHlsManifest) {
+                                extractionStage = "无扩展名 HLS 清单音轨分段下载"
+                                HlsAudioDownloader.download(
+                                    mediaUrl,
+                                    destination,
+                                    requestHeaders = headers,
+                                    awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
+                                    userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                                ) { detail ->
+                                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                        if (state.key == sessionKey) {
+                                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail, audioProgress = null)
+                                        } else state
+                                    }
+                                }
+                            } else if (
+                                io.translatetube.local.web.WebMediaUrlPolicy
+                                    .isExplicitAudioOnlyResource(mediaUrl)
+                            ) {
+                                extractionStage = "纯音频直链下载兜底"
+                                // A URL explicitly ending in an audio-only extension is safe to fetch whole.
+                                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                    if (state.key == sessionKey) {
+                                        state.copy(progress = "音轨流式读取失败，正在下载独立音频文件…")
+                                    } else state
+                                }
+                                downloadAudio(
+                                    mediaUrl,
+                                    destination,
+                                    sessionKey,
+                                    headers,
+                                    progressLabel = "独立音轨",
+                                    pipelineGeneration = pipelineGeneration,
+                                    dubbingMutationGeneration = dubbingMutationGeneration,
+                                    speakerRecognitionOnly = speakerRecognitionOnly,
+                                )
+                            } else {
+                                android.util.Log.w(
+                                    "PlaybackService",
+                                    "网页视频流式音轨提取失败；已阻止整段视频下载",
+                                    streamingError,
+                                )
+                                throw IllegalStateException(
+                                    "网页视频音轨提取失败。为避免把整段视频下载到手机，本次已停止整文件兜底。请重试，或在网页页面选择“用 yt-dlp 解析本页视频”。原因：${streamingError.message ?: streamingError.javaClass.simpleName}",
+                                    streamingError,
+                                )
+                            }
+                        }
+                    }
+                } catch (mediaError: Exception) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (mediaError is kotlinx.coroutines.CancellationException) throw mediaError
+
+                    val refreshedAudio = try {
+                        refreshRemoteAudioFromPage(
+                            sessionKey = sessionKey,
+                            pipelineGeneration = pipelineGeneration,
+                            dubbingMutationGeneration = dubbingMutationGeneration,
+                            pageUrl = referrer,
+                            existingCookie = cookie,
+                            destination = destination,
+                            originalFailure = mediaError,
+                            speakerRecognitionOnly = speakerRecognitionOnly,
+                        )
+                    } catch (refreshError: Exception) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (refreshError is kotlinx.coroutines.CancellationException) throw refreshError
+                        logRemoteAudioFailure(
+                            mediaUrl,
+                            referrer,
+                            cookie,
+                            "媒体地址失效后重新解析网页音轨",
+                            refreshError,
+                            mapOf(
+                                "原始媒体错误分类" to RemoteAudioFailurePolicy.classify(mediaError).code,
+                                "原始媒体异常类型" to mediaError.javaClass.name,
+                                "原始媒体异常详情" to (mediaError.message ?: "无异常消息").take(300),
+                                "转写缓存文件存在" to destination.isFile.toString(),
+                                "转写缓存文件大小字节" to destination.length().toString(),
+                            ),
+                        )
+                        throw refreshError
+                    }
+                    if (refreshedAudio != null) {
+                        extractionStage = "媒体地址失效后重新解析并下载纯音频"
+                        refreshedAudio
+                    } else {
+                        logRemoteAudioFailure(
+                            mediaUrl, referrer, cookie, extractionStage, mediaError,
+                            mapOf(
+                                "转写缓存文件存在" to destination.isFile.toString(),
+                                "转写缓存文件大小字节" to destination.length().toString(),
+                            ),
+                        )
+                        throw mediaError
+                    }
+                }
+                validateRemoteAudioFile(mediaUrl, referrer, cookie, extractionStage, cachedAudio)
+                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = cachedAudio)
+                leaseTransferred = true
+                cachedAudio
+            } finally {
+                if (!leaseTransferred) activeAsrAudioPaths.release(destination.absolutePath)
+            }
+        }
+    }
+
+    /**
+     * Recover a signed CDN URL that has expired while the user was away from the source page.
+     * Only 404/410-style failures are eligible, and only one page re-resolution is attempted.
+     * If the site no longer exposes a supported stream, the original failure is attached to the
+     * refresh failure and the caller reports both without downloading the whole video.
+     */
+    private suspend fun refreshRemoteAudioFromPage(
+        sessionKey: String,
+        pipelineGeneration: Long?,
+        dubbingMutationGeneration: Long?,
+        pageUrl: String,
+        existingCookie: String?,
+        destination: File,
+        originalFailure: Throwable,
+        speakerRecognitionOnly: Boolean = false,
+    ): File? {
+        val diagnosis = RemoteAudioFailurePolicy.classify(originalFailure)
+        if (!RemoteAudioFailurePolicy.shouldRetryWithFreshPageExtraction(originalFailure)) {
+            return null
+        }
+        val refreshProgress = if (diagnosis.code == "access_denied") {
+            "媒体地址访问被拒绝，正在重新解析网页音轨…"
+        } else {
+            "媒体地址已过期，正在重新解析网页音轨…"
+        }
+        val refreshDownloadLabel = if (diagnosis.code == "access_denied") {
+            "网页音轨 · 刷新访问地址后下载"
+        } else {
+            "网页音轨 · 重新解析后下载"
+        }
+        val pageUri = runCatching { android.net.Uri.parse(pageUrl.trim()) }.getOrNull()
+            ?: return null
+        if (
+            pageUri.scheme !in setOf("http", "https") ||
+            pageUri.host.isNullOrBlank()
+        ) return null
+
+        awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+        val cookieHeader = existingCookie?.takeIf { it.isNotBlank() }
+            ?: runCatching {
+                android.webkit.CookieManager.getInstance().getCookie(pageUrl)
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+
+        updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+            if (state.key == sessionKey) {
+                state.copy(
+                    phase = Phase.DOWNLOADING_AUDIO,
+                    progress = refreshProgress,
+                    audioProgress = null,
+                )
+            } else state
+        }
+
+        try {
+            // downloadAudio performs a fresh page extraction internally. Avoid a separate
+            // resolve() request first so a low-RAM/mobile-data device parses the page only once.
+            val refreshedAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
+                applicationContext,
+                pageUrl,
+                destination,
+                onProgress = { percent, downloadedBytes, totalBytes ->
+                    kotlinx.coroutines.runBlocking {
+                        awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                    }
+                    updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(
+                                phase = Phase.DOWNLOADING_AUDIO,
+                                progress = if (downloadedBytes > 0L || totalBytes != null) {
+                                    AudioDownloadProgressFormatter.formatProgress(
+                                        label = refreshDownloadLabel,
+                                        downloadedBytes = downloadedBytes,
+                                        totalBytes = totalBytes,
+                                        percent = percent.takeIf { it >= 0 },
+                                    )
+                                } else if (percent >= 0) {
+                                    "网页音轨 · 重新解析后下载 $percent%"
+                                } else {
+                                    "网页音轨 · 重新解析后下载…"
+                                },
+                                audioProgress = if (downloadedBytes > 0L || totalBytes != null) {
+                                    AudioProgressSnapshot(
+                                        downloadedBytes = downloadedBytes,
+                                        totalBytes = totalBytes,
+                                        percent = percent.takeIf { it >= 0 },
+                                    )
+                                } else null,
+                            )
+                        } else state
+                    }
+                },
+                cookieHeader = cookieHeader,
+            )
+            io.translatetube.local.util.AppLogStore.info(
+                context = applicationContext,
+                tag = "WebAudioExtraction",
+                message = "网页媒体临时地址失效或访问受限，重新提取页面并下载纯音频成功",
+                diagnosticContext = mapOf(
+                    "原始错误分类" to RemoteAudioFailurePolicy.classify(originalFailure).code,
+                    "网页主机名" to pageUri.host.orEmpty(),
+                    "是否恢复 Cookie" to (!cookieHeader.isNullOrBlank()).toString(),
+                    "重新提取方式" to "yt-dlp bestaudio，仅获取音频",
+                ),
+            )
+            return refreshedAudio
+        } catch (error: Exception) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            error.addSuppressed(originalFailure)
+            throw error
+        }
+    }
+
+    /**
+     * A history item can receive a refreshed CDN URL or lose its WebView Referer after re-entry.
+     * In that case the URL-scoped cache key changes even though the already-downloaded source
+     * audio still belongs to this exact history item. Recheck the item's indexed cache artifacts
+     * before requesting the old (often expired) HLS URL.
+     *
+     * Cookie-backed sessions deliberately do not use this cross-URL fallback: their exact
+     * URL/referrer/cookie cache key remains the only permitted reuse path.
+     */
+    private fun reusableHistoryRemoteAudioFile(
+        sessionKey: String,
+        currentIdentity: String,
+        currentSourceIdentity: String,
+        cookie: String?,
+    ): File? {
+        if (sessionKey.isBlank() || !cookie.isNullOrBlank()) return null
+
+        val directory = asrAudioCacheDirectory()
+        val currentPath = asrAudioCacheFile(currentIdentity).absolutePath
+        val now = System.currentTimeMillis()
+        val candidates = VideoHistoryCacheIndex.audioCacheFileNames(this, sessionKey)
+            .asSequence()
+            .filter { fileName ->
+                VideoHistoryCacheIndex.hasMatchingAudioSourceIdentity(
+                    this,
+                    sessionKey,
+                    fileName,
+                    currentSourceIdentity,
+                )
+            }
+            .map { File(directory, it) }
+            .filter { it.absolutePath != currentPath }
+            .filter { it.isFile && it.length() > 0L }
+            .sortedByDescending { it.lastModified() }
+            .toList()
+
+        for (candidate in candidates) {
+            val path = candidate.absolutePath
+            activeAsrAudioPaths.acquire(path)
+            if (!AsrAudioCachePolicy.canReuse(
+                    isFile = candidate.isFile,
+                    sizeBytes = candidate.length(),
+                    lastModifiedMs = candidate.lastModified(),
+                    nowMs = now,
+                )
+            ) {
+                activeAsrAudioPaths.release(path)
+                continue
+            }
+
+            // The index is scoped to this history key, but older entries may have been produced
+            // by a different source selection. Validate that the cached container still exposes a
+            // readable audio track before handing it to transcription. Do not delete a failed
+            // candidate unless this lookup is its only active lease.
+            val probe = runCatching {
+                io.translatetube.local.asr.AudioExtract.probeMediaFile(candidate)
+            }.getOrNull()
+            if (probe == null || probe.audioTrackCount <= 0 ||
+                probe.selectedAudioDecoderAvailable == false
+            ) {
+                activeAsrAudioPaths.deleteIfLeaseCountAtMost(path, allowedLeaseCount = 1) {
+                    candidate.delete()
+                }
+                activeAsrAudioPaths.release(path)
+                continue
+            }
+
+            candidate.setLastModified(System.currentTimeMillis())
+            pruneAsrAudioCache(directory, keep = candidate)
+            io.translatetube.local.util.AppLogStore.info(
+                context = applicationContext,
+                tag = "WebAudioExtraction",
+                message = "按历史视频缓存索引复用已下载音频，跳过旧媒体地址请求",
+                diagnosticContext = mapOf(
+                    "缓存复用方式" to "历史视频音频索引",
+                    "缓存文件大小字节" to candidate.length().toString(),
+                    "当前媒体地址" to "未写入日志",
+                    "Cookie 会话隔离" to "当前请求未携带 Cookie",
+                    "媒体地址是否可能已刷新" to "是",
+                ),
+            )
+            return candidate
+        }
+        return null
+    }
+
+    /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
+    private fun reusableAsrAudioFile(identity: String, cacheNamespace: String? = null): File? {
+        val file = asrAudioCacheFile(identity, cacheNamespace)
+        val now = System.currentTimeMillis()
+        // Protect the candidate before checking its metadata: a concurrent cache pruner must not
+        // delete it in the gap between validation and handing the file to its reader.
+        activeAsrAudioPaths.acquire(file.absolutePath)
+        if (AsrAudioCachePolicy.canReuse(file.isFile, file.length(), file.lastModified(), now)) {
+            file.setLastModified(now)
+            file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
+            return file
+        }
+        activeAsrAudioPaths.release(file.absolutePath)
+        // Release and deletion must be coordinated with acquisition, not a separate contains()
+        // check: a new reader could otherwise acquire this path just before file.delete().
+        activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+        File(file.parentFile, file.name + ".part").delete()
+        return null
+    }
+
+    /** Keep cached audio through its TTL; never evict files currently being reused/downloaded. */
+    private fun releaseActiveAsrAudio(path: String?) {
+        if (path.isNullOrBlank()) return
+        activeAsrAudioPaths.release(path)
+        val file = File(path)
+        file.parentFile?.let { parent ->
+            pruneAsrAudioCache(parent, keep = file.takeIf { it.isFile })
+        }
+    }
+
+    private fun pruneAsrAudioCache(directory: File, keep: File?) {
+        val allFiles = directory.listFiles() ?: return
+        val now = System.currentTimeMillis()
+        // A process killed during download may leave a large .part file. Retire it only after
+        // six hours, and coordinate deletion with the final .bin lease so an old-but-active
+        // download cannot lose its partial payload while another cache is being pruned.
+        allFiles.filter { file ->
+            file.isFile && file.name.endsWith(".part") &&
+                AsrAudioCachePolicy.isStalePartial(file.lastModified(), now)
+        }.forEach { file ->
+            val destinationPath = file.absolutePath.removeSuffix(".part")
+            activeAsrAudioPaths.deleteIfUnleased(destinationPath) { file.delete() }
+        }
+
+        // First expire stale/empty entries, then enforce a shared byte and file-count budget.
+        // Touching a cache on reuse updates its mtime, so oldest unused audio is evicted first.
+        var files = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".bin") }
+            .orEmpty()
+        files.forEach { file ->
+            val isKept = keep != null && file.absolutePath == keep.absolutePath
+            val age = now - file.lastModified()
+            val shouldExpire = !isKept &&
+                (file.length() <= 0L || age < 0L || age > AsrAudioCachePolicy.TTL_MS)
+            if (shouldExpire) {
+                // The lease registry holds its monitor through deletion. A simultaneous reader
+                // either acquires first (and protects the file) or waits until deletion finishes.
+                activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+            }
+        }
+
+        files = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".bin") }
+            .orEmpty()
+        var totalBytes = files.fold(0L) { total, file ->
+            AsrAudioCachePolicy.addCacheBytes(total, file.length().coerceAtLeast(0L))
+        }
+        var fileCount = files.size
+        val oldestFirst = files
+            .filterNot { keep != null && it.absolutePath == keep.absolutePath }
+            .sortedBy { it.lastModified() }
+        for (file in oldestFirst) {
+            if (!AsrAudioCachePolicy.exceedsBudget(totalBytes, fileCount)) break
+            val bytes = file.length().coerceAtLeast(0L)
+            val deleted = activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
+            if (deleted) {
+                totalBytes = (totalBytes - bytes).coerceAtLeast(0L)
+                fileCount = (fileCount - 1).coerceAtLeast(0)
+            }
+        }
+    }
+
+    /**
+     * Some media servers use chunked transfer encoding and omit Content-Length on the download
+     * response. A one-byte range probe can still reveal the exact entity length from Content-Range.
+     * The probe is only attempted when the main response has no usable size.
+     */
+    private suspend fun probeRemoteMediaTotalBytes(
+        url: String,
+        requestHeaders: Map<String, String>,
+        ownerJob: Job?,
+    ): Long? = withContext(Dispatchers.IO) {
+        ownerJob?.ensureActive()
+        val probeHeaders = HlsAudioDownloader.headersWithoutInheritedRange(requestHeaders) +
+            ("Range" to "bytes=0-0")
+        SafeMediaHttp.execute(
+            url = url,
+            requestHeaders = probeHeaders,
+            userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }
+                ?: SafeMediaHttp.DEFAULT_USER_AGENT,
+            ownerJob = ownerJob,
+        ).use { response ->
+            if (response.code !in setOf(200, 206)) return@use null
+            val rangeTotal = response.header("Content-Range")
+                ?.let { header ->
+                    Regex("""(?i)^bytes\s+\d+-\d+/(\d+)$""")
+                        .matchEntire(header.trim())
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toLongOrNull()
+                }
+                ?.takeIf { it > 0L }
+            rangeTotal ?: response.header("Content-Length")
+                ?.toLongOrNull()
+                ?.takeIf { it > 0L }
+        }
+    }
+
+    private suspend fun downloadAudio(
+        url: String,
+        destination: File? = null,
+        sessionKey: String,
+        requestHeaders: Map<String, String> = emptyMap(),
+        progressLabel: String = "音轨类型待确认 · 音轨",
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
+        speakerRecognitionOnly: Boolean = false,
+    ): File {
+        val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
+        target.parentFile?.mkdirs()
+        // Capture the owning pipeline before switching to IO. SafeMediaHttp uses it to cancel
+        // the active socket read immediately when the user changes video or aborts transcription.
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        // Always write to a sibling temporary file. A process killed mid-download must never
+        // leave a partial payload under the final .bin name where a later cache scan can reuse it.
+        val writeTarget = File(target.parentFile, target.name + ".part")
+        var lastError: Exception? = null
+
+        for (attempt in 1..3) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            writeTarget.delete()
+            try {
+                withContext(Dispatchers.IO) {
+                    SafeMediaHttp.execute(
+                        url = url,
+                        // This operation needs the full track, not a Range captured from a WebView request.
+                        requestHeaders = HlsAudioDownloader.headersWithoutInheritedRange(requestHeaders),
+                        // 站点防护（Cloudflare 等）的 Cookie 与 WebView 的 UA 绑定，
+                        // 音频提取必须沿用同一 UA，否则会被判无效返回挑战页。
+                        userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }
+                            ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+                        ownerJob = ownerJob,
+                    ).use { resp ->
+                        SafeMediaHttp.validateCompleteGetResponse(resp.code, "音频文件")
+                        val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
+                        if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
+                            throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")
+                        }
+                        val responseLength = body.contentLength()
+                        val total = if (responseLength > 0L) {
+                            responseLength
+                        } else {
+                            try {
+                                probeRemoteMediaTotalBytes(url, requestHeaders, ownerJob)
+                            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                                throw cancel
+                            } catch (probeError: Exception) {
+                                android.util.Log.d(
+                                    "PlaybackService",
+                                    "音轨响应未提供总长度，范围探测也未取得可用大小",
+                                    probeError,
+                                )
+                                null
+                            } ?: -1L
+                        }
+                        body.byteStream().use { ins ->
+                            var got = 0L
+                            var lastProgressBytes = 0L
+                            var lastProgressAtMs = android.os.SystemClock.elapsedRealtime()
+                            val payloadPrefix = ByteArray(512)
+                            var payloadPrefixSize = 0
+                            writeTarget.outputStream().buffered().use { out ->
+                                val buf = ByteArray(64 * 1024)
+                                while (true) {
+                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                                    val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
+                                    if (n < 0) break
+                                    if (payloadPrefixSize < payloadPrefix.size) {
+                                        val copyCount = minOf(n, payloadPrefix.size - payloadPrefixSize)
+                                        System.arraycopy(buf, 0, payloadPrefix, payloadPrefixSize, copyCount)
+                                        payloadPrefixSize += copyCount
+                                        if (isHlsManifestPayload(payloadPrefix, payloadPrefixSize)) {
+                                            throw HlsManifestPayloadException(url)
+                                        }
+                                        if (isLikelyTextErrorPayload(payloadPrefix, payloadPrefixSize)) {
+                                            throw IllegalStateException(
+                                                "服务器返回了登录页或错误文本，而不是音频数据；链接可能过期或需要登录。"
+                                            )
+                                        }
+                                    }
+                                    if (got > Long.MAX_VALUE - n.toLong()) {
+                                        throw IllegalStateException("音频大小超过当前文件格式可表示的范围。")
+                                    }
+                                    got += n.toLong()
+                                    out.write(buf, 0, n)
+                                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                                    val shouldPublishProgress =
+                                        got - lastProgressBytes >= 512L * 1024L ||
+                                            nowMs - lastProgressAtMs >= 350L ||
+                                            (total > 0L && got >= total)
+                                    if (shouldPublishProgress) {
+                                        val percent = if (total > 0L) {
+                                            (got * 100.0 / total.toDouble()).toInt().coerceIn(0, 100)
+                                        } else null
+                                        val progress = AudioDownloadProgressFormatter.formatProgress(
+                                            label = "${progressLabel} · 正在下载",
+                                            downloadedBytes = got,
+                                            totalBytes = total.takeIf { it > 0L },
+                                            percent = percent,
+                                        )
+                                        updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                            if (state.key == sessionKey) state.copy(
+                                                progress = progress,
+                                                audioProgress = AudioProgressSnapshot(
+                                                    downloadedBytes = got,
+                                                    totalBytes = total.takeIf { it > 0L },
+                                                    percent = percent,
+                                                ),
+                                            ) else state
+                                        }
+                                        lastProgressBytes = got
+                                        lastProgressAtMs = nowMs
+                                    }
+                                }
+                                out.flush()
+                            }
+                            if (!AsrAudioCachePolicy.isCompleteDownload(total, got)) {
+                                throw IllegalStateException(
+                                    "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
+                                )
+                            }
+                            updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(
+                                        progress = AudioDownloadProgressFormatter.formatProgress(
+                                            label = "${progressLabel} · 下载完成",
+                                            downloadedBytes = got,
+                                            totalBytes = total.takeIf { it > 0L },
+                                            percent = 100,
+                                        ),
+                                        audioProgress = AudioProgressSnapshot(
+                                            downloadedBytes = got,
+                                            totalBytes = total.takeIf { it > 0L },
+                                            percent = 100,
+                                        ),
+                                    )
+                                } else state
+                            }
+                        }
+                    }
+                }
+
+                // Make the complete temporary payload durable before publishing the cache path.
+                if (writeTarget.isFile && writeTarget.length() > 0L) {
+                    java.io.RandomAccessFile(writeTarget, "rw").use { it.fd.sync() }
+                }
+                if (!writeTarget.isFile || writeTarget.length() == 0L) {
+                    throw IllegalStateException("音频下载结果为空")
+                }
+                // Rename only after the complete response has been validated. On Android/Linux,
+                // same-directory rename replaces the previous regular file atomically; if it fails,
+                // leave the previous cache intact rather than deleting it first.
+                awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                if (!writeTarget.renameTo(target)) {
+                    throw IllegalStateException("下载完成但无法原子保存音频缓存")
+                }
+                target.setLastModified(System.currentTimeMillis())
+                return target
+            } catch (error: Exception) {
+                writeTarget.delete()
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                lastError = error
+                if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
+                awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                    if (state.key == sessionKey) {
+                        state.copy(progress = "网络不稳定，正在重试音频下载（第 ${attempt + 1} 次）")
+                    } else state
+                }
+                kotlinx.coroutines.delay(300L * attempt)
+            }
+        }
+        throw IllegalStateException("音频下载失败，已达到重试次数上限。", lastError)
+    }
+
+    
+    /**
+     * Audio acquisition requested by speaker diarization is a secondary player task, not a new
+     * five-stage processing run. Preserve playback phase/progress and publish measured detail
+     * only in the speaker-recognition menu state.
+     */
+    private fun updateAudioAcquisitionUi(
+        sessionKey: String,
+        pipelineGeneration: Long?,
+        dubbingMutationGeneration: Long?,
+        speakerRecognitionOnly: Boolean,
+        transform: (PlayerUiState) -> PlayerUiState,
+    ) {
+        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { current ->
+            SpeakerRecognitionProgressPolicy.preservePlaybackState(
+                current = current,
+                requested = transform(current),
+                speakerRecognitionOnly = speakerRecognitionOnly,
+            )
+        }
+    }
+
+    private fun kokoroRuntimeReady(): Boolean = runCatching {
+        val files = io.translatetube.local.data.ModelFiles
+        if (files.ttsCoreReady(this)) files.installBundledTtsSupportFiles(this)
+        files.ttsReady(this)
+    }.onFailure {
+        android.util.Log.w("PlaybackService", "Kokoro runtime readiness check failed", it)
+    }.getOrDefault(false)
+
+    private fun ttsDisplayName(engineId: String): String = when (engineId) {
+        "system" -> "系统 TTS"
+        "edge" -> "微软 Edge TTS"
+        "google" -> "谷歌在线语音"
+        "gemini" -> "Gemini TTS"
+        "kokoro" -> "Kokoro"
+        "piper" -> {
+            val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+            val id = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+            val def = io.translatetube.local.tts.PiperModels.byId(id)
+            if (def == null) "Piper" else "Piper · ${def.voiceLabel}"
+        }
+        else -> "未知配音引擎"
+    }
+
+    private fun piperModelReadyForChinese(): Boolean {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val id = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+        val definition = io.translatetube.local.tts.PiperModels.byId(id) ?: return false
+        return definition.supportsChineseOutput &&
+            io.translatetube.local.tts.PiperModels.modelReady(this, id)
+    }
+
+    private fun makeTts(engineId: String? = null): TtsEngine {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val selected = DubbingConfigPreferencePolicy.normalizeEngineId(
+            engineId ?: prefs.getString("tts_engine", "edge"),
+        )
+        return when (selected) {
+            "system" -> io.translatetube.local.tts.SystemTts(
+                this,
+                io.translatetube.local.tts.SystemTtsPlaybackMode.fromPreference(
+                    prefs.getString("system_tts_mode", "generated"),
+                ),
+            )
+            "kokoro" -> {
+                if (!kokoroRuntimeReady()) {
+                    throw IllegalStateException("已选择 Kokoro，但配音模型尚未就绪")
+                }
+                KokoroTts(this, speakerId = prefs.getInt("kokoro_speaker", 14))
+            }
+            "piper" -> {
+                val modelId = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
+                    ?: throw IllegalStateException("未知 Piper 模型「$modelId」，请在设置中重新选择")
+                if (!definition.supportsChineseOutput) {
+                    throw IllegalStateException("当前翻译目标是中文，所选 Piper 模型为「${definition.langLabel}」。请在设置中选择中文 Piper 模型。")
+                }
+                if (!io.translatetube.local.tts.PiperModels.modelReady(this, modelId)) {
+                    throw IllegalStateException("已选择 Piper 中文配音，但模型尚未下载或文件不完整，请在设置中下载中文 Piper 模型")
+                }
+                io.translatetube.local.tts.PiperTts(this, modelId)
+            }
+            "edge" -> io.translatetube.local.tts.EdgeTts()
+            "google" -> io.translatetube.local.tts.GoogleTts()
+            "gemini" -> io.translatetube.local.tts.GeminiTts(this)
+            else -> throw IllegalStateException("未知配音引擎「$selected」，请在设置中重新选择")
+        }
+    }
+
+    /**
+     * TTS constructors may load native runtimes or wait for Android's system TTS service.
+     * Keep those blocking operations off the main thread and close an instance if cancellation
+     * wins after construction but before the caller can take ownership.
+     */
+    private suspend fun makeTtsOffMainThread(engineId: String? = null): TtsEngine {
+        val created = java.util.concurrent.atomic.AtomicReference<TtsEngine?>(null)
+        try {
+            return withContext(Dispatchers.IO) {
+                val engine = makeTts(engineId)
+                created.set(engine)
+                try {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    engine
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    created.compareAndSet(engine, null)
+                    runCatching { engine.close() }
+                    throw cancelled
+                }
+            }.also { created.compareAndSet(it, null) }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            created.getAndSet(null)?.let { engine -> runCatching { engine.close() } }
+            throw cancelled
+        }
+    }
+
+    /**
+     * Report synthesis failures without silently replacing the engine selected in Settings.
+     * When the selected engine cannot produce voice output, pause the video rather than
+     * silently substituting the original audio as an automatic fallback.
+     */
+    private fun pausePlaybackAfterDubbingFailure(
+        engine: DubbingEngine,
+        sessionKey: String,
+        reason: String,
+    ) {
+        scope.launch(Dispatchers.Main.immediate) {
+            if (!::pm.isInitialized || !isCurrentDubbingEngine(engine, sessionKey)) return@launch
+            cancelPendingSeekResume()
+            cancelDubbingDrainAfterVideoEnd()
+            runCatching { pm.pause() }
+            safelyControlDubbing("配音失败后停止语音输出：$reason") { engine.stop() }
+
+            val current = ui.value
+            if (current.key != sessionKey || !isCurrentDubbingEngine(engine, sessionKey)) return@launch
+            safelySetOriginalVolume(
+                if (current.originalVolume <= 0f) 0f else current.originalVolume,
+                "配音失败后保持视频暂停并保留原声音量设置",
+            )
+            ui.update { state ->
+                if (state.key == sessionKey && dubbing === engine) {
+                    state.copy(
+                        isPlaying = false,
+                        currentLine = -1,
+                        activeDubbingLine = -1,
+                        dubbingHasErrors = true,
+                        dubbingStatus = "${state.ttsEngineName.ifBlank { "配音引擎" }}合成失败，视频已暂停",
+                    )
+                } else state
+            }
+            android.util.Log.w(
+                "PlaybackService",
+                "Video paused after dubbing failure: session=$sessionKey reason=${reason.take(180)}",
+            )
+        }
+    }
+
+    private fun registerDubbingFailureHandler(
+        engine: DubbingEngine,
+        tts: TtsEngine,
+        sessionKey: String = ui.value.key,
+    ) {
+        engine.onSynthesisReady = { index, sampleCount, sampleRate, fromCache ->
+            val durationMs = sampleCount.toLong() * 1_000L / sampleRate.coerceAtLeast(1)
+            val durationSeconds = String.format(
+                java.util.Locale.ROOT,
+                "%.2f",
+                durationMs / 1_000.0,
+            )
+            val engineName = engine.currentTtsName.ifBlank { tts.name }
+            val cueStatus = if (fromCache) {
+                "已复用第 ${index + 1} 句 PCM 缓存"
+            } else {
+                "已生成第 ${index + 1} 句 PCM"
+            }
+            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                state.copy(
+                    ttsEngineName = engineName,
+                    dubbingStatus = "$engineName $cueStatus（约 ${durationSeconds} s）",
+                )
+            }
+        }
+        engine.onPlaybackStarted = { index, playbackGeneration ->
+            // Audio starts on a worker thread and this callback can reach Main after a seek,
+            // pause, quick toggle, or restart of the same subtitle row. Bind every side effect
+            // to the exact playAt generation that actually started.
+            if (::pm.isInitialized) {
+                scope.launch(Dispatchers.Main) {
+                    val canApply = DubbingPlaybackStartedPolicy.shouldApply(
+                        dubbingEnabled = ui.value.dubbingOn,
+                        engineIsCurrent = isCurrentDubbingEngine(engine, sessionKey),
+                        startedLineStillCurrent = engine.hasStartedPlaybackFor(index, playbackGeneration),
+                    )
+                    if (::pm.isInitialized && canApply) {
+                        syncOriginalVolumeWithDubbing(engine, ui.value, "中文配音开始播放")
+                    }
+                }
+            }
+            // The same generation check protects subtitle highlighting from a stale callback.
+            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                if (
+                    DubbingPlaybackStartedPolicy.shouldApply(
+                        dubbingEnabled = state.dubbingOn,
+                        engineIsCurrent = true,
+                        startedLineStillCurrent = engine.hasStartedPlaybackFor(index, playbackGeneration),
+                    )
+                ) {
+                    state.copy(
+                        dubbingStatus = "${engine.currentTtsName} 正在播放中文配音",
+                        activeDubbingLine = index,
+                    )
+                } else {
+                    state
+                }
+            }
+        }
+        engine.onFallbackRequested = { _, detail ->
+            if (engine.currentTtsName != "系统TTS" || !isCurrentDubbingEngine(engine, sessionKey)) {
+                false
+            } else {
+                // Return false so DubbingEngine marks this cue unavailable. Never replace the
+                // user's explicitly selected System TTS engine; pause video instead of source fallback.
+                updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                    state.copy(
+                        dubbingStatus = "系统 TTS 合成失败，保持当前引擎",
+                        noModelHint = "系统 TTS 合成失败：$detail。应用不会自动切换到本地模型，也不会要求下载 Kokoro/Piper。视频已暂停；请检查手机设置中的文字转语音服务、中文语音数据和可用音色后重新处理。",
+                        dubbingHasErrors = true,
+                        activeDubbingLine = -1,
+                    )
+                }
+                pausePlaybackAfterDubbingFailure(engine, sessionKey, "系统 TTS 合成失败：${detail.take(180)}")
+                false
+            }
+        }
+
+        engine.onSynthesisError = { detail ->
+            val activeName = engine.currentTtsName.ifBlank { tts.name }
+            val systemTtsSelected = activeName.contains("系统TTS")
+            val message = if (systemTtsSelected) {
+                "系统 TTS 合成或输出失败：$detail。当前保持系统 TTS，不会自动切换或要求下载本地模型。视频已暂停，请检查手机的文字转语音服务、中文语音数据和可用音色后重新处理。"
+            } else {
+                "当前配音引擎「$activeName」合成或输出失败，视频已暂停。$detail"
+            }
+            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                state.copy(
+                    ttsEngineName = activeName,
+                    dubbingStatus = if (systemTtsSelected) {
+                        "系统 TTS 合成失败，视频已暂停"
+                    } else {
+                        "$activeName 合成或播放失败，视频已暂停"
+                    },
+                    noModelHint = message,
+                    // Keep the selected engine and the user's audio preference; the error hint
+                    // makes a failed voice explicit instead of silently switching audio settings.
+                    dubbingHasErrors = true,
+                    activeDubbingLine = -1,
+                )
+            }
+            pausePlaybackAfterDubbingFailure(engine, sessionKey, "$activeName 合成/输出失败：${detail.take(180)}")
+            if (detail.contains("设备内存不足")) {
+                // Retire even if attach() reported the OOM just before publishing the engine.
+                // retireDubbing only clears the service field when this exact engine owns it.
+                scope.launch(Dispatchers.IO) {
+                    retireDubbing(engine)
+                    runCatching { awaitRetiredDubbingEngines() }
+                        .onFailure { android.util.Log.w("PlaybackService", "TTS cleanup after memory failure did not finish cleanly", it) }
+                }
+            }
+        }
+    }
+
+    private suspend fun saveHistory(meta: VideoEntity) {
+        val db = AppDatabase.get(this)
+        val old = db.videoDao().byKey(meta.key)
+        if (old != null) db.videoDao().upsert(old.copy(lastPlayedAt = System.currentTimeMillis()))
+        else db.videoDao().upsert(meta.copy())
+    }
+
+    // ============ 时间轴驱动 ============
+    /**
+     * Drop both the interval index and its source-list identity. The source list may contain
+     * hundreds of thousands of subtitle rows, and the cached arrays can also be several MB.
+     * Called when a new session takes ownership and when the long-lived Service is destroyed.
+     */
+    private fun clearSubtitleHighlightTimeline() {
+        highlightTimelineSource = null
+        highlightTimeline = DubbingTimeline(emptyList())
+        highlightFirstSpokenLine = -1
+        lastLineIdx = Int.MIN_VALUE
+    }
+
+    private fun subtitleHighlightLineAt(lines: List<SubLine>, positionMs: Long): Int {
+        if (highlightTimelineSource !== lines) {
+            highlightTimeline = DubbingTimeline(lines)
+            highlightTimelineSource = lines
+            highlightFirstSpokenLine = lines.indexOfFirst { it.text.isNotBlank() }
+            // Don't carry a line index across a newly published subtitle snapshot.
+            lastLineIdx = Int.MIN_VALUE
+        }
+        val activeLine = highlightTimeline.lineAt(positionMs)
+        if (activeLine in lines.indices) return activeLine
+
+        // 首句宽限期：ASR 给第一句的起点普遍偏晚（视频已开口、时间戳还没到）。
+        // 仅保留首句启动补偿，不提前预告后续字幕。
+        val firstSpoken = highlightFirstSpokenLine
+        if (firstSpoken in lines.indices) {
+            val first = lines[firstSpoken]
+            val lead = first.startMs - positionMs
+            if (lead in 0L..2_500L) return firstSpoken
+        }
+
+        // 相邻字幕结束边界只保留极短缓冲，真实空档超过 160ms 后立即清除高亮。
+        // 下一句只会在 DubbingTimeline.lineAt() 命中其开始时间后切换，不提前显示。
+        return SubtitleHighlightPolicy.holdPreviousCueBriefly(
+            lines = lines,
+            previousLine = lastLineIdx,
+            positionMs = positionMs,
+        )
+    }
+    /**
+     * ExoPlayer invokes some callbacks synchronously from seek()/play() on its application looper.
+     * A stale subtitle snapshot or a TTS transition must not let an ordinary runtime exception
+     * escape that callback and terminate the app process.
+     */
+    /**
+     * TTS engines and AudioTrack implementations can reject stop/pause during teardown or a seek.
+     * These calls originate in Media3 callbacks; an ordinary engine exception must not escape them
+     * and terminate the Android process.
+     */
+    private fun safelyControlDubbing(source: String, action: () -> Unit) {
+        try {
+            action()
+        } catch (error: Exception) {
+            val state = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackSync",
+                "播放器事件中同步配音状态失败：$source",
+                error,
+                diagnosticContext = mapOf(
+                    "触发来源" to source,
+                    "视频会话标识（去除查询参数）" to state.key.substringBefore('?').take(160),
+                    "播放器阶段" to state.phase.name,
+                    "视频播放位置 ms" to runCatching { if (::pm.isInitialized) pm.position() else -1L }.getOrDefault(-1L).toString(),
+                    "当前字幕索引" to state.currentLine.toString(),
+                    "当前配音字幕索引" to state.activeDubbingLine.toString(),
+                    "是否开启配音" to state.dubbingOn.toString(),
+                    "是否静音原声" to (state.originalVolume <= 0f).toString(),
+                    "当前配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
+                    "恢复策略" to "恢复原声音量并清除活动配音行，继续视频播放",
+                ),
+            )
+            android.util.Log.e("PlaybackService", "Unable to synchronize dubbing during $source", error)
+            safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, source)
+            ui.update { state ->
+                state.copy(
+                    activeDubbingLine = -1,
+                    dubbingStatus = "配音音频正在恢复，视频播放继续",
+                )
+            }
+        }
+    }
+
+    /**
+     * Preserve the user's original-audio gain independently of whether Chinese speech has started.
+     * Playback ticks may reapply this gain throughout a cue; only the user's own mute setting
+     * should silence the source track while dubbing is playing.
+     */
+    private fun syncOriginalVolumeWithDubbing(
+        engine: DubbingEngine,
+        observedState: PlayerUiState,
+        source: String,
+    ) {
+        // A player tick can carry a stale snapshot for one frame after a slider/mode/session change.
+        // Use current settings and decline ownership changes rather than restoring stale source gain.
+        val latest = ui.value
+        if (
+            latest.key != observedState.key ||
+            videoKey != latest.key ||
+            dubbing !== engine
+        ) return
+
+        val index = engine.currentLineIdx()
+        val speechStarted = index >= 0 && engine.hasStartedPlaybackFor(index)
+        val sourceGain = DubbingSourceVolumePolicy.sourceGain(
+            originalVolume = latest.originalVolume,
+            dubbingVolume = latest.dubbingVolume,
+            dubbingEnabled = latest.dubbingOn,
+            dubbingStarted = speechStarted,
+        )
+        safelySetOriginalVolume(sourceGain, source)
+    }
+
+    private fun safelySetOriginalVolume(volume: Float, source: String) {
+        try {
+            if (playerReady && ::pm.isInitialized) {
+                // Each path has its own user gain. Live System TTS must not force source audio to zero.
+                val state = ui.value
+                val configuredGain = state.originalVolume
+                    .takeIf { it.isFinite() }
+                    ?.coerceIn(0f, 1f)
+                    ?: 0f
+                val requestedGain = volume
+                    .takeIf { it.isFinite() }
+                    ?.coerceIn(0f, 1f)
+                    ?: 0f
+                pm.originalVolume = configuredGain * requestedGain
+            }
+        } catch (error: Exception) {
+            io.translatetube.local.util.AppLogStore.warning(
+                this@PlaybackService, "PlaybackSync",
+                "播放期间调整原视频音量失败：$source",
+                error,
+                diagnosticContext = mapOf(
+                    "触发来源" to source,
+                    "视频会话标识（去除查询参数）" to ui.value.key.substringBefore('?').take(160),
+                    "播放器阶段" to ui.value.phase.name,
+                    "请求音量" to volume.toString(),
+                    "当前是否静音原声" to (ui.value.originalVolume <= 0f).toString(),
+                    "播放器是否初始化" to (::pm.isInitialized).toString(),
+                ),
+            )
+            android.util.Log.w("PlaybackService", "Unable to set source volume during $source", error)
+        }
+    }
+
+    private fun hasPendingDubbingAfterVideoEnd(sessionKey: String): Boolean {
+        if (!::pm.isInitialized ||
+            pm.player.playbackState != androidx.media3.common.Player.STATE_ENDED
+        ) return false
+        val state = ui.value
+        if (state.key != sessionKey || videoKey != sessionKey || !state.dubbingOn) return false
+        if (hasDubbingCatchUpCues(sessionKey)) return true
+        val engine = dubbing ?: return false
+        val index = engine.currentLineIdx()
+        return index >= 0 && (
+            engine.shouldContinueCurrentCue(-1) ||
+                (!engine.hasStartedPlaybackFor(index) &&
+                    engine.isPrepared(index) && !engine.isSilent(index))
+            )
+    }
+
+    private fun clearDubbingCatchUpQueue(sessionKey: String? = null, positionMs: Long = -1L) {
+        synchronized(dubbingCatchUpLock) {
+            dubbingCatchUpQueue.clear()
+            dubbingCatchUpSessionKey = sessionKey.orEmpty()
+            // Callers provide raw Media3 time; the queue stores subtitle-timeline time.
+            lastDubbingCatchUpPositionMs = subtitleTimelinePositionMs(positionMs)
+        }
+    }
+
+    private fun peekDubbingCatchUpCue(sessionKey: String): Int? = synchronized(dubbingCatchUpLock) {
+        if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.firstOrNull() else null
+    }
+
+    private fun enqueueDubbingCatchUpCue(
+        sessionKey: String,
+        index: Int,
+        prioritizeFirst: Boolean = false,
+    ) {
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey == sessionKey) {
+                DubbingCatchUpQueuePolicy.enqueue(
+                    queue = dubbingCatchUpQueue,
+                    index = index,
+                    prioritizeFirst = prioritizeFirst,
+                )
+            }
+        }
+    }
+
+    /**
+     * Buffering invalidates a live System TTS utterance. If its subtitle window has already
+     * passed, retain that interrupted sentence ahead of later missed cues before pausePlayback()
+     * clears the engine's active utterance state. Manual pause does not enter this path.
+     */
+    private fun preserveInterruptedImmediateCueOnBuffer(sessionKey: String) {
+        if (!::pm.isInitialized) return
+        val state = ui.value
+        if (state.key != sessionKey || !state.dubbingOn) return
+        val player = pm.player
+        if (!player.playWhenReady ||
+            player.playbackState != androidx.media3.common.Player.STATE_BUFFERING
+        ) return
+
+        val engine = dubbing ?: return
+        if (!engine.usesImmediateTimelinePlayback) return
+        val activeIndex = engine.currentLineIdx()
+        if (activeIndex < 0 || !engine.hasActiveTimelineUtteranceFor(activeIndex)) return
+
+        val timelinePositionMs = subtitleTimelinePositionMs(pm.position())
+        if (engine.lineAt(timelinePositionMs) == activeIndex) return
+
+        enqueueDubbingCatchUpCue(
+            sessionKey = sessionKey,
+            index = activeIndex,
+            prioritizeFirst = true,
+        )
+    }
+
+    private fun removeDubbingCatchUpCue(sessionKey: String, index: Int) {
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey == sessionKey && dubbingCatchUpQueue.firstOrNull() == index) {
+                dubbingCatchUpQueue.remove(index)
+            }
+        }
+    }
+
+    private fun hasDubbingCatchUpCues(sessionKey: String): Boolean =
+        peekDubbingCatchUpCue(sessionKey) != null
+
+    private fun dubbingCatchUpQueueDepth(sessionKey: String): Int = synchronized(dubbingCatchUpLock) {
+        if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.size else 0
+    }
+
+    /** Record every playable cue whose start time passes while another sentence owns output. */
+    private fun updateDubbingCatchUpQueue(
+        state: PlayerUiState,
+        positionMs: Long,
+        captureMissedCues: Boolean,
+        activeDubbingIndex: Int,
+    ) {
+        val previousPositionMs: Long
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey != state.key) {
+                dubbingCatchUpQueue.clear()
+                dubbingCatchUpSessionKey = state.key
+                lastDubbingCatchUpPositionMs = positionMs
+                return
+            }
+            if (!state.dubbingOn) {
+                dubbingCatchUpQueue.clear()
+                lastDubbingCatchUpPositionMs = positionMs
+                return
+            }
+            val previous = lastDubbingCatchUpPositionMs
+            if (previous < 0L || positionMs < previous) {
+                dubbingCatchUpQueue.clear()
+                lastDubbingCatchUpPositionMs = positionMs
+                return
+            }
+            previousPositionMs = previous
+            lastDubbingCatchUpPositionMs = positionMs
+        }
+        if (!captureMissedCues || positionMs <= previousPositionMs) return
+
+        val crossed = DubbingCatchUpQueuePolicy.crossedCueIndexes(
+            cueCount = state.lines.size,
+            previousPositionMs = previousPositionMs,
+            positionMs = positionMs,
+            activeDubbingIndex = activeDubbingIndex,
+            cueStartMs = { index -> state.lines[index].startMs },
+            isPlayableCue = { index -> DubbingTimeline.isPlayableCue(state.lines[index]) },
+        )
+
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey != state.key || !state.dubbingOn) return
+            crossed.forEach { dubbingCatchUpQueue.add(it) }
+        }
+    }
+
+    private fun isDubbingDrainActiveFor(engine: DubbingEngine, sessionKey: String): Boolean =
+        dubbingDrainAfterVideoEnd &&
+            dubbingDrainEngine === engine &&
+            dubbingDrainSessionKey == sessionKey &&
+            videoKey == sessionKey &&
+            ui.value.key == sessionKey &&
+            ui.value.dubbingOn
+
+    private fun cancelDubbingDrainAfterVideoEnd() {
+        val poll = dubbingDrainPoll
+        dubbingDrainPoll = null
+        dubbingDrainAfterVideoEnd = false
+        dubbingDrainEngine = null
+        dubbingDrainSessionKey = ""
+        poll?.let(dubbingDrainHandler::removeCallbacks)
+    }
+
+    private fun startDubbingDrainAfterVideoEnd(engine: DubbingEngine, sessionKey: String) {
+        if (!isCurrentDubbingEngine(engine, sessionKey) || !ui.value.dubbingOn) return
+        if (isDubbingDrainActiveFor(engine, sessionKey)) return
+        cancelDubbingDrainAfterVideoEnd()
+        dubbingDrainAfterVideoEnd = true
+        dubbingDrainEngine = engine
+        dubbingDrainSessionKey = sessionKey
+
+        lateinit var poll: Runnable
+        poll = object : Runnable {
+            override fun run() {
+                if (!dubbingDrainAfterVideoEnd || dubbingDrainEngine !== engine ||
+                    dubbingDrainSessionKey != sessionKey
+                ) return
+                if (!isDubbingDrainActiveFor(engine, sessionKey)) {
+                    cancelDubbingDrainAfterVideoEnd()
+                    if (videoKey == sessionKey && ui.value.key == sessionKey && !ui.value.dubbingOn) {
+                        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = pm.position())
+                        engine.stop()
+                    }
+                    return
+                }
+                if (!playerReady || !isCurrentDubbingEngine(engine, sessionKey)) {
+                    cancelDubbingDrainAfterVideoEnd()
+                    return
+                }
+
+                runCatching { tick(subtitleTimelinePositionMs(pm.position())) }.onFailure { error ->
+                    io.translatetube.local.util.AppLogStore.error(
+                        this@PlaybackService,
+                        "PlaybackTimeline",
+                        "视频结束后的剩余配音调度失败",
+                        error,
+                        diagnosticContext = mapOf(
+                            "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
+                            "当前配音引擎" to engine.currentTtsName,
+                            "当前字幕索引" to engine.currentLineIdx().toString(),
+                            "剩余补播队列长度" to synchronized(dubbingCatchUpLock) {
+                                dubbingCatchUpQueue.size
+                            }.toString(),
+                        ),
+                    )
+                }
+
+                val index = engine.currentLineIdx()
+                val activeSpeechRemains = index >= 0 && (
+                    engine.shouldContinueCurrentCue(-1) ||
+                        (!engine.hasStartedPlaybackFor(index) &&
+                            engine.isPrepared(index) && !engine.isSilent(index))
+                    )
+                if (hasDubbingCatchUpCues(sessionKey) || activeSpeechRemains) {
+                    dubbingDrainHandler.postDelayed(this, 50L)
+                } else {
+                    cancelDubbingDrainAfterVideoEnd()
+                    engine.stop()
+                    safelySetOriginalVolume(1f, "remaining dubbing completed")
+                    updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                        state.copy(
+                            isPlaying = false,
+                            currentLine = -1,
+                            activeDubbingLine = -1,
+                            dubbingStatus = "视频已结束，剩余字幕配音已完成",
+                        )
+                    }
+                }
+            }
+        }
+        dubbingDrainPoll = poll
+        dubbingDrainHandler.post(poll)
+    }
+
+    /**
+     * Publish the initial visible subtitle before the first video/audio frame starts.
+     * Waiting for onIsPlayingChanged means the playhead has already advanced before the
+     * first highlight reaches Compose; this is noticeable for the first cue in both audio modes.
+     */
+    private fun primeSubtitleHighlightAtPlaybackStart(positionMs: Long) {
+        if (positionMs < 0L) return
+        val snapshot = ui.value
+        if (snapshot.lines.isEmpty()) return
+
+        val target = try {
+            subtitleHighlightLineAt(
+                snapshot.lines,
+                positionMs + subtitleTimingOffsetMs(),
+            )
+        } catch (error: Exception) {
+            android.util.Log.w(
+                "PlaybackService",
+                "Unable to prime the initial subtitle highlight",
+                error,
+            )
+            return
+        }
+
+        lastLineIdx = target
+        ui.update { state ->
+            if (state.key == snapshot.key && state.lines === snapshot.lines) {
+                state.copy(currentLine = target)
+            } else {
+                state
+            }
+        }
+    }
+
+    private fun tickFromPlayerCallback(ms: Long, source: String) {
+        try {
+            // 固定提前量：让配音/字幕更早出现（对冲转写字幕时间戳的系统性偏晚），
+            // 配音与字幕共用同一个值保证内容一致。
+            tick(subtitleTimelinePositionMs(ms))
+        } catch (error: Exception) {
+            val state = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackTimeline",
+                "视频时间轴更新失败：$source",
+                error,
+                diagnosticContext = mapOf(
+                    "触发来源" to source,
+                    "视频会话标识（去除查询参数）" to state.key.substringBefore('?').take(160),
+                    "触发时间位置 ms" to ms.toString(),
+                    "播放器阶段" to state.phase.name,
+                    "最近处理步骤" to state.progress.ifBlank { state.failedProgress }.take(200),
+                    "当前字幕索引" to state.currentLine.toString(),
+                    "当前配音字幕索引" to state.activeDubbingLine.toString(),
+                    "配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
+                ),
+            )
+            android.util.Log.e("PlaybackService", "Timeline update failed during $source", error)
+            val key = ui.value.key
+            updateUiForSession(key) { state ->
+                if (state.key == key) {
+                    state.copy(
+                        dubbingStatus = "字幕时间轴正在恢复，请稍后重试",
+                        activeDubbingLine = -1,
+                    )
+                } else state
+            }
+        }
+    }
+
+    // 与 DubbingEngine 挂载配音时使用同一个读取逻辑：字幕和配音一起提前/延后。
+    private fun subtitleTimingOffsetMs(): Long = SubtitleTimingOffset.LEAD_MS
+
+    /** All catch-up cursors use the same lead-adjusted media timeline as ordinary dubbing ticks. */
+    private fun subtitleTimelinePositionMs(mediaPositionMs: Long): Long =
+        DubbingCatchUpQueuePolicy.toTimelinePositionMs(
+            mediaPositionMs = mediaPositionMs,
+            offsetMs = subtitleTimingOffsetMs(),
+        )
+
+    private fun tick(ms: Long) {
+        val st = ui.value
+        val d = dubbing
+
+        // 配音必须严格使用 lineAt 的时间区间结果；字幕高亮可以回退到最近一行，
+        // 但不能把“字幕间隙中的上一行”当成当前配音行，否则会压低间隙里的原声。
+        val dubLine = if (d != null) d.lineAt(ms) else -1
+        // AudioTrack startup is asynchronous; publish the newest media playhead even while PCM
+        // is loading so the audio executor can skip elapsed speech instead of starting late.
+        val previousDubbingLine = d?.currentLineIdx() ?: -1
+        d?.updateTimelinePosition(dubLine, ms)
+
+        // Prefeed publishes PCM asynchronously and derives notBeforeUs from latestTimelineCursor.
+        // Publish this tick's cursor first; otherwise a seek/forward jump can let a worker mount
+        // the newly selected cue against the previous playhead and schedule it at a stale time.
+        if (d != null && st.dubbingOn) d.primeUpcomingCues(ms)
+        val keepingTimelineCue = d?.usesImmediateTimelinePlayback == true &&
+            d.shouldContinueCurrentCue(dubLine)
+        // Retire a queue head only after its audio output actually starts.
+        if (d != null && previousDubbingLine >= 0 && d.hasStartedPlaybackFor(previousDubbingLine)) {
+            removeDubbingCatchUpCue(st.key, previousDubbingLine)
+        }
+        // Use the queue snapshot that existed before this tick to decide whether the
+        // currently speaking cue must retain output ownership. Newly crossed cues are captured
+        // below and must not interrupt that sentence.
+        val queuedHeadBeforeCapture =
+            if (d?.usesImmediateTimelinePlayback == true) peekDubbingCatchUpCue(st.key) else null
+        val keepingQueuedCue = d != null && queuedHeadBeforeCapture != null &&
+            previousDubbingLine >= 0 && previousDubbingLine != queuedHeadBeforeCapture &&
+            d.shouldContinueCurrentCue(queuedHeadBeforeCapture)
+        val keepingPreviousDubbingCue = keepingTimelineCue || keepingQueuedCue
+        updateDubbingCatchUpQueue(
+            state = st,
+            positionMs = ms,
+            captureMissedCues = d?.usesImmediateTimelinePlayback == true &&
+                (keepingPreviousDubbingCue || hasDubbingCatchUpCues(st.key) ||
+                    (previousDubbingLine >= 0 && previousDubbingLine != dubLine)),
+            activeDubbingIndex = previousDubbingLine,
+        )
+        // Read after capture: if TTS completed between ticks, the earliest crossed subtitle
+        // must play before the newest subtitle at the current playhead.
+        val queuedHead =
+            if (d?.usesImmediateTimelinePlayback == true) peekDubbingCatchUpCue(st.key) else null
+        // Highlight against the exact subtitle snapshot rendered by the UI. Its cached interval
+        // index uses the same overlap/time-window rules as dubbing, without depending on an engine
+        // that may be between old and replacement subtitle sessions.
+        val highlightLine = subtitleHighlightLineAt(st.lines, ms)
+        // 同时对照界面状态本身：别处（播放结束、暂停恢复、换字幕快照）把 currentLine 改掉但没有重置
+        // lastLineIdx 时，只比较 lastLineIdx 会让字幕条一直停在错误的行，直到下一句才恢复。
+        if (highlightLine != lastLineIdx || st.currentLine != highlightLine) {
+            lastLineIdx = highlightLine
+            ui.update { it.copy(currentLine = highlightLine) }
+        }
+        // 相邻两句合并配音时，配音念的是整块文本：字幕条跟着显示整块，听到的和看到的一致。
+        val spokenCaption = if (d != null && st.dubbingOn && highlightLine in st.lines.indices) {
+            runCatching { d.spokenCaptionFor(highlightLine) }.getOrNull()
+        } else null
+        if (spokenCaption != st.captionOverride) {
+            ui.update { it.copy(captionOverride = spokenCaption) }
+        }
+
+        if (d != null && st.dubbingOn) {
+            if (keepingPreviousDubbingCue) {
+                // Finish the current sentence without pausing video. Captions crossed meanwhile
+                // stay in the ordered catch-up queue instead of being skipped.
+                d.updatePlayerSpeed(pm.playbackSpeed())
+                // Voice and source use independent gains; both may remain audible at the same time.
+                d.updateVolume(st.dubbingVolume)
+                syncOriginalVolumeWithDubbing(d, st, "continuing a dubbed cue")
+                d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
+            } else if (queuedHead != null) {
+                // Live System TTS stays serialized; generated PCM playback is scheduled by bus timestamps.
+                var catchUpIndex = queuedHead
+                while (catchUpIndex != null && d.isPrepared(catchUpIndex) && d.isSilent(catchUpIndex)) {
+                    removeDubbingCatchUpCue(st.key, catchUpIndex)
+                    catchUpIndex = peekDubbingCatchUpCue(st.key)
+                }
+                if (catchUpIndex != null) {
+                    val catchUpLine = st.lines.getOrNull(catchUpIndex)
+                    if (catchUpLine == null || !DubbingTimeline.isPlayableCue(catchUpLine)) {
+                        removeDubbingCatchUpCue(st.key, catchUpIndex)
+                    } else if (d.currentLineIdx() != catchUpIndex) {
+                        if (d.isPrepared(catchUpIndex)) {
+                            d.playAt(
+                                catchUpIndex,
+                                st.dubbingVolume,
+                                positionMs = catchUpLine.startMs,
+                                playerSpeed = pm.playbackSpeed(),
+                                completeCueWhenLate = true,
+                                catchUpSyncRate = DubbingRecoveryRatePolicy.rateForBacklog(
+                                    queueDepth = dubbingCatchUpQueueDepth(st.key),
+                                    latenessMs = (pm.position() - catchUpLine.startMs).coerceAtLeast(0L),
+                                ),
+                                playbackAllowed = {
+                                    val latest = ui.value
+                                    ::pm.isInitialized &&
+                                        (pm.isPlaying.value || isDubbingDrainActiveFor(d, st.key)) &&
+                                        latest.key == st.key && latest.dubbingOn && dubbing === d
+                                },
+                            )
+                        } else {
+                            d.prioritizeAround(catchUpIndex, lookAhead = 8)
+                            if (d.currentLineIdx() >= 0) d.stop()
+                        }
+                    }
+                }
+                syncOriginalVolumeWithDubbing(d, st, "catch-up dubbing playback")
+            } else if (dubLine >= 0 && d.isSilent(dubLine)) {
+                d.logSilentCueFallback(dubLine)
+                if (d.currentLineIdx() >= 0) d.stop()
+                // No synthesized voice is playing for this cue, so source audio is the only
+                // available narration; it can never overlap a live dubbed cue.
+                safelySetOriginalVolume(1f, "source audio restore requested")
+                ui.update { state ->
+                    if (state.key == st.key) {
+                        state.copy(
+                            noModelHint = state.noModelHint
+                                ?: io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName),
+                            activeDubbingLine = -1,
+                        )
+                    } else state
+                }
+            } else if (dubLine >= 0 && d.isPrepared(dubLine)) {
+                if (!pm.player.isPlaying) {
+                    // seekTo() emits an immediate tick: don't start speech while video is paused.
+                    // After the video ends, the explicit drain may finish already-queued speech; no
+                    // timing-overrun path is allowed to pause or hold the video during normal playback.
+                    if (d.currentLineIdx() >= 0 && !isDubbingDrainActiveFor(d, st.key)) d.stop()
+                } else if (d.currentLineIdx() != dubLine) {
+                    d.playAt(
+                        dubLine,
+                        st.dubbingVolume,
+                        positionMs = ms,
+                        playerSpeed = pm.playbackSpeed(),
+                        playbackAllowed = {
+                            val latest = ui.value
+                            ::pm.isInitialized &&
+                                (pm.isPlaying.value || isDubbingDrainActiveFor(d, st.key)) &&
+                                latest.key == st.key &&
+                                latest.dubbingOn &&
+                                dubbing === d
+                        },
+                    )
+                } else {
+                    d.updatePlayerSpeed(pm.playbackSpeed())
+                    // Voice and source use independent gains; both may remain audible at the same time.
+                    d.updateVolume(st.dubbingVolume)
+                }
+                syncOriginalVolumeWithDubbing(d, st, "dubbing cue playback")
+            } else if (dubLine >= 0) {
+                // If generation is falling behind real time, continuously enlarge the look-ahead
+                // priority window so the single TTS worker prepares more upcoming cues first.
+                // Immediate mode has no PCM queue and therefore keeps the normal small window.
+                val synthesisRtf = d.synthesisRealtimeFactor
+                val lookAhead = when {
+                    d.usesImmediateTimelinePlayback -> 2
+                    synthesisRtf.isFinite() && synthesisRtf >= 1.6f -> 7
+                    synthesisRtf.isFinite() && synthesisRtf >= 1.2f -> 6
+                    synthesisRtf.isFinite() && synthesisRtf < 0.75f -> 2
+                    else -> 4
+                }
+                d.prioritizeAround(dubLine, lookAhead = lookAhead)
+                if (!d.usesImmediateTimelinePlayback && synthesisRtf.isFinite() && synthesisRtf >= 1.2f) {
+                    updateUiForCurrentDubbingEngine(d, st.key) { state ->
+                        if (state.dubbingStatus.startsWith("配音生成偏慢")) state
+                        else state.copy(
+                            dubbingStatus = "配音生成偏慢，正在优先准备后续字幕；未就绪片段按原声开关设置处理",
+                        )
+                    }
+                }
+                if (d.currentLineIdx() >= 0) d.stop()
+                safelySetOriginalVolume(1f, "source audio restore requested")
+            } else {
+                // Outside a dubbed cue, keep the original track as the only audio source.
+                if (d.currentLineIdx() >= 0) d.stop()
+                safelySetOriginalVolume(if (st.originalVolume <= 0f) 0f else 1f, "source audio timeline policy")
+            }
+        } else {
+            if (d != null && !st.dubbingOn) {
+                // Source-only playback still drives the synthesis queue. Prioritize captions near
+                // the current playhead so the corresponding Chinese PCM is ready before the user
+                // switches back to dubbed mode; this never starts audible dubbing output.
+                val synthesisTarget = when {
+                    dubLine in st.lines.indices -> dubLine
+                    highlightLine in st.lines.indices -> highlightLine
+                    else -> -1
+                }
+                d.prepareForBackgroundPlayback(synthesisTarget, lookAhead = 8)
+            }
+            // With no active dubbed speech, only the original track can be heard.
+            safelySetOriginalVolume(if (st.originalVolume <= 0f) 0f else 1f, "source audio timeline policy")
+            if (
+                st.dubbingOn &&
+                st.originalVolume <= 0f &&
+                st.lines.isNotEmpty() &&
+                st.noModelHint == null &&
+                st.phase == Phase.READY &&
+                !st.waitingForDubbingEngine
+            ) {
+                ui.update {
+                    if (it.key == st.key) {
+                        it.copy(
+                            noModelHint = "配音引擎尚未启动或未能创建。视频音量仍按播放页的原声开关处理。系统 TTS 请检查手机文字转语音服务与中文语音数据；其他引擎请检查模型是否就绪。"
+                        )
+                    } else it
+                }
+            }
+        }
+
+        // 与上面"配音尚未就绪"分支同一判定：这句配音既没就绪也没失败，正在播放的只有原声。
+        val dubbingCuePending = d != null && st.dubbingOn &&
+            !keepingPreviousDubbingCue && queuedHead == null &&
+            dubLine >= 0 && !d.isPrepared(dubLine) && !d.isSilent(dubLine)
+        ui.update { state ->
+            if (state.key == st.key && state.dubbingCuePending != dubbingCuePending) {
+                state.copy(dubbingCuePending = dubbingCuePending)
+            } else state
+        }
+
+        // A pause or dubbing toggle can race with a tick that already captured the previous UI
+        // state. Re-check the live owner after scheduling playback so stale work cannot leave an
+        // AudioTrack speaking after pause, disable, or engine replacement.
+        val latestState = ui.value
+        if (
+            d != null &&
+            DubbingPlaybackOwnerPolicy.shouldStop(
+                hasSelectedLine = d.currentLineIdx() >= 0,
+                dubbingEnabled = latestState.dubbingOn,
+                playerIsPlaying = ::pm.isInitialized &&
+                    (pm.player.isPlaying || isDubbingDrainActiveFor(d, st.key)),
+                engineIsCurrent = dubbing === d,
+            )
+        ) {
+            d.stop()
+            if (::pm.isInitialized) {
+                safelySetOriginalVolume(if (latestState.originalVolume <= 0f) 0f else 1f, "stale dubbing playback stop")
+            }
+        }
+
+        // Keep the displayed duration synchronized with ExoPlayer in case the extractor metadata
+        // omitted or misreported the duration. This also prevents a permanent 00:00:00 total time.
+        val activeDubbingLine = d?.currentLineIdx()?.takeIf { index ->
+            latestState.dubbingOn &&
+                ::pm.isInitialized &&
+                pm.player.isPlaying &&
+                dubbing === d &&
+                d.hasStartedPlaybackFor(index)
+        } ?: -1
+        ui.update { state ->
+            if (state.activeDubbingLine == activeDubbingLine) state
+            else state.copy(activeDubbingLine = activeDubbingLine)
+        }
+
+        val actualDuration = if (::pm.isInitialized) pm.duration() else 0L
+        if (actualDuration > 0L && ui.value.durationMs != actualDuration) {
+            ui.update { it.copy(durationMs = actualDuration) }
+        }
+    }
+
+    // ============ UI 控制命令 ============
+    /**
+     * 手动为某条字幕指定 Kokoro 音色。修改后重建配音缓存队列，
+     * 文件缓存按音色分开，避免修改人物音色后仍播放旧声音。
+     */
+    /**
+     * 从当前视频音轨执行本地说话人分离，并把说话人编号映射到不同 Kokoro 预设音色。
+     * 模型仅在用户点击自动区分时下载，不会拖慢普通视频打开流程。
+     */
+    fun autoAssignSpeakers(forceRecognition: Boolean = false) {
+        if (speakerJob?.isActive == true) return
+        val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
+        val originalLines = ui.value.lines
+        if (originalLines.isEmpty()) {
+            ui.update { it.copy(
+                error = "当前没有字幕，先生成或导入字幕再区分人物",
+                speakerRecognition = SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.FAILED,
+                    message = "没有可关联的字幕",
+                    error = "先生成或导入字幕，再执行人物区分。",
+                ),
+            ) }
+            return
+        }
+        if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
+            ui.update { it.copy(
+                error = "Kokoro 配音模型尚未就绪；已保留当前播放和字幕，请先在设置中准备模型后再区分人物。",
+                speakerRecognition = SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.FAILED,
+                    message = "配音模型尚未就绪",
+                    error = "请先在设置中准备 Kokoro 模型，再重试人物区分。",
+                ),
+            ) }
+            return
+        }
+        val sessionKey = videoKey
+        val sessionVideoId = videoId
+        val sessionLocalUri = localUri
+        val sessionRemoteMediaUrl = remoteMediaUrl
+        val sessionRemoteMediaReferrer = remoteMediaReferrer
+        val sessionRemoteMediaCookie = remoteMediaCookie
+        val sessionState = ui.value
+        val translationCacheKey = sessionState.translationCacheKey.ifBlank {
+            "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
+        }
+        val sessionSourceLang = sessionState.sourceLang
+        val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
+        val pipelineGeneration = activePipelineGeneration
+        val mutationGeneration = beginDubbingMutationGeneration()
+        synchronized(speakerRecognitionCancellationLock) {
+            speakerRecognitionCommitTaskToken = null
+        }
+        speakerCancelRequestedAtMs = 0L
+        speakerCancelTaskToken = null
+        speakerCancelStageAtRequest = ""
+        speakerCancelProgressAtRequest = "不定进度"
+        ui.update { state ->
+            if (state.key == sessionKey) state.copy(
+                speakerRecognition = SpeakerRecognitionUiState(
+                    phase = SpeakerRecognitionPhase.PREPARING,
+                    stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                    message = "正在准备音频…",
+                    taskToken = mutationGeneration,
+                ),
+            ) else state
+        }
+        beginSpeakerRecognitionTaskJournal(sessionKey)
+        val recognitionJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            val speakerTaskJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            pipelineExecutionMutex.withLock {
+            var pendingTts: TtsEngine? = null
+            var oldEngineRetired = false
+            var detectedSpeakerCount = 0
+            try {
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                val recognitionCacheIdentity = withContext(Dispatchers.IO) {
+                    val audioIdentity = speakerRecognitionSourceAudioIdentity(
+                        sessionKey = sessionKey,
+                        videoId = sessionVideoId,
+                        localUri = sessionLocalUri,
+                        remoteMediaUrl = sessionRemoteMediaUrl,
+                        remoteMediaReferrer = sessionRemoteMediaReferrer,
+                        remoteMediaCookie = sessionRemoteMediaCookie,
+                    )
+                    SpeakerRecognitionCacheIdentity.create(
+                        sessionKey = sessionKey,
+                        sourceAudioIdentity = "$audioIdentity|source-lang:${sessionSourceLang.trim().lowercase()}",
+                        cues = originalLines.asSequence().map { line ->
+                            SpeakerRecognitionCacheIdentity.Cue(
+                                startMs = line.startMs,
+                                endMs = line.endMs,
+                                text = line.text,
+                            )
+                        },
+                        modelVersion = io.translatetube.local.asr.SpeakerDiarizer.MODEL_VERSION,
+                    )
+                }
+                val cachedAssignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
+                val cachedPersonIds = HashSet<Int>()
+                var cachedAssignedCueCount = 0
+                originalLines.forEach { line ->
+                    val personId = cachedAssignmentSnapshot.lineSpeakers[
+                        SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                    ]
+                    if (personId != null && personId in 0..999) {
+                        cachedPersonIds += personId
+                        cachedAssignedCueCount++
+                    }
+                }
+                val cachedPersonCount = cachedPersonIds.size
+                val savedRecognitionIdentity = getSharedPreferences(
+                    "speaker_recognition_cache_v1",
+                    MODE_PRIVATE,
+                ).getString(speakerRecognitionCachePrefsKey(sessionKey), null)
+                val reuseSavedSpeakerTimeline = !forceRecognition &&
+                    SpeakerRecognitionCachePolicy.canReuse(
+                        savedIdentity = savedRecognitionIdentity,
+                        requestedIdentity = recognitionCacheIdentity,
+                        totalCueCount = originalLines.size,
+                        assignedCueCount = cachedAssignedCueCount,
+                        personCount = cachedPersonCount,
+                    )
+                if (reuseSavedSpeakerTimeline) detectedSpeakerCount = cachedPersonCount
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
+                    it.copy(
+                        error = null,
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = if (reuseSavedSpeakerTimeline) {
+                                SpeakerRecognitionPhase.APPLYING
+                            } else {
+                                SpeakerRecognitionPhase.PREPARING
+                            },
+                            stage = SpeakerRecognitionStage.INITIALIZING_VOICE_ENGINE,
+                            message = if (selectedTts == "system") {
+                                "正在检查手机可用的中文音色…"
+                            } else {
+                                "正在初始化所选配音引擎…"
+                            },
+                            personCount = if (reuseSavedSpeakerTimeline) cachedPersonCount else 0,
+                            taskToken = mutationGeneration,
+                        ),
+                        progress = if (selectedTts == "system") {
+                            "人物识别 · 正在检查手机可用的中文音色…"
+                        } else {
+                            "人物识别 · 正在初始化所选配音引擎…"
+                        },
+                        // Keep the successful player session READY while this secondary operation
+                        // analyzes speakers. Its progress text drives the busy UI; READY remains
+                        // available to history reuse and playback-session guards.
+                    )
+                }
+                persistSpeakerRecognitionState(sessionKey)
+
+                // Initialize the selected engine before the expensive diarization step and before
+                // retiring the current dubbing engine. If TTS setup fails, playback remains intact.
+                val preflightEngine = makeTtsOffMainThread(selectedTts)
+                pendingTts = preflightEngine
+                val systemChineseVoiceCount =
+                    (preflightEngine as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
+                // A valid cached person timeline skips audio decoding and native inference.
+                val segments = if (reuseSavedSpeakerTimeline) {
+                    emptyList()
+                } else {
+                    val speakerDecodeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    val speakerDecodeStartedNs = System.nanoTime()
+                    // Reuse the PCM that local transcription already decoded (shared PCM cache). The
+                    // source audio is fetched and decoded only on a cache miss.
+                    var leasedSpeakerPcmPath: String? = null
+                    var speakerAudioDecodedFresh = false
+                    val pcmFile = withContext(Dispatchers.IO) {
+                        val decodeFresh: suspend () -> AudioExtract.PcmFile = {
+                            speakerAudioDecodedFresh = true
+                            val sourceFile: File?
+                            val sourceUri: Uri?
+                            if (sessionVideoId != null) {
+                                sourceFile = obtainAsrAudioFile(
+                                    sessionVideoId,
+                                    sessionKey,
+                                    "人物识别 · 复用已下载音频，正在准备分析…",
+                                    pipelineGeneration = pipelineGeneration,
+                                    dubbingMutationGeneration = mutationGeneration,
+                                    speakerRecognitionOnly = true,
+                                )
+                                sourceUri = null
+                            } else if (sessionRemoteMediaUrl != null) {
+                                sourceFile = obtainRemoteMediaAsrFile(
+                                    sessionRemoteMediaUrl,
+                                    sessionRemoteMediaReferrer,
+                                    sessionRemoteMediaCookie,
+                                    sessionKey,
+                                    "人物识别 · 复用网页视频音频，正在准备分析…",
+                                    pipelineGeneration = pipelineGeneration,
+                                    dubbingMutationGeneration = mutationGeneration,
+                                    speakerRecognitionOnly = true,
+                                )
+                                sourceUri = null
+                            } else {
+                                sourceFile = null
+                                sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
+                            }
+                            val leasedPath = sourceFile?.absolutePath
+                            try {
+                                AudioExtract.decodeTo16kMonoFile(
+                                    this@PlaybackService,
+                                    sourceUri,
+                                    sourceFile,
+                                    checkActive = { speakerDecodeJob?.ensureActive() },
+                                    onProgressPercent = { percent ->
+                                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                                            if (
+                                                state.key == sessionKey &&
+                                                state.speakerRecognition.phase != SpeakerRecognitionPhase.CANCELLING
+                                            ) state.copy(
+                                                progress = "人物识别 · 解码音频 $percent%",
+                                                speakerRecognition = state.speakerRecognition.copy(
+                                                    phase = SpeakerRecognitionPhase.PREPARING,
+                                                    stage = SpeakerRecognitionStage.AUDIO_DECODING,
+                                                    message = "正在解码音频…",
+                                                    progressPercent = percent.coerceIn(0, 100),
+                                                    taskToken = mutationGeneration,
+                                                ),
+                                            ) else state
+                                        }
+                                        persistSpeakerRecognitionState(sessionKey)
+                                    },
+                                )
+                            } finally {
+                                releaseActiveAsrAudio(leasedPath)
+                            }
+                        }
+                        val sharedPcmIdentity = when {
+                            sessionVideoId != null -> AsrPcmCacheIdentity.youtube(sessionVideoId)
+                            sessionRemoteMediaUrl != null -> AsrPcmCacheIdentity.remote(
+                                MediaUrlCacheIdentity.audioKey(
+                                    sessionRemoteMediaUrl,
+                                    sessionRemoteMediaReferrer,
+                                    sessionRemoteMediaCookie,
+                                ),
+                            )
+                            sessionLocalUri != null -> AsrPcmCacheIdentity.local(
+                                LocalMediaCacheIdentity.identityKey(this@PlaybackService, sessionLocalUri),
+                            )
+                            else -> null
+                        }
+                        if (sharedPcmIdentity != null) {
+                            val prepared = obtainLocalAsrPcmFile(
+                                cacheFile = localAsrPcmCacheFile(sharedPcmIdentity),
+                                sessionKey = sessionKey,
+                                pipelineGeneration = pipelineGeneration,
+                            ) { decodeFresh() }
+                            leasedSpeakerPcmPath = prepared.second
+                            prepared.first
+                        } else {
+                            decodeFresh()
+                        }
+                    }
+                    val speakerDecodeMs = (System.nanoTime() - speakerDecodeStartedNs) / 1_000_000L
+                    try {
+                        ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                        val speakerDiarizeStartedNs = System.nanoTime()
+                        val diarizedSegments = io.translatetube.local.asr.SpeakerDiarizer.diarizePcmFile(
+                            this@PlaybackService,
+                            pcmFile,
+                        ) { progressUpdate ->
+                            updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                                if (
+                                    state.key == sessionKey &&
+                                    state.speakerRecognition.phase != SpeakerRecognitionPhase.CANCELLING
+                                ) {
+                                    val recognitionPhase = when (progressUpdate.stage) {
+                                        SpeakerRecognitionStage.DOWNLOADING_MODELS ->
+                                            SpeakerRecognitionPhase.DOWNLOADING_MODELS
+                                        SpeakerRecognitionStage.ANALYZING_AUDIO ->
+                                            SpeakerRecognitionPhase.ANALYZING
+                                        else -> SpeakerRecognitionPhase.PREPARING
+                                    }
+                                    state.copy(
+                                        progress = "人物识别 · ${progressUpdate.message}",
+                                        speakerRecognition = SpeakerRecognitionUiState(
+                                            phase = recognitionPhase,
+                                            stage = progressUpdate.stage,
+                                            message = progressUpdate.message,
+                                            progressPercent = progressUpdate.progressPercent,
+                                            completedUnits = progressUpdate.completedUnits,
+                                            totalUnits = progressUpdate.totalUnits,
+                                            progressItem = progressUpdate.progressItem,
+                                            taskToken = mutationGeneration,
+                                        ),
+                                    )
+                                } else state
+                            }
+                            persistSpeakerRecognitionState(sessionKey)
+                        }
+                        val speakerDiarizeMs = (System.nanoTime() - speakerDiarizeStartedNs) / 1_000_000L
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "人物识别阶段耗时统计",
+                            diagnosticContext = mapOf(
+                                "视频来源" to diagnosticMediaSourceType(ui.value),
+                                "音频时长（秒）" to (pcmFile.sampleCount / pcmFile.sampleRate).toString(),
+                                "音频来源" to if (speakerAudioDecodedFresh) "重新获取并解码" else "复用已解码音频缓存",
+                                "获取并解码音频 ms" to speakerDecodeMs.toString(),
+                                "模型准备与分段推理 ms" to speakerDiarizeMs.toString(),
+                                "识别出的说话片段数" to diarizedSegments.size.toString(),
+                            ),
+                        )
+                        diarizedSegments
+                    } finally {
+                        // A cached PCM stays for the next run; only release this run's lease.
+                        val leasedPcm = leasedSpeakerPcmPath
+                        if (leasedPcm != null) releaseLocalAsrPcmFile(leasedPcm) else pcmFile.file.delete()
+                    }
+                }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
+                }
+                if (!reuseSavedSpeakerTimeline && segments.isEmpty()) {
+                    throw IllegalStateException("没有识别到可区分的说话人")
+                }
+                val assignmentSnapshot = cachedAssignmentSnapshot
+                val speakerVoiceAssignments = assignmentSnapshot.speakerVoices.toMutableMap()
+                val lineVoiceAssignments = assignmentSnapshot.lineVoices.toMutableMap()
+                val linePersonAssignments = assignmentSnapshot.lineSpeakers.toMutableMap()
+                // sherpa-onnx cluster labels are arbitrary identifiers, not persistent person IDs.
+                // Normalize them by first appearance so a fresh diarization run cannot swap voices
+                // merely because the model numbered the same people differently.
+                val speakerObservations = if (reuseSavedSpeakerTimeline) {
+                    emptyList()
+                } else {
+                    SpeakerAssignmentPolicy.observationsFromSegments(segments)
+                }
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                    if (state.key == sessionKey) state.copy(
+                        speakerRecognition = SpeakerRecognitionUiState(
+                            phase = SpeakerRecognitionPhase.APPLYING,
+                            stage = SpeakerRecognitionStage.LINKING_SUBTITLES,
+                            message = "正在关联人物与字幕…",
+                            progressPercent = 0,
+                            completedUnits = 0L,
+                            totalUnits = originalLines.size.toLong(),
+                            taskToken = mutationGeneration,
+                        ),
+                    ) else state
+                }
+                persistSpeakerRecognitionState(sessionKey)
+                val cueAnchors = if (reuseSavedSpeakerTimeline) {
+                    emptyList()
+                } else {
+                    originalLines.mapNotNull { line ->
+                        val previousPersonId = assignmentSnapshot.lineSpeakers[
+                            SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                        ] ?: return@mapNotNull null
+                        SpeakerAssignmentPolicy.CueAnchor(
+                            startMs = line.startMs,
+                            endMs = line.endMs,
+                            previousPersonId = previousPersonId,
+                        )
+                    }
+                }
+                val canonicalSpeakerIds = if (reuseSavedSpeakerTimeline) {
+                    emptyMap()
+                } else {
+                    SpeakerAssignmentPolicy.stableSpeakerIds(
+                        observations = speakerObservations,
+                        cueAnchors = cueAnchors,
+                    )
+                }
+                if (!reuseSavedSpeakerTimeline) detectedSpeakerCount = canonicalSpeakerIds.size
+                val totalCueCount = originalLines.size
+                val applyProgressStep = (totalCueCount / 40).coerceAtLeast(1)
+                val updated = originalLines.mapIndexed { lineIndex, line ->
+                    val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                    val speaker = if (reuseSavedSpeakerTimeline) {
+                        assignmentSnapshot.lineSpeakers[keyForLine] ?: -1
+                    } else {
+                        val cueDurationMs = if (line.startMs >= 0L && line.endMs > line.startMs) {
+                            line.endMs - line.startMs
+                        } else {
+                            0L
+                        }
+                        val minimumOverlapMs = SpeakerAssignmentPolicy.minimumOverlapMsForCue(cueDurationMs)
+                        val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
+                            observations = speakerObservations,
+                            cueStartMs = line.startMs,
+                            cueEndMs = line.endMs,
+                            minimumOverlapMs = minimumOverlapMs,
+                        )
+                        canonicalSpeakerIds[detectedSpeaker] ?: -1
+                    }
+                    val suggestedVoice = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
+                        .voiceForCanonicalSpeaker(
+                            engineId = selectedTts,
+                            canonicalSpeakerId = speaker,
+                            systemChineseVoiceCount = systemChineseVoiceCount,
+                            preferredKokoroVoice = preferredVoice,
+                        )
+                    val voice = assignmentSnapshot.lineOverrides[keyForLine] ?: if (speaker in 0..999) {
+                        speakerVoiceAssignments.getOrPut(speaker) { suggestedVoice }
+                    } else {
+                        suggestedVoice
+                    }
+                    lineVoiceAssignments[keyForLine] = voice
+                    if (speaker >= 0) {
+                        linePersonAssignments[keyForLine] = speaker
+                    } else {
+                        linePersonAssignments.remove(keyForLine)
+                    }
+                    val updatedLine = line.copy(speakerId = voice)
+                    val completedCueCount = lineIndex + 1
+                    if (
+                        completedCueCount == totalCueCount ||
+                        completedCueCount % applyProgressStep == 0
+                    ) {
+                        val percent = SpeakerRecognitionProgressPolicy.percentForCount(
+                            completedCount = completedCueCount.toLong(),
+                            totalCount = totalCueCount.toLong(),
+                        ) ?: 100
+                        updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { current ->
+                            if (
+                                current.key == sessionKey &&
+                                current.speakerRecognition.phase == SpeakerRecognitionPhase.APPLYING
+                            ) {
+                                current.copy(
+                                    speakerRecognition = current.speakerRecognition.copy(
+                                        message = "正在关联人物与字幕…",
+                                        progressPercent = percent,
+                                        personCount = detectedSpeakerCount,
+                                        completedUnits = completedCueCount.toLong(),
+                                        totalUnits = totalCueCount.toLong(),
+                                    ),
+                                )
+                            } else current
+                        }
+                        persistSpeakerRecognitionState(sessionKey)
+                    }
+                    updatedLine
+                }
+                saveSpeakerAssignments(
+                    assignmentSnapshot.copy(
+                        speakerVoices = speakerVoiceAssignments,
+                        lineVoices = lineVoiceAssignments,
+                        lineSpeakers = linePersonAssignments,
+                    ),
+                    sessionKey,
+                    selectedTts,
+                )
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val mappedCurrentCueCount = originalLines.count { line ->
+                    SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs) in linePersonAssignments
+                }
+                if (detectedSpeakerCount > 0 && mappedCurrentCueCount > 0) {
+                    getSharedPreferences("speaker_recognition_cache_v1", MODE_PRIVATE)
+                        .edit()
+                        .putString(speakerRecognitionCachePrefsKey(sessionKey), recognitionCacheIdentity)
+                        .apply()
+                }
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
+                }
+                val distinctVoices = updated.map { it.speakerId }.distinct().size
+                synchronized(speakerRecognitionCancellationLock) {
+                    // Cancellation and the irreversible engine swap share one gate. If cancel
+                    // wins first, the job is checked before retiring the currently audible dub.
+                    speakerTaskJob?.ensureActive()
+                    speakerRecognitionCommitTaskToken = mutationGeneration
+                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(
+                                lines = updated,
+                                progress = "已区分人物，使用 ${distinctVoices} 种音色",
+                                speakerRecognition = SpeakerRecognitionUiState(
+                                    phase = SpeakerRecognitionPhase.APPLYING,
+                                    stage = SpeakerRecognitionStage.APPLYING_VOICES,
+                                    message = "已识别 ${detectedSpeakerCount} 位人物，正在更新人物音色…",
+                                    progressPercent = null,
+                                    personCount = detectedSpeakerCount,
+                                    taskToken = mutationGeneration,
+                                ),
+                                phase = Phase.SYNTHESIZING,
+                                totalLines = updated.size,
+                                preparedUntil = 0,
+                                preparedCount = 0,
+                                audioReadyCount = 0,
+                                currentLine = -1,
+                            )
+                        } else state
+                    }
+                }
+                persistSpeakerRecognitionState(sessionKey)
+                // Keep the configured engine fixed for this operation. The selected TTS was
+                // preflighted before diarization so construction failures cannot stop the current dub.
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                val previousDubbing = retireCurrentDubbing()
+                oldEngineRetired = previousDubbing != null
+                awaitRetiredDubbingEngines()
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
+                }
+                val ttsWasPreflighted = pendingTts != null
+                val tts = pendingTts ?: makeTtsOffMainThread(selectedTts)
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    if (!ttsWasPreflighted) runCatching { tts.close() }
+                    throw e
+                }
+                val d = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
+                } catch (e: Exception) {
+                    if (!ttsWasPreflighted) runCatching { tts.close() }
+                    throw e
+                }
+                pendingTts = null
+                registerDubbingFailureHandler(d, tts, sessionKey)
+                d.attach(tts, updated, sourceLanguage = sessionSourceLang)
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(d)
+                    throw e
+                }
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration, mutationGeneration)) {
+                    retireDubbing(d)
+                    throw kotlinx.coroutines.CancellationException("人物配音任务已过期")
+                }
+                dubCollectJob?.cancel()
+                dubCollectJob = scope.launch {
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
+                            updateUiForCurrentDubbingEngine(d, sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
+                                } else state
+                            }
+                        }
+                }
+                val arr = org.json.JSONArray()
+                for (line in updated) arr.put(
+                    org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
+                        .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
+                )
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
+                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            translationCacheKey,
+                            sessionSourceLang, arr.toString(), System.currentTimeMillis(),
+                            videoKey = sessionKey,
+                        )
+                    )
+                }
+                lastLineIdx = Int.MIN_VALUE
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                    if (state.key == sessionKey) {
+                        state.copy(
+                            phase = Phase.READY,
+                            progress = "人物区分完成：已识别 $detectedSpeakerCount 位人物",
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.SUCCEEDED,
+                                stage = SpeakerRecognitionStage.APPLYING_VOICES,
+                                message = "识别完成 · ${detectedSpeakerCount} 位人物",
+                                personCount = detectedSpeakerCount,
+                                taskToken = mutationGeneration,
+                            ),
+                        )
+                    } else state
+                }
+                clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                if (
+                    speakerJob === speakerTaskJob &&
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey
+                ) {
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey && state.speakerRecognition.isActive) state.copy(
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.CANCELLED,
+                                stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                                message = "人物识别已取消",
+                                taskToken = mutationGeneration,
+                            ),
+                        ) else state
+                    }
+                    clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
+                }
+                throw e
+            } catch (e: Exception) {
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService, "SpeakerDiarization",
+                    "手动区分人物失败，未能完成字幕人物与配音引擎重新装配",
+                    e,
+                    diagnosticContext = mapOf(
+                        "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
+                        "故障阶段" to ui.value.phase.name,
+                        "原字幕行数" to originalLines.size.toString(),
+                        "人物识别阶段" to ui.value.speakerRecognition.stage.name,
+                        "人物识别进度消息" to ui.value.speakerRecognition.message.take(160),
+                        "人物识别进度百分比" to (
+                            ui.value.speakerRecognition.progressPercent?.toString() ?: "不定进度"
+                        ),
+                        "人物识别进度项" to ui.value.speakerRecognition.progressItem.orEmpty(),
+                        "已完成单位" to (
+                            ui.value.speakerRecognition.completedUnits?.toString() ?: "未知"
+                        ),
+                        "总单位" to (
+                            ui.value.speakerRecognition.totalUnits?.toString() ?: "未知"
+                        ),
+                        "人物识别任务令牌" to (
+                            ui.value.speakerRecognition.taskToken?.toString() ?: "未知"
+                        ),
+                        "识别到人物数量" to detectedSpeakerCount.toString(),
+                        "配音引擎" to selectedTts,
+                        "旧配音引擎是否已释放" to oldEngineRetired.toString(),
+                        "错误后的恢复" to "恢复原字幕和原声；保留原有音色分配以便重试",
+                    ),
+                )
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
+                    if (state.key == sessionKey && videoKey == sessionKey) {
+                        state.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            muteOriginal = state.originalVolume <= 0f,
+                            error = "自动区分人物失败：${e.message}",
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.FAILED,
+                                stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                                message = "人物识别失败",
+                                personCount = detectedSpeakerCount,
+                                error = e.message ?: e.javaClass.simpleName,
+                                taskToken = mutationGeneration,
+                            ),
+                        )
+                    } else state
+                }
+                clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
+                if (
+                    oldEngineRetired &&
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey &&
+                    activePipelineGeneration == pipelineGeneration &&
+                    activeDubbingMutationGeneration == mutationGeneration
+                ) {
+                    withContext(Dispatchers.Main) {
+                        // Check again on the player thread: a new pipeline or speaker mutation
+                        // may start while this coroutine is being dispatched to Main.
+                        if (
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey &&
+                            activePipelineGeneration == pipelineGeneration &&
+                            activeDubbingMutationGeneration == mutationGeneration
+                        ) {
+                            safelySetOriginalVolume(1f, "source audio restore requested")
+                        }
+                    }
+                }
+            } finally {
+                runCatching { pendingTts?.close() }
+                recordSpeakerCancellationResponse(mutationGeneration)
+                synchronized(speakerRecognitionCancellationLock) {
+                    if (speakerRecognitionCommitTaskToken == mutationGeneration) {
+                        speakerRecognitionCommitTaskToken = null
+                    }
+                }
+                // A canceled diarization used to leave this progress marker behind. The UI
+                // treated the marker itself as an active job, so the menu stayed stuck forever.
+                if (
+                    speakerJob === speakerTaskJob &&
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey
+                ) {
+                    updateUiForSession(sessionKey) { state ->
+                        val staleRecognitionProgress = state.progress.contains("人物识别") ||
+                            state.progress.contains("人物说话") || state.progress.contains("分离")
+                        if (state.key == sessionKey) {
+                            val recognition = if (state.speakerRecognition.isActive) {
+                                SpeakerRecognitionUiState(
+                                    phase = SpeakerRecognitionPhase.CANCELLED,
+                                    stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                                    message = "人物识别已结束",
+                                    taskToken = mutationGeneration,
+                                )
+                            } else state.speakerRecognition
+                            state.copy(
+                                progress = if (staleRecognitionProgress) "" else state.progress,
+                                speakerRecognition = recognition,
+                            )
+                        } else state
+                    }
+                    clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
+                }
+            }
+            }
+        }
+        // Install cancellation cleanup before start(): the coroutine may otherwise be
+        // cancelled while queued on pipelineExecutionMutex before its inner try/finally.
+        speakerJob = recognitionJob
+        recognitionJob.invokeOnCompletion { cause ->
+            if (
+                cause is kotlinx.coroutines.CancellationException &&
+                speakerJob === recognitionJob
+            ) {
+                ui.update { state ->
+                    if (state.key == sessionKey && state.speakerRecognition.isActive) {
+                        state.copy(
+                            progress = "",
+                            speakerRecognition = SpeakerRecognitionUiState(
+                                phase = SpeakerRecognitionPhase.CANCELLED,
+                                stage = SpeakerRecognitionStage.PREPARING_AUDIO,
+                                message = "人物识别已取消",
+                                taskToken = mutationGeneration,
+                            ),
+                        )
+                    } else state
+                }
+                clearSpeakerRecognitionJournal(sessionKey, mutationGeneration)
+                recordSpeakerCancellationResponse(mutationGeneration)
+            }
+        }
+        recognitionJob.start()
+    }
+
+    fun setLineSpeaker(index: Int, speakerId: Int, applyToPerson: Boolean = false) {
+        val sessionState = ui.value
+        val sessionKey = sessionState.key
+        if (sessionKey.isBlank() || videoKey != sessionKey) return
+        val oldLines = sessionState.lines
+        if (index !in oldLines.indices) return
+        val selectedVoice = speakerId.coerceIn(-1, 53)
+        // Applying the same tone to every cue of a person is still a meaningful action even
+        // when the currently selected cue already has that tone.
+        if (oldLines[index].speakerId == selectedVoice && !applyToPerson) return
+
+        val selectedTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
+        if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
+            updateUiForSession(sessionKey) {
+                it.copy(error = "Kokoro 配音模型尚未就绪，当前人物音色未更改。")
+            }
+            return
+        }
+
+        speakerJob?.cancel()
+        val selectedLine = oldLines[index]
+        val translationCacheKey = sessionState.translationCacheKey.ifBlank {
+            "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
+        }
+        val sourceLang = sessionState.sourceLang
+        val assignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
+        val selectedLineKey = SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs)
+        val personId = assignmentSnapshot.lineSpeakers[selectedLineKey]
+        if (applyToPerson && personId == null) {
+            updateUiForSession(sessionKey) {
+                it.copy(error = "当前字幕还没有可靠的人物编号，请先执行“识别并区分人物”，再应用到该人物的全部字幕。")
+            }
+            return
+        }
+        val personLineKeys = if (applyToPerson && personId != null) {
+            SpeakerAssignmentResolver.lineKeysForPerson(oldLines, assignmentSnapshot, personId)
+        } else {
+            setOf(selectedLineKey)
+        }
+        val updated = oldLines.mapIndexed { i, line ->
+            val key = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+            if (key in personLineKeys) line.copy(speakerId = selectedVoice) else line
+        }
+        val updatedAssignments = if (applyToPerson && personId != null) {
+            SpeakerAssignmentResolver.applyToneToPerson(
+                assignmentSnapshot,
+                personId,
+                selectedVoice,
+                personLineKeys,
+            )
+        } else {
+            assignmentSnapshot.copy(
+                lineOverrides = assignmentSnapshot.lineOverrides + (selectedLineKey to selectedVoice),
+            )
+        }
+
+        val pipelineGeneration = activePipelineGeneration
+        val mutationGeneration = beginDubbingMutationGeneration()
+        speakerJob = scope.launch {
+            pipelineExecutionMutex.withLock {
+            var pendingTts: TtsEngine? = null
+            var replacementDubbing: DubbingEngine? = null
+            var previousDubbing: DubbingEngine? = null
+            var oldEngineRetired = false
+            var assignmentsSaved = false
+            try {
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
+                    it.copy(error = null, progress = "检查可用音色…")
+                }
+
+                // Initialize the selected engine before touching the active voice. A phone that
+                // offers only one Chinese system voice cannot perform manual multi-speaker changes;
+                // in that case the existing dub keeps playing unchanged.
+                pendingTts = makeTtsOffMainThread(selectedTts)
+                val systemChineseVoiceCount =
+                    (pendingTts as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
+                if (!io.translatetube.local.tts.TtsSpeakerCapabilityPolicy
+                        .supportsDistinctVoices(selectedTts, systemChineseVoiceCount)
+                ) {
+                    val message = when (selectedTts) {
+                        "piper" ->
+                            "当前 Piper 中文模型为单人音色，人物音色未更改。若要多人物使用不同声音，请切换到 Kokoro 或支持多种中文音色的系统 TTS。"
+                        "system" ->
+                            "手机系统 TTS 只提供一个可用中文音色，当前人物音色未更改；普通系统配音仍可使用。"
+                        else -> "当前选择的配音引擎不支持多人物音色分配，人物音色未更改。"
+                    }
+                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
+                        it.copy(progress = "", error = message)
+                    }
+                    return@launch
+                }
+                if (selectedTts == "system" &&
+                    selectedVoice >= (systemChineseVoiceCount - 1).coerceAtLeast(0)
+                ) {
+                    updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
+                        it.copy(
+                            progress = "",
+                            error = "所选系统音色在当前手机上不可用，请从现有中文音色列表中选择。",
+                        )
+                    }
+                    return@launch
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+
+                previousDubbing = retireCurrentDubbing()
+                oldEngineRetired = previousDubbing != null
+                awaitRetiredDubbingEngines()
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+
+                saveSpeakerAssignments(updatedAssignments, sessionKey, selectedTts)
+                assignmentsSaved = true
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
+                    it.copy(
+                        lines = updated,
+                        preparedUntil = 0,
+                        preparedCount = 0,
+                        audioReadyCount = 0,
+                        totalLines = updated.size,
+                        currentLine = -1,
+                        phase = Phase.SYNTHESIZING,
+                        progress = "更新人物音色…",
+                    )
+                }
+
+                val tts = pendingTts ?: makeTtsOffMainThread(selectedTts)
+                val engine = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
+                } catch (e: Exception) {
+                    if (pendingTts == null) runCatching { tts.close() }
+                    throw e
+                }
+                pendingTts = null
+                replacementDubbing = engine
+                registerDubbingFailureHandler(engine, tts, sessionKey)
+                engine.attach(tts, updated, sourceLanguage = sourceLang)
+                try {
+                    ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(engine)
+                    replacementDubbing = null
+                    throw e
+                }
+                if (!publishDubbingEngine(engine, sessionKey, pipelineGeneration, mutationGeneration)) {
+                    replacementDubbing = null
+                    retireDubbing(engine)
+                    throw kotlinx.coroutines.CancellationException("人物音色修改任务已过期")
+                }
+
+                dubCollectJob?.cancel()
+                dubCollectJob = scope.launch {
+                    kotlinx.coroutines.flow.combine(engine.preparedUntil, engine.preparedCount, engine.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .collect { (prefix, readyCount, audioReadyCount) ->
+                            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                                state.copy(
+                                    preparedUntil = prefix,
+                                    preparedCount = readyCount,
+                                    audioReadyCount = audioReadyCount,
+                                    phase = if (prefix >= updated.size) Phase.READY else Phase.SYNTHESIZING,
+                                    progress = if (prefix >= updated.size) "" else "正在准备多人物配音…",
+                                )
+                            }
+                        }
+                }
+
+                val cacheRows = org.json.JSONArray()
+                updated.forEach { line ->
+                    cacheRows.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                            .put("zh", line.zh ?: "")
+                            .put("sp", line.speakerId)
+                    )
+                }
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
+                if (updated.isNotEmpty() &&
+                    updated.count { !it.zh.isNullOrBlank() } > updated.size / 2
+                ) {
+                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            translationCacheKey,
+                            sourceLang,
+                            cacheRows.toString(),
+                            System.currentTimeMillis(),
+                            videoKey = sessionKey,
+                        )
+                    )
+                }
+                lastLineIdx = Int.MIN_VALUE
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "SpeakerVoiceAssignment",
+                    "切换人物或字幕音色失败，配音引擎重新装配未完成",
+                    e,
+                    diagnosticContext = mapOf(
+                        "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
+                        "故障阶段" to ui.value.phase.name,
+                        "原字幕行数" to oldLines.size.toString(),
+                        "目标配音引擎" to selectedTts,
+                        "音色分配是否已经保存" to assignmentsSaved.toString(),
+                        "旧配音引擎是否已释放" to oldEngineRetired.toString(),
+                        "失败后的恢复" to "恢复原字幕和可用原声，必要时回滚音色分配",
+                    ),
+                )
+                // Restore the persisted assignment and translated captions if setup failed before
+                // a replacement engine became usable. If the old native engine was already retired,
+                // restore original audio rather than leaving the video silent.
+                if (replacementDubbing != null && dubbing === replacementDubbing) {
+                    dubbing = null
+                }
+                replacementDubbing?.let { retireDubbing(it) }
+                awaitRetiredDubbingEngines()
+                if (assignmentsSaved && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    runCatching { saveSpeakerAssignments(assignmentSnapshot, sessionKey, selectedTts) }
+                }
+                updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
+                    it.copy(
+                        lines = oldLines,
+                        totalLines = oldLines.size,
+                        phase = Phase.ERROR,
+                        progress = "",
+                        // If preflight failed before retiring the old engine, preserve its audio mode.
+                        muteOriginal = it.originalVolume <= 0f,
+                        error = "切换人物音色失败：${e.message}",
+                    )
+                }
+                if (
+                    oldEngineRetired &&
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey &&
+                    activePipelineGeneration == pipelineGeneration &&
+                    activeDubbingMutationGeneration == mutationGeneration
+                ) {
+                    withContext(Dispatchers.Main) {
+                        // Check again on the player thread: a new pipeline or speaker mutation
+                        // may start while this coroutine is being dispatched to Main.
+                        if (
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey &&
+                            activePipelineGeneration == pipelineGeneration &&
+                            activeDubbingMutationGeneration == mutationGeneration
+                        ) {
+                            safelySetOriginalVolume(1f, "source audio restore requested")
+                        }
+                    }
+                }
+            } finally {
+                pendingTts?.close()
+            }
+            }
+        }
+    }
+
+    private fun currentTtsEngineId(): String =
+        DubbingConfigPreferencePolicy.normalizeEngineId(
+            getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+        )
+
+    private fun assignmentStorageKey(identity: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(identity.toByteArray(Charsets.UTF_8))
+        return "video_" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    private fun speakerRecognitionCachePrefsKey(sessionKey: String): String =
+        assignmentStorageKey("speaker-recognition-cache-v2|$sessionKey")
+
+    /**
+     * Audio identity is separate from TTS. Local document metadata invalidates cached results
+     * when a file is replaced in place, where the content provider exposes that metadata.
+     */
+    private fun speakerRecognitionSourceAudioIdentity(
+        sessionKey: String,
+        videoId: String?,
+        localUri: Uri?,
+        remoteMediaUrl: String?,
+        remoteMediaReferrer: String,
+        remoteMediaCookie: String?,
+    ): String {
+        if (videoId != null) return "youtube-original-track:$videoId"
+        if (remoteMediaUrl != null) {
+            return "remote-audio:${MediaUrlCacheIdentity.audioKey(remoteMediaUrl, remoteMediaReferrer, remoteMediaCookie)}"
+        }
+        if (localUri != null) {
+            val metadata = runCatching {
+                if (localUri.scheme.equals("file", ignoreCase = true)) {
+                    val file = File(localUri.path.orEmpty())
+                    "size=${file.length()};modified=${file.lastModified()}"
+                } else {
+                    contentResolver.query(
+                        localUri,
+                        arrayOf(android.provider.OpenableColumns.SIZE, "last_modified"),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        if (!cursor.moveToFirst()) {
+                            "metadata-unavailable"
+                        } else {
+                            val sizeIndex = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                            val modifiedIndex = cursor.getColumnIndex("last_modified")
+                            val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else -1L
+                            val modified = if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) {
+                                cursor.getLong(modifiedIndex)
+                            } else -1L
+                            "size=$size;modified=$modified"
+                        }
+                    } ?: "metadata-unavailable"
+                }
+            }.getOrElse { "metadata-unavailable" }
+            return "local-uri:$localUri|$metadata"
+        }
+        return "session:$sessionKey"
+    }
+
+    private fun assignmentPrefsKey(
+        key: String,
+        engineId: String = currentTtsEngineId(),
+    ): String = assignmentStorageKey(SpeakerAssignmentCodec.storageIdentity(key, engineId))
+
+    /** Person identity is independent of the TTS engine; only tone IDs remain engine-scoped. */
+    private fun sharedSpeakerTimelinePrefsKey(key: String): String =
+        assignmentStorageKey("speaker-timeline-v1|$key")
+
+    /** Key used before assignments were scoped by TTS engine; read it once for migration only. */
+    private fun legacyAssignmentPrefsKey(key: String): String = assignmentStorageKey(key)
+
+    private fun migrateLegacyAssignments(
+        snapshot: SpeakerAssignmentSnapshot,
+        engineId: String,
+    ): SpeakerAssignmentSnapshot {
+        return when (engineId) {
+            "piper" -> SpeakerAssignmentSnapshot()
+            "system" -> {
+                val names = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+                    getSharedPreferences("settings", MODE_PRIVATE).getString(
+                        io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                        null,
+                    )
+                )
+                // If the current ROM catalogue is known, convert invalid old Kokoro tone IDs to
+                // the default instead of silently wrapping them to an unrelated system voice.
+                val alternativeCount = (names.size - 1).coerceAtLeast(0)
+                if (names.isEmpty()) snapshot else {
+                    fun validTone(tone: Int): Int =
+                        if (tone == -1 || tone in 0 until alternativeCount) tone else -1
+                    snapshot.copy(
+                        speakerVoices = snapshot.speakerVoices.mapValues { (_, tone) -> validTone(tone) },
+                        lineVoices = snapshot.lineVoices.mapValues { (_, tone) -> validTone(tone) },
+                        lineOverrides = snapshot.lineOverrides.mapValues { (_, tone) -> validTone(tone) },
+                    )
+                }
+            }
+            else -> snapshot
+        }
+    }
+
+    private fun loadSpeakerAssignments(
+        key: String = videoKey,
+        engineId: String = currentTtsEngineId(),
+    ): SpeakerAssignmentSnapshot {
+        if (key.isBlank()) return SpeakerAssignmentSnapshot()
+        val prefs = getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
+        val scopedKey = assignmentPrefsKey(key, engineId)
+        val scopedRaw = prefs.getString(scopedKey, null)
+        val scopedSnapshot = if (scopedRaw != null) {
+            SpeakerAssignmentCodec.decode(scopedRaw)
+        } else {
+            val legacyRaw = prefs.getString(legacyAssignmentPrefsKey(key), null)
+            if (legacyRaw == null) {
+                SpeakerAssignmentSnapshot()
+            } else {
+                // On the first upgraded run, the player may load subtitle rows before SystemTts
+                // persists its real voice catalogue. Keep the legacy payload pending in that case.
+                val systemCatalogMissing = engineId == "system" &&
+                    io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+                        getSharedPreferences("settings", MODE_PRIVATE).getString(
+                            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                            null,
+                        )
+                    ).isEmpty()
+                if (systemCatalogMissing) {
+                    SpeakerAssignmentSnapshot()
+                } else {
+                    migrateLegacyAssignments(SpeakerAssignmentCodec.decode(legacyRaw), engineId).also { migrated ->
+                        prefs.edit().putString(scopedKey, SpeakerAssignmentCodec.encode(migrated)).apply()
+                    }
+                }
+            }
+        }
+        val sharedTimeline = prefs.getString(sharedSpeakerTimelinePrefsKey(key), null)
+            ?.let { encoded -> SpeakerAssignmentCodec.decode(encoded).lineSpeakers }
+            .orEmpty()
+        // One-time migration: earlier builds stored person IDs alongside each engine's tone IDs.
+        if (sharedTimeline.isEmpty() && scopedSnapshot.lineSpeakers.isNotEmpty()) {
+            prefs.edit().putString(
+                sharedSpeakerTimelinePrefsKey(key),
+                SpeakerAssignmentCodec.encode(SpeakerAssignmentCodec.personTimelineOnly(scopedSnapshot)),
+            ).apply()
+        }
+        return SpeakerAssignmentCodec.withSharedPersonTimeline(scopedSnapshot, sharedTimeline)
+    }
+
+    private fun saveSpeakerAssignments(
+        snapshot: SpeakerAssignmentSnapshot,
+        key: String = videoKey,
+        engineId: String = currentTtsEngineId(),
+    ) {
+        if (key.isBlank()) return
+        val prefs = getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
+        prefs.edit()
+            .putString(assignmentPrefsKey(key, engineId), SpeakerAssignmentCodec.encode(snapshot))
+            .putString(
+                sharedSpeakerTimelinePrefsKey(key),
+                SpeakerAssignmentCodec.encode(SpeakerAssignmentCodec.personTimelineOnly(snapshot)),
+            )
+            .apply()
+    }
+
+    /**
+     * 只给 YouTube 用：YouTube 自带字幕的起点不是按人声开口量的，第一句配音会比原声慢一点。
+     * 这里解码音轨开头几秒，量出人真正开口的时间，把第一句的起点提前到
+     * "实测开口 + 统一提前量"（字幕与配音共用同一个起点，所以两者一起准）。
+     * 只往前挪；量不出来、超时、出错都保持原样，不影响正常流程。
+     * 结果按 视频ID+原起点 缓存，同一个视频只会量一次。
+     */
+    private suspend fun calibrateYouTubeFirstCue(videoId: String, lines: List<SubLine>): List<SubLine> {
+        var firstPos = -1
+        for (index in lines.indices) {
+            if (lines[index].text.isBlank()) continue
+            if (firstPos < 0 || lines[index].startMs < lines[firstPos].startMs) firstPos = index
+        }
+        if (firstPos < 0) return lines
+        val first = lines[firstPos]
+        // 片头太久才开口，或一开始就在 0 附近：没什么可校准的。
+        if (first.startMs !in 200L..60_000L) return lines
+        var nextStartMs: Long? = null
+        for (index in lines.indices) {
+            if (index == firstPos) continue
+            val start = lines[index].startMs
+            if (nextStartMs == null || start < nextStartMs) nextStartMs = start
+        }
+
+        val prefs = getSharedPreferences("yt_first_onset_v1", MODE_PRIVATE)
+        val cacheKey = "$videoId@${first.startMs}"
+        val onsetMs: Long? = if (prefs.contains(cacheKey)) {
+            prefs.getLong(cacheKey, -1L)
+        } else {
+            val measured = measureYouTubeFirstOnset(videoId, first.startMs)
+            // 只缓存"确实量过了"的结果（含"没量出来"=-1）；超时/出错下次再试。
+            if (measured != null) prefs.edit().putLong(cacheKey, measured).apply()
+            measured
+        }
+        if (onsetMs == null || onsetMs < 0L) return lines
+
+        val newStart = SpeechOnsetDetector.calibratedStartMs(onsetMs, first.startMs, first.endMs, nextStartMs)
+        io.translatetube.local.util.AppLogStore.info(
+            this,
+            "PlaybackFlow",
+            if (newStart != null) "YouTube 第一句起点已按实测开口校准" else "YouTube 第一句起点无需校准",
+            diagnosticContext = mapOf(
+                "字幕原起点ms" to first.startMs.toString(),
+                "实测开口ms" to onsetMs.toString(),
+                "校准后起点ms" to (newStart ?: first.startMs).toString(),
+            ),
+        )
+        if (newStart == null) return lines
+        return lines.toMutableList().also { it[firstPos] = first.copy(startMs = newStart) }
+    }
+
+    /** @return 实测开口毫秒；-1 = 量过但没把握；null = 失败/超时（不缓存）。 */
+    private suspend fun measureYouTubeFirstOnset(videoId: String, captionStartMs: Long): Long? {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val job = scope.async<Long?> {
+            val self = kotlin.coroutines.coroutineContext[Job]
+            val stream = NewPipeRepo.audioForAsr(videoId) ?: return@async null
+            val (fromMs, toMs) = SpeechOnsetDetector.readRangeMs(captionStartMs, Long.MAX_VALUE)
+            val pcm = AudioExtract.decodeTo16kMonoFile(
+                this@PlaybackService,
+                Uri.parse(stream.content),
+                null,
+                maxDurationMs = toMs + 200L,
+                checkActive = { self?.ensureActive() },
+            )
+            try {
+                val rate = pcm.sampleRate
+                val startSample = fromMs * rate / 1000L
+                if (startSample >= pcm.sampleCount) return@async -1L
+                val wanted = (toMs - fromMs) * rate / 1000L
+                val count = minOf(pcm.sampleCount - startSample, wanted).toInt()
+                val samples = pcm.readFloatSamples(startSample, count, checkActive = { self?.ensureActive() })
+                SpeechOnsetDetector.findOnsetMs(samples, rate, fromMs, captionStartMs) ?: -1L
+            } finally {
+                pcm.file.delete()
+            }
+        }
+        return try {
+            // 网络读取可能卡住：用独立协程 + 超时，卡住就放弃，字幕/配音照常用原起点。
+            kotlinx.coroutines.withTimeoutOrNull(10_000L) { job.await() }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        } finally {
+            if (!job.isCompleted) job.cancel()
+            scope.cancel()
+        }
+    }
+
+    private fun applySavedLineOverrides(
+        lines: List<SubLine>,
+        key: String = videoKey,
+        engineId: String = currentTtsEngineId(),
+    ): List<SubLine> {
+        // Older subtitle-cache rows also persisted speaker IDs. Clear that engine-specific value
+        // before applying this engine's own saved timeline map, so a cache hit cannot leak tones
+        // from Kokoro into System TTS (or vice versa).
+        val neutralLines = lines.map { line ->
+            if (line.speakerId == -1) line else line.copy(speakerId = -1)
+        }
+        val snapshot = loadSpeakerAssignments(key, engineId)
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val systemVoiceCount = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+            prefs.getString(
+                io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                null,
+            ),
+        ).size
+        val speakerVoices = snapshot.speakerVoices.toMutableMap()
+        val lineVoices = snapshot.lineVoices.toMutableMap()
+        val preferredKokoroVoice = prefs.getInt("kokoro_speaker", 14).coerceIn(0, 53)
+        for ((lineKey, personId) in snapshot.lineSpeakers) {
+            val voiceId = speakerVoices.getOrPut(personId) {
+                io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.voiceForCanonicalSpeaker(
+                    engineId = engineId,
+                    canonicalSpeakerId = personId,
+                    systemChineseVoiceCount = systemVoiceCount,
+                    preferredKokoroVoice = preferredKokoroVoice,
+                )
+            }
+            // Explicit line overrides remain authoritative in SpeakerAssignmentResolver.
+            if (!lineVoices.containsKey(lineKey)) lineVoices[lineKey] = voiceId
+        }
+        val resolved = snapshot.copy(speakerVoices = speakerVoices, lineVoices = lineVoices)
+        if (resolved.speakerVoices != snapshot.speakerVoices || resolved.lineVoices != snapshot.lineVoices) {
+            saveSpeakerAssignments(resolved, key, engineId)
+        }
+        return SpeakerAssignmentResolver.apply(neutralLines, resolved)
+    }
+
+    fun toggleDub() {
+        val nowOn = !ui.value.dubbingOn
+        val sessionKey = ui.value.key
+        val position = if (::pm.isInitialized) pm.position() else -1L
+
+        // Gate the actual mixer first. Turning the switch off must silence already queued PCM,
+        // not just prevent the next timeline tick from choosing a subtitle.
+        if (::pm.isInitialized) pm.dubbingBus.setDubbingEnabled(nowOn)
+        if (!nowOn) {
+            // Publish the off state before cancellation so stale ticks fail their live-owner check.
+            ui.update { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        dubbingOn = false,
+                        activeDubbingLine = -1,
+                        dubbingStatus = "仅播放原声",
+                    )
+                } else state
+            }
+            // Stop the active sentence before doing queue bookkeeping.
+            safelyControlDubbing("switch to original playback") { dubbing?.stop() }
+        }
+
+        // Mode changes invalidate any speech queued for the previous mode, including end-of-video
+        // draining. The next dub tick will select a cue from the current video timestamp.
+        cancelDubbingDrainAfterVideoEnd()
+        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
+        if (!nowOn) {
+            if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
+            val currentDubbing = dubbing
+            if (position >= 0L) currentDubbing?.prepareForBackgroundPlayback(currentDubbing.lineAt(position))
+        } else {
+            ui.update { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        dubbingOn = true,
+                        activeDubbingLine = -1,
+                        dubbingStatus = "正在等待中文配音启动",
+                    )
+                } else state
+            }
+            // Source audio and Chinese dubbing now use independent volume gains; users may hear both.
+            if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
+            lastLineIdx = Int.MIN_VALUE
+            if (::pm.isInitialized) {
+                tickFromPlayerCallback(pm.position(), "dubbing enabled")
+            }
+        }
+    }
+
+    /** Ensure source audio is available without disabling the Chinese dubbing timeline. */
+    fun selectOriginalPlayback() {
+        if (ui.value.originalVolume <= 0f) {
+            toggleOriginalVolume()
+        } else if (::pm.isInitialized) {
+            safelySetOriginalVolume(1f, "source audio restore requested")
+        }
+    }
+
+    private fun persistOriginalVolume(value: Float) {
+        val normalized = value.coerceIn(0f, 1f)
+        val editor = getSharedPreferences("settings", MODE_PRIVATE).edit()
+            .putFloat(PREF_PLAYER_ORIGINAL_VOLUME, normalized)
+        if (normalized > 0f) editor.putFloat(PREF_PLAYER_ORIGINAL_VOLUME_LAST, normalized)
+        editor.apply()
+    }
+
+    private fun persistDubbingVolume(value: Float) {
+        val normalized = value.coerceIn(0f, 1f)
+        val editor = getSharedPreferences("settings", MODE_PRIVATE).edit()
+            .putFloat(PREF_PLAYER_DUBBING_VOLUME, normalized)
+        if (normalized > 0f) editor.putFloat(PREF_PLAYER_DUBBING_VOLUME_LAST, normalized)
+        editor.apply()
+    }
+
+    /** Slider updates stay live while dragging; persist once when the gesture ends. */
+    fun setOriginalVolume(volume: Float, persist: Boolean = true) {
+        val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+        if (persist) persistOriginalVolume(normalized)
+        ui.update { state ->
+            state.copy(
+                originalVolume = normalized,
+                muteOriginal = normalized <= 0f,
+            )
+        }
+        if (::pm.isInitialized) safelySetOriginalVolume(1f, "original volume slider")
+    }
+
+    fun finishOriginalVolumeAdjustment() {
+        persistOriginalVolume(ui.value.originalVolume)
+    }
+
+    /** Slider updates stay live while dragging; persist once when the gesture ends. */
+    fun setDubbingVolume(volume: Float, persist: Boolean = true) {
+        val previousVolume = ui.value.dubbingVolume
+        val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+        if (persist) persistDubbingVolume(normalized)
+        ui.update { state -> state.copy(dubbingVolume = normalized) }
+        if (::pm.isInitialized) pm.dubbingVolume = normalized
+        val engine = dubbing
+        engine?.updateVolume(normalized)
+
+        // Android's immediate System TTS receives volume per utterance, so changing its gain to
+        // zero cannot mute a sentence already speaking. Stop only that live utterance at 0%;
+        // the background synthesis request remains enabled and can prepare later cues.
+        if (
+            normalized <= 0f &&
+            previousVolume > 0f &&
+            engine?.usesImmediateTimelinePlayback == true &&
+            engine.currentLineIdx() >= 0
+        ) {
+            safelyControlDubbing("中文配音音量归零，停止当前即时 TTS") { engine.stop() }
+            ui.update { state -> state.copy(activeDubbingLine = -1) }
+            val position = if (::pm.isInitialized) pm.position() else -1L
+            if (position >= 0L) engine.prepareForBackgroundPlayback(engine.lineAt(position))
+        }
+
+        // At zero volume the synthesis timeline remains available in the background. When sound
+        // is restored, resume selection at the current video position without forcing original off.
+        if (normalized > 0f && !ui.value.dubbingOn) {
+            toggleDub()
+        } else if (
+            normalized > 0f &&
+            previousVolume <= 0f &&
+            ui.value.dubbingOn &&
+            ::pm.isInitialized
+        ) {
+            tickFromPlayerCallback(pm.position(), "dubbing volume restored")
+        }
+    }
+
+    fun finishDubbingVolumeAdjustment() {
+        persistDubbingVolume(ui.value.dubbingVolume)
+    }
+
+    fun toggleOriginalVolume() {
+        val current = ui.value.originalVolume
+        val target = if (current > 0f) {
+            0f
+        } else {
+            getSharedPreferences("settings", MODE_PRIVATE)
+                .getFloat(PREF_PLAYER_ORIGINAL_VOLUME_LAST, 1f)
+                .coerceIn(0.01f, 1f)
+        }
+        setOriginalVolume(target)
+    }
+
+    fun toggleDubbingVolume() {
+        val current = ui.value.dubbingVolume
+        val target = if (current > 0f) {
+            0f
+        } else {
+            getSharedPreferences("settings", MODE_PRIVATE)
+                .getFloat(PREF_PLAYER_DUBBING_VOLUME_LAST, 1f)
+                .coerceIn(0.01f, 1f)
+        }
+        setDubbingVolume(target)
+    }
+
+    /** Legacy call path now toggles the source gain itself, not a mutually-exclusive mode. */
+    fun toggleMute() = toggleOriginalVolume()
+
+    fun toggleAudioOnly() {
+        val nowOnly = !ui.value.audioOnly
+        ui.update { it.copy(audioOnly = nowOnly) }
+        // 关画面：禁视频轨（省电）；重开恢复
+        pm.player.trackSelectionParameters = pm.player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, nowOnly)
+            .build()
+    }
+    private fun cancelPendingSeekResume() {
+        synchronized(seekResumeLock) {
+            seekResumeGeneration += 1L
+            pendingSeekResume?.let(seekResumeHandler::removeCallbacks)
+            pendingSeekResume = null
+        }
+    }
+
+    /**
+     * Reassert play intent once after Media3 has processed the seek discontinuity.
+     * Some web/segmented streams briefly leave isPlaying=false after seek even when play()
+     * was requested. An explicit play/pause tap invalidates this one-shot retry.
+     */
+    private fun scheduleSeekResume(sessionKey: String) {
+        val token = synchronized(seekResumeLock) {
+            seekResumeGeneration += 1L
+            pendingSeekResume?.let(seekResumeHandler::removeCallbacks)
+            pendingSeekResume = null
+            seekResumeGeneration
+        }
+        val retry = Runnable {
+            val stillCurrent = synchronized(seekResumeLock) { token == seekResumeGeneration }
+            if (!stillCurrent) return@Runnable
+            if (
+                !playerReady ||
+                !::pm.isInitialized ||
+                instance !== this@PlaybackService ||
+                videoKey != sessionKey ||
+                ui.value.key != sessionKey
+            ) {
+                synchronized(seekResumeLock) {
+                    if (token == seekResumeGeneration) pendingSeekResume = null
+                }
+                return@Runnable
+            }
+            try {
+                // Do not use isPlaying to decide whether the user wants playback: it is false
+                // while buffering. This is one final play() nudge after the seek transition.
+                if (!pm.player.playWhenReady || !pm.player.isPlaying) pm.play()
+            } catch (error: Exception) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackSeek",
+                    "跳转后恢复播放失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                        "延迟恢复代次" to token.toString(),
+                        "当前恢复代次" to synchronized(seekResumeLock) { seekResumeGeneration }.toString(),
+                        "播放器初始化状态" to playerReady.toString(),
+                        "播放意图 playWhenReady" to runCatching { pm.player.playWhenReady.toString() }.getOrDefault("读取失败"),
+                        "播放器当前是否实际播放" to runCatching { pm.player.isPlaying.toString() }.getOrDefault("读取失败"),
+                        "播放器状态码" to runCatching { pm.player.playbackState.toString() }.getOrDefault("读取失败"),
+                        "跳转目标位置 ms" to runCatching { pm.position().toString() }.getOrDefault("读取失败"),
+                    ),
+                )
+                android.util.Log.w("PlaybackService", "Playback resume after seek did not complete", error)
+            } finally {
+                synchronized(seekResumeLock) {
+                    if (token == seekResumeGeneration) pendingSeekResume = null
+                }
+            }
+        }
+        synchronized(seekResumeLock) {
+            if (token == seekResumeGeneration) {
+                pendingSeekResume = retry
+                seekResumeHandler.postDelayed(retry, 180L)
+            }
+        }
+    }
+
+    private fun seekAndResumeInternal(ms: Long, reason: String, failureMessage: String) {
+        if (!playerReady || !::pm.isInitialized || ui.value.key != videoKey) {
+            android.util.Log.w("PlaybackService", "Ignoring $reason for an inactive playback service")
+            return
+        }
+        val sessionKey = videoKey
+        cancelPendingSeekResume()
+        try {
+            // Stop speech associated with the old timestamp before applying the seek.
+            safelyControlDubbing(reason) { dubbing?.stop() }
+            lastLineIdx = Int.MIN_VALUE
+            pm.seekTo(ms.coerceAtLeast(0L))
+            if (
+                playerReady &&
+                ::pm.isInitialized &&
+                instance === this &&
+                videoKey == sessionKey &&
+                ui.value.key == sessionKey
+            ) {
+                // Seeking from either the progress bar or a subtitle row should resume playback
+                // automatically in both original-audio and dubbing modes.
+                pm.play()
+                scheduleSeekResume(sessionKey)
+            }
+        } catch (error: Exception) {
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService,
+                "PlaybackSeek",
+                "视频跳转操作失败：$reason",
+                error,
+                diagnosticContext = mapOf(
+                    "触发原因" to reason,
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                    "请求跳转位置 ms" to ms.coerceAtLeast(0L).toString(),
+                    "播放器初始化状态" to playerReady.toString(),
+                    "播放器阶段" to ui.value.phase.name,
+                    "当前视频位置 ms" to runCatching { if (::pm.isInitialized) pm.position().toString() else "未初始化" }.getOrDefault("读取失败"),
+                    "当前字幕索引" to ui.value.currentLine.toString(),
+                    "当前配音字幕索引" to ui.value.activeDubbingLine.toString(),
+                    "恢复播放是否已排队" to synchronized(seekResumeLock) { pendingSeekResume != null }.toString(),
+                ),
+            )
+            android.util.Log.e("PlaybackService", "$reason failed", error)
+            updateUiForSession(sessionKey) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        activeDubbingLine = -1,
+                        dubbingStatus = failureMessage,
+                    )
+                } else state
+            }
+        }
+    }
+
+    /** Progress-bar seeking always resumes playback at the selected timestamp. */
+    fun seek(ms: Long) {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.seek(ms)
+            return
+        }
+        seekAndResumeInternal(
+            ms = ms,
+            reason = "progress seek",
+            failureMessage = "进度跳转时正在恢复播放，请稍后再试",
+        )
+    }
+
+    /** Jump to a subtitle and start playback, even when the video was paused before the tap. */
+    fun seekAndPlay(ms: Long) {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.seekAndPlay(ms)
+            return
+        }
+        seekAndResumeInternal(
+            ms = ms,
+            reason = "subtitle seek",
+            failureMessage = "跳转到字幕时间点失败",
+        )
+    }
+
+    /** Explicit play/pause actions cancel a delayed seek retry so it cannot override the user. */
+    fun playPlayback() {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.playPlayback()
+            return
+        }
+        if (!playerReady || !::pm.isInitialized) {
+            publishPlaybackHintCandidate(
+                PlaybackHint(
+                    key = "restoring",
+                    message = "正在恢复播放…",
+                    showSpinner = true,
+                    priority = 55,
+                ),
+                force = true,
+            )
+            return
+        }
+        cancelPendingSeekResume()
+
+        val player = pm.player
+        if (player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
+            // The floating-window and in-app controls share this service/player. Restart centrally
+            // so either surface resumes the same video, timeline, subtitles and dubbed audio from 0.
+            // Clear any post-video dubbing drain before the first cue is scheduled again.
+            val sessionKey = videoKey
+            cancelDubbingDrainAfterVideoEnd()
+            clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = 0L)
+            seekAndResumeInternal(
+                ms = 0L,
+                reason = "replay after video ended",
+                failureMessage = "视频结束后重新播放失败",
+            )
+            return
+        }
+        pm.play()
+    }
+
+    fun pausePlayback() {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.pausePlayback()
+            return
+        }
+        if (!playerReady || !::pm.isInitialized) return
+        cancelPendingSeekResume()
+        pm.pause()
+    }
+
+    fun playPause() {
+        val liveService = instance
+        if (liveService != null && liveService !== this) {
+            liveService.takeIf { it.isReady }?.playPause()
+            return
+        }
+        if (!playerReady || !::pm.isInitialized) return
+        // When ExoPlayer is buffering, isPlaying can be false although playWhenReady is true.
+        if (pm.player.playWhenReady) pausePlayback() else playPlayback()
+    }
+
+    /** 记录观看进度（退出播放页时调用，历史列表续看用） */
+    fun saveProgress() {
+        val key = videoKey
+        if (key.isEmpty() || !playerReady || !::pm.isInitialized) return
+
+        // Capture the playhead synchronously with the key/generation. Reading pm.position() only
+        // inside the launched coroutine can pair the old video's key with the next video's playhead
+        // if Home opens another item before this coroutine is scheduled.
+        val savePipelineGeneration = activePipelineGeneration
+        val savedPositionSeconds = runCatching {
+            (pm.position().coerceAtLeast(0L) / 1000L)
+        }.getOrElse { error ->
+            io.translatetube.local.util.AppLogStore.warning(
+                this@PlaybackService,
+                "PlaybackProgress",
+                "读取观看位置失败，未保存历史进度",
+                error,
+                diagnosticContext = mapOf(
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "视频会话标识长度" to key.length.toString(),
+                    "播放器初始化状态" to ::pm.isInitialized.toString(),
+                ),
+            )
+            return
+        }
+
+        scope.launch {
+            try {
+                // If the same history row has already been reopened, an older queued save must
+                // not overwrite progress belonging to the newer processing/playback generation.
+                if (videoKey == key && activePipelineGeneration != savePipelineGeneration) {
+                    return@launch
+                }
+                AppDatabase.get(this@PlaybackService).videoDao().setWatched(key, savedPositionSeconds)
+            } catch (error: Exception) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackProgress",
+                    "保存观看进度失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                        "视频会话标识长度" to key.length.toString(),
+                        "播放器初始化状态" to ::pm.isInitialized.toString(),
+                        "保存位置秒" to savedPositionSeconds.toString(),
+                        "保存时处理代数" to savePipelineGeneration.toString(),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun setSpeed(s: Float) { pm.speed(s) }
+    fun playbackSpeed(): Float = pm.playbackSpeed()
+    fun playbackSpeedState(): StateFlow<Float> = pm.playbackSpeedState
+    fun position(): Long = pm.position()
+    fun bufferedPosition(): Long = pm.bufferedPosition()
+    fun duration(): Long = pm.duration()
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val phase = ui.value.phase
+        val isProcessing = phase in setOf(
+            Phase.PARSING,
+            Phase.DOWNLOADING_AUDIO,
+            Phase.TRANSCRIBING,
+            Phase.TRANSLATING,
+            Phase.SYNTHESIZING,
+        )
+        val isDubbingPreparing = isDubbingPreparationIncomplete(ui.value)
+        val isSpeakerRecognitionActive = ui.value.speakerRecognition.isActive && speakerJob?.isActive == true
+        saveProgress()
+        if (isProcessing) persistCurrentProcessingCheckpoint()
+        if (isProcessing || isDubbingPreparing || isSpeakerRecognitionActive) {
+            // Keep service-owned recognition alive when the Activity task is dismissed from recents.
+            android.util.Log.i(
+                "PlaybackService",
+                "Keeping background task alive after task removal: phase=$phase, dubbingPreparing=$isDubbingPreparing, speakerRecognition=$isSpeakerRecognitionActive",
+            )
+            return
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+}
+
+/** 通知渠道小工具（避免直接 import 冲突） */
+object NotificationManagerCompat_c {
+    fun create(ctx: Context): NotificationManager? {
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return null
+        val ch = NotificationChannel(PlaybackService.CH_MAIN, "播放与配音", NotificationManager.IMPORTANCE_LOW)
+        nm.createNotificationChannel(ch)
+        return nm
+    }
+}
+
+private typealias NotificationManager = android.app.NotificationManager

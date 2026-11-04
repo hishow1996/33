@@ -1,0 +1,55 @@
+package io.translatetube.local.asr
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PcmDecodeLimitPolicyTest {
+    @Test
+    fun zeroDurationDoesNotForceADecoderFrame() {
+        assertEquals(0L, PcmDecodeLimitPolicy.maxSourceSamples(48_000, 1, 0L))
+        assertEquals(0L, PcmDecodeLimitPolicy.maxSourceSamples(48_000, 2, 0L))
+    }
+
+    @Test
+    fun recomputesThreeMinuteLimitFromActualDecoderFormat() {
+        assertEquals(
+            17_280_000L,
+            PcmDecodeLimitPolicy.maxSourceSamples(48_000, 2, 180_000L),
+        )
+        assertEquals(
+            7_938_000L,
+            PcmDecodeLimitPolicy.maxSourceSamples(44_100, 1, 180_000L),
+        )
+        assertEquals(
+            15_876_000L,
+            PcmDecodeLimitPolicy.maxSourceSamples(44_100, 2, 180_000L),
+        )
+    }
+
+    @Test
+    fun durationLimitAlwaysEndsOnACompleteChannelFrame() {
+        val samples = PcmDecodeLimitPolicy.maxSourceSamples(48_000, 6, 1L)
+        assertEquals(288L, samples) // 48 frames per millisecond, six channels per frame.
+        assertEquals(0L, samples % 6L)
+    }
+
+    @Test
+    fun unlimitedDurationRetainsARepresentableBound() {
+        val samples = PcmDecodeLimitPolicy.maxSourceSamples(48_000, 2, Long.MAX_VALUE)
+        assertEquals(2_147_483_646L, samples)
+        assertTrue(samples > 0L)
+    }
+
+    @Test
+    fun veryLargeFiniteDurationDoesNotOverflowTheSampleLimit() {
+        val samples = PcmDecodeLimitPolicy.maxSourceSamples(48_000, 2, Long.MAX_VALUE - 1L)
+        assertEquals(2_147_483_646L, samples)
+        assertEquals(0L, samples % 2L)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsInvalidChannelCount() {
+        PcmDecodeLimitPolicy.maxSourceSamples(48_000, 0, 180_000L)
+    }
+}
