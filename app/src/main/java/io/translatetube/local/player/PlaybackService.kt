@@ -8685,6 +8685,29 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             releaseActiveAsrAudio(leasedAudioPath)
                             throw cancelled
                         } catch (error: Exception) {
+                            currentStageDiagnostics.putAll(
+                                mapOf(
+                                    "当前处理阶段" to Phase.TRANSCRIBING.name,
+                                    "当前处理子步骤" to "云端编码音轨直传预检失败，切换为 PCM/WAV 路径",
+                                    "编码音轨预检异常类型" to error.javaClass.name,
+                                    "编码音轨预检失败原因" to (error.message ?: "未提供"),
+                                    "直传失败后的处理策略" to "不终止转写；继续尝试解码为 16 kHz 单声道 PCM",
+                                ),
+                            )
+                            runCatching {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    this@PlaybackService,
+                                    "CloudTranscription",
+                                    "编码音轨直传预检失败，正在回退到 PCM/WAV 转写路径",
+                                    error,
+                                    diagnosticContext = currentStageDiagnostics.toMap() + mapOf(
+                                        "原始输入音频字节数" to (audioFile as? File)?.takeIf { it.isFile }?.length()?.toString().orEmpty(),
+                                        "转写服务商 ID" to asrProvider,
+                                        "转写语言参数" to cloudLanguage,
+                                        "回退后是否继续转写" to "是",
+                                    ),
+                                )
+                            }
                             android.util.Log.i(
                                 "PlaybackService",
                                 "Encoded cloud audio is not suitable for direct upload; using PCM fallback",
@@ -9034,6 +9057,18 @@ updateUiForSession(key, pipelineGeneration) {
                     firstPassSegs
                 }
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
+                currentStageDiagnostics.putAll(
+                    mapOf(
+                        "当前处理阶段" to Phase.TRANSCRIBING.name,
+                        "当前处理子步骤" to "已完成语音活动检测（VAD），准备读取识别模型和处理分段",
+                        "VAD 首次检测分段数" to firstPassSegs.size.toString(),
+                        "VAD 最终分段总数" to segs.size.toString(),
+                        "是否因首次未检测到语音而提高灵敏度重试" to firstPassSegs.isEmpty().toString(),
+                        "VAD 分段总时长 ms" to segs.sumOf { (start, end) -> (end - start).coerceAtLeast(0L) }.toString(),
+                        "PCM 音频时长 ms" to pcmFile.durationMs.toString(),
+                        "PCM 音频文件字节数" to pcmFile.file.length().toString(),
+                    ),
+                )
                 // PCM stays on disk; VAD timestamps and the current segment are loaded as needed.
                 val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs) {
                     pcmOwnerJob?.ensureActive()
@@ -9261,6 +9296,23 @@ updateUiForSession(key, pipelineGeneration) {
                     ensureCurrentSession(key, pipelineGeneration)
                     withContext(Dispatchers.IO) {
                         val selectedModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this@PlaybackService)
+                        currentStageDiagnostics.putAll(
+                            mapOf(
+                                "当前处理阶段" to Phase.TRANSCRIBING.name,
+                                "当前处理子步骤" to "初始化或复用本地 ASR 模型并按 VAD 分段识别",
+                                "本地 ASR 模型 ID" to selectedModelId,
+                                "本地 ASR 模型名称" to io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(selectedModelId),
+                                "本地 ASR 处理线程数" to LocalAsrPerformancePolicy.recommendedThreadCount(
+                                    modelId = selectedModelId,
+                                    processorCount = Runtime.getRuntime().availableProcessors(),
+                                    isPlaying = ui.value.isPlaying,
+                                    dubbingEnabled = ui.value.dubbingOn,
+                                ).toString(),
+                                "VAD 最终分段总数" to segs.size.toString(),
+                                "已从检查点恢复分段数" to restoredProcessedSegments.toString(),
+                                "已从检查点恢复字幕行数" to restoredAsrRows.size.toString(),
+                            ),
+                        )
                         val engine = localAsrEngine?.takeIf { localAsrEngineModelId == selectedModelId }
                             ?: run {
                                 releaseLocalAsr()
@@ -9344,6 +9396,15 @@ updateUiForSession(key, pipelineGeneration) {
                                 }
                                 rows.addAll(chunkRows)
                                 processed = chunkEnd
+                                currentStageDiagnostics.putAll(
+                                    mapOf(
+                                        "当前处理子步骤" to "本地 ASR 分段识别",
+                                        "本地 ASR 已完成分段数" to processed.toString(),
+                                        "本地 ASR 总分段数" to segs.size.toString(),
+                                        "当前已生成字幕行数" to rows.size.toString(),
+                                        "当前识别语言" to engine.lastLang.ifBlank { restoredAsrLanguage }.ifBlank { "尚未检测" },
+                                    ),
+                                )
                                 publishTranscriptionPreview()
 
                                 if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
@@ -10608,7 +10669,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "当前字幕索引" to memoryFailureState.currentLine.toString(),
                     "配音引擎" to memoryFailureState.ttsEngineName.ifBlank { "未确定" },
                     "本次处理状态" to "捕获内存错误后释放本地转写、配音和音频缓存资源，停止配音并报告错误",
-                ),
+                ) + currentStageDiagnostics,
             )
             android.util.Log.e("PlaybackService", "Insufficient memory while preparing video/TTS for key=${key.substringBefore('?').take(80)}", e)
             runCatching {
@@ -10661,7 +10722,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "当前字幕索引" to nonVmFailureState.currentLine.toString(),
                     "错误类型" to e.javaClass.name,
                     "处理策略" to "将异常显示在播放器状态中，避免非 VM 错误逃逸到后台协程",
-                ),
+                ) + currentStageDiagnostics,
             )
             android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=${key.substringBefore('?').take(80)}", e)
             updateUiForSession(key, pipelineGeneration) {
