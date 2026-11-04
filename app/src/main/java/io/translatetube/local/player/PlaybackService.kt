@@ -13392,10 +13392,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "是否开启配音" to state.dubbingOn.toString(),
                     "是否静音原声" to (state.originalVolume <= 0f).toString(),
                     "当前配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
-                    "恢复策略" to "配音控制异常后停止视频播放并保留用户原声开关设置；不再自动切换为原声播放",
+                    "恢复策略" to "配音控制异常后临时静音原声音轨并暂停视频；保留用户音量设置，不自动切换原声播放",
                 ),
             )
             android.util.Log.e("PlaybackService", "Unable to synchronize dubbing during $source", error)
+            // Silence the source track immediately without changing the user's saved volume
+            // preference; the main-looper pause below then stops video and audio together.
+            safelySetOriginalVolume(0f, "配音控制异常时临时静音原声音轨")
             val failureKey = state.key
             val failureGeneration = activePipelineGeneration
             ui.update { current ->
