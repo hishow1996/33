@@ -101,6 +101,33 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
+    fun importedChineseSourceWithoutSeparateTranslationRemainsDubbable() {
+        val imported = io.translatetube.local.subs.ImportedSubtitlePolicy.preserveImportedTranslations(
+            listOf(io.translatetube.local.subs.SubLine(0, 0L, 900L, "你好", null)),
+        )
+        val chineseSource = io.translatetube.local.subs.ImportedSubtitlePolicy
+            .completeChineseSourceCaptions(imported)
+
+        val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(chineseSource, "zh")
+
+        assertEquals("你好", prepared.single().zh)
+    }
+
+    @Test
+    fun importedForeignSourceWithoutTranslationFailsPreflight() {
+        val imported = io.translatetube.local.subs.ImportedSubtitlePolicy.preserveImportedTranslations(
+            listOf(io.translatetube.local.subs.SubLine(0, 0L, 900L, "Hello there", null)),
+        )
+
+        assertNull(imported.single().zh)
+        val error = runCatching {
+            DubbingTranslationPolicy.prepareLinesForDubbing(imported, "en")
+        }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("翻译结果为空"))
+    }
+
+    @Test
     fun blankSourceCuesDoNotBlockDubbingPreflight() {
         val source = io.translatetube.local.subs.SubLine(0, 0, 500, "", null)
         val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(listOf(source), "en")
