@@ -142,7 +142,7 @@ class AppLogAiReportTest {
         assertTrue(report.contains("legacy/unknown"))
         assertTrue(report.contains("legacy-1000-1"))
         assertTrue(report.contains("\"schemaVersion\":1"))
-        assertTrue(report.contains("\"reportSchemaVersion\":7"))
+        assertTrue(report.contains("\"reportSchemaVersion\":8"))
         assertFalse(report.contains("undefined"))
     }
     @Test
