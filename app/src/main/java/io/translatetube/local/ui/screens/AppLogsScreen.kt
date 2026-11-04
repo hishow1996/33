@@ -398,6 +398,9 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     }
 
     selectedRecord?.let { record ->
+        val translationDiagnosticId = remember(record.timestampMs, record.details) {
+            AppLogStore.translationDiagnosticId(record)
+        }
         Dialog(
             onDismissRequest = { selectedRecord = null },
             properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -571,6 +574,47 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     }
                 }
 
+                if (translationDiagnosticId != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    ) {
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !exporting,
+                            onClick = {
+                                scope.launch {
+                                    exporting = true
+                                    val result = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            AppLogStore.exportTranslationDiagnosticPack(
+                                                ctx.applicationContext,
+                                                translationDiagnosticId,
+                                            )
+                                        }
+                                    }
+                                    result.onSuccess { pack ->
+                                        val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        clipboard.setPrimaryClip(
+                                            android.content.ClipData.newPlainText("翻译 AI 诊断包", pack),
+                                        )
+                                        message = "AI 诊断包已复制"
+                                        selectedRecord = null
+                                    }.onFailure { failure ->
+                                        message = "诊断包生成失败：${failure.message ?: "未知错误"}"
+                                    }
+                                    exporting = false
+                                }
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (exporting) "正在整理…" else "复制 AI 诊断包")
+                        }
+                    }
+                }
                 HorizontalDivider(color = Color(0xFFE9EAEC))
                 Row(
                     modifier = Modifier

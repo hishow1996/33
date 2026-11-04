@@ -23,11 +23,124 @@ internal object TranslationFailureDiagnosticPolicy {
         else -> "导入字幕/其他"
     }
 
+    /** Summarize provider payload shape without storing a full successful response or subtitle batch. */
+    fun responseBodySummary(body: String, includeErrorPreview: Boolean = false): String {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty()) return "body=empty"
+        if (trimmed.startsWith("data:", ignoreCase = true) || trimmed.lineSequence().any { it.startsWith("data:") }) {
+            val dataLines = trimmed.lineSequence().filter { it.startsWith("data:") }.toList()
+            val done = dataLines.any { it.substringAfter("data:").trim() == "[DONE]" }
+            val jsonData = dataLines.count { line -> runCatching { org.json.JSONObject(line.substringAfter("data:").trim()) }.isSuccess }
+            val errorEvent = if (includeErrorPreview) {
+                dataLines.firstOrNull()?.let { safeSnippet(it, 160) }.orEmpty()
+            } else {
+                "成功流正文不采集"
+            }
+            return "format=sse; chars=${trimmed.length}; dataEvents=${dataLines.size}; jsonEvents=$jsonData; terminalDone=$done; errorEvent=$errorEvent"
+        }
+        val root = runCatching { org.json.JSONObject(trimmed) }.getOrNull()
+            ?: return if (includeErrorPreview) {
+                "format=non-json; chars=${trimmed.length}; errorPreview=${safeSnippet(trimmed, 140)}"
+            } else {
+                "format=non-json; chars=${trimmed.length}; bodyPreview=成功响应正文不采集"
+            }
+        val rootKeys = root.keys().asSequence().toList().sorted().take(24)
+        val errorNode = when (val value = root.opt("error")) {
+            is org.json.JSONObject -> value
+            is String -> org.json.JSONObject().put("message", value)
+            else -> root.optJSONObject("Response")?.optJSONObject("Error")
+                ?: root.optJSONObject("Error")
+                ?: root.optJSONObject("error_details")
+                ?: root.takeIf {
+                    includeErrorPreview && (it.has("message") || it.has("error_description") || it.has("code"))
+                }
+        }
+        val code = errorNode?.opt("code")?.takeUnless { it == org.json.JSONObject.NULL }?.toString()
+            ?: errorNode?.opt("error_code")?.takeUnless { it == org.json.JSONObject.NULL }?.toString()
+            ?: root.opt("code")?.takeUnless { it == org.json.JSONObject.NULL }?.toString()
+        val type = errorNode?.optString("type")?.takeIf { it.isNotBlank() }
+            ?: errorNode?.optString("error_type")?.takeIf { it.isNotBlank() }
+        val message = errorNode?.optString("message")?.takeIf { it.isNotBlank() }
+            ?: errorNode?.optString("error_message")?.takeIf { it.isNotBlank() }
+            ?: root.optString("error_description").takeIf { it.isNotBlank() }
+
+        val counts = listOf("choices", "translations", "candidates", "data", "output", "results")
+            .mapNotNull { key ->
+                root.optJSONArray(key)?.let { "$key=${it.length()}" }
+            }.joinToString(",")
+        val choices = root.optJSONArray("choices")
+        val choice = choices?.optJSONObject(0)
+        val messageObject = choice?.optJSONObject("message")
+        val contentShape = messageObject?.opt("content")?.let { value ->
+            when (value) {
+                is String -> "string:${value.length}"
+                is org.json.JSONArray -> "array:${value.length()}"
+                is org.json.JSONObject -> "object:${value.length()}"
+                org.json.JSONObject.NULL -> "null"
+                else -> value.javaClass.simpleName
+            }
+        } ?: "missing"
+        return buildString {
+            append("format=json; chars=").append(trimmed.length)
+            append("; rootFields=").append(rootKeys.joinToString(","))
+            if (counts.isNotBlank()) append("; arrays=").append(counts)
+            if (choices != null) append("; firstFinishReason=").append(choice?.optString("finish_reason", "missing") ?: "missing")
+            if (messageObject != null) append("; assistantContent=").append(contentShape)
+            if (!code.isNullOrBlank()) append("; providerErrorCode=").append(safeSnippet(code, 80))
+            if (!type.isNullOrBlank()) append("; providerErrorType=").append(safeSnippet(type, 80))
+            if (!message.isNullOrBlank()) append("; providerErrorMessage=").append(safeFailureMessage(message))
+        }
+    }
+
+    /** Read a provider-generated request/trace ID from an error JSON body when no header exists. */
+    fun responseRequestId(body: String): String? {
+        val root = runCatching { org.json.JSONObject(body.trim()) }.getOrNull() ?: return null
+        val keys = listOf("request_id", "requestId", "request-id", "trace_id", "traceId", "correlation_id")
+        val nested = listOf("error", "metadata", "meta", "response", "Response")
+        for (key in keys) {
+            root.opt(key)?.takeUnless { it == org.json.JSONObject.NULL }?.toString()
+                ?.takeIf { it.isNotBlank() }?.let { return safeDiagnosticText(it, 100) }
+        }
+        for (parentKey in nested) {
+            val parent = root.optJSONObject(parentKey) ?: continue
+            for (key in keys) {
+                parent.opt(key)?.takeUnless { it == org.json.JSONObject.NULL }?.toString()
+                    ?.takeIf { it.isNotBlank() }?.let { return safeDiagnosticText(it, 100) }
+            }
+        }
+        return null
+    }
+
+    fun safeDiagnosticText(value: String?, maxChars: Int = 240): String =
+        if (value.isNullOrBlank()) "（空）" else safeFailureMessage(value).take(maxChars.coerceIn(16, 800))
+
+    fun httpTransportDetails(failure: Throwable): String {
+        val responses = generateSequence(failure) { it.cause }
+            .take(12)
+            .filterIsInstance<TranslationHttpException>()
+            .mapIndexed { index, response ->
+                buildString {
+                    append("#").append(index + 1)
+                    append(" status=").append(response.statusCode?.toString() ?: "unknown")
+                    append(" requestId=").append(response.requestId.orEmpty().ifBlank { "未提供" })
+                    append(" contentType=").append(response.contentType.orEmpty().ifBlank { "未提供" })
+                    append(" bytes=").append(response.responseBytes?.toString() ?: "unknown")
+                    append(" retryAfter=").append(response.retryAfterHeader.orEmpty().ifBlank { response.retryAfterMs?.toString() ?: "未提供" })
+                    append(" rateLimit=").append(response.rateLimitHeaders.orEmpty().ifBlank { "未提供" })
+                    append(" providerCode=").append(response.providerErrorCode.orEmpty().ifBlank { "未提供" })
+                    append(" providerType=").append(response.providerErrorType.orEmpty().ifBlank { "未提供" })
+                    append(" providerMessage=").append(safeDiagnosticText(response.providerErrorMessage, 180))
+                    append(" summary=").append(response.responseSummary.orEmpty().take(600))
+                }
+            }.toList()
+        return responses.joinToString("\n").ifBlank { "异常链中没有结构化 HTTP 错误响应对象" }
+    }
+
     private fun safeFailureMessage(message: String): String {
         var safe = message
         safe = Regex("""(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+""")
             .replace(safe) { "${it.groupValues[1]} [REDACTED]" }
-        safe = Regex("""(?i)\b(api[_-]?key|authorization|cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)(\s*[=:]\s*)[^\s,;]+""")
+        safe = Regex("""(?i)\b(api[_-]?key|authorization|cookie|access[_-]?token|refresh[_-]?token|token|password|secret|client[_-]?secret|signature|sig)(\s*[=:]\s*)[^\s,;]+""")
             .replace(safe) { "${it.groupValues[1]}${it.groupValues[2]}[REDACTED]" }
         safe = Regex("""(?i)https?://[^\s"'<>]+""")
             .replace(safe) { match ->
@@ -118,7 +231,7 @@ internal object TranslationFailureDiagnosticPolicy {
             .trim()
         normalized = Regex("(?i)\\b(Bearer|Basic)\\s+[A-Za-z0-9._~+/=-]+")
             .replace(normalized) { "${it.groupValues[1]} [REDACTED]" }
-        normalized = Regex("(?i)\\b(api[_-]?key|authorization|cookie|access[_-]?token|refresh[_-]?token|token|password|client[_-]?secret)(\\s*[=:]\\s*)[^\\s,;]+")
+        normalized = Regex("(?i)\\b(api[_-]?key|authorization|cookie|access[_-]?token|refresh[_-]?token|token|password|secret|client[_-]?secret|signature|sig)(\\s*[=:]\\s*)[^\\s,;]+")
             .replace(normalized) { "${it.groupValues[1]}${it.groupValues[2]}[REDACTED]" }
         normalized = Regex("""(?i)https?://[^\s"'<>]+""")
             .replace(normalized) { match ->

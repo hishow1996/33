@@ -213,6 +213,23 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun diagnosticEvidenceExplainsHanScriptEchoAndSpeakabilityChecks() {
+        val evidence = SubtitleTranslationQualityPolicy.diagnosticEvidence(
+            sourceText = "Hello world",
+            translatedText = "こんにちは",
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(evidence.contains("sourceLanguage=en"))
+        assertTrue(evidence.contains("targetLanguage=zh-CN"))
+        assertTrue(evidence.contains("han=0"))
+        assertTrue(evidence.contains("kana=5"))
+        assertTrue(evidence.contains("sourceEcho=false"))
+        assertTrue(evidence.contains("targetLanguageMismatch=true"))
+        assertTrue(evidence.contains("speakable=true"))
+    }
+
+    @Test
     fun ordinaryWordsAndPhrasesReturnedUnchangedAreStillFailedTranslations() {
         listOf("Hello", "Thank you very much", "I think so.", "Good morning everyone").forEach {
             assertTrue("'$it'", SubtitleTranslationQualityPolicy.isSourceEcho(it, it, "en"))

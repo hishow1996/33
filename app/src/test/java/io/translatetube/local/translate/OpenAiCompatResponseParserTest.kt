@@ -1,6 +1,7 @@
 package io.translatetube.local.translate
 
 import org.junit.Assert.assertEquals
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -233,6 +234,19 @@ class OpenAiCompatResponseParserTest {
 
         assertTrue(error is IllegalStateException)
         assertTrue(error?.message.orEmpty().contains("不是有效的 JSON"))
+    }
+
+    @Test
+    fun recordsOpenAiParserSuccessAndFailureStages() = runBlocking {
+        val trace = TranslationDiagnosticContext("8caaf8ef-8d5b-437d-b292-5fc859a6e17d")
+        TranslationDiagnosticContextHolder.withDiagnosticContext(trace) {
+            extractOpenAiCompatContent("""{"choices":[{"message":{"content":"0|你好"}}]}""")
+            val failed = runCatching { extractOpenAiCompatContent("{broken") }.exceptionOrNull()
+            assertTrue(failed is IllegalStateException)
+        }
+        val events = trace.snapshot()
+        assertTrue(events.contains("parser=openai-compatible-final-text result=PARSED"))
+        assertTrue(events.contains("parser=openai-compatible-final-text result=FAILED"))
     }
 
     @Test

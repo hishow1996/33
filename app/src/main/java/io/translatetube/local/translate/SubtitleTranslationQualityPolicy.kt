@@ -45,6 +45,63 @@ internal object SubtitleTranslationQualityPolicy {
         sourceText, translatedText, sourceLanguage, targetLanguage,
     ) != null
 
+    /**
+     * Content-free evidence describing the exact quality checks applied to one source/target pair.
+     * Counts are based on the full cleaned model output, not on the shortened diagnostic preview.
+     */
+    fun diagnosticEvidence(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String {
+        if (sourceText.isNullOrBlank()) return "source=empty; target=${targetLanguage}"
+        val output = translatedText.orEmpty()
+        var han = 0
+        var kana = 0
+        var hangul = 0
+        var latin = 0
+        var lettersOrDigits = 0
+        output.forEach { char ->
+            if (char.isLetterOrDigit()) lettersOrDigits++
+            when (Character.UnicodeScript.of(char.code)) {
+                Character.UnicodeScript.HAN -> han++
+                Character.UnicodeScript.HIRAGANA,
+                Character.UnicodeScript.KATAKANA -> kana++
+                Character.UnicodeScript.HANGUL -> hangul++
+                Character.UnicodeScript.LATIN -> latin++
+                else -> Unit
+            }
+        }
+        val mismatch = targetLanguageMismatchReason(
+            sourceText = sourceText,
+            translatedText = output,
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage,
+        )
+        val nonTranslatable = isNonTranslatableCue(sourceText)
+        val sourceEcho = isSourceEcho(sourceText, output, sourceLanguage)
+        val punctuationOnly = isPunctuationOnlyTranslation(sourceText, output)
+        val speakable = io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(output)
+        return buildString {
+            append("sourceLanguage=").append(sourceLanguage.ifBlank { "auto" })
+            append("; targetLanguage=").append(targetLanguage)
+            append("; sourceChars=").append(sourceText.length)
+            append("; outputChars=").append(output.length)
+            append("; outputLettersOrDigits=").append(lettersOrDigits)
+            append("; han=").append(han)
+            append("; kana=").append(kana)
+            append("; hangul=").append(hangul)
+            append("; latin=").append(latin)
+            append("; sourceEcho=").append(sourceEcho)
+            append("; nonTranslatableSourceCue=").append(nonTranslatable)
+            append("; punctuationOnlyOutput=").append(punctuationOnly)
+            append("; speakable=").append(speakable)
+            append("; targetLanguageMismatch=").append(mismatch != null)
+            append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
+        }
+    }
+
     /** Content-free explanation for a rejected Chinese-target response; subtitle text is not logged. */
     fun targetLanguageMismatchReason(
         sourceText: String?,

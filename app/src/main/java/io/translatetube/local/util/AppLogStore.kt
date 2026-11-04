@@ -465,6 +465,51 @@ object AppLogStore {
         true
     }
 
+    /** UUID extracted from this log event, if it belongs to a translation operation. */
+    fun translationDiagnosticId(record: AppLogRecord): String? =
+        TranslationDiagnosticPackPolicy.idFromRecord(record)
+
+    /**
+     * Export only records sharing one translation diagnostic ID. This intentionally excludes
+     * unrelated browsing/playback logs, API secrets and complete request/response bodies.
+     */
+    fun exportTranslationDiagnosticPack(context: Context, diagnosticId: String): String {
+        val normalizedId = TranslationDiagnosticPackPolicy.normalizeId(diagnosticId)
+            ?: throw IllegalArgumentException("翻译诊断 ID 格式无效")
+        val records = TranslationDiagnosticPackPolicy.relatedRecords(
+            records = readRecent(context, MAX_READ_RECORDS),
+            diagnosticId = normalizedId,
+        )
+        val date = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        return buildString {
+            append("大象翻译 AI 故障诊断包\n")
+            append("翻译诊断 ID：").append(normalizedId).append('\n')
+            append("导出时间：").append(date).append('\n')
+            append("应用版本：").append(runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知")).append('\n')
+            append("设备：").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
+            append("Android：").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n")
+            append("关联事件数：").append(records.size).append('\n')
+            append("范围：仅包含相同翻译诊断 ID 的本地事件；不含完整 API 请求体或密钥。\n")
+            append("分享前请检查字幕短片段是否含有个人信息。\n")
+            append("=".repeat(64)).append('\n')
+            if (records.isEmpty()) {
+                append("没有找到该诊断 ID 对应的本地日志。可能已被日志保留策略清理，请刷新日志后重试。\n")
+            }
+            records.forEachIndexed { index, record ->
+                append("#").append(index + 1).append(' ')
+                    .append(formatTime(record.timestampMs))
+                    .append(" [").append(record.level).append("] ")
+                    .append(AppLogTitleResolver.title(record.tag, record.message))
+                    .append(" [模块：").append(record.tag).append("]\n")
+                if (record.thread.isNotBlank()) append("线程：").append(record.thread).append('\n')
+                if (record.issueKey.isNotBlank()) append("故障编号：").append(record.issueKey).append('\n')
+                if (record.details.isNotBlank()) append(record.details.trimEnd()).append('\n')
+                append("-".repeat(64)).append('\n')
+            }
+            append("AI 分析要求：先按时间顺序还原任务，再区分网络/HTTP、响应格式解析、字幕行对齐、译文质量校验和应用自身异常；指出具体证据、最可能责任模块、待核对文件/方法及验证方案。不得把推测写成已证实根因。\n")
+        }
+    }
+
     fun exportText(context: Context): String {
         val date = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
         val records = readRecent(context, MAX_READ_RECORDS).sortedBy { it.timestampMs }

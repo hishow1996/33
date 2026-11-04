@@ -4,6 +4,16 @@ package io.translatetube.local.translate
 internal class TranslationHttpException(
     message: String,
     val retryAfterMs: Long?,
+    val statusCode: Int? = null,
+    val requestId: String? = null,
+    val contentType: String? = null,
+    val responseBytes: Long? = null,
+    val retryAfterHeader: String? = null,
+    val rateLimitHeaders: String? = null,
+    val providerErrorCode: String? = null,
+    val providerErrorType: String? = null,
+    val providerErrorMessage: String? = null,
+    val responseSummary: String? = null,
 ) : IllegalStateException(message)
 
 /**

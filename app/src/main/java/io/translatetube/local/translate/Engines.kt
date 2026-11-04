@@ -372,12 +372,22 @@ private fun stripTranslationPrefix(value: String): String {
  */
 internal fun parseModelTranslations(content: String, size: Int): List<String> {
     if (size <= 0) return emptyList()
+    fun recordParser(result: String, reason: String = "") {
+        TranslationDiagnosticContextHolder.current()?.recordParserEvent(
+            parser = "numbered-subtitle-output",
+            result = result,
+            reason = reason,
+        )
+    }
 
     val normalized = content
         .replace(Regex("(?s)<think>.*?</think>"), "")
         .replace(Regex("(?m)^\\s*```[\\w-]*\\s*$"), "")
         .trim()
-    if (normalized.isEmpty()) return List(size) { "" }
+    if (normalized.isEmpty()) {
+        recordParser("EMPTY_OUTPUT", "expectedRows=$size; rawChars=${content.length}")
+        return List(size) { "" }
+    }
 
     // Accept JSON arrays when a model disregards the requested text format. Keep every
     // org.json call inside runCatching because Android's local-test stub may throw from length().
@@ -386,7 +396,10 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
             List(size) { i -> array.optString(i).trim() }
         }
     }.getOrNull()
-    if (jsonTranslations != null) return jsonTranslations
+    if (jsonTranslations != null) {
+        recordParser("PARSED_JSON_ARRAY", "expectedRows=$size; outputRows=${jsonTranslations.size}")
+        return jsonTranslations
+    }
 
     // Accepted examples: 0|text, 1 | text, 1. text, 1) text, 1：text, and Markdown bullets.
     val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d+)(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
@@ -419,28 +432,36 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         }
     }
     if (outOfRangeIndex != null) {
+        recordParser("REJECTED_OUT_OF_RANGE_INDEX", "index=$outOfRangeIndex; expectedRows=$size; indexedRows=${indexed.size}")
         throw IllegalStateException(
             "翻译服务返回了超出本批范围的字幕编号 " + outOfRangeIndex + "，已拒绝可能错位的译文"
         )
     }
     if (indexed.isNotEmpty()) {
         if (unexpectedLines.isNotEmpty()) {
+            recordParser("REJECTED_UNNUMBERED_CONTENT", "expectedRows=$size; indexedRows=${indexed.size}; unnumberedRows=${unexpectedLines.size}")
             throw IllegalStateException(
                 "翻译服务在编号译文中混入未编号内容，已拒绝可能错位的译文"
             )
         }
         if (duplicateIndex) {
+            recordParser("REJECTED_DUPLICATE_INDEX", "expectedRows=$size; uniqueIndexes=${indexed.size}")
             throw IllegalStateException("翻译服务重复返回字幕编号，已拒绝错位译文")
         }
         // If numbering begins at 1 and no zero row exists, accept the common one-based format.
         val base = if (0 !in indexed.keys && indexed.keys.minOrNull() == 1) 1 else 0
         if (base == 0 && size in indexed.keys) {
+            recordParser("REJECTED_INDEX_BOUNDARY", "expectedRows=$size; lastIndex=$size; base=$base")
             throw IllegalStateException("翻译服务返回了超出本批范围的字幕编号")
         }
         if ((0 until size).any { (it + base) !in indexed.keys }) {
+            val missing = (0 until size).map { it + base }.filterNot(indexed::containsKey)
+            recordParser("REJECTED_MISSING_INDEX", "expectedRows=$size; missingIndexes=${missing.joinToString(",")}")
             throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
         }
-        return List(size) { i -> indexed.getValue(i + base) }
+        val parsed = List(size) { i -> indexed.getValue(i + base) }
+        recordParser("PARSED_INDEXED_LINES", "expectedRows=$size; outputRows=${parsed.size}; indexBase=$base")
+        return parsed
     }
 
     // Fall back to positional output only when each input row has exactly one output row.
@@ -453,15 +474,25 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         .filter { it.isNotBlank() }
         // The response can contain many rows; share this pattern instead of compiling it per row.
         .filterNot { translationHeaderRegex.matches(it) }
-    if (plainLines.size == size) return plainLines
+    if (plainLines.size == size) {
+        recordParser("PARSED_POSITIONAL_LINES", "expectedRows=$size; outputRows=${plainLines.size}")
+        return plainLines
+    }
 
     // Single-row probes occasionally return a sentence without any index or wrapper.
     if (size == 1) {
         val single = stripTranslationPrefix(normalized)
-        if (single.isNotBlank()) return listOf(single)
+        if (single.isNotBlank()) {
+            recordParser("PARSED_SINGLE_TEXT", "expectedRows=1; outputChars=${single.length}")
+            return listOf(single)
+        }
     }
 
     // Keep alignment deterministic; the caller turns an entirely unparseable batch into an error.
+    recordParser(
+        "UNPARSEABLE_CONTENT",
+        "expectedRows=$size; rawChars=${content.length}; normalizedChars=${normalized.length}; lineCount=${normalized.lines().size}; indexedRows=${indexed.size}; unnumberedRows=${unexpectedLines.size}",
+    )
     return List(size) { "" }
 }
 
@@ -494,7 +525,12 @@ private fun responseRoute(response: okhttp3.Response): String {
     val hops = mutableListOf<String>()
     var current: okhttp3.Response? = response
     while (current != null) {
-        hops += "${current.request.method} ${safeDiagnosticUrl(current.request.url)}"
+        val url = current.request.url
+        val defaultPort = if (url.isHttps) 443 else 80
+        val portSuffix = if (url.port == defaultPort) "" else ":" + url.port
+        val authority = url.host + portSuffix
+        // Keep endpoint path for API diagnosis; omit user-info, all query values and fragments.
+        hops += "${current.request.method} ${url.scheme}://$authority${url.encodedPath}"
         current = current.priorResponse
     }
     return hops.asReversed().joinToString(" -> ")
@@ -532,6 +568,12 @@ internal suspend fun <T> withBoundedTranslationRetries(
         } catch (error: Exception) {
             val waitMs = TranslationRetryBackoffPolicy.nextDelayMs(retries, error, allowThrottleRetries)
                 ?: throw error
+            TranslationDiagnosticContextHolder.current()?.recordRetry(
+                retryNumber = retries + 1,
+                waitMs = waitMs,
+                failureType = TranslationFailureDiagnosticPolicy.classify(error),
+                failureMessage = TranslationFailureDiagnosticPolicy.causeChain(error, maxDepth = 4),
+            )
             retries += 1
             kotlinx.coroutines.delay(waitMs)
         }
@@ -545,22 +587,90 @@ internal fun readTranslationResponse(
     ownerJob: Job?,
 ): String {
     val body = response.body ?: throw IllegalStateException("空响应")
-    if (body.contentLength() > MAX_TRANSLATION_RESPONSE_BYTES) {
+    val declaredLength = body.contentLength()
+    if (declaredLength > MAX_TRANSLATION_RESPONSE_BYTES) {
+        TranslationDiagnosticContextHolder.current()?.recordParserEvent(
+            parser = "http-response-body-reader",
+            result = "REJECTED_SIZE_LIMIT",
+            reason = "declaredBytes=$declaredLength; limitBytes=$MAX_TRANSLATION_RESPONSE_BYTES",
+        )
         throw IllegalStateException("翻译服务响应超过 16 MB 安全上限，已停止读取以保护设备内存")
     }
-    val bytes = body.byteStream().use { input ->
-        io.translatetube.local.yt.BoundedTextPayload.readBytes(
-            input,
-            maxBytes = MAX_TRANSLATION_RESPONSE_BYTES,
-            resourceLabel = "翻译服务响应",
-            checkActive = { ownerJob?.ensureActive() },
+    val bytes = try {
+        body.byteStream().use { input ->
+            io.translatetube.local.yt.BoundedTextPayload.readBytes(
+                input,
+                maxBytes = MAX_TRANSLATION_RESPONSE_BYTES,
+                resourceLabel = "翻译服务响应",
+                checkActive = { ownerJob?.ensureActive() },
+            )
+        }
+    } catch (failure: Exception) {
+        TranslationDiagnosticContextHolder.current()?.recordParserEvent(
+            parser = "http-response-body-reader",
+            result = "READ_FAILED",
+            reason = "${failure.javaClass.simpleName}: ${TranslationFailureDiagnosticPolicy.safeDiagnosticText(failure.message, 180)}; declaredBytes=$declaredLength",
         )
+        throw failure
     }
     val text = String(bytes, Charsets.UTF_8)
+    val retryAfterHeader = response.header("Retry-After")
+    val retryAfterMs = TranslationRetryBackoffPolicy.parseRetryAfterMs(retryAfterHeader)
+    val requestId = listOf(
+        "x-request-id",
+        "request-id",
+        "anthropic-request-id",
+        "x-goog-request-id",
+        "x-ms-request-id",
+        "apim-request-id",
+        "x-correlation-id",
+    ).firstNotNullOfOrNull { name -> response.header(name)?.takeIf { it.isNotBlank() } }
+        ?.let { TranslationFailureDiagnosticPolicy.safeDiagnosticText(it, 100) }
+        ?: TranslationFailureDiagnosticPolicy.responseRequestId(text)
+    val rateLimitHeaders = listOf(
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "x-ratelimit-resource",
+        "x-ratelimit-bucket",
+        "ratelimit-limit",
+        "ratelimit-remaining",
+    ).mapNotNull { name -> response.header(name)?.takeIf { it.isNotBlank() }?.let { "$name=${it.take(100)}" } }
+        .joinToString(",")
+    val bodySummary = TranslationFailureDiagnosticPolicy.responseBodySummary(text, includeErrorPreview = !response.isSuccessful)
+    val route = responseRoute(response)
+    TranslationDiagnosticContextHolder.current()?.recordHttpResponse(
+        method = response.request.method,
+        route = route,
+        statusCode = response.code,
+        requestId = requestId,
+        contentType = body.contentType()?.toString() ?: response.header("Content-Type"),
+        responseBytes = bytes.size.toLong(),
+        retryAfterHeader = retryAfterHeader?.let { TranslationFailureDiagnosticPolicy.safeDiagnosticText(it, 80) },
+        retryAfterMs = retryAfterMs,
+        rateLimitHeaders = rateLimitHeaders,
+        bodySummary = bodySummary,
+    )
     if (!response.isSuccessful) {
+        val providerCode = Regex("""(?i)(?:providerErrorCode=)([^;, ]+)""")
+            .find(bodySummary)?.groupValues?.getOrNull(1)
+        val providerType = Regex("""(?i)(?:providerErrorType=)([^;, ]+)""")
+            .find(bodySummary)?.groupValues?.getOrNull(1)
+        val providerMessage = Regex("""(?i)(?:providerErrorMessage=)(.*)$""")
+            .find(bodySummary)?.groupValues?.getOrNull(1)
         throw TranslationHttpException(
-            "HTTP ${response.code} [${responseRoute(response)}]: ${text.take(500)}",
-            TranslationRetryBackoffPolicy.parseRetryAfterMs(response.header("Retry-After")),
+            "HTTP ${response.code} [${route}]: ${bodySummary}",
+            retryAfterMs = retryAfterMs,
+            statusCode = response.code,
+            requestId = requestId,
+            contentType = body.contentType()?.toString() ?: response.header("Content-Type"),
+            responseBytes = bytes.size.toLong(),
+            retryAfterHeader = retryAfterHeader,
+            rateLimitHeaders = rateLimitHeaders,
+            providerErrorCode = providerCode,
+            providerErrorType = providerType,
+            providerErrorMessage = providerMessage,
+            responseSummary = bodySummary,
         )
     }
     return text
@@ -1056,6 +1166,30 @@ internal fun openAiCompatResponseSummary(body: String): String {
 
 /** Extract text from a non-streaming OpenAI-compatible chat-completion response. */
 internal fun extractOpenAiCompatContent(body: String): String {
+    val trace = TranslationDiagnosticContextHolder.current()
+    return try {
+        extractOpenAiCompatContentInternal(body).also { output ->
+            trace?.recordParserEvent(
+                parser = "openai-compatible-response",
+                result = "PARSED",
+                reason = "outputChars=${output.length}; responseShape=${openAiCompatResponseSummary(body)}",
+            )
+        }
+    } catch (failure: Exception) {
+        val result = when (failure) {
+            is ReasoningOnlyResponseException -> "REASONING_WITHOUT_FINAL_TEXT"
+            else -> "FAILED"
+        }
+        trace?.recordParserEvent(
+            parser = "openai-compatible-response",
+            result = result,
+            reason = "${failure.javaClass.simpleName}: ${TranslationFailureDiagnosticPolicy.safeDiagnosticText(failure.message, 220)}",
+        )
+        throw failure
+    }
+}
+
+private fun extractOpenAiCompatContentInternal(body: String): String {
     val root = try {
         JSONObject(body)
     } catch (error: Exception) {

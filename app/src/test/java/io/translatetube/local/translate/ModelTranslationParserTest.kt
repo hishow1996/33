@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
 class ModelTranslationParserTest {
@@ -115,6 +116,28 @@ class ModelTranslationParserTest {
         assertEquals("繁體中文", LangMap.display("zh_Hant_TW"))
         assertEquals("the original language", LangMap.display("und"))
         assertFalse(LangMap.isMlkitSupported("xx-zz"))
+    }
+
+    @Test
+    fun recordsTheSuccessfulParsingModeAndRowAlignment() = runBlocking {
+        val trace = TranslationDiagnosticContext("8caaf8ef-8d5b-437d-b292-5fc859a6e17d")
+        TranslationDiagnosticContextHolder.withDiagnosticContext(trace) {
+            assertEquals(listOf("你好", "再见"), parseModelTranslations("0|你好\\n1|再见", 2))
+        }
+        assertTrue(trace.snapshot().contains("result=PARSED_INDEXED_LINES"))
+        assertTrue(trace.snapshot().contains("indexBase=0"))
+    }
+
+    @Test
+    fun recordsWhyNumberedParserRejectedDuplicateIndexes() = runBlocking {
+        val trace = TranslationDiagnosticContext("8caaf8ef-8d5b-437d-b292-5fc859a6e17d")
+        TranslationDiagnosticContextHolder.withDiagnosticContext(trace) {
+            val failure = runCatching {
+                parseModelTranslations("0|first\\n0|duplicate\\n1|second", 2)
+            }.exceptionOrNull()
+            assertTrue(failure is IllegalStateException)
+        }
+        assertTrue(trace.snapshot().contains("result=REJECTED_DUPLICATE_INDEX"))
     }
 
     @Test

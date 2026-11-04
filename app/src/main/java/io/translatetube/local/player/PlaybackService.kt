@@ -511,8 +511,11 @@ private data class PartialAsrTranscript(
     val sourceLang: String,
 )
 
-private class TranslationFailureException(message: String, cause: Throwable) :
-    IllegalStateException(message, cause)
+private class TranslationFailureException(
+    message: String,
+    cause: Throwable,
+    val diagnosticId: String,
+) : IllegalStateException(message, cause)
 
 
 data class AudioProgressSnapshot(
@@ -10285,6 +10288,7 @@ updateUiForSession(key, pipelineGeneration) {
                     "当前字幕索引" to failureState.currentLine.toString(),
                     "原声是否静音" to (failureState.originalVolume <= 0f).toString(),
                     "处理代数" to pipelineGeneration.toString(),
+                    "翻译诊断 ID" to (e as? TranslationFailureException)?.diagnosticId.orEmpty(),
                     ),
                     issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
                 )
@@ -10456,6 +10460,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         pipelineGeneration: Long? = null,
     ): List<SubLine> {
         val startedAtNanos = System.nanoTime()
+        val traceContext = io.translatetube.local.translate.TranslationDiagnosticContext(
+            diagnosticId = java.util.UUID.randomUUID().toString(),
+        )
         try {
             return translateLinesInternal(
                 key = key,
@@ -10464,6 +10471,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 cacheKeyOverride = cacheKeyOverride,
                 activeIdOverride = activeIdOverride,
                 pipelineGeneration = pipelineGeneration,
+                traceContext = traceContext,
             )
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
@@ -10502,6 +10510,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             failure,
                             diagnosticContext = mapOf(
                                 "诊断事件类型" to "TRANSLATION_STAGE_UNHANDLED_FAILURE",
+                                "翻译诊断 ID" to traceContext.diagnosticId,
+                                "传输/响应/重试轨迹" to traceContext.snapshot(),
                                 "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
                                 "视频标识摘要" to java.security.MessageDigest.getInstance("SHA-256")
                                     .digest(key.toByteArray(Charsets.UTF_8))
@@ -10532,7 +10542,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
             }
-            throw failure
+            if (failure is TranslationFailureException) throw failure
+            throw TranslationFailureException(
+                message = failure.message?.takeIf { it.isNotBlank() } ?: "翻译阶段失败，请查看本次诊断日志",
+                cause = failure,
+                diagnosticId = traceContext.diagnosticId,
+            )
         }
     }
 
@@ -10543,8 +10558,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cacheKeyOverride: String? = null,
         activeIdOverride: Long? = null,
         pipelineGeneration: Long? = null,
+        traceContext: io.translatetube.local.translate.TranslationDiagnosticContext,
     ): List<SubLine> {
         val translationStartedAtNanos = System.nanoTime()
+        val diagnosticId = traceContext.diagnosticId
         val earlyExternalTranslation = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
         if (earlyExternalTranslation != null) {
             val validatedExternalTranslation =
@@ -10555,6 +10572,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "Translation",
                     "外部翻译字幕已准备完成，跳过自动翻译批次",
                     diagnosticContext = mapOf(
+                        "翻译诊断 ID" to diagnosticId,
                         "输入字幕行数" to lines.size.toString(),
                         "输出字幕行数" to validatedExternalTranslation.size.toString(),
                         "源语言代码" to srcLang,
@@ -10716,6 +10734,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "Translation",
                     "中文字幕翻译任务已开始",
                     diagnosticContext = mapOf(
+                        "诊断事件类型" to "TRANSLATION_TASK_STARTED",
+                        "翻译诊断 ID" to diagnosticId,
                         "视频来源" to when {
                             key.startsWith("youtube:") -> "YouTube"
                             key.startsWith("remote:") -> "网页视频/远程媒体"
@@ -10817,7 +10837,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         val sourcePreview = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.safeSnippet(sourceLine?.text)
                         val outputPreview = row.rawOutputPreview?.takeIf { it.isNotBlank() }
                             ?.let { "；模型原始返回片段=$it" }.orEmpty()
-                        "${row.sourceIndex + 1}行 [${row.reasonCode}]：$reason（原文 ${row.sourceCharCount} 字符，返回 ${row.rawOutputCharCount} 字符$timeRange；原文片段=$sourcePreview$outputPreview）"
+                        val qualityEvidence = row.qualityEvidence?.takeIf { it.isNotBlank() }
+                            ?.let { "；质量规则证据=$it" }.orEmpty()
+                        "${row.sourceIndex + 1}行 [${row.reasonCode}]：$reason（原文 ${row.sourceCharCount} 字符，返回 ${row.rawOutputCharCount} 字符$timeRange；原文片段=$sourcePreview$outputPreview$qualityEvidence）"
                     }
                     val omitted = rows.size - minOf(rows.size, 20)
                     return shown + if (omitted > 0) "；另有 $omitted 行未展开" else ""
@@ -10866,9 +10888,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         runUntilInterrupted(
                             manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
                         ) {
-                            engine!!.translateWithContext(
-                                batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
-                            )
+                            io.translatetube.local.translate.TranslationDiagnosticContextHolder
+                                .withDiagnosticContext(traceContext) {
+                                    engine!!.translateWithContext(
+                                        batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
+                                    )
+                                }
                         }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
@@ -10882,6 +10907,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             e,
                             diagnosticContext = mapOf(
                                 "诊断事件类型" to "TRANSLATION_REQUEST_FAILURE",
+                                "翻译诊断 ID" to diagnosticId,
+                                "传输/响应/重试轨迹" to traceContext.snapshot(),
+                                "结构化 HTTP 错误详情" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.httpTransportDetails(e),
                                 "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
                                 "翻译引擎名称" to engineName,
                                 "翻译引擎 ID" to engine?.id.orEmpty(),
@@ -10968,7 +10996,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         } else {
                             "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
                         }
-                        throw TranslationFailureException(message, e)
+                        throw TranslationFailureException(message, e, diagnosticId)
                     }
                     if (racedBatch is InterruptibleResult.Interrupted) {
                         // 进入等待外部译文；若用户随后又取消外部模式，则回到应用内翻译，重新翻译这一批。
@@ -11035,6 +11063,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "Translation",
                                 "模型译文存在未通过校验的字幕行，正在重试",
                                 diagnosticContext = mapOf(
+                                    "翻译诊断 ID" to diagnosticId,
+                                    "传输/响应/网络重试轨迹" to traceContext.snapshot(),
                                     "翻译引擎名称" to engineName,
                                     "翻译引擎 ID" to (engine?.id ?: "未知"),
                                     "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
@@ -11087,7 +11117,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             },
                             IllegalStateException(failureDetail),
                             diagnosticContext = mapOf(
-                                "翻译引擎名称" to engineName,
+                                "翻译诊断 ID" to diagnosticId,
+                                "传输/响应/网络重试轨迹" to traceContext.snapshot(),
+                                                                "翻译引擎名称" to engineName,
                                 "翻译引擎 ID" to (engine?.id ?: "未知"),
                                 "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
                                 "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
@@ -11132,6 +11164,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。"
                         },
                         IllegalStateException(failureDetail + " 缺失字幕索引：$missingRows"),
+                        diagnosticId,
                     )
                 }
 
@@ -11192,6 +11225,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "Translation",
                             "中文字幕翻译批次处理完成",
                             diagnosticContext = mapOf(
+                                "翻译诊断 ID" to diagnosticId,
+                                "传输/响应/网络重试轨迹" to traceContext.snapshot(2_400),
                                 "翻译引擎名称" to engineName,
                                 "翻译引擎 ID" to (engine?.id ?: "未知"),
                                 "批次进度" to "${completedBatchCount}/${translationBatches.size}",
@@ -11249,6 +11284,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "Translation",
                         "外部翻译字幕已导入并匹配到原字幕时间轴",
                         diagnosticContext = mapOf(
+                            "翻译诊断 ID" to diagnosticId,
                             "输入原文字幕行数" to lines.size.toString(),
                             "合并后字幕行数" to externallyTranslatedFinal.size.toString(),
                             "源语言代码" to src,
@@ -11265,6 +11301,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "Translation",
                     "中文字幕翻译任务完成",
                     diagnosticContext = mapOf(
+                        "翻译诊断 ID" to diagnosticId,
+                        "传输/响应/网络重试轨迹" to traceContext.snapshot(),
                         "翻译引擎名称" to engineName,
                         "翻译引擎 ID" to (engine?.id ?: "未知"),
                         "翻译配置编号" to activeId.toString(),

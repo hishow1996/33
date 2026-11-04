@@ -72,6 +72,71 @@ class TranslationFailureDiagnosticPolicyTest {
     }
 
     @Test
+    fun summarizesProviderErrorFieldsWithoutCopyingTheWholePayload() {
+        val body = """{"error":{"message":"Unknown model id","type":"invalid_request_error","code":"model_not_found"},"request_id":"req-abc"}"""
+        val summary = TranslationFailureDiagnosticPolicy.responseBodySummary(body)
+        assertTrue(summary.contains("format=json"))
+        assertTrue(summary.contains("providerErrorCode=model_not_found"))
+        assertTrue(summary.contains("providerErrorType=invalid_request_error"))
+        assertTrue(summary.contains("providerErrorMessage=Unknown model id"))
+        assertEquals("req-abc", TranslationFailureDiagnosticPolicy.responseRequestId(body))
+        assertTrue(!summary.contains(body))
+    }
+
+    @Test
+    fun summarizesOpenAiResponseShapeWithoutLoggingTranslatedText() {
+        val body = """{"object":"chat.completion","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"译文内容不应进入响应结构摘要"}}]}"""
+        val summary = TranslationFailureDiagnosticPolicy.responseBodySummary(body)
+        assertTrue(summary.contains("choices=1"))
+        assertTrue(summary.contains("firstFinishReason=stop"))
+        assertTrue(summary.contains("assistantContent=string:"))
+        assertTrue(!summary.contains("译文内容不应进入响应结构摘要"))
+    }
+
+    @Test
+    fun detectsIncompleteServerSentEventResponses() {
+        val summary = TranslationFailureDiagnosticPolicy.responseBodySummary(
+            listOf("""data: {"choices":[{"delta":{"content":"hello"}}]}""").joinToString("\n"),
+        )
+        assertTrue(summary.contains("format=sse"))
+        assertTrue(summary.contains("terminalDone=false"))
+        assertTrue(summary.contains("jsonEvents=1"))
+        assertTrue(!summary.contains("hello"))
+    }
+
+    @Test
+    fun neverCopiesSuccessfulNonJsonResponseTextIntoTheDiagnosticSummary() {
+        val summary = TranslationFailureDiagnosticPolicy.responseBodySummary("translated text must remain private")
+        assertTrue(summary.contains("bodyPreview=成功响应正文不采集"))
+        assertTrue(!summary.contains("translated text must remain private"))
+    }
+
+    @Test
+    fun exposesStructuredHttpAndRateLimitEvidenceFromTheExceptionChain() {
+        val failure = TranslationHttpException(
+            message = "HTTP 429",
+            retryAfterMs = 4_000L,
+            statusCode = 429,
+            requestId = "req-123",
+            contentType = "application/json",
+            responseBytes = 128L,
+            retryAfterHeader = "4",
+            rateLimitHeaders = "x-ratelimit-remaining=0",
+            providerErrorCode = "rate_limit_exceeded",
+            providerErrorType = "tokens",
+            providerErrorMessage = "Too many requests",
+            responseSummary = "format=json",
+        )
+        val details = TranslationFailureDiagnosticPolicy.httpTransportDetails(failure)
+        assertTrue(details.contains("status=429"))
+        assertTrue(details.contains("requestId=req-123"))
+        assertTrue(details.contains("retryAfter=4"))
+        assertTrue(details.contains("rateLimit=x-ratelimit-remaining=0"))
+        assertTrue(details.contains("providerCode=rate_limit_exceeded"))
+        assertTrue(details.contains("Too many requests"))
+    }
+
+    @Test
     fun sourceTypesRemainConsistentAcrossPlaybackSources() {
         assertEquals("YouTube", TranslationFailureDiagnosticPolicy.sourceType("youtube:abc"))
         assertEquals("网页视频/远程媒体", TranslationFailureDiagnosticPolicy.sourceType("remote:abc"))
