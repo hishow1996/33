@@ -6929,17 +6929,18 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
 
             if (isFullscreen && durationForUi > 0L) {
-                Row(
+                Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 22.dp)
-                        .padding(bottom = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                        .padding(horizontal = 22.dp),
                 ) {
+                    // Keep the current position above the track so it never sits on the line.
                     Text(
                         text = formatFloatingTime((pos.coerceIn(0f, 1f) * durationForUi).toLong()),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(bottom = 27.dp),
                         color = Color.White,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 10.sp,
@@ -6950,8 +6951,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             ),
                         ),
                     )
+                    // Keep the total duration aligned with the progress track's lower row.
                     Text(
                         text = formatFloatingTime(durationForUi),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(bottom = 14.dp),
                         color = Color.White.copy(alpha = 0.88f),
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 10.sp,
