@@ -161,7 +161,7 @@ class DubbingEngine(
     @Volatile private var inputLinesForDiagnostics: List<SubLine> = emptyList()
     @Volatile private var sourceLanguageForDiagnostics: String = "auto"
     private val silentCueReasonsByIndex = java.util.concurrent.ConcurrentHashMap<Int, String>()
-    private val silentFallbackReported = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+    private val silentCueErrorReported = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     private var timeline = DubbingTimeline(emptyList())
     @Volatile private var speed = 1.0f
     /** Latest player position; async PCM loading must not start speech at an old timestamp. */
@@ -373,13 +373,6 @@ class DubbingEngine(
                 "字幕行数超过配音安全上限，无法初始化配音"
             }
             val normalized = lines.mapIndexed { index, line ->
-                if (line.translationFallbackOriginalAudio) {
-                    translationDiagnostics[index] = DubbingTranslationResolution(
-                        null,
-                        "已明确采用原声兜底，不生成中文配音",
-                    )
-                    return@mapIndexed line.copy(zh = null)
-                }
                 val resolution = DubbingTranslationPolicy.resolveText(line.text, line.zh, sourceLanguage)
                 if (resolution.text.isNullOrBlank() ||
                     !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(resolution.text.orEmpty())
@@ -413,18 +406,12 @@ class DubbingEngine(
         val reasonCounts = linkedMapOf<String, Int>()
         val preflightDetails = ArrayList<String>(40)
         var preflightIssueCount = 0
-        val explicitOriginalAudioFallbackIndices = ArrayList<Int>()
         for (index in preparedLines.indices) {
             val cue = preparedLines[index]
             val rawCue = lines.getOrNull(index)
-            if (rawCue?.translationFallbackOriginalAudio == true) {
-                explicitOriginalAudioFallbackIndices += index
-                preflightReasons[index] = "已明确采用原声兜底，不生成中文配音"
-                continue
-            }
             val reason = when {
                 rawCue == null -> "找不到原始字幕记录"
-                rawCue.text.isBlank() -> "原文字幕为空"
+                rawCue.text.isBlank() -> null
                 cue.startMs < 0L || cue.endMs <= cue.startMs ->
                     "字幕时间轴无效（开始=${cue.startMs} ms，结束=${cue.endMs} ms）"
                 cue.zh.isNullOrBlank() ->
@@ -444,19 +431,6 @@ class DubbingEngine(
                     "实际配音文本=${cue.zh.orEmpty().take(100)}"
             }
         }
-        if (explicitOriginalAudioFallbackIndices.isNotEmpty()) {
-            logDubbingError(
-                "字幕翻译原声兜底：已按翻译结果标记保留部分字幕原声",
-                diagnosticContext = mapOf(
-                    "配音引擎名称" to tts.name,
-                    "字幕总行数" to preparedLines.size.toString(),
-                    "明确原声兜底行数" to explicitOriginalAudioFallbackIndices.size.toString(),
-                    "明确原声兜底行号（从1开始）" to explicitOriginalAudioFallbackIndices.joinToString(",") { (it + 1).toString() },
-                    "不参与配音预检失败统计" to "是",
-                ),
-                tag = "DubbingFallback",
-            )
-        }
         if (preflightIssueCount > 0) {
             logDubbingError(
                 "配音字幕预检失败：$preflightIssueCount 条字幕无法生成中文配音",
@@ -470,10 +444,14 @@ class DubbingEngine(
                     "无法配音原因统计" to reasonCounts.entries.joinToString("；") { "${it.key}：${it.value} 条" },
                     "前 40 条逐句诊断" to preflightDetails.joinToString("\n"),
                     "其余字幕详情" to if (preflightIssueCount > preflightDetails.size) {
-                        "还有 ${preflightIssueCount - preflightDetails.size} 条未在此摘要展开；播放到相应字幕时会记录逐句原声回退原因"
+                        "还有 ${preflightIssueCount - preflightDetails.size} 条未在此摘要展开"
                     } else "无",
                 ),
-                tag = "DubbingFallback",
+                tag = "Dubbing",
+            )
+            runCatching { tts.close() }
+            throw IllegalStateException(
+                "有 $preflightIssueCount 条字幕无法生成有效中文配音，已停止配音。"
             )
         }
         var ttsPublished = false
@@ -496,7 +474,7 @@ class DubbingEngine(
                 this.sourceLanguageForDiagnostics = sourceLanguage
                 this.silentCueReasonsByIndex.clear()
                 this.silentCueReasonsByIndex.putAll(preflightReasons)
-                this.silentFallbackReported.clear()
+                this.silentCueErrorReported.clear()
                 this.timeline = preparedTimeline
                 // VideoLingo 式分块：预算放不下的相邻句合并成块一口气合成（衔接自然），
                 // 块 PCM 由 WSOLA 变速不变调对齐到窗口（每条都配完、不暂停视频）。
@@ -1095,14 +1073,14 @@ class DubbingEngine(
                     bumpPrepared()
                     continue
                 }
-                // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
+                // 只合成有效中文译文；空字幕行写入空 PCM 标记，以便时间轴正常推进。
                 val text = line.zh
                 // 只有标点/符号/表情的译文念不出声，任何引擎都会拿不到音频：当作静音句，不报合成失败。
                 if (text.isNullOrBlank() || !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(text)) {
                     val markerSpeed = speed
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    // An empty translation is intentionally silent. Persisting its empty marker is
-                    // only an optimization; a full cache must not terminate the whole TTS queue.
+                    // Blank source rows have no speech content. Persisting an empty marker only
+                    // keeps the timeline complete; nonblank rows are rejected by preflight.
                     try {
                         writeCache(
                             idx,
@@ -1710,7 +1688,7 @@ class DubbingEngine(
                     runCatching {
                         io.translatetube.local.util.AppLogStore.error(
                             appContext, "DubbingEngine",
-                            "中文配音合成时内存耗尽，已停止当前合成队列并准备恢复视频原声",
+                            "中文配音合成时内存耗尽，已停止当前合成队列",
                             memoryError,
                             diagnosticContext = mapOf(
                                 "配音引擎" to (tts?.name ?: "未知引擎"),
@@ -1719,7 +1697,7 @@ class DubbingEngine(
                                 "当前合成字幕索引" to activeSynthesisIndex.toString(),
                                 "待合成队列长度" to pendingCountBeforeOom.toString(),
                                 "内存缓存清理前条目数" to memoryCacheEntryCountBeforeOom.toString(),
-                                "失败处理" to "清空待合成队列和 PCM 内存缓存，向播放服务上报恢复原声",
+                                "失败处理" to "清空待合成队列和 PCM 内存缓存，向播放服务上报合成错误",
                             ),
                         )
                     }
@@ -1728,7 +1706,7 @@ class DubbingEngine(
                     synthesisErrorReported.set(false)
                     runCatching {
                         reportSynthesisError(
-                            "设备内存不足，已停止继续生成中文配音并恢复视频原声；请重新打开视频或选择占用更低的配音引擎后重试。"
+                            "设备内存不足，已停止继续生成中文配音；视频已暂停，请重新打开视频或选择占用更低的配音引擎后重试。"
                         )
                     }.onFailure {
                         android.util.Log.w("DubbingEngine", "Unable to publish out-of-memory recovery status", it)
@@ -4134,9 +4112,9 @@ class DubbingEngine(
     fun isPrepared(idx: Int): Boolean = canSpeakDirectly(idx) || readiness.isPrepared(idx)
     fun isSilent(idx: Int): Boolean = !canSpeakDirectly(idx) && readiness.isSilent(idx)
 
-    /** Persist the exact cause when playback reaches a silent cue and restores the original track. */
-    fun logSilentCueFallback(index: Int) {
-        if (released || index !in lines.indices || !silentFallbackReported.add(index)) return
+    /** Record the exact cause when playback reaches a cue without playable Chinese audio. */
+    fun logSilentCueError(index: Int) {
+        if (released || index !in lines.indices || !silentCueErrorReported.add(index)) return
         val cue = lines[index]
         val rawCue = inputLinesForDiagnostics.getOrNull(index)
         val reason = silentCueReasonsByIndex[index] ?: when {
@@ -4147,11 +4125,11 @@ class DubbingEngine(
             else -> "该句未获得可播放 PCM；没有记录到更具体的失败原因"
         }
         logDubbingError(
-            "配音播放错误：第 ${index + 1}/${lines.size} 句未检测到可播放中文配音，已恢复原声",
+            "配音播放错误：第 ${index + 1}/${lines.size} 句未检测到可播放中文配音",
             diagnosticContext = mapOf(
                 "字幕行号" to "${index + 1}/${lines.size}",
                 "原因" to reason,
-                "故障阶段" to "字幕播放与原声回退",
+                "故障阶段" to "字幕配音输出",
                 "配音引擎名称" to (tts?.name ?: "未知引擎"),
                 "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
                 "配音引擎缓存/模型标识" to runCatching { tts?.cacheKey.orEmpty() }.getOrDefault("读取失败").take(1200),
@@ -4160,9 +4138,9 @@ class DubbingEngine(
                 "实际中文配音文本预览" to cue.zh.orEmpty().take(240),
                 "字幕时间轴 ms" to "${rawCue?.startMs ?: cue.startMs}–${rawCue?.endMs ?: cue.endMs}",
                 "源语言标记" to sourceLanguageForDiagnostics,
-                "处理动作" to "该句不播放中文配音，保留视频原声，避免无声片段",
+                "处理动作" to "该句没有可播放的中文配音，保持用户设置的原声音量",
             ),
-            tag = "DubbingFallback",
+            tag = "Dubbing",
         )
     }
 
