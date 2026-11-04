@@ -6440,11 +6440,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     }
                     // The same right-side vertical control column is used in normal and fullscreen
                     // playback, so one fixed edge exclusion is sufficient in both modes.
-                    val rightControlSafeEdge = if (controlsVisible) {
-                        with(this) { 64.dp.toPx() }
-                    } else 0f
                     val controlsAreVisible = latestControlsVisible
                     val captionIsVisible = latestFullscreenCaptionVisible
+                    val rightControlSafeEdge = if (controlsAreVisible) {
+                        with(this) { 64.dp.toPx() }
+                    } else 0f
                     val startsInsideRightControls = controlsAreVisible &&
                         down.position.x > size.width - rightControlSafeEdge
                     val startsInsideFullscreenCaption = captionIsVisible && isFullscreen &&
