@@ -447,7 +447,7 @@ class DubbingEngine(
         if (explicitOriginalAudioFallbackIndices.isNotEmpty()) {
             logDubbingError(
                 "字幕翻译原声兜底：已按翻译结果标记保留部分字幕原声",
-                mapOf(
+                diagnosticContext = mapOf(
                     "配音引擎名称" to tts.name,
                     "字幕总行数" to preparedLines.size.toString(),
                     "明确原声兜底行数" to explicitOriginalAudioFallbackIndices.size.toString(),
@@ -460,7 +460,7 @@ class DubbingEngine(
         if (preflightIssueCount > 0) {
             logDubbingError(
                 "配音字幕预检失败：$preflightIssueCount 条字幕无法生成中文配音",
-                mapOf(
+                diagnosticContext = mapOf(
                     "配音引擎名称" to tts.name,
                     "配音引擎实现类" to tts.javaClass.name,
                     "配音引擎缓存/模型标识" to runCatching { tts.cacheKey }.getOrDefault("读取失败").take(1200),
@@ -4148,7 +4148,7 @@ class DubbingEngine(
         }
         logDubbingError(
             "配音播放错误：第 ${index + 1}/${lines.size} 句未检测到可播放中文配音，已恢复原声",
-            mapOf(
+            diagnosticContext = mapOf(
                 "字幕行号" to "${index + 1}/${lines.size}",
                 "原因" to reason,
                 "故障阶段" to "字幕播放与原声回退",
