@@ -374,37 +374,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             }
         }
 
-        if (!writerHealth.isHealthy) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp),
-                color = Color(0xFFFFF1F0),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.Top,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = Color(0xFFB42318))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            "日志写入异常",
-                            color = Color(0xFFB42318),
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            writerHealth.lastFailureDescription.ifBlank { "部分日志可能未能保存。" },
-                            color = Color(0xFF7A271A),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            }
-        }
-
         message?.let { text ->
             Text(
                 text,
