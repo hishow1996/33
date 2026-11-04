@@ -14,8 +14,6 @@ internal object SubtitleCacheValidationPolicy {
         val endMs: Long,
         val sourceText: String,
         val translatedText: String?,
-        val originalAudioFallback: Boolean = false,
-        val originalAudioFallbackReason: String? = null,
     )
 
     /**
@@ -72,7 +70,7 @@ internal object SubtitleCacheValidationPolicy {
                 source.text != cached.sourceText
             ) return null
             previousStart = cached.startMs
-            if (cached.originalAudioFallback || usableCachedTranslation(
+            if (usableCachedTranslation(
                     source.text, cached.translatedText, sourceLanguage, targetLanguage,
                 ) != null
             ) {
@@ -89,8 +87,6 @@ internal object SubtitleCacheValidationPolicy {
                 zh = usableCachedTranslation(
                     source.text, cachedRows[index].translatedText, sourceLanguage, targetLanguage,
                 ),
-                translationFallbackOriginalAudio = cachedRows[index].originalAudioFallback,
-                translationFallbackReason = cachedRows[index].originalAudioFallbackReason,
             )
         }
         checkActive()
@@ -121,14 +117,8 @@ internal object SubtitleCacheValidationPolicy {
      * Reuse it when at least one real translation survives cleanup; callers can then retry only
      * the blank/placeholder rows. A cache made entirely of placeholders is not recoverable.
      */
-    fun hasRecoverableTranslationRows(
-        translations: List<String?>,
-        originalAudioFallbackRows: List<Boolean> = emptyList(),
-    ): Boolean =
-        translations.indices.any { index ->
-            originalAudioFallbackRows.getOrNull(index) == true ||
-                !SubtitleParsers.cleanTranslatedText(translations[index]).isNullOrBlank()
-        }
+    fun hasRecoverableTranslationRows(translations: List<String?>): Boolean =
+        translations.any { !SubtitleParsers.cleanTranslatedText(it).isNullOrBlank() }
 
     /**
      * Chinese source captions are already the target language. Repair legacy/incomplete cache rows
@@ -138,8 +128,6 @@ internal object SubtitleCacheValidationPolicy {
         rows.map {
             it.copy(
                 zh = it.text.takeIf { text -> text.isNotBlank() },
-                translationFallbackOriginalAudio = false,
-                translationFallbackReason = null,
             )
         }
 }
