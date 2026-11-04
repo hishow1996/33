@@ -262,4 +262,50 @@ class SubtitleCacheValidationPolicyTest {
         assertTrue(SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(partiallyValid, "en"))
     }
 
+    @Test
+    fun resumeMergeFillsOnlyMissingOrInvalidRowsAndKeepsCheckpointTranslations() {
+        val checkpoint = listOf(
+            SubLine(0, 0L, 1_000L, "Sarah", "Sara"),
+            SubLine(1, 1_000L, 2_000L, "I agree.", null),
+            SubLine(2, 2_000L, 3_000L, "Thank you.", "Thank you."),
+            SubLine(3, 3_000L, 4_000L, "Where are you?", "你在哪里？"),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "Sarah", "莎拉"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "I agree.", "我同意。"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "Thank you.", "谢谢。"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(3_000L, 4_000L, "Where are you?", "你在哪儿？"),
+        )
+
+        val merged = SubtitleCacheValidationPolicy.mergeCachedTranslationsIntoCheckpoint(
+            checkpointLines = checkpoint,
+            cachedRows = cached,
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+
+        assertEquals(listOf("Sara", "我同意。", "谢谢。", "你在哪里？"), merged.map { it.zh })
+    }
+
+    @Test
+    fun resumeMergeRejectsCacheFromDifferentSourceTimelineAndKeepsCheckpoint() {
+        val checkpoint = listOf(
+            SubLine(0, 0L, 1_000L, "Hello", null),
+            SubLine(1, 1_000L, 2_000L, "Goodbye", "再见"),
+        )
+        val mismatchedCache = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "Different source", "你好"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Goodbye", "Farewell"),
+        )
+
+        val merged = SubtitleCacheValidationPolicy.mergeCachedTranslationsIntoCheckpoint(
+            checkpointLines = checkpoint,
+            cachedRows = mismatchedCache,
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+
+        assertEquals(listOf(null, "再见"), merged.map { it.zh })
+    }
+
 }

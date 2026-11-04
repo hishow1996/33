@@ -9975,6 +9975,109 @@ updateUiForSession(key, pipelineGeneration) {
                 cached = null
             }
 
+            val shouldMergeResumeTranslationCache =
+                resumeState != null &&
+                    resumeState.key == key &&
+                    !restoreCompletedSnapshot &&
+                    !forceFreshTranslationNow &&
+                    !manualTranslationRequestedKeys.contains(key) &&
+                    resumeState.processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+                    resumeState.translationCacheKey.isNotBlank() &&
+                    resumeState.translationCacheKey == translationCacheKey &&
+                    resumeState.lines.isNotEmpty()
+            if (shouldMergeResumeTranslationCache) {
+                val checkpointLines = lines ?: resumeState!!.lines
+                val cachedEntry = withContext(Dispatchers.IO) {
+                    db.subtitleCacheDao().get(translationCacheKey)
+                }
+                val restoreJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val cacheMatchesCheckpoint = cachedEntry != null &&
+                    withContext(Dispatchers.IO) {
+                        restoreJob?.ensureActive()
+                        cachedEntry.srcLang.isNotBlank() &&
+                            cachedEntry.srcLang == resumeState!!.sourceLang &&
+                            isUsableTranslationCache(cachedEntry.linesJson, cachedEntry.srcLang) &&
+                            translationCacheMatchesSource(cachedEntry.linesJson, checkpointLines)
+                    }
+                if (cachedEntry != null && cacheMatchesCheckpoint) {
+                    val mergedLines = withContext(Dispatchers.IO) {
+                        val jsonRows = org.json.JSONArray(cachedEntry.linesJson)
+                        if (jsonRows.length() != checkpointLines.size || jsonRows.length() > 500_000) {
+                            null
+                        } else {
+                            val rows = ArrayList<SubtitleCacheValidationPolicy.CachedTranslationRow>(jsonRows.length())
+                            for (index in 0 until jsonRows.length()) {
+                                if ((index and 0xff) == 0) restoreJob?.ensureActive()
+                                val row = jsonRows.optJSONObject(index) ?: break
+                                val rawTranslation = row.opt("zh")
+                                val translation = if (rawTranslation == null || rawTranslation == org.json.JSONObject.NULL) {
+                                    null
+                                } else {
+                                    rawTranslation.toString().takeIf { it.isNotBlank() }
+                                }
+                                rows += SubtitleCacheValidationPolicy.CachedTranslationRow(
+                                    startMs = row.optLong("s", Long.MIN_VALUE),
+                                    endMs = row.optLong("e", Long.MIN_VALUE),
+                                    sourceText = row.optString("t", ""),
+                                    translatedText = translation,
+                                )
+                            }
+                            if (rows.size != jsonRows.length()) {
+                                null
+                            } else {
+                                SubtitleCacheValidationPolicy.mergeCachedTranslationsIntoCheckpoint(
+                                    checkpointLines = checkpointLines,
+                                    cachedRows = rows,
+                                    sourceLanguage = resumeState!!.sourceLang,
+                                    targetLanguage = "zh-CN",
+                                    checkActive = { restoreJob?.ensureActive() },
+                                )
+                            }
+                        }
+                    }
+                    if (mergedLines != null) {
+                        val checkpointValidCount = withContext(Dispatchers.Default) {
+                            checkpointLines.count { line ->
+                                !DubbingTranslationPolicy.usableText(line.text, line.zh, resumeState!!.sourceLang).isNullOrBlank()
+                            }
+                        }
+                        val mergedValidCount = withContext(Dispatchers.Default) {
+                            mergedLines.count { line ->
+                                !DubbingTranslationPolicy.usableText(line.text, line.zh, resumeState!!.sourceLang).isNullOrBlank()
+                            }
+                        }
+                        val filledCount = (mergedValidCount - checkpointValidCount).coerceAtLeast(0)
+                        if (filledCount > 0) {
+                            lines = mergedLines
+                            updateUiForSession(key, pipelineGeneration) { state ->
+                                state.copy(
+                                    lines = mergedLines,
+                                    totalLines = mergedLines.size,
+                                    translatedLineCount = mergedValidCount,
+                                    sourceLang = resumeState!!.sourceLang,
+                                )
+                            }
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "PlaybackCheckpoint",
+                                "已将同一翻译配置的 Room 缓存合并到处理中间检查点",
+                                diagnosticContext = mapOf(
+                                    "处理流程" to resumeState!!.processingFlow.name,
+                                    "原文字幕行数" to checkpointLines.size.toString(),
+                                    "检查点原有效译文行数" to checkpointValidCount.toString(),
+                                    "合并后有效译文行数" to mergedValidCount.toString(),
+                                    "从 Room 补齐行数" to filledCount.toString(),
+                                    "是否匹配同一翻译缓存键" to "是",
+                                    "是否匹配相同源语言" to "是",
+                                    "是否匹配原文及时间轴" to "是",
+                                    "合并规则" to "仅填补检查点缺失/无效行，不覆盖检查点中有效译文",
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+
             suspend fun prepareTranslatedLines(): List<SubLine> {
                 val translationState = ui.value.takeIf { it.key == key }
                 currentStageDiagnostics.clear()

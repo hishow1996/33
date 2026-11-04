@@ -119,6 +119,43 @@ internal object SubtitleCacheValidationPolicy {
     }
 
     /**
+     * Merge a validated Room cache into an in-progress checkpoint. Existing valid checkpoint
+     * translations win; the cache may only fill missing or invalid rows for the exact same source
+     * timeline. A malformed or entirely invalid cache leaves the checkpoint unchanged.
+     */
+    fun mergeCachedTranslationsIntoCheckpoint(
+        checkpointLines: List<SubLine>,
+        cachedRows: List<CachedTranslationRow>,
+        sourceLanguage: String,
+        targetLanguage: String = "zh",
+        checkActive: () -> Unit = {},
+    ): List<SubLine> {
+        val restoredCache = restoreTranslationsForSource(
+            sourceLines = checkpointLines,
+            cachedRows = cachedRows,
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage,
+            checkActive = checkActive,
+        ) ?: return checkpointLines
+
+        val merged = ArrayList<SubLine>(checkpointLines.size)
+        for (index in checkpointLines.indices) {
+            if ((index and 0xff) == 0) checkActive()
+            val checkpointLine = checkpointLines[index]
+            val checkpointTranslation = DubbingTranslationPolicy.usableText(
+                checkpointLine.text,
+                checkpointLine.zh,
+                sourceLanguage,
+            )
+            merged += checkpointLine.copy(
+                zh = checkpointTranslation ?: restoredCache[index].zh,
+            )
+        }
+        checkActive()
+        return merged
+    }
+
+    /**
      * Keep original cue times intact, but reject malformed or out-of-order rows. Equal start times
      * are valid because captions may overlap; descending starts violate the playback index contract.
      */
