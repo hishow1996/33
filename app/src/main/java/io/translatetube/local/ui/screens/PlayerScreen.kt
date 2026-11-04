@@ -7258,8 +7258,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(start = 2.dp, top = 2.dp)
                     .graphicsLayer {
-                        translationX = -4.dp.toPx()
-                        translationY = -4.dp.toPx()
+                        translationX = -10.dp.toPx()
+                        translationY = -12.dp.toPx()
                     }
                     .size(44.dp),
                 contentAlignment = Alignment.Center,
