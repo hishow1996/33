@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * A later cue can be ready after a seek even while an earlier cue is still synthesizing.
  */
 internal class DubbingReadiness {
-    // true = synthesized audio is ready; false = intentionally silent/fallback to source audio.
+    // true = synthesized audio is ready; false = preparation finished without playable dubbing audio.
     private val states = ConcurrentHashMap<Int, Boolean>()
     // Maintain the audible-row total incrementally. Recounting every value after each cue
     // mutation turns a long subtitle run into repeated full-map scans (quadratic total work).
@@ -39,7 +39,7 @@ internal class DubbingReadiness {
 
     /** Number of ready cues, including out-of-order cues prioritized after a seek. */
     fun readyCount(): Int = states.size
-    /** O(1) count of ready cues with usable audio; silent/source-fallback rows are excluded. */
+    /** O(1) count of ready cues with usable audio; rows without playable output are excluded. */
     fun audioReadyCount(): Int = audioReadyCueCount.get()
 
     fun isReady(index: Int): Boolean = index >= 0 && states.containsKey(index)
