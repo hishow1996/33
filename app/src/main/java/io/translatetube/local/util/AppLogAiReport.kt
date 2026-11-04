@@ -44,6 +44,7 @@ internal object AppLogAiReport {
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
             append("Android：").append(AppLogStore.redactForExport(androidVersion)).append('\n')
             append("日志记录数：").append(ordered.size).append('\n')
+            append("导出范围：本报告读取本地保留日志中最近最多 800 条；时间线完整覆盖本次读取的记录。更早记录可能已按保留策略清理或超出读取上限。\n")
             append("时间范围：")
                 .append(ordered.firstOrNull()?.let { AppLogStore.formatTime(it.timestampMs) } ?: "无记录")
                 .append(" 至 ")
@@ -112,7 +113,8 @@ internal object AppLogAiReport {
                     AppLogTitleResolver.featureLabel(event.tag, event.message)
                 }
                 val json = JSONObject()
-                    .put("schemaVersion", maxOf(2, event.schemaVersion))
+                    .put("schemaVersion", event.schemaVersion)
+                    .put("reportSchemaVersion", 2)
                     .put("index", index + 1)
                     .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + (index + 1) })
                     .put("sessionId", event.sessionId.ifBlank { "legacy/unknown" })
@@ -151,6 +153,7 @@ internal object AppLogAiReport {
             append("5. 对 YouTube、网页视频和本地视频分别核对同一阶段的实现路径，并指出需要同步修复的入口。\n")
             append("6. 提出最小且可验证的修复，说明文件、方法、风险和回归测试；不得用静默吞错、空结果或原声兜底掩盖失败。\n")
             append("7. 日志不足时先指出应在真实失败分支补采的字段，不得臆造运行状态。\n")
+            append("8. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
             append("\n隐私说明：导出前再次执行凭据脱敏；分享前仍应检查字幕片段、文件名和业务内容是否包含个人信息。\n")
         }
     }

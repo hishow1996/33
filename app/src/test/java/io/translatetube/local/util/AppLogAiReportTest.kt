@@ -44,6 +44,7 @@ class AppLogAiReportTest {
         )
 
         assertTrue(report.contains("report_schema: elephant-app-log/v2"))
+        assertTrue(report.contains("最近最多 800 条"))
         assertTrue(report.contains("优先检查的故障事件"))
         assertTrue(report.contains("完整事件时间线（JSONL"))
         assertTrue(report.contains("\"eventId\":\"event-1\""))
@@ -65,6 +66,8 @@ class AppLogAiReportTest {
         )
         assertTrue(report.contains("legacy/unknown"))
         assertTrue(report.contains("legacy-1000-1"))
+        assertTrue(report.contains("\\"schemaVersion\\":1"))
+        assertTrue(report.contains("\\"reportSchemaVersion\\":2"))
         assertFalse(report.contains("undefined"))
     }
 }
