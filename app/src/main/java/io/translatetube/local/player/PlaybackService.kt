@@ -10747,6 +10747,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
             val translationBatches = pendingIndices.chunked(batchSize)
+            // A subtitle is reported once as soon as its final per-batch dubbing eligibility is known.
+            val loggedFallbackIndices = mutableSetOf<Int>()
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     engineName = engineName,
@@ -11193,7 +11195,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 for ((rowIndex, line) in updatedLines.withIndex()) {
                     checkTranslationActive(rowIndex)
                     nextRows += resolvedBatch[rowIndex]?.let { translation ->
-                        line.copy(
+                        val translatedLine = line.copy(
                             zh = translation.takeIf { it.isNotBlank() },
                             translationFallbackOriginalAudio = translation.isBlank(),
                             translationFallbackReason = if (translation.isBlank()) {
@@ -11203,6 +11205,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 null
                             },
                         )
+                        // Run the same final speech-eligibility guard now, per completed cue.
+                        // This catches non-empty echoes, non-Chinese text and non-speakable output
+                        // before the translation stage finishes, so the live card/log stay current.
+                        DubbingTranslationPolicy.prepareLinesForDubbing(
+                            lines = listOf(translatedLine),
+                            sourceLanguage = src,
+                        ).lines.first()
                     } ?: line
                 }
                 translationJob?.ensureActive()
@@ -11230,6 +11239,65 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         translationRetryCount = 0,
                         progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已处理 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                     )
+                }
+                // Publish a dedicated error as soon as this batch contains confirmed fallbacks.
+                // The UI state above is updated first; later batches continue normally.
+                val batchFallbackEntries = batchIndices.mapNotNull { rowIndex ->
+                    val line = updatedLines.getOrNull(rowIndex) ?: return@mapNotNull null
+                    if (
+                        line.text.isBlank() ||
+                        !line.translationFallbackOriginalAudio ||
+                        !loggedFallbackIndices.add(rowIndex)
+                    ) {
+                        null
+                    } else {
+                        rowIndex to line
+                    }
+                }
+                if (batchFallbackEntries.isNotEmpty()) {
+                    val fallbackRowsSummary = batchFallbackEntries.joinToString("；") { (rowIndex, line) ->
+                        val reason = line.translationFallbackReason
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "译文未通过最终中文配音可用性校验"
+                        "${rowIndex + 1}行（${line.startMs}..${line.endMs} ms）：$reason；原文=${line.text.take(180)}"
+                    }
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.error(
+                            this@PlaybackService,
+                            "DubbingFallback",
+                            "字幕翻译过程中出现原声兜底：第${batchIndex + 1}/${translationBatches.size}批，${batchFallbackEntries.size}条字幕",
+                            diagnosticContext = mapOf(
+                                "视频来源" to when {
+                                    key.startsWith("youtube:") -> "YouTube"
+                                    key.startsWith("remote:") -> "网页视频/远程媒体"
+                                    key.startsWith("local:") -> "本地视频"
+                                    else -> "导入字幕/其他"
+                                },
+                                "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
+                                "翻译引擎名称" to engineName,
+                                "翻译引擎 ID" to (engine?.id ?: "未知"),
+                                "翻译配置编号" to activeId.toString(),
+                                "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
+                                "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                                "源语言代码" to src,
+                                "目标语言代码" to tgt,
+                                "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
+                                "本批原声兜底行数" to batchFallbackEntries.size.toString(),
+                                "本批原声兜底字幕行号（从1开始）" to batchFallbackEntries.joinToString(",") { (index, _) -> (index + 1).toString() },
+                                "当前累计原声兜底数量" to updatedLines.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }.toString(),
+                                "当前累计已完成翻译行数" to completed.coerceAtMost(updatedLines.size).toString(),
+                                "字幕总行数" to updatedLines.size.toString(),
+                                "逐行原声兜底原因和原文" to fallbackRowsSummary,
+                                "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                                "日志触发时机" to "当前批次确认兜底后立即记录，后续字幕继续翻译",
+                            ),
+                            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                "DubbingFallback",
+                                "${key}|${pipelineGeneration ?: -1L}|${batchIndex + 1}|" +
+                                    batchFallbackEntries.joinToString(",") { it.first.toString() },
+                            ),
+                        )
+                    }
                 }
                 // Unlike the coarser Room cache checkpoint, persist each completed batch so
                 // force-stop recovery resumes from the exact remaining cue rather than from audio.
