@@ -10828,6 +10828,56 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     return shown + if (omitted > 0) "；另有 $omitted 行未展开" else ""
                 }
 
+                suspend fun logConfirmedFallbackRows(
+                    entries: List<Pair<Int, io.translatetube.local.subs.SubLine>>,
+                    processedRows: Int,
+                ) {
+                    if (entries.isEmpty()) return
+                    val fallbackRowsSummary = entries.joinToString("；") { (rowIndex, line) ->
+                        val reason = line.translationFallbackReason
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "译文未通过最终中文配音可用性校验"
+                        "${rowIndex + 1}行（${line.startMs}..${line.endMs} ms）：$reason；原文=${line.text.take(180)}"
+                    }
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.error(
+                            this@PlaybackService,
+                            "DubbingFallback",
+                            "字幕翻译过程中出现原声兜底：第${batchIndex + 1}/${translationBatches.size}批，${entries.size}条字幕",
+                            diagnosticContext = mapOf(
+                                "视频来源" to when {
+                                    key.startsWith("youtube:") -> "YouTube"
+                                    key.startsWith("remote:") -> "网页视频/远程媒体"
+                                    key.startsWith("local:") -> "本地视频"
+                                    else -> "导入字幕/其他"
+                                },
+                                "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
+                                "翻译引擎名称" to engineName,
+                                "翻译引擎 ID" to (engine?.id ?: "未知"),
+                                "翻译配置编号" to activeId.toString(),
+                                "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
+                                "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                                "源语言代码" to src,
+                                "目标语言代码" to tgt,
+                                "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
+                                "本批原声兜底行数" to entries.size.toString(),
+                                "本批原声兜底字幕行号（从1开始）" to entries.joinToString(",") { (index, _) -> (index + 1).toString() },
+                                "当前累计原声兜底数量" to updatedLines.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }.toString(),
+                                "当前累计已处理字幕数" to processedRows.coerceAtMost(updatedLines.size).toString(),
+                                "字幕总行数" to updatedLines.size.toString(),
+                                "逐行原声兜底原因和原文" to fallbackRowsSummary,
+                                "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                                "日志触发时机" to "当前批次确认兜底后立即记录，后续字幕继续翻译",
+                            ),
+                            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                "DubbingFallback",
+                                "${key}|${pipelineGeneration ?: -1L}|${batchIndex + 1}|" +
+                                    entries.joinToString(",") { it.first.toString() },
+                            ),
+                        )
+                    }
+                }
+
                 while (unresolvedIndices.isNotEmpty() && attempt < 3) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     val batch = unresolvedIndices.map { plain[it] }
@@ -10979,6 +11029,46 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         val sourceLine = updatedLines.getOrNull(sourceIndex)
                         acceptedSourceEchoFallbacks[sourceIndex] =
                             "原文回显被当前引擎策略视为不可翻译内容并保留原声；原文字符数=${sourceLine?.text?.length ?: 0}，模型返回字符数=${rawOutput.length}"
+                    }
+
+                    // Check each accepted response row immediately, not after the whole batch's
+                    // retry loop. This exposes confirmed fallback rows even while other cues retry.
+                    val newlyConfirmedFallbackRows = parsedBatch.translations.mapNotNull { (sourceIndex, translation) ->
+                        val sourceLine = updatedLines.getOrNull(sourceIndex) ?: return@mapNotNull null
+                        val candidateLine = sourceLine.copy(
+                            zh = translation.takeIf { it.isNotBlank() },
+                            translationFallbackOriginalAudio = translation.isBlank(),
+                            translationFallbackReason = if (translation.isBlank()) {
+                                acceptedSourceEchoFallbacks[sourceIndex]
+                            } else {
+                                null
+                            },
+                        )
+                        val checkedLine = DubbingTranslationPolicy.prepareLinesForDubbing(
+                            lines = listOf(candidateLine),
+                            sourceLanguage = src,
+                        ).lines.first()
+                        if (checkedLine.translationFallbackOriginalAudio) sourceIndex to checkedLine else null
+                    }
+                    if (newlyConfirmedFallbackRows.isNotEmpty()) {
+                        val fallbackByIndex = newlyConfirmedFallbackRows.toMap()
+                        updatedLines = updatedLines.mapIndexed { index, line ->
+                            fallbackByIndex[index] ?: line
+                        }
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                lines = updatedLines,
+                                totalLines = updatedLines.size,
+                                translationPreviewLines = translationPreviewRows.toList(),
+                            )
+                        }
+                        val rowsToLog = newlyConfirmedFallbackRows.filter { (index, _) ->
+                            loggedFallbackIndices.add(index)
+                        }
+                        logConfirmedFallbackRows(
+                            entries = rowsToLog,
+                            processedRows = completed + parsedBatch.translations.size,
+                        )
                     }
 
                     val validResponseRows = parsedBatch.translations.values.count { it.isNotBlank() }
@@ -11254,51 +11344,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         rowIndex to line
                     }
                 }
-                if (batchFallbackEntries.isNotEmpty()) {
-                    val fallbackRowsSummary = batchFallbackEntries.joinToString("；") { (rowIndex, line) ->
-                        val reason = line.translationFallbackReason
-                            ?.takeIf { it.isNotBlank() }
-                            ?: "译文未通过最终中文配音可用性校验"
-                        "${rowIndex + 1}行（${line.startMs}..${line.endMs} ms）：$reason；原文=${line.text.take(180)}"
-                    }
-                    withContext(Dispatchers.IO) {
-                        io.translatetube.local.util.AppLogStore.error(
-                            this@PlaybackService,
-                            "DubbingFallback",
-                            "字幕翻译过程中出现原声兜底：第${batchIndex + 1}/${translationBatches.size}批，${batchFallbackEntries.size}条字幕",
-                            diagnosticContext = mapOf(
-                                "视频来源" to when {
-                                    key.startsWith("youtube:") -> "YouTube"
-                                    key.startsWith("remote:") -> "网页视频/远程媒体"
-                                    key.startsWith("local:") -> "本地视频"
-                                    else -> "导入字幕/其他"
-                                },
-                                "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
-                                "翻译引擎名称" to engineName,
-                                "翻译引擎 ID" to (engine?.id ?: "未知"),
-                                "翻译配置编号" to activeId.toString(),
-                                "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
-                                "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
-                                "源语言代码" to src,
-                                "目标语言代码" to tgt,
-                                "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
-                                "本批原声兜底行数" to batchFallbackEntries.size.toString(),
-                                "本批原声兜底字幕行号（从1开始）" to batchFallbackEntries.joinToString(",") { (index, _) -> (index + 1).toString() },
-                                "当前累计原声兜底数量" to updatedLines.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }.toString(),
-                                "当前累计已完成翻译行数" to completed.coerceAtMost(updatedLines.size).toString(),
-                                "字幕总行数" to updatedLines.size.toString(),
-                                "逐行原声兜底原因和原文" to fallbackRowsSummary,
-                                "处理代数" to (pipelineGeneration ?: -1L).toString(),
-                                "日志触发时机" to "当前批次确认兜底后立即记录，后续字幕继续翻译",
-                            ),
-                            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
-                                "DubbingFallback",
-                                "${key}|${pipelineGeneration ?: -1L}|${batchIndex + 1}|" +
-                                    batchFallbackEntries.joinToString(",") { it.first.toString() },
-                            ),
-                        )
-                    }
-                }
+                logConfirmedFallbackRows(
+                    entries = batchFallbackEntries,
+                    processedRows = completed.coerceAtMost(updatedLines.size),
+                )
                 // Unlike the coarser Room cache checkpoint, persist each completed batch so
                 // force-stop recovery resumes from the exact remaining cue rather than from audio.
                 pipelineGeneration?.let { generation ->
