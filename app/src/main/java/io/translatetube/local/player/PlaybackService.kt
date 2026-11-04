@@ -4557,12 +4557,18 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
         transform: (PlayerUiState) -> PlayerUiState,
     ) {
+        var publishedState: PlayerUiState? = null
         ui.update { current ->
             if (current.key == sessionKey && videoKey == sessionKey && dubbing === engine) {
-                transform(current)
+                transform(current).also { publishedState = it }
             } else {
                 current
             }
+        }
+        publishedState?.let { state ->
+            activeAppLogOperationContext
+                ?.takeIf { it.videoSessionFingerprint == safeDiagnosticSessionFingerprint(sessionKey) }
+                ?.updateSnapshot(processingDiagnosticSnapshot(state))
         }
     }
 
