@@ -7347,7 +7347,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             return preferred
         }
 
-        // Strong script detection first (Japanese, Korean, Chinese, etc.).
+        // Distinctive kana/Hangul detection first; Han-only Chinese/Japanese text proceeds to ML Kit.
         val scriptDetected = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(cues)
         if (!SourceLanguagePolicy.isUndetermined(scriptDetected)) {
             return scriptDetected
