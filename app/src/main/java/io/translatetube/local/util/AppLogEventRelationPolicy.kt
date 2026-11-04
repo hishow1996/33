@@ -53,13 +53,8 @@ internal object AppLogEventRelationPolicy {
                 )
                 selected.issueKey.isNotBlank() && event.resolvesIssueKey == selected.issueKey ->
                     AppLogEventRelation(
-                        "CONFIRMED_RECOVERY",
-                        "resolvesIssueKey 与选中事件 issueKey 完全匹配；这是明确恢复关联",
-                    )
-                selected.issueKey.isNotBlank() && event.issueKey == selected.issueKey ->
-                    AppLogEventRelation(
-                        "SAME_ISSUE_SIGNATURE",
-                        "issueKey 相同，表示相同故障签名；不单独证明是同一次故障实例",
+                        "RECOVERY_MATCHED_BY_ISSUE_KEY",
+                        "resolvesIssueKey 与选中事件 issueKey 完全匹配；这是按故障签名关联的恢复记录，不保证对应唯一单次实例",
                     )
                 selected.sessionId.isNotBlank() &&
                     event.sessionId == selected.sessionId &&
@@ -67,6 +62,11 @@ internal object AppLogEventRelationPolicy {
                     event.operationId == selectedOperationId -> {
                     val order = compare(event, selected)
                     when {
+                        isIssue(event) && selected.issueKey.isNotBlank() &&
+                            event.issueKey == selected.issueKey -> AppLogEventRelation(
+                                "SAME_ISSUE_SIGNATURE_SAME_OPERATION",
+                                "同一 sessionId/operationId 且 issueKey 相同；是同任务内相同故障签名的另一条记录，时间顺序不证明因果",
+                            )
                         isIssue(event) && order < 0 -> AppLogEventRelation(
                             "EARLIER_ANOMALY_SAME_OPERATION",
                             "sessionId 和 operationId 均一致，且该异常早于选中事件；仅是上游候选，不证明因果关系",
@@ -85,6 +85,11 @@ internal object AppLogEventRelationPolicy {
                         )
                     }
                 }
+                selected.issueKey.isNotBlank() && event.issueKey == selected.issueKey ->
+                    AppLogEventRelation(
+                        "SAME_ISSUE_SIGNATURE",
+                        "issueKey 相同，表示相同故障签名；不单独证明是同一次故障实例",
+                    )
                 selected.sessionId.isNotBlank() && event.sessionId == selected.sessionId ->
                     AppLogEventRelation(
                         "SAME_SESSION_CONTEXT",

@@ -23,8 +23,20 @@ class AppLogEventRelationPolicyTest {
         val recovery = record(2_000L, "recovery", "INFO", "", "new-session")
             .copy(resolvesIssueKey = "issue-1")
         val relations = AppLogEventRelationPolicy.againstSelected(listOf(selected, recovery), selected)
-        assertEquals("CONFIRMED_RECOVERY", relations["event:recovery"]?.role)
+        assertEquals("RECOVERY_MATCHED_BY_ISSUE_KEY", relations["event:recovery"]?.role)
         assertTrue(relations.getValue("event:recovery").evidence.contains("完全匹配"))
+    }
+
+    @Test
+    fun sameIssueKeyAcrossSessionsIsOnlyTheSameFailureSignature() {
+        val selected = record(1_000L, "failure-a", "ERROR", "", "session-a", "issue-1")
+        val otherOccurrence = record(2_000L, "failure-b", "ERROR", "", "session-b", "issue-1")
+        val relations = AppLogEventRelationPolicy.againstSelected(
+            listOf(selected, otherOccurrence),
+            selected,
+        )
+        assertEquals("SAME_ISSUE_SIGNATURE", relations["event:failure-b"]?.role)
+        assertTrue(relations.getValue("event:failure-b").evidence.contains("不单独证明"))
     }
 
     @Test

@@ -87,7 +87,7 @@ internal object AppLogAiReport {
                         .append("；最早异常候选事件=").append(summary.firstAnomalyEventId)
                         .append("；异常事件数=").append(summary.anomalyCount)
                         .append("；后续异常数=").append(summary.laterAnomalyCount)
-                        .append("；明确恢复记录数=").append(summary.recoveryCount)
+                        .append("；按 issueKey 匹配的恢复记录数=").append(summary.recoveryCount)
                         .append('\n')
                 }
                 append("注意：最早异常仅代表当前保留日志中时间最早的异常候选，不等于真实根因；后续异常可能是连锁错误，也可能是并行/独立故障。\n")
@@ -321,7 +321,7 @@ internal object AppLogAiReport {
                 append("- ").append(eventKey).append("：").append(relation.role)
                     .append("；").append(AppLogStore.redactForExport(relation.evidence)).append('\n')
             }
-            append("因果判断约束：更早/更晚只说明时间顺序；只有 resolvesIssueKey 与 issueKey 匹配才作为明确恢复关联。相同 issueKey 仅代表故障签名相同。\n")
+            append("因果判断约束：更早/更晚只说明时间顺序；只有 resolvesIssueKey 与选中 issueKey 匹配才记录为按故障签名匹配的恢复；它不代表恢复了唯一单次故障实例。相同 issueKey 仅代表故障签名相同。\n")
 
             append("\n## 4. 关联事件时间线（JSONL，按时间升序）\n")
             append("事件按同一 operationId 优先关联；没有操作 ID 时，仅收录同一 sessionId 的相邻事件。不同进程会话不会混合。\n")
