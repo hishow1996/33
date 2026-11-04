@@ -10985,10 +10985,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 },
                                 "当前重试次数（0表示首次请求）" to attempt.toString(),
                                 "是否允许原声兜底" to "否；请求异常只按引擎策略重试，失败后终止翻译",
-                                "异常类型链" to generateSequence(e as Throwable?) { it.cause }
+                                "异常类型链" to generateSequence(e) { it.cause }
                                     .take(8)
                                     .joinToString(" -> ") { it.javaClass.simpleName },
-                                "异常原因链" to generateSequence(e as Throwable?) { it.cause }
+                                "异常原因链" to generateSequence(e) { it.cause }
                                     .take(8)
                                     .joinToString(" -> ") { it.message.orEmpty().take(240) }
                                     .take(2_000),
