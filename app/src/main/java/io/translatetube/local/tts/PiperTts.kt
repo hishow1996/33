@@ -7,6 +7,8 @@ import io.translatetube.local.data.ResumableModelArchiveDownloader
 import io.translatetube.local.asr.AtomicFileInstaller
 
 import android.content.Context
+import io.translatetube.local.util.AppLogStore
+import java.util.concurrent.CancellationException
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
@@ -53,6 +55,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
         ?.sortedBy { it.name }
         ?.firstOrNull()
         ?: File(dir, "model.onnx")
+    private val numThreads: Int = TtsCpuThreadPolicy.recommendedThreads(appCtx)
 
     private val modelCacheKey: String by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         // Preserve the historical identity for Chinese models. For other languages the active
@@ -122,7 +125,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
                     lexicon = if (definition.supportsChineseOutput) lexicon.absolutePath else "",
                     dataDir = if (definition.supportsChineseOutput) "" else dataDir.absolutePath,
                 ),
-                numThreads = TtsCpuThreadPolicy.recommendedThreads(appCtx),
+                numThreads = this@PiperTts.numThreads,
                 debug = false,
                 provider = "cpu",
             ),
@@ -159,18 +162,128 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 22050)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val sid = 0
-        val audio = guard.use { tts.generate(normalizedText, sid, safeSpeed) }
+        val inferenceStartedAtMs = android.os.SystemClock.elapsedRealtime()
+        val audio = try {
+            guard.use { tts.generate(normalizedText, sid, safeSpeed) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            logSynthesisFailure(
+                message = "Piper 本地神经 TTS 推理失败",
+                failure = failure,
+                stage = "Sherpa-ONNX VITS 原生推理",
+                textLength = normalizedText.length,
+                speed = safeSpeed,
+                elapsedMs = android.os.SystemClock.elapsedRealtime() - inferenceStartedAtMs,
+            )
+            throw failure
+        }
         checkActive()
         val sampleRate = audio.sampleRate
+        val rawSamples = audio.samples.size
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
-            throw IllegalStateException(
-                "Piper 模型返回无效音频：采样率=${sampleRate} Hz，样本数=${audio.samples.size}；请检查模型文件和本次推理结果"
+            val failure = IllegalStateException(
+                "Piper 模型返回无效音频：采样率=${sampleRate} Hz，样本数=$rawSamples；请检查模型文件和本次推理结果"
+            )
+            logSynthesisFailure(
+                message = "Piper 推理完成但返回无效 PCM",
+                failure = failure,
+                stage = "原生推理输出格式校验",
+                textLength = normalizedText.length,
+                speed = safeSpeed,
+                elapsedMs = android.os.SystemClock.elapsedRealtime() - inferenceStartedAtMs,
+                sampleRate = sampleRate,
+                sampleCount = rawSamples,
+            )
+            throw failure
+        }
+        val postProcessStartedAtMs = android.os.SystemClock.elapsedRealtime()
+        val clean: FloatArray
+        val trimmed: FloatArray
+        try {
+            clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples, checkActive)
+            trimmed = TtsEdgeSilenceTrimmer.trim(clean, sampleRate, checkActive)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            logSynthesisFailure(
+                message = "Piper PCM 后处理失败",
+                failure = failure,
+                stage = "PCM 数值清理/首尾静音裁剪",
+                textLength = normalizedText.length,
+                speed = safeSpeed,
+                elapsedMs = android.os.SystemClock.elapsedRealtime() - postProcessStartedAtMs,
+                sampleRate = sampleRate,
+                sampleCount = rawSamples,
+            )
+            throw failure
+        }
+        checkActive()
+        if (trimmed.isEmpty()) {
+            val failure = IllegalStateException("Piper PCM 后处理后没有剩余可播放样本")
+            logSynthesisFailure(
+                message = "Piper 合成得到音频，但清理和静音裁剪后结果为空",
+                failure = failure,
+                stage = "PCM 后处理结果校验",
+                textLength = normalizedText.length,
+                speed = safeSpeed,
+                elapsedMs = android.os.SystemClock.elapsedRealtime() - inferenceStartedAtMs,
+                sampleRate = sampleRate,
+                sampleCount = rawSamples,
+                outputSampleCount = trimmed.size,
             )
         }
-        val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples, checkActive)
-        val trimmed = TtsEdgeSilenceTrimmer.trim(clean, sampleRate, checkActive)
-        checkActive()
         return TtsAudio(trimmed, sampleRate)
+    }
+
+    private fun logSynthesisFailure(
+        message: String,
+        failure: Throwable,
+        stage: String,
+        textLength: Int,
+        speed: Float,
+        elapsedMs: Long,
+        sampleRate: Int? = null,
+        sampleCount: Int? = null,
+        outputSampleCount: Int? = null,
+    ) {
+        val tokens = File(dir, "tokens.txt")
+        val lexicon = File(dir, "lexicon.txt")
+        val ruleFiles = PiperModelFilePolicy.CHINESE_RULE_FST_NAMES.map { File(dir, it) }
+        val espeakDir = File(dir, "espeak-ng-data")
+        val details = mapOf(
+            "配音服务商" to "Piper / Sherpa-ONNX",
+            "失败阶段" to stage,
+            "模型 ID" to modelId,
+            "模型语言" to definition.langLabel,
+            "模型音色" to definition.voiceLabel,
+            "是否中文输出模型" to definition.supportsChineseOutput.toString(),
+            "ONNX 模型文件名" to model.name,
+            "ONNX 模型文件存在" to model.isFile.toString(),
+            "ONNX 模型文件大小 bytes" to model.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+            "词表文件存在" to (tokens.isFile && tokens.length() > 0L).toString(),
+            "词表文件大小 bytes" to tokens.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+            "中文词典存在" to (lexicon.isFile && lexicon.length() > 0L).toString(),
+            "中文发音规则文件状态" to ruleFiles.joinToString(",") { file ->
+                "${file.name}:${file.isFile && file.length() > 0L}"
+            },
+            "多语言语音数据目录存在" to espeakDir.isDirectory.toString(),
+            "多语言语音数据目录项目数" to espeakDir.listFiles()?.size?.toString().orEmpty().ifBlank { "未知" },
+            "ONNX 推理线程数" to numThreads.toString(),
+            "推理设备" to "CPU",
+            "当前语速" to speed.toString(),
+            "当前文本字符数" to textLength.toString(),
+            "当前字幕正文是否写入日志" to "否",
+            "推理/处理耗时 ms" to elapsedMs.coerceAtLeast(0L).toString(),
+            "输出采样率 Hz" to (sampleRate?.toString() ?: "未知"),
+            "原始 PCM 样本数" to (sampleCount?.toString() ?: "未知"),
+            "后处理后 PCM 样本数" to (outputSampleCount?.toString() ?: "未执行"),
+            "异常类型" to failure.javaClass.name,
+            "异常摘要" to (failure.message ?: "无异常消息").take(360),
+        )
+        runCatching {
+            AppLogStore.error(appCtx, "PiperTTS", message, failure, diagnosticContext = details)
+        }
     }
 
     override fun close() = guard.close()
