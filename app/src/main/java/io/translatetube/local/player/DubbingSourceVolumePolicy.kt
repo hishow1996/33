@@ -1,13 +1,19 @@
 package io.translatetube.local.player
 
 /**
- * Keeps source audio audible independently of dubbing playback, respecting the original-volume setting.
+ * Preserve the user's source gain except while an active Chinese cue is still waiting for voice.
+ * This prevents source speech from becoming an unintended substitute for missing dubbing.
  */
 internal object DubbingSourceVolumePolicy {
     fun sourceGain(
         originalVolume: Float,
         @Suppress("UNUSED_PARAMETER") dubbingVolume: Float,
-        @Suppress("UNUSED_PARAMETER") dubbingEnabled: Boolean,
-        @Suppress("UNUSED_PARAMETER") dubbingStarted: Boolean,
-    ): Float = if (!originalVolume.isFinite() || originalVolume <= 0f) 0f else 1f
+        dubbingEnabled: Boolean,
+        dubbingStarted: Boolean,
+        dubbingCuePending: Boolean = false,
+    ): Float {
+        if (!originalVolume.isFinite() || originalVolume <= 0f) return 0f
+        if (dubbingEnabled && dubbingCuePending && !dubbingStarted) return 0f
+        return 1f
+    }
 }
