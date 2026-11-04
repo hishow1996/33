@@ -5616,10 +5616,19 @@ class PlaybackService : MediaSessionService() {
                             ),
                         )
                     } else {
+                        val incompleteTranslationIndices = finishedState.lines.mapIndexedNotNull { index, line ->
+                            index.takeIf { needsSubtitleTranslation(line, finishedState.sourceLang) }
+                        }
+                        val explicitOriginalAudioFallbackIndices = finishedState.lines.mapIndexedNotNull { index, line ->
+                            index.takeIf { line.translationFallbackOriginalAudio }
+                        }
+                        val validChineseTranslationCount = finishedState.lines.count { line ->
+                            !line.translationFallbackOriginalAudio &&
+                                !needsSubtitleTranslation(line, finishedState.sourceLang) &&
+                                !line.zh.isNullOrBlank()
+                        }
                         val translationsComplete = ReadySessionCompletionPolicy.hasCompleteTranslations(
-                            hasUntranslatedLines = finishedState.lines.any {
-                                needsSubtitleTranslation(it, finishedState.sourceLang)
-                            },
+                            hasUntranslatedLines = incompleteTranslationIndices.isNotEmpty(),
                         )
                         if (
                             ReadySessionCompletionPolicy.canRegisterSuccessfulResult(
@@ -5682,6 +5691,12 @@ class PlaybackService : MediaSessionService() {
                                     "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
                                     "字幕行数" to finishedState.lines.size.toString(),
                                     "译文是否完整" to translationsComplete.toString(),
+                                    "有效中文译文行数" to validChineseTranslationCount.toString(),
+                                    "明确原声兜底行数" to explicitOriginalAudioFallbackIndices.size.toString(),
+                                    "明确原声兜底字幕行号（从1开始）" to explicitOriginalAudioFallbackIndices.take(80).joinToString(",") { (it + 1).toString() },
+                                    "未完成译文行数" to incompleteTranslationIndices.size.toString(),
+                                    "未完成译文字幕行号（从1开始）" to incompleteTranslationIndices.take(80).joinToString(",") { (it + 1).toString() },
+                                    "未完成译文行号是否截断" to (incompleteTranslationIndices.size > 80).toString(),
                                     "配音是否启用" to finishedState.dubbingOn.toString(),
                                     "配音是否存在失败" to finishedState.dubbingHasErrors.toString(),
                                     "处理结果是否登记为成功" to "否",
@@ -7339,7 +7354,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         if (translated.isNullOrBlank()) return true
         if (isChineseLanguage(srcLang)) return false
         return io.translatetube.local.translate.SubtitleTranslationQualityPolicy
-            .isSourceEcho(line.text, translated, srcLang)
+            .isSourceEcho(line.text, translated, srcLang) ||
+            io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                .isTargetLanguageMismatch(line.text, translated, srcLang, "zh")
     }
 
     /** Reject corrupt timelines and progress/status placeholders before restoring translated rows. */
@@ -9726,6 +9743,39 @@ updateUiForSession(key, pipelineGeneration) {
                             // Source captions are not translator output: preserve repeated words and text that
                             // happens to resemble a progress label instead of running translation cleanup on it.
                             translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
+                        }
+                    }
+                    if (!isImportedTranslatedSnapshot) {
+                        val dubbingPreparation = DubbingTranslationPolicy.prepareLinesForDubbing(
+                            translatedLines,
+                            sourceLanguage = srcLang,
+                        )
+                        translatedLines = dubbingPreparation.lines
+                        if (dubbingPreparation.originalAudioFallbackIndices.isNotEmpty()) {
+                            withContext(Dispatchers.IO) {
+                                io.translatetube.local.util.AppLogStore.info(
+                                    this@PlaybackService,
+                                    "DubbingFallback",
+                                    "配音前已将无法生成中文语音的字幕明确标记为原声兜底",
+                                    diagnosticContext = mapOf(
+                                        "视频来源" to when {
+                                            key.startsWith("youtube:") -> "YouTube"
+                                            key.startsWith("remote:") -> "网页视频/远程媒体"
+                                            key.startsWith("local:") -> "本地视频"
+                                            else -> "其他"
+                                        },
+                                        "配音引擎名称" to ui.value.ttsEngineName,
+                                        "字幕总行数" to translatedLines.size.toString(),
+                                        "明确原声兜底字幕行数" to dubbingPreparation.originalAudioFallbackIndices.size.toString(),
+                                        "明确原声兜底字幕行号（从1开始）" to dubbingPreparation.originalAudioFallbackIndices.joinToString(",") { (it + 1).toString() },
+                                        "逐行原因" to dubbingPreparation.fallbackReasons.entries.take(40).joinToString("；") { (index, reason) ->
+                                            "${index + 1}行：$reason"
+                                        },
+                                        "未展开行数" to (dubbingPreparation.originalAudioFallbackIndices.size - 40).coerceAtLeast(0).toString(),
+                                        "处理策略" to "仅跳过无法生成中文语音的字幕，保留原视频音轨，不影响其他字幕配音",
+                                    ),
+                                )
+                            }
                         }
                     }
                     lines = translatedLines

@@ -78,4 +78,42 @@ class DubbingTranslationPolicyTest {
         assertEquals("NASA", DubbingTranslationPolicy.usableText("NASA", "NASA", "en"))
         assertEquals("Elon Musk", DubbingTranslationPolicy.usableText("Elon Musk", "Elon Musk", "en"))
     }
+
+    @Test
+    fun marksUnusableTranslationsAsExplicitOriginalAudioFallbackBeforeDubbing() {
+        val sourceLines = listOf(
+            io.translatetube.local.subs.SubLine(0, 0, 900, "Hello world", "你好世界"),
+            io.translatetube.local.subs.SubLine(1, 900, 1800, "Hello there", "Hello there"),
+            io.translatetube.local.subs.SubLine(2, 1800, 2700, "Where are you?", null),
+            io.translatetube.local.subs.SubLine(3, 2700, 3600, "How are you?", "こんにちは"),
+            io.translatetube.local.subs.SubLine(4, 3600, 4500, "See you soon", "。"),
+            io.translatetube.local.subs.SubLine(
+                5, 4500, 5400, "Already on original audio", "stale text",
+                translationFallbackOriginalAudio = true,
+            ),
+        )
+
+        val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(sourceLines, "en")
+
+        assertEquals(listOf(1, 2, 3, 4, 5), prepared.originalAudioFallbackIndices)
+        assertEquals("你好世界", prepared.lines[0].zh)
+        assertFalse(prepared.lines[0].translationFallbackOriginalAudio)
+        prepared.originalAudioFallbackIndices.forEach { index ->
+            assertTrue(prepared.lines[index].translationFallbackOriginalAudio)
+            assertNull(prepared.lines[index].zh)
+        }
+        assertEquals("译文与原文相同，命中原文回显过滤规则", prepared.fallbackReasons[1])
+        assertEquals("翻译结果为空或只有空白字符", prepared.fallbackReasons[2])
+        assertEquals("译文未达到中文目标语言", prepared.fallbackReasons[3])
+        assertEquals("已由翻译阶段明确采用原声兜底", prepared.fallbackReasons[5])
+    }
+
+    @Test
+    fun doesNotMarkBlankSourceCuesAsTranslationFailures() {
+        val source = io.translatetube.local.subs.SubLine(0, 0, 500, "", null)
+        val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(listOf(source), "en")
+
+        assertTrue(prepared.originalAudioFallbackIndices.isEmpty())
+        assertFalse(prepared.lines.single().translationFallbackOriginalAudio)
+    }
 }

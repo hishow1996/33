@@ -372,6 +372,13 @@ class DubbingEngine(
                 "字幕行数超过配音安全上限，无法初始化配音"
             }
             val normalized = lines.mapIndexed { index, line ->
+                if (line.translationFallbackOriginalAudio) {
+                    translationDiagnostics[index] = DubbingTranslationResolution(
+                        null,
+                        "已明确采用原声兜底，不生成中文配音",
+                    )
+                    return@mapIndexed line.copy(zh = null)
+                }
                 val resolution = DubbingTranslationPolicy.resolveText(line.text, line.zh, sourceLanguage)
                 if (resolution.text.isNullOrBlank() ||
                     !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(resolution.text.orEmpty())
@@ -405,9 +412,14 @@ class DubbingEngine(
         val reasonCounts = linkedMapOf<String, Int>()
         val preflightDetails = ArrayList<String>(40)
         var preflightIssueCount = 0
+        val explicitOriginalAudioFallbackIndices = ArrayList<Int>()
         for (index in preparedLines.indices) {
             val cue = preparedLines[index]
             val rawCue = lines.getOrNull(index)
+            if (rawCue?.translationFallbackOriginalAudio == true) {
+                explicitOriginalAudioFallbackIndices += index
+                continue
+            }
             val reason = when {
                 rawCue == null -> "找不到原始字幕记录"
                 rawCue.text.isBlank() -> "原文字幕为空"
@@ -429,6 +441,19 @@ class DubbingEngine(
                     "输入译文=${rawCue?.zh.orEmpty().take(100)}；" +
                     "实际配音文本=${cue.zh.orEmpty().take(100)}"
             }
+        }
+        if (explicitOriginalAudioFallbackIndices.isNotEmpty()) {
+            logDubbingInfo(
+                "已按翻译结果标记保留部分字幕原声",
+                mapOf(
+                    "配音引擎名称" to tts.name,
+                    "字幕总行数" to preparedLines.size.toString(),
+                    "明确原声兜底行数" to explicitOriginalAudioFallbackIndices.size.toString(),
+                    "明确原声兜底行号（从1开始）" to explicitOriginalAudioFallbackIndices.joinToString(",") { (it + 1).toString() },
+                    "不参与配音预检失败统计" to "是",
+                ),
+                tag = "DubbingFallback",
+            )
         }
         if (preflightIssueCount > 0) {
             logDubbingInfo(
