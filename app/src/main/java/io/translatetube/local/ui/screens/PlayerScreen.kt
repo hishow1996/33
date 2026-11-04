@@ -4741,7 +4741,7 @@ private fun CompactProcessingStageDetails(
             }
             4 -> {
                 CompactStageMetadataRow(value("配音引擎"), value("音色"))
-                value("合成任务")?.let { CompactStageMetadataLine(it) }
+                value("合成任务")?.let { CompactStageMetadataLine(it, maxLines = 2) }
                 value("引擎状态")?.let { CompactStageMetadataLine(it) }
             }
         }
@@ -4803,6 +4803,7 @@ private fun CompactStageMetadataLine(
     modifier: Modifier = Modifier,
     valueColor: Color = Color(0xFF3D4E65),
     valueFontWeight: FontWeight = FontWeight.Medium,
+    maxLines: Int = 1,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -4827,7 +4828,7 @@ private fun CompactStageMetadataLine(
                 lineHeight = 13.sp,
                 fontWeight = valueFontWeight,
             ),
-            maxLines = 1,
+            maxLines = maxLines.coerceAtLeast(1),
             overflow = TextOverflow.Ellipsis,
         )
     }
