@@ -358,7 +358,7 @@ object AppLogDiagnostics {
                 "失败事件缺少异常对象",
                 if (callSite == "未记录日志调用位置") "调用位置和异常根因均缺失" else "日志调用位置已记录，根因待补充",
                 "当前失败记录没有 Throwable、结构化异常树或可识别的 HTTP 错误状态。日志调用位置只能定位到记录失败状态的源码分支，不能代表异常真正抛出位置；必须结合该分支的返回值、错误码和控制流继续确认根因。",
-                listOf("日志调用位置：" + callSite, "异常对象采集状态：" + captureStatus),
+                listOf(callSite, captureStatus),
                 listOf(
                     "从日志调用位置打开对应文件和方法，找到生成这条失败日志的 if/else 或结果判定分支。",
                     "检查该分支是否丢弃了原始异常；若存在 Throwable，应把原始对象传给 AppLogStore.error/warning。",
