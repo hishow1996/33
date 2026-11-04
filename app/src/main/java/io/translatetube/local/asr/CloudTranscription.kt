@@ -471,6 +471,10 @@ object CloudTranscription {
         allowUncertainRetry: Boolean = false,
         /** Stable source identity, independent of language, credentials or generated upload encoding. */
         submissionGuardIdentity: String? = null,
+        /** Optional local logger; no credentials or full request bodies are ever recorded. */
+        logContext: Context? = null,
+        /** Source/task metadata supplied by the owning playback pipeline. */
+        diagnosticContext: Map<String, String> = emptyMap(),
     ): Result {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
@@ -484,20 +488,74 @@ object CloudTranscription {
         if (durationMs <= 0L) throw IOException("待转写音频时长无效，无法建立字幕时间轴")
         checkActive()
         val ownerJob = currentCoroutineContext()[Job]
+        val providerName = when (provider) {
+            "elevenlabs" -> "ElevenLabs"
+            "cartesia" -> "Cartesia"
+            else -> "Kawa"
+        }
+        val audioDiagnostics = linkedMapOf(
+            "诊断事件类型" to "CLOUD_TRANSCRIPTION_FAILURE",
+            "转写服务商" to providerName,
+            "转写服务商 ID" to provider,
+            "云端模型 ID" to when (provider) {
+                "elevenlabs" -> "scribe_v2"
+                "cartesia" -> "ink-whisper"
+                else -> "Kawa 分段转写"
+            },
+            "转写语言参数" to language.ifBlank { "未提供" },
+            "音频文件字节数" to wavFile.length().toString(),
+            "音频时长 ms" to durationMs.toString(),
+            "音频上传文件名" to (encodedAudio?.fileName ?: wavFile.name.substringAfterLast('/')),
+            "音频 MIME 类型" to (encodedAudio?.mimeType ?: "audio/wav"),
+            "音频是否编码文件直传" to (encodedAudio != null).toString(),
+            "PCM WAV 是否已执行格式校验" to (encodedAudio == null || provider == "kawa").toString(),
+        ) + diagnosticContext
+        fun recordCloudFailure(stage: String, failure: Throwable, extra: Map<String, String> = emptyMap()) {
+            val context = logContext ?: return
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    context.applicationContext,
+                    "CloudTranscription",
+                    "$providerName 云端转写$stage失败",
+                    failure,
+                    diagnosticContext = audioDiagnostics + mapOf(
+                        "失败子阶段" to stage,
+                        "请求文件当前是否存在" to wavFile.isFile.toString(),
+                        "请求文件当前大小字节" to wavFile.takeIf { it.isFile }?.length()?.toString().orEmpty(),
+                    ) + extra,
+                )
+            }.onFailure { loggingFailure ->
+                android.util.Log.w("CloudTranscription", "Unable to persist cloud ASR diagnostic", loggingFailure)
+            }
+        }
         if (provider == "kawa") {
-            return transcribeKawa(
-                apiKey = apiKey,
-                language = language,
-                wavFile = wavFile,
-                durationMs = durationMs,
-                checkActive = checkActive,
-                ownerJob = ownerJob,
-                onProgress = onProgress,
-                checkpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() },
-            )
+            return try {
+                transcribeKawa(
+                    apiKey = apiKey,
+                    language = language,
+                    wavFile = wavFile,
+                    durationMs = durationMs,
+                    checkActive = checkActive,
+                    ownerJob = ownerJob,
+                    onProgress = onProgress,
+                    checkpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() },
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                recordCloudFailure(
+                    "Kawa 分段上传/任务轮询/时间戳解析",
+                    failure,
+                    mapOf(
+                        "WAV PCM 数据字节数" to (wavFile.length() - 44L).coerceAtLeast(0L).toString(),
+                        "预计分段数量" to kawaChunkRangesWithContext((wavFile.length() - 44L).coerceAtLeast(0L)).size.toString(),
+                    ),
+                )
+                throw failure
+            }
         }
 
-        val providerName = if (provider == "elevenlabs") "ElevenLabs" else "Cartesia"
+        
         val stableCheckpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() }
         var responseCheckpointFile: File? = null
         var responseAudioDigest: String? = null
@@ -528,7 +586,15 @@ object CloudTranscription {
             if (savedResponse != null) {
                 runCatching { CloudAsrSubmissionGuardStore.clear(requireNotNull(submissionGuardFile)) }
                 onProgress("已恢复上次云端转写结果，正在整理字幕…")
-                return parseProviderResponse(savedResponse, durationMs, checkActive)
+                return try {
+                    parseProviderResponse(savedResponse, durationMs, checkActive)
+                } catch (failure: Exception) {
+                    recordCloudFailure("恢复响应解析", failure, mapOf(
+                        "输入来源" to "本地持久化的云端转写响应检查点",
+                        "响应文本字符数" to savedResponse.length.toString(),
+                    ))
+                    throw failure
+                }
             }
             if (CloudAsrSubmissionGuardStore.hasPendingSubmission(requireNotNull(submissionGuardFile)) &&
                 !allowUncertainRetry
@@ -613,13 +679,45 @@ object CloudTranscription {
                         submissionGuardFile?.let { CloudAsrSubmissionGuardStore.clear(it) }
                         if (retriesUsed >= MAX_CLOUD_SUBMISSION_RETRIES ||
                             !shouldRetryCloudSubmission(error)
-                        ) throw error
+                        ) {
+                            recordCloudFailure(
+                                "提交请求",
+                                error,
+                                mapOf(
+                                    "HTTP 状态码" to (statusCode?.toString() ?: "未提取"),
+                                    "已使用重试次数" to retriesUsed.toString(),
+                                    "终止原因" to "达到重试上限或该错误不适合自动重试",
+                                ),
+                            )
+                            throw error
+                        }
                     }
                     isDefinitiveCloudSubmissionRejection(error) -> {
                         submissionGuardFile?.let { CloudAsrSubmissionGuardStore.clear(it) }
+                        recordCloudFailure(
+                            "提交请求",
+                            error,
+                            mapOf(
+                                "HTTP 状态码" to (statusCode?.toString() ?: "未提取"),
+                                "已使用重试次数" to retriesUsed.toString(),
+                                "终止原因" to "服务商明确拒绝本次请求",
+                            ),
+                        )
                         throw error
                     }
-                    else -> throw CloudAsrSubmissionUncertainException(providerName, error)
+                    else -> {
+                        val uncertain = CloudAsrSubmissionUncertainException(providerName, error)
+                        recordCloudFailure(
+                            "提交状态确认",
+                            uncertain,
+                            mapOf(
+                                "HTTP 状态码" to (statusCode?.toString() ?: "未提取"),
+                                "已使用重试次数" to retriesUsed.toString(),
+                                "终止原因" to "请求结果不确定；为避免重复扣费或重复提交，停止自动重提",
+                            ),
+                        )
+                        throw uncertain
+                    }
                 }
                 retriesUsed++
                 val waitMs = 750L shl (retriesUsed - 1)
@@ -657,9 +755,40 @@ object CloudTranscription {
                 throw cancelled
             } catch (error: Exception) {
                 android.util.Log.w("CloudTranscription", "Cloud ASR response checkpoint write failed", error)
+                logContext?.let { context ->
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            context.applicationContext,
+                            "CloudTranscription",
+                            "云端转写成功响应已取得，但本地响应检查点写入失败；继续使用内存中的当前响应",
+                            error,
+                            diagnosticContext = audioDiagnostics + mapOf(
+                                "失败子阶段" to "持久化云端响应检查点",
+                                "响应文本字符数" to completedResponseText.length.toString(),
+                                "检查点文件是否可用" to (responseCheckpointFile?.parentFile?.canWrite() == true).toString(),
+                                "恢复方式" to "本次继续解析内存响应；进程退出后可能需要重新请求服务商",
+                            ),
+                        )
+                    }.onFailure {
+                        android.util.Log.w("CloudTranscription", "Unable to persist cloud checkpoint warning", it)
+                    }
+                }
             }
         }
-        val parsedResult = parseProviderResponse(completedResponseText, durationMs, checkActive)
+        val parsedResult = try {
+            parseProviderResponse(completedResponseText, durationMs, checkActive)
+        } catch (failure: Exception) {
+            recordCloudFailure(
+                "服务商响应解析/词级时间戳整理",
+                failure,
+                mapOf(
+                    "响应文本字符数" to completedResponseText.length.toString(),
+                    "是否已持久化原始响应检查点" to durableResponseSaved.toString(),
+                    "解析输入类型" to "脱敏前仅保留在内存；日志不记录完整响应正文",
+                ),
+            )
+            throw failure
+        }
         if (!durableResponseSaved) {
             submissionGuardFile?.let { runCatching { CloudAsrSubmissionGuardStore.clear(it) } }
         }
