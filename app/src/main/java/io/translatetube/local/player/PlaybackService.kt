@@ -7355,12 +7355,18 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
 
         // Run bundled on-device language identification for ambiguous Latin-script and
         // Han-only subtitles, including Chinese/Japanese Kanji-only text without kana.
-        val identified = io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(cues)
+        val hanOnlyAmbiguous = io.translatetube.local.subs.SubtitleLanguageDetector
+            .isHanDominantAmbiguousFromCues(cues)
+        val identified = io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(
+            cues,
+            confidenceThreshold = if (hanOnlyAmbiguous) 0.80f else 0.55f,
+        )
         if (!SourceLanguagePolicy.isUndetermined(identified)) {
             return identified
         }
 
-        // If the model cannot confidently identify the text, preserve the provider's hint.
+        // If the model cannot confidently identify the text, preserve a provider hint only when
+        // the sample is not Han-only ambiguous; the latter remains auto until explicitly resolved.
         return io.translatetube.local.subs.SubtitleLanguageDetector
             .resolveTranscriptionLanguageFromCues(detectedLanguage, cues)
     }
