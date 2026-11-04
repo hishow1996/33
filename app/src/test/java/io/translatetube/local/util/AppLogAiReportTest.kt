@@ -24,6 +24,33 @@ class AppLogAiReportTest {
                 firstAppStackFrame = "io.translatetube.local.translate.TranslationEngine.translate(TranslationEngine.kt:88)",
                 diagnosticContext = mapOf("HTTP 状态码" to "429", "请求阶段" to "提交"),
                 httpStatusCode = 429,
+                exceptionSnapshot = AppLogExceptionSnapshot(
+                    type = "java.lang.IllegalStateException",
+                    message = "translation request failed",
+                    stackFrames = listOf(
+                        AppLogStackFrame(
+                            "io.translatetube.local.translate.TranslationEngine",
+                            "translate",
+                            "TranslationEngine.kt",
+                            88,
+                        ),
+                    ),
+                    cause = AppLogExceptionSnapshot(
+                        type = "java.net.SocketTimeoutException",
+                        message = "read timed out",
+                        stackFrames = listOf(
+                            AppLogStackFrame("java.net.SocketInputStream", "read", "SocketInputStream.java", 0),
+                        ),
+                    ),
+                    suppressed = listOf(
+                        AppLogExceptionSnapshot(
+                            type = "java.io.IOException",
+                            message = "response close failed",
+                            stackFrames = emptyList(),
+                            truncated = true,
+                        ),
+                    ),
+                ),
             ),
             AppLogRecord(
                 timestampMs = 1_000L,
@@ -47,7 +74,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 2_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/v3"))
+        assertTrue(report.contains("report_schema: elephant-app-log/v4"))
         assertTrue(report.contains("最近最多 800 条"))
         assertTrue(report.contains("优先检查的故障事件"))
         assertTrue(report.contains("完整事件时间线（JSONL"))
@@ -59,6 +86,10 @@ class AppLogAiReportTest {
         assertTrue(report.contains("\"HTTP 状态码\":\"429\""))
         assertTrue(report.contains("\"请求阶段\":\"提交\""))
         assertTrue(report.contains("AI 分类=HTTP 429：请求频率受限"))
+        assertTrue(report.contains("\"exceptionSnapshot\""))
+        assertTrue(report.contains("\"type\":\"java.net.SocketTimeoutException\""))
+        assertTrue(report.contains("\"message\":\"response close failed\""))
+        assertTrue(report.contains("\"truncated\":true"))
         assertTrue(report.indexOf("\"eventId\":\"event-1\"") < report.indexOf("\"eventId\":\"event-2\""))
         assertTrue(report.contains("不要把不同进程会话混为一次任务"))
     }
@@ -76,7 +107,7 @@ class AppLogAiReportTest {
         assertTrue(report.contains("legacy/unknown"))
         assertTrue(report.contains("legacy-1000-1"))
         assertTrue(report.contains("\"schemaVersion\":1"))
-        assertTrue(report.contains("\"reportSchemaVersion\":3"))
+        assertTrue(report.contains("\"reportSchemaVersion\":4"))
         assertFalse(report.contains("undefined"))
     }
     @Test
@@ -98,6 +129,16 @@ class AppLogAiReportTest {
             firstAppStackFrame = "io.translatetube.local.translate.TranslationEngine.run(TranslationEngine.kt:120)",
             diagnosticContext = mapOf("HTTP 状态码" to "504", "请求阶段" to "读取响应"),
             httpStatusCode = 504,
+            exceptionSnapshot = AppLogExceptionSnapshot(
+                type = "java.io.IOException",
+                message = "translation request failed",
+                stackFrames = emptyList(),
+                cause = AppLogExceptionSnapshot(
+                    type = "java.net.SocketTimeoutException",
+                    message = "read timed out",
+                    stackFrames = emptyList(),
+                ),
+            ),
         )
         val related = target.copy(
             timestampMs = 19_000L,
@@ -118,11 +159,13 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v1"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v2"))
         assertTrue(report.contains("failure-2"))
         assertTrue(report.contains("start-1"))
         assertTrue(report.contains("rootCauseMessage"))
         assertTrue(report.contains("firstAppStackFrame"))
+        assertTrue(report.contains("exceptionSnapshot"))
+        assertTrue(report.contains("\"type\":\"java.net.SocketTimeoutException\""))
         assertTrue(report.contains("diagnosticContext"))
         assertTrue(report.contains("HTTP 504"))
         assertTrue(report.contains("关联事件时间线"))

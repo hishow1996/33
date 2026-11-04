@@ -38,7 +38,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 修复诊断报告\n")
-            append("report_schema: elephant-app-log/v3\n")
+            append("report_schema: elephant-app-log/v4\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -119,7 +119,7 @@ internal object AppLogAiReport {
                 }
                 val json = JSONObject()
                     .put("schemaVersion", event.schemaVersion)
-                    .put("reportSchemaVersion", 3)
+                    .put("reportSchemaVersion", 4)
                     .put("index", index + 1)
                     .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + (index + 1) })
                     .put("sessionId", event.sessionId.ifBlank { "legacy/unknown" })
@@ -143,6 +143,10 @@ internal object AppLogAiReport {
                     .put("errorClass", AppLogStore.redactForExport(event.errorClass))
                     .put("rootCauseMessage", AppLogStore.redactForExport(event.rootCauseMessage))
                     .put("firstAppStackFrame", AppLogStore.redactForExport(event.firstAppStackFrame))
+                    .put(
+                        "exceptionSnapshot",
+                        event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
+                    )
                     .put("httpStatusCode", event.httpStatusCode)
                     .put(
                         "diagnosticContext",
@@ -166,7 +170,7 @@ internal object AppLogAiReport {
             append("\n## 4. AI 修复要求\n")
             append("1. 按 sessionId、sequence、timestampMs 还原触发操作和阶段顺序；不要把不同进程会话混为一次任务。\n")
             append("2. 区分日志已证实的事实、合理假设和缺失证据；不得把推测写成已证实根因。\n")
-            append("3. 优先读取 diagnosticContext、rootCauseMessage、firstAppStackFrame、httpStatusCode 和 operationId 等结构化字段；不要只依赖中文 details 文本。\n")
+            append("3. 优先读取 diagnosticContext、rootCauseMessage、firstAppStackFrame、exceptionSnapshot、httpStatusCode 和 operationId 等结构化字段；exceptionSnapshot 保留每层异常自己的堆栈及 Suppressed。若任一节点 truncated=true，必须注明异常树/栈帧已截断。\n")
             append("4. 检查最深层 cause、Suppressed 异常，以及第一个应用自身包名的栈帧；给出文件、类、方法和行号。\n")
             append("5. 网络问题同时分析 HTTP 状态码、服务商错误码、requestId、Content-Type、响应长度、重试和解析器结果；不要把所有失败归为网络问题。\n")
             append("6. 对 YouTube、网页视频和本地视频分别核对同一阶段的实现路径，并指出需要同步修复的入口。\n")
@@ -215,6 +219,10 @@ internal object AppLogAiReport {
             .put("errorClass", AppLogStore.redactForExport(event.errorClass))
             .put("rootCauseMessage", AppLogStore.redactForExport(event.rootCauseMessage))
             .put("firstAppStackFrame", AppLogStore.redactForExport(event.firstAppStackFrame))
+            .put(
+                "exceptionSnapshot",
+                event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
+            )
             .put("httpStatusCode", event.httpStatusCode)
             .put("processId", event.processId)
             .put("threadId", event.threadId)
@@ -234,7 +242,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 单条故障修复包\n")
-            append("report_schema: elephant-app-log/incident-v1\n")
+            append("report_schema: elephant-app-log/incident-v2\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -280,10 +288,11 @@ internal object AppLogAiReport {
 
             append("\n## 4. AI 修复要求\n")
             append("1. 先还原主故障前后的事件顺序，区分触发操作、失败步骤、重试和恢复结果。\n")
-            append("2. 优先查看 rootCauseMessage 和 firstAppStackFrame，定位到真实应用文件、类、方法及行号；若没有应用栈帧，明确说明证据缺口。\n")
-            append("3. 根据 diagnosticContext 判断视频来源、处理阶段、引擎、请求状态、批次/句子索引等字段；缺失字段不得猜测。\n")
-            append("4. 给出最小修复方案、可能影响的 YouTube/网页/本地入口、回归测试和验证标准。\n")
-            append("5. 不得通过吞掉异常、返回空成功、跳过错误或原声兜底来掩盖真实失败。\n")
+            append("2. 优先查看 exceptionSnapshot.cause 链最深层异常及每层 stackFrames；单独检查 suppressed，勿把清理异常误判为主故障。若 truncated=true，说明当前包只包含上限内证据。\n")
+            append("3. 使用 rootCauseMessage 和 firstAppStackFrame 定位真实应用文件、类、方法及行号；若没有应用栈帧，明确说明证据缺口。\n")
+            append("4. 根据 diagnosticContext 判断视频来源、处理阶段、引擎、请求状态、批次/句子索引等字段；缺失字段不得猜测。\n")
+            append("5. 给出最小修复方案、可能影响的 YouTube/网页/本地入口、回归测试和验证标准。\n")
+            append("6. 不得通过吞掉异常、返回空成功、跳过错误或原声兜底来掩盖真实失败。\n")
             append("\n隐私说明：报告对常见密钥、令牌、Cookie 和签名 URL 参数执行脱敏；分享前仍请检查字幕片段、文件名和业务内容。\n")
         }
     }

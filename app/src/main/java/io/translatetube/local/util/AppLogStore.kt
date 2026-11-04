@@ -54,6 +54,24 @@ data class AppLogRecord(
     val firstAppStackFrame: String = "",
     /** Original structured key/value evidence supplied by the failing operation. */
     val diagnosticContext: Map<String, String> = emptyMap(),
+    /** Structured cause/suppressed tree and per-exception stack frames. */
+    val exceptionSnapshot: AppLogExceptionSnapshot? = null,
+)
+
+data class AppLogStackFrame(
+    val className: String,
+    val methodName: String,
+    val fileName: String?,
+    val lineNumber: Int,
+)
+
+data class AppLogExceptionSnapshot(
+    val type: String,
+    val message: String,
+    val stackFrames: List<AppLogStackFrame>,
+    val cause: AppLogExceptionSnapshot? = null,
+    val suppressed: List<AppLogExceptionSnapshot> = emptyList(),
+    val truncated: Boolean = false,
 )
 
 data class AppLogWriterHealth(
@@ -139,6 +157,7 @@ object AppLogStore {
         context, "WARN", tag, messageWithRootCause(message, failure),
         failureDetails(failure), diagnosticContext,
         issueKey = issueKey ?: stableIssueKey(tag, message),
+        failure = failure,
     )
 
     fun error(
@@ -152,6 +171,7 @@ object AppLogStore {
         context, "ERROR", tag, messageWithRootCause(message, failure),
         failureDetails(failure), diagnosticContext,
         issueKey = issueKey ?: stableIssueKey(tag, message),
+        failure = failure,
     )
 
     fun recordUncaught(
@@ -179,6 +199,7 @@ object AppLogStore {
                 "处理方式" to if (status == "FATAL") "交由 Android 默认崩溃处理器，进程退出" else "后台异常被保护，进程继续运行",
                 "异常类" to failure.javaClass.name,
             ) + diagnosticContext,
+            failure = failure,
         )
     }
 
@@ -557,6 +578,11 @@ object AppLogStore {
                 append("根因消息：").append(redact(record.rootCauseMessage).ifBlank { "未提取" }).append('\n')
                 append("首个应用代码栈帧：").append(redact(record.firstAppStackFrame).ifBlank { "未记录" }).append('\n')
                 append("HTTP 状态码：").append(record.httpStatusCode.takeIf { it > 0 } ?: "未知").append('\n')
+                record.exceptionSnapshot?.let { snapshot ->
+                    append("结构化异常树 JSON：")
+                        .append(exceptionSnapshotForExport(snapshot).toString())
+                        .append('\n')
+                }
                 if (record.diagnosticContext.isNotEmpty()) {
                     append("结构化诊断字段：\n")
                     record.diagnosticContext.toSortedMap().forEach { (key, value) ->
@@ -568,7 +594,7 @@ object AppLogStore {
                 if (record.details.isNotBlank()) append(redact(record.details.trimEnd())).append('\n')
                 append("-".repeat(64)).append('\n')
             }
-            append("AI 分析要求：先按时间顺序还原任务，再区分网络/HTTP、响应格式解析、字幕行对齐、译文质量校验和应用自身异常；指出具体证据、最可能责任模块、待核对文件/方法及验证方案。不得把推测写成已证实根因。\n")
+            append("AI 分析要求：先按时间顺序还原任务，再区分网络/HTTP、响应格式解析、字幕行对齐、译文质量校验和应用自身异常；优先分析结构化异常树中的 cause 与 suppressed，并检查 truncated 标记；指出具体证据、最可能责任模块、待核对文件/方法及验证方案。不得把推测写成已证实根因。\n")
         }
     }
 
@@ -691,6 +717,7 @@ object AppLogStore {
         diagnosticContext: Map<String, String> = emptyMap(),
         issueKey: String? = null,
         resolvesIssueKey: String = "",
+        failure: Throwable? = null,
     ) = appendAt(
         context = context,
         timestampMs = System.currentTimeMillis(),
@@ -702,6 +729,7 @@ object AppLogStore {
         diagnosticContext = diagnosticContext,
         issueKey = issueKey,
         resolvesIssueKey = resolvesIssueKey,
+        failure = failure,
     )
 
     private fun appendAt(
@@ -715,6 +743,7 @@ object AppLogStore {
         diagnosticContext: Map<String, String> = emptyMap(),
         issueKey: String? = null,
         resolvesIssueKey: String = "",
+        failure: Throwable? = null,
     ) {
         synchronized(lock) {
             try {
@@ -754,8 +783,11 @@ object AppLogStore {
                 val firstAppStackFrame = extractFirstAppStackFrame(safeDetails)
                 val operationId = extractOperationId(safeContext, safeDetails)
                 val httpStatusCode = extractHttpStatusCode(safeMessage, safeDetails, safeContext)
+                val structuredException = failure?.let { thrown ->
+                    runCatching { snapshotExceptionTree(thrown) }.getOrNull()
+                }
                 val row = JSONObject()
-                    .put("schemaVersion", 3)
+                    .put("schemaVersion", 4)
                     .put("eventId", eventId)
                     .put("sessionId", sessionId)
                     .put("sequence", sequence)
@@ -778,6 +810,7 @@ object AppLogStore {
                             safeContext.toSortedMap().forEach { (key, value) -> put(key, value) }
                         },
                     )
+                    .put("exceptionSnapshot", structuredException?.let(::exceptionSnapshotToJson) ?: JSONObject.NULL)
                     .put("details", safeDetails)
                     .put("thread", redact(threadName).take(120))
                     .put("issueKey", effectiveIssueKey.take(100))
@@ -1025,6 +1058,7 @@ object AppLogStore {
                 extractFirstAppStackFrame(details)
             },
             diagnosticContext = diagnosticContext,
+            exceptionSnapshot = json.optJSONObject("exceptionSnapshot")?.let(::parseExceptionSnapshot),
         ).takeIf { it.timestampMs > 0L && (it.message.isNotBlank() || it.details.isNotBlank()) }
     }.getOrNull()
 
@@ -1124,6 +1158,124 @@ object AppLogStore {
                 PrintWriter(writer).use { failure.printStackTrace(it) }
             }.toString())
         }
+    }
+
+
+    /**
+     * Snapshot the Throwable object before the caller unwinds it. A text stack trace is still
+     * retained for compatibility, while this bounded tree lets AI inspect causes, suppressed
+     * exceptions and each exception's own frames without reparsing "Caused by" text.
+     */
+    internal fun snapshotExceptionTree(failure: Throwable): AppLogExceptionSnapshot {
+        val seen = java.util.Collections.newSetFromMap(
+            java.util.IdentityHashMap<Throwable, Boolean>(),
+        )
+        var capturedNodes = 0
+        fun visit(current: Throwable, depth: Int): AppLogExceptionSnapshot? {
+            // Bound the whole exception graph, not only each individual cause chain. A Throwable
+            // can carry many nested Suppressed exceptions; without a global budget, a small root
+            // object could expand into an enormous diagnostic report.
+            if (depth >= 12 || capturedNodes >= 24 || !seen.add(current)) return null
+            capturedNodes++
+            val frames = current.stackTrace.take(32).map { frame ->
+                AppLogStackFrame(
+                    className = frame.className.take(400),
+                    methodName = frame.methodName.take(240),
+                    fileName = frame.fileName?.take(240),
+                    lineNumber = frame.lineNumber,
+                )
+            }
+            // Preserve the primary cause chain before spending the remaining budget on cleanup
+            // failures. Suppressed exceptions are still retained separately when budget allows.
+            val causeCandidate = current.cause
+            val cause = causeCandidate?.let { visit(it, depth + 1) }
+            val suppressedCandidates = current.suppressed.take(4)
+            val suppressed = suppressedCandidates.mapNotNull { visit(it, depth + 1) }
+            val truncated = current.stackTrace.size > frames.size ||
+                current.suppressed.size > suppressedCandidates.size ||
+                (causeCandidate != null && cause == null) ||
+                suppressed.size < suppressedCandidates.size
+            return AppLogExceptionSnapshot(
+                type = current.javaClass.name.take(400),
+                message = current.message.orEmpty().take(1_200),
+                stackFrames = frames,
+                cause = cause,
+                suppressed = suppressed,
+                truncated = truncated,
+            )
+        }
+        return requireNotNull(visit(failure, 0))
+    }
+
+    private fun exceptionSnapshotToJson(
+        snapshot: AppLogExceptionSnapshot,
+        depth: Int = 0,
+    ): JSONObject {
+        val result = JSONObject()
+            .put("type", redact(snapshot.type).take(400))
+            .put("message", redact(snapshot.message).take(1_200))
+            .put("truncated", snapshot.truncated)
+            .put(
+                "stackFrames",
+                org.json.JSONArray().apply {
+                    snapshot.stackFrames.take(48).forEach { frame ->
+                        put(
+                            JSONObject()
+                                .put("className", redact(frame.className).take(400))
+                                .put("methodName", redact(frame.methodName).take(240))
+                                .put("fileName", redact(frame.fileName.orEmpty()).take(240))
+                                .put("lineNumber", frame.lineNumber),
+                        )
+                    }
+                },
+            )
+        if (depth < 11) {
+            snapshot.cause?.let { result.put("cause", exceptionSnapshotToJson(it, depth + 1)) }
+            result.put(
+                "suppressed",
+                org.json.JSONArray().apply {
+                    snapshot.suppressed.take(4).forEach { put(exceptionSnapshotToJson(it, depth + 1)) }
+                },
+            )
+        }
+        return result
+    }
+
+    internal fun exceptionSnapshotForExport(snapshot: AppLogExceptionSnapshot): JSONObject =
+        exceptionSnapshotToJson(snapshot)
+
+    private fun parseExceptionSnapshot(
+        json: JSONObject,
+        depth: Int = 0,
+        nodeBudget: IntArray = intArrayOf(24),
+    ): AppLogExceptionSnapshot? {
+        if (depth >= 12 || nodeBudget[0] <= 0) return null
+        nodeBudget[0]--
+        val frames = json.optJSONArray("stackFrames")?.let { array ->
+            (0 until minOf(array.length(), 48)).mapNotNull { index ->
+                val frame = array.optJSONObject(index) ?: return@mapNotNull null
+                AppLogStackFrame(
+                    className = frame.optString("className", ""),
+                    methodName = frame.optString("methodName", ""),
+                    fileName = frame.optString("fileName", "").ifBlank { null },
+                    lineNumber = frame.optInt("lineNumber", -1),
+                )
+            }
+        }.orEmpty()
+        val cause = json.optJSONObject("cause")?.let { parseExceptionSnapshot(it, depth + 1, nodeBudget) }
+        val suppressed = json.optJSONArray("suppressed")?.let { array ->
+            (0 until minOf(array.length(), 4)).mapNotNull { index ->
+                array.optJSONObject(index)?.let { parseExceptionSnapshot(it, depth + 1, nodeBudget) }
+            }
+        }.orEmpty()
+        return AppLogExceptionSnapshot(
+            type = json.optString("type", ""),
+            message = json.optString("message", ""),
+            stackFrames = frames,
+            cause = cause,
+            suppressed = suppressed,
+            truncated = json.optBoolean("truncated", false),
+        )
     }
 
     private fun extractRootCauseMessage(details: String): String =
