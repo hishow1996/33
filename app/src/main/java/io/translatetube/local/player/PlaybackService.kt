@@ -10965,10 +10965,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
-                        io.translatetube.local.util.AppLogStore.warning(
+                        io.translatetube.local.util.AppLogStore.error(
                             this@PlaybackService,
                             "Translation",
-                            "字幕翻译批次失败，正在执行恢复处理",
+                            "字幕翻译请求失败：已禁止原声兜底",
                             e,
                             diagnosticContext = mapOf(
                                 "翻译引擎 ID" to engine?.id.orEmpty(),
@@ -10984,6 +10984,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "${index + 1}行：${row?.startMs ?: -1}..${row?.endMs ?: -1} ms"
                                 },
                                 "当前重试次数（0表示首次请求）" to attempt.toString(),
+                                "是否允许原声兜底" to "否；请求异常只按引擎策略重试，失败后终止翻译",
+                                "异常类型链" to generateSequence(e as Throwable?) { it.cause }
+                                    .take(8)
+                                    .joinToString(" -> ") { it.javaClass.simpleName },
+                                "异常原因链" to generateSequence(e as Throwable?) { it.cause }
+                                    .take(8)
+                                    .joinToString(" -> ") { it.message.orEmpty().take(240) }
+                                    .take(2_000),
                                 "已成功翻译行数" to completed.toString(),
                                 "当前任务键类型" to when {
                                     ui.value.key.startsWith("youtube:") -> "YouTube"
@@ -10993,9 +11001,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 },
                             ),
                         )
-                        android.util.Log.w(
+                        android.util.Log.e(
                             "PlaybackService",
-                            "Translation batch failed for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
+                            "Translation request failed; original-audio fallback is disabled for this failure",
                             e,
                         )
                         // Distinguish API provider failures from Google offline language-pack errors.
