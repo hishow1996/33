@@ -92,6 +92,46 @@ class DubbingCatchUpQueuePolicyTest {
     }
 
     @Test
+    fun preparedSilentQueueHeadIsReportedAsFailureInsteadOfBeingSkipped() {
+        assertEquals(
+            4,
+            DubbingCatchUpQueuePolicy.preparedSilentHead(
+                queueHead = 4,
+                isPrepared = { true },
+                isSilent = { true },
+            ),
+        )
+    }
+
+    @Test
+    fun unpreparedOrAudibleQueueHeadIsNotTreatedAsSilentFailure() {
+        assertEquals(
+            null,
+            DubbingCatchUpQueuePolicy.preparedSilentHead(
+                queueHead = 4,
+                isPrepared = { false },
+                isSilent = { true },
+            ),
+        )
+        assertEquals(
+            null,
+            DubbingCatchUpQueuePolicy.preparedSilentHead(
+                queueHead = 4,
+                isPrepared = { true },
+                isSilent = { false },
+            ),
+        )
+        assertEquals(
+            null,
+            DubbingCatchUpQueuePolicy.preparedSilentHead(
+                queueHead = null,
+                isPrepared = { true },
+                isSilent = { true },
+            ),
+        )
+    }
+
+    @Test
     fun mediaPositionIsShiftedIntoTheLeadAdjustedTimelineDomain() {
         assertEquals(1_180L, DubbingCatchUpQueuePolicy.toTimelinePositionMs(1_000L, 180L))
     }
