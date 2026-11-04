@@ -28,6 +28,8 @@ internal object DubbingTranslationPolicy {
         val detectedSource = if (hasLanguageHint) hint.lowercase(java.util.Locale.ROOT)
             else SubtitleLanguageDetector.detect(sourceText)
         val chineseSource = io.translatetube.local.translate.SourceLanguagePolicy.isChinese(detectedSource)
+        val ambiguousHanSource = !hasLanguageHint &&
+            SubtitleLanguageDetector.isHanDominantAmbiguous(sourceText)
         if (chineseSource) {
             // Preserve literal Chinese captions even if their text resembles a UI progress label.
             val literal = sourceText.trim()
@@ -37,7 +39,14 @@ internal object DubbingTranslationPolicy {
             return DubbingTranslationResolution(literal)
         }
         if (translatedText.isNullOrBlank()) {
-            return DubbingTranslationResolution(null, "翻译结果为空或只有空白字符")
+            return DubbingTranslationResolution(
+                null,
+                if (ambiguousHanSource) {
+                    "原字幕仅含汉字，无法确认是中文还是日语；请在翻译设置中确认源语言，或提供中文译文"
+                } else {
+                    "翻译结果为空或只有空白字符"
+                },
+            )
         }
         val cleaned = SubtitleParsers.cleanTranslatedText(translatedText)
             ?: return DubbingTranslationResolution(
@@ -57,7 +66,14 @@ internal object DubbingTranslationPolicy {
             )
         }
         if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {
-            return DubbingTranslationResolution(null, "译文与原文相同，未生成中文译文")
+            return DubbingTranslationResolution(
+                null,
+                if (ambiguousHanSource) {
+                    "原字幕仅含汉字，无法确认是中文还是日语；拒绝把原文直接当成中文配音，请确认源语言或提供中文译文"
+                } else {
+                    "译文与原文相同，未生成中文译文"
+                },
+            )
         }
         if (SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 sourceText, cleaned, detectedSource, "zh",
