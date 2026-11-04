@@ -223,7 +223,7 @@ class TranslationAdaptiveRecoveryTest {
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("已禁止原声兜底"))
+        assertTrue(error?.message.orEmpty().contains("翻译失败"))
     }
 
     @Test
