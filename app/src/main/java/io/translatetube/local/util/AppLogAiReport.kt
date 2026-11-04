@@ -37,10 +37,11 @@ internal object AppLogAiReport {
         }.takeLast(80).asReversed()
         val operationRoles = AppLogEventRelationPolicy.operationRoles(ordered)
         val operationSummaries = AppLogEventRelationPolicy.operationFailureSummaries(ordered).take(80)
+        val stageSummaries = AppLogStageSummaryPolicy.summarize(ordered).take(120)
 
         return buildString {
             append("# 大象翻译 AI 修复诊断报告\n")
-            append("report_schema: elephant-app-log/v5\n")
+            append("report_schema: elephant-app-log/v6\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -93,7 +94,30 @@ internal object AppLogAiReport {
                 append("注意：最早异常仅代表当前保留日志中时间最早的异常候选，不等于真实根因；后续异常可能是连锁错误，也可能是并行/独立故障。\n")
             }
 
-            append("\n## 3. 优先检查的故障事件（最多 80 条，按最新优先）\n")
+            append("\n## 3. 五阶段诊断摘要（按处理任务和阶段归组）\n")
+            if (stageSummaries.isEmpty()) {
+                append("当前报告没有足够的 operationId 和阶段快照来生成五阶段摘要；旧版日志可能没有记录实时阶段字段。\n")
+            } else {
+                stageSummaries.forEachIndexed { index, stage ->
+                    append(index + 1).append(". 阶段=").append(stage.stage)
+                        .append("；operationId=").append(stage.operationId)
+                        .append("；事件数=").append(stage.eventCount)
+                        .append("；WARN/ERROR/FATAL=").append(stage.warningCount).append("/")
+                        .append(stage.errorCount).append("/").append(stage.fatalCount)
+                        .append("；时间=").append(AppLogStore.formatTime(stage.firstTimestampMs))
+                        .append(" 至 ").append(AppLogStore.formatTime(stage.lastTimestampMs))
+                        .append('\n')
+                    if (stage.latestProgress.isNotBlank()) append("   最近步骤：").append(AppLogStore.redactForExport(stage.latestProgress)).append('\n')
+                    append("   引擎：转写=").append(stage.transcriptionEngine.ifBlank { "未记录" })
+                        .append("；翻译=").append(stage.translationEngine.ifBlank { "未记录" })
+                        .append("；配音=").append(stage.dubbingEngine.ifBlank { "未记录" }).append('\n')
+                    append("   数量：字幕=").append(stage.latestSubtitleCount.ifBlank { "未记录" })
+                        .append("；有效译文=").append(stage.latestTranslatedCount.ifBlank { "未记录" })
+                        .append("；已准备配音=").append(stage.latestPreparedDubbingCount.ifBlank { "未记录" }).append('\n')
+                }
+            }
+
+            append("\n## 4. 优先检查的故障事件（最多 80 条，按最新优先）\n")
             if (priorityEvents.isEmpty()) {
                 append("当前保留范围内没有 WARN/ERROR/FATAL 事件。\n")
             } else {
@@ -137,7 +161,7 @@ internal object AppLogAiReport {
                 }
                 val json = JSONObject()
                     .put("schemaVersion", event.schemaVersion)
-                    .put("reportSchemaVersion", 5)
+                    .put("reportSchemaVersion", 6)
                     .put("index", index + 1)
                     .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + (index + 1) })
                     .put("sessionId", event.sessionId.ifBlank { "legacy/unknown" })
@@ -177,6 +201,10 @@ internal object AppLogAiReport {
                         event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
                     )
                     .put("httpStatusCode", event.httpStatusCode)
+                    .put("processingStage", event.diagnosticContext["当前处理阶段"].orEmpty())
+                    .put("processingUiPhase", event.diagnosticContext["当前 UI 阶段"].orEmpty())
+                    .put("processingProgress", AppLogStore.redactForExport(event.diagnosticContext["当前处理步骤"].orEmpty()))
+                    .put("processingFlow", event.diagnosticContext["处理流程"].orEmpty())
                     .put(
                         "diagnosticContext",
                         JSONObject().apply {
@@ -197,16 +225,17 @@ internal object AppLogAiReport {
             if (ordered.isEmpty()) append("（当前没有可导出的日志记录）\n")
 
             append("\n## 5. AI 修复要求\n")
-            append("1. 先按 sessionId + operationId 分组；不要把不同进程会话混为一次任务。operationFailureRole=FIRST_RECORDED_ANOMALY_CANDIDATE 仅代表最早已记录异常，不能直接认定为真实根因。\n")
+            append("1. 先按 sessionId + operationId 分组，再查看五阶段诊断摘要；operationFailureRole=FIRST_RECORDED_ANOMALY_CANDIDATE 仅代表最早已记录异常，不能直接认定为真实根因。\n")
             append("2. 对同一任务后续异常逐条比较异常树、根因消息、首个应用栈帧和阶段字段；明确区分连锁错误、重复记录、并行故障及证据不足。\n")
             append("3. 不得仅凭时间先后断言因果；区分日志已证实的事实、合理假设和缺失证据。\n")
-            append("4. 优先读取 diagnosticContext、rootCauseMessage、firstAppStackFrame、exceptionSnapshot、httpStatusCode 和 operationId 等结构化字段；exceptionSnapshot 保留每层异常自己的堆栈及 Suppressed。若任一节点 truncated=true，必须注明异常树/栈帧已截断。\n")
-            append("5. 检查最深层 cause、Suppressed 异常，以及第一个应用自身包名的栈帧；给出文件、类、方法和行号。\n")
-            append("6. 网络问题同时分析 HTTP 状态码、服务商错误码、requestId、Content-Type、响应长度、重试和解析器结果；不要把所有失败归为网络问题。\n")
-            append("7. 对 YouTube、网页视频和本地视频分别核对同一阶段的实现路径，并指出需要同步修复的入口。\n")
-            append("8. 提出最小且可验证的修复，说明文件、方法、风险和回归测试；不得用静默吞错、空结果或原声兜底掩盖失败。\n")
-            append("9. 日志不足时先指出应在真实失败分支补采的字段，不得臆造运行状态。\n")
-            append("10. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
+            append("4. 优先读取 processingStage、processingProgress、processingFlow 和 diagnosticContext；核对该异常发生时的阶段、子步骤、引擎及字幕数量。空字段表示当时未采集，不得猜测。\n")
+            append("5. 优先读取 rootCauseMessage、firstAppStackFrame、exceptionSnapshot、httpStatusCode 和 operationId 等结构化字段；exceptionSnapshot 保留每层异常自己的堆栈及 Suppressed。若任一节点 truncated=true，必须注明异常树/栈帧已截断。\n")
+            append("6. 检查最深层 cause、Suppressed 异常，以及第一个应用自身包名的栈帧；给出文件、类、方法和行号。\n")
+            append("7. 网络问题同时分析 HTTP 状态码、服务商错误码、requestId、Content-Type、响应长度、重试和解析器结果；不要把所有失败归为网络问题。\n")
+            append("8. 对 YouTube、网页视频和本地视频分别核对同一阶段的实现路径，并指出需要同步修复的入口。\n")
+            append("9. 提出最小且可验证的修复，说明文件、方法、风险和回归测试；不得用静默吞错、空结果或原声兜底掩盖失败。\n")
+            append("10. 日志不足时先指出应在真实失败分支补采的字段，不得臆造运行状态。\n")
+            append("11. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
             append("\n隐私说明：导出前再次执行凭据脱敏；分享前仍应检查字幕片段、文件名和业务内容是否包含个人信息。\n")
         }
     }
@@ -257,6 +286,10 @@ internal object AppLogAiReport {
                 event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) } ?: JSONObject.NULL,
             )
             .put("httpStatusCode", event.httpStatusCode)
+            .put("processingStage", event.diagnosticContext["当前处理阶段"].orEmpty())
+            .put("processingUiPhase", event.diagnosticContext["当前 UI 阶段"].orEmpty())
+            .put("processingProgress", AppLogStore.redactForExport(event.diagnosticContext["当前处理步骤"].orEmpty()))
+            .put("processingFlow", event.diagnosticContext["处理流程"].orEmpty())
             .put("processId", event.processId)
             .put("threadId", event.threadId)
             .put("thread", AppLogStore.redactForExport(event.thread))
@@ -278,7 +311,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 单条故障修复包\n")
-            append("report_schema: elephant-app-log/incident-v3\n")
+            append("report_schema: elephant-app-log/incident-v4\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -330,7 +363,7 @@ internal object AppLogAiReport {
             }
 
             append("\n## 5. AI 修复要求\n")
-            append("1. 先按 relationToSelectedEvent/relationEvidence 解释关联强度；不得将仅有时间先后的事件断言为因果。\n")
+            append("1. 先按 relationToSelectedEvent/relationEvidence 解释关联强度；再使用 processingStage/processingProgress 还原失败时的阶段和子步骤；不得将仅有时间先后的事件断言为因果。\n")
             append("2. 先还原主故障前后的事件顺序，区分触发操作、失败步骤、重试和恢复结果。\n")
             append("3. 优先查看 exceptionSnapshot.cause 链最深层异常及每层 stackFrames；单独检查 suppressed，勿把清理异常误判为主故障。若 truncated=true，说明当前包只包含上限内证据。\n")
             append("4. 使用 rootCauseMessage 和 firstAppStackFrame 定位真实应用文件、类、方法及行号；若没有应用栈帧，明确说明证据缺口。\n")

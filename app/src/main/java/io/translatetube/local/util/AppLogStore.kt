@@ -1313,12 +1313,7 @@ object AppLogStore {
     internal fun applyOperationContext(
         diagnosticContext: Map<String, String>,
         operation: AppLogOperationContext,
-    ): Map<String, String> = diagnosticContext + mapOf(
-        "操作关联 ID" to operation.operationId,
-        "视频来源" to operation.mediaSource,
-        "视频会话指纹" to operation.videoSessionFingerprint,
-        "处理代数" to operation.pipelineGeneration.toString(),
-    )
+    ): Map<String, String> = diagnosticContext + operation.diagnosticFields()
 
     internal fun extractOperationId(
         diagnosticContext: Map<String, String>,

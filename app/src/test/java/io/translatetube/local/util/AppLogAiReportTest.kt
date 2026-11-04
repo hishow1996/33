@@ -23,7 +23,17 @@ class AppLogAiReportTest {
                 errorClass = "java.net.SocketTimeoutException",
                 rootCauseMessage = "connect timed out",
                 firstAppStackFrame = "io.translatetube.local.translate.TranslationEngine.translate(TranslationEngine.kt:88)",
-                diagnosticContext = mapOf("HTTP 状态码" to "429", "请求阶段" to "提交"),
+                diagnosticContext = mapOf(
+                    "HTTP 状态码" to "429",
+                    "请求阶段" to "提交",
+                    "当前处理阶段" to "TRANSLATING",
+                    "当前 UI 阶段" to "TRANSLATING",
+                    "当前处理步骤" to "正在处理第 1/3 批",
+                    "处理流程" to "AUTO",
+                    "翻译引擎" to "测试翻译引擎",
+                    "字幕总行数" to "50",
+                    "已获得有效译文行数" to "16",
+                ),
                 httpStatusCode = 429,
                 exceptionSnapshot = AppLogExceptionSnapshot(
                     type = "java.lang.IllegalStateException",
@@ -60,6 +70,13 @@ class AppLogAiReportTest {
                 message = "开始处理视频",
                 details = "阶段：语音转写",
                 thread = "main",
+                diagnosticContext = mapOf(
+                    "当前处理阶段" to "TRANSCRIBING",
+                    "当前 UI 阶段" to "TRANSCRIBING",
+                    "当前处理步骤" to "正在整理语音时间轴",
+                    "处理流程" to "AUTO",
+                    "转写引擎" to "Whisper",
+                ),
                 eventId = "event-1",
                 sessionId = "session-a",
                 operationId = "pipeline-test-1",
@@ -76,7 +93,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 2_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/v5"))
+        assertTrue(report.contains("report_schema: elephant-app-log/v6"))
         assertTrue(report.contains("最近最多 800 条"))
         assertTrue(report.contains("优先检查的故障事件"))
         assertTrue(report.contains("完整事件时间线（JSONL"))
@@ -95,6 +112,11 @@ class AppLogAiReportTest {
         assertTrue(report.indexOf("\"eventId\":\"event-1\"") < report.indexOf("\"eventId\":\"event-2\""))
         assertTrue(report.contains("不要把不同进程会话混为一次任务"))
         assertTrue(report.contains("任务故障关系候选"))
+        assertTrue(report.contains("五阶段诊断摘要"))
+        assertTrue(report.contains("阶段=TRANSLATING"))
+        assertTrue(report.contains("阶段=TRANSCRIBING"))
+        assertTrue(report.contains("正在处理第 1/3 批"))
+        assertTrue(report.contains("\"processingStage\":\"TRANSLATING\""))
         assertTrue(report.contains("最早异常候选事件=event-2"))
         assertTrue(report.contains("FIRST_RECORDED_ANOMALY_CANDIDATE"))
         assertTrue(report.contains("不能直接认定为真实根因"))
@@ -174,7 +196,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v3"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v4"))
         assertTrue(report.contains("failure-2"))
         assertTrue(report.contains("start-1"))
         assertTrue(report.contains("rootCauseMessage"))
@@ -187,6 +209,7 @@ class AppLogAiReportTest {
         assertTrue(report.contains("不同进程会话不会混合"))
         assertTrue(report.contains("故障关系分析"))
         assertTrue(report.contains("relationToSelectedEvent"))
+        assertTrue(report.contains("processingStage"))
         assertTrue(report.contains("SAME_OPERATION_CONTEXT"))
         assertTrue(report.contains("EARLIER_ANOMALY_SAME_OPERATION"))
         assertTrue(report.contains("仅是上游候选"))

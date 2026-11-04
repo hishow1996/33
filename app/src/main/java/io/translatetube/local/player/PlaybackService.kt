@@ -788,6 +788,8 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var dubbingDrainSessionKey = ""
     @Volatile private var dubbingDrainPoll: Runnable? = null
     @Volatile private var playerReady = false
+    /** Latest processing run; each coroutine still retains its own immutable run identity. */
+    @Volatile private var activeAppLogOperationContext: AppLogOperationContext? = null
     // The player outlives the Activity; only foreground/floating modes expect a visible video surface.
     @Volatile private var videoPresentationMode = VideoPresentationMode.BACKGROUND_AUDIO
     // Keep only the latest requested video output. A weak reference avoids retaining an old Activity view.
@@ -4348,6 +4350,42 @@ class PlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
+    private fun processingDiagnosticSnapshot(state: PlayerUiState): Map<String, String> =
+        linkedMapOf(
+            "当前处理阶段" to (state.failedPhase ?: state.phase).name,
+            "当前 UI 阶段" to state.phase.name,
+            "当前处理步骤" to state.progress.ifBlank { state.failedProgress }.take(240),
+            "失败前阶段" to (state.failedPhase?.name ?: "未记录"),
+            "当前错误提示" to state.error.orEmpty().take(240),
+            "处理流程" to state.processingFlow.name,
+            "转写引擎" to state.transcriptionEngineName.ifBlank { "未确定" },
+            "翻译引擎" to state.engineName.ifBlank { "未确定" },
+            "配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
+            "字幕源语言" to state.sourceLang.ifBlank { "未确定" },
+            "转写预览行数" to state.transcriptionPreviewLines.size.toString(),
+            "当前字幕行数" to state.lines.size.toString(),
+            "翻译预览行数" to state.translationPreviewLines.size.toString(),
+            "已获得有效译文行数" to state.translatedLineCount.toString(),
+            "字幕总行数" to maxOf(state.totalLines, state.lines.size).toString(),
+            "转写已完成分段" to state.transcriptionCompletedSegments.toString(),
+            "转写总分段" to state.transcriptionTotalSegments.toString(),
+            "转写进度百分比" to (state.transcriptionProgressPercent?.toString() ?: "未提供"),
+            "当前翻译批次" to state.translationCurrentBatch.toString(),
+            "翻译总批次数" to state.translationTotalBatches.toString(),
+            "当前翻译批次重试次数" to state.translationRetryCount.toString(),
+            "已准备配音行数" to state.preparedCount.toString(),
+            "已生成可播放配音行数" to state.audioReadyCount.toString(),
+            "当前视频字幕索引" to state.currentLine.toString(),
+            "当前实际配音字幕索引" to state.activeDubbingLine.toString(),
+            "是否等待转写引擎" to state.waitingForTranscriptionEngine.toString(),
+            "是否等待配音引擎" to state.waitingForDubbingEngine.toString(),
+            "是否启用配音" to state.dubbingOn.toString(),
+            "是否静音原声" to state.muteOriginal.toString(),
+            "播放器是否正在播放" to state.isPlaying.toString(),
+            "播放器是否正在缓冲" to state.isBuffering.toString(),
+            "当前加载重试次数" to state.loadRetryCount.toString(),
+        )
+
     /** Prevent a canceled pipeline from publishing progress/results into a newer video session. */
     private fun updateUiForSession(
         sessionKey: String,
@@ -4399,6 +4437,11 @@ class PlaybackService : MediaSessionService() {
 
         val after = ui.value
         if (after.key == sessionKey) {
+            if (pipelineGeneration != null) {
+                activeAppLogOperationContext
+                    ?.takeIf { it.pipelineGeneration == pipelineGeneration }
+                    ?.updateSnapshot(processingDiagnosticSnapshot(after))
+            }
             val phaseChanged = before.phase != after.phase
             val stepChanged = after.progress.isNotBlank() &&
                 progressLogSignature(before.progress) != progressLogSignature(after.progress)
@@ -5390,6 +5433,8 @@ class PlaybackService : MediaSessionService() {
             videoSessionFingerprint = safeDiagnosticSessionFingerprint(key),
             pipelineGeneration = pipelineGeneration,
         )
+        processingOperationContext.updateSnapshot(processingDiagnosticSnapshot(ui.value))
+        activeAppLogOperationContext = processingOperationContext
         io.translatetube.local.util.AppLogStore.info(
             this@PlaybackService,
             "PlaybackFlow",
