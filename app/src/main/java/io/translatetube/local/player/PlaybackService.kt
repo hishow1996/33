@@ -2203,7 +2203,7 @@ class PlaybackService : MediaSessionService() {
         dubCollectJob?.cancel()
         dubCollectJob = null
         runCatching { retireCurrentDubbing() }
-        if (playerReady && ::pm.isInitialized) runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
+        if (playerReady && ::pm.isInitialized) runCatching { safelySetOriginalVolume(1f, "preserve original audio preference") }
         updateUiForSession(current.key) {
             it.copy(
                 phase = Phase.ERROR,
@@ -3946,11 +3946,11 @@ class PlaybackService : MediaSessionService() {
                         (if (state.dubbingHasErrors) "配音部分失败 · 仍在准备" else if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
                             "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
                                 (if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else "") +
-                                if (state.dubbingHasErrors) "；失败字幕暂用原声" else ""
+                                if (state.dubbingHasErrors) "；失败字幕已停止配音" else ""
                         } else state.progress.ifBlank { "正在生成中文配音" }
                     failureTitle != null -> failureTitle to (
                         state.noModelHint?.takeIf { it.isNotBlank() }
-                            ?: "部分字幕配音失败，相关片段已恢复原声。打开应用查看详情。"
+                            ?: "部分字幕配音失败。打开应用查看详情。"
                     )
                     state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
                     else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
@@ -5619,12 +5619,8 @@ class PlaybackService : MediaSessionService() {
                         val incompleteTranslationIndices = finishedState.lines.mapIndexedNotNull { index, line ->
                             index.takeIf { needsSubtitleTranslation(line, finishedState.sourceLang) }
                         }
-                        val explicitOriginalAudioFallbackIndices = finishedState.lines.mapIndexedNotNull { index, line ->
-                            index.takeIf { line.translationFallbackOriginalAudio }
-                        }
                         val validChineseTranslationCount = finishedState.lines.count { line ->
-                            !line.translationFallbackOriginalAudio &&
-                                !needsSubtitleTranslation(line, finishedState.sourceLang) &&
+                            !needsSubtitleTranslation(line, finishedState.sourceLang) &&
                                 !line.zh.isNullOrBlank()
                         }
                         val translationsComplete = ReadySessionCompletionPolicy.hasCompleteTranslations(
@@ -5692,8 +5688,6 @@ class PlaybackService : MediaSessionService() {
                                     "字幕行数" to finishedState.lines.size.toString(),
                                     "译文是否完整" to translationsComplete.toString(),
                                     "有效中文译文行数" to validChineseTranslationCount.toString(),
-                                    "明确原声兜底行数" to explicitOriginalAudioFallbackIndices.size.toString(),
-                                    "明确原声兜底字幕行号（从1开始）" to explicitOriginalAudioFallbackIndices.take(80).joinToString(",") { (it + 1).toString() },
                                     "未完成译文行数" to incompleteTranslationIndices.size.toString(),
                                     "未完成译文字幕行号（从1开始）" to incompleteTranslationIndices.take(80).joinToString(",") { (it + 1).toString() },
                                     "未完成译文行号是否截断" to (incompleteTranslationIndices.size > 80).toString(),
@@ -6472,7 +6466,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     )
                 })
                 ensureCurrentSession(sessionKey, pipelineGeneration)
-                safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "source audio fallback")
+                safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "apply original audio preference")
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.SYNTHESIZING,
@@ -6707,13 +6701,13 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 io.translatetube.local.util.AppLogStore.error(
                     this@PlaybackService,
                     "Subtitles",
-                    "导入字幕配音时内存不足，已恢复视频原声",
+                    "导入字幕配音时内存不足，未生成中文配音",
                     e,
                     diagnosticContext = mapOf(
                         "字幕行数" to ui.value.lines.size.toString(),
                         "当前配音引擎" to ui.value.ttsEngineName.ifBlank { "未确定" },
                         "处理阶段" to ui.value.phase.name,
-                        "内存恢复策略" to "释放当前配音引擎并恢复原声，不自动切换其他引擎",
+                        "内存恢复策略" to "释放当前配音引擎并停止配音，不自动切换其他引擎",
                     ),
                 )
                 runCatching { retireCurrentDubbing() }
@@ -6721,13 +6715,12 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     withContext(Dispatchers.IO) { awaitRetiredDubbingEngines() }
                 }
                 runCatching { System.gc() }
-                runCatching { safelySetOriginalVolume(1f, "translated subtitle import OOM recovery") }
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
                         error = "设备可用内存不足，无法合成已导入字幕的中文配音。",
-                        noModelHint = "已恢复视频原声。请关闭其他应用后重试；不会自动切换配音引擎。",
+                        noModelHint = "未生成中文配音。请关闭其他应用后重试；不会自动切换配音引擎。",
                         muteOriginal = false,
                         dubbingHasErrors = true,
                         waitingForTranscriptionEngine = false,
@@ -6766,9 +6759,6 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
     this@PlaybackService, "Subtitles", "导入已翻译字幕失败", e,
 )
 android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
-                if (videoKey == sessionKey && ui.value.key == sessionKey) {
-                    runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
-                }
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -6826,7 +6816,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
         dubCollectJob?.cancel()
         dubCollectJob = null
         retireCurrentDubbing()
-        safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "source audio fallback")
+        safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "apply original audio preference")
         lastLineIdx = Int.MIN_VALUE
 
         prepJob = scope.launch {
@@ -6946,8 +6936,6 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                     // JSONObject.NULL.toString() can become the literal "null";
                                     // treat absent/null translations as missing so they are retried.
                                     translatedText = row.optString("zh", "").takeIf { it.isNotBlank() },
-                                    originalAudioFallback = row.optBoolean("oa", false),
-                                    originalAudioFallbackReason = row.optString("oaReason").takeIf { it.isNotBlank() },
                                 )
                             }
                             SubtitleCacheValidationPolicy.restoreTranslationsForSource(
@@ -7015,7 +7003,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
+                            
                             .put("sp", line.speakerId)
                     )
                     ensureCurrentSession(sessionKey, pipelineGeneration)
@@ -7132,7 +7120,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         .put("e", line.endMs)
                         .put("t", line.text)
                         .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
+                            
                         .put("sp", line.speakerId)
                 )
                 ensureCurrentSession(sessionKey, pipelineGeneration)
@@ -7350,7 +7338,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
      * This repairs older caches where source text was mistakenly saved to the Chinese field.
      */
     private fun needsSubtitleTranslation(line: SubLine, srcLang: String): Boolean {
-        if (line.text.isBlank() || line.translationFallbackOriginalAudio) return false
+        if (line.text.isBlank()) return false
         val translated = SubtitleParsers.cleanTranslatedText(line.zh)
         if (translated.isNullOrBlank()) return true
         if (isChineseLanguage(srcLang)) return false
@@ -7367,7 +7355,6 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             false
         } else {
             val translations = ArrayList<String?>(rows.length())
-            val originalAudioFallbackRows = ArrayList<Boolean>(rows.length())
             val timelineRows = ArrayList<Triple<Long, Long, String>>(rows.length())
             for (i in 0 until rows.length()) {
                 val row = rows.optJSONObject(i)
@@ -7378,17 +7365,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 timelineRows += Triple(startMs, endMs, originalText)
 
                 translations += row.optString("zh", "")
-                originalAudioFallbackRows += row.optBoolean("oa", false)
             }
             if (!SubtitleCacheValidationPolicy.hasValidTimeline(timelineRows)) {
                 throw IllegalArgumentException("字幕缓存时间轴无效或未按开始时间排序")
             }
             // Keep any valid completed rows; restore logic cleans placeholder rows to null and
             // translates only those missing cues on retry.
-            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(
-                translations,
-                originalAudioFallbackRows,
-            )
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(translations)
         }
     } catch (e: Exception) {
         android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON or timeline", e)
@@ -9747,66 +9730,12 @@ updateUiForSession(key, pipelineGeneration) {
                             translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
                         }
                     }
-                    if (!isImportedTranslatedSnapshot) {
-                        val translatedLinesBeforeDubbingPreparation = translatedLines
-                        val dubbingPreparation = DubbingTranslationPolicy.prepareLinesForDubbing(
-                            translatedLinesBeforeDubbingPreparation,
+                    }
+                    if (ui.value.dubbingOn) {
+                        translatedLines = DubbingTranslationPolicy.prepareLinesForDubbing(
+                            translatedLines,
                             sourceLanguage = srcLang,
                         )
-                        translatedLines = dubbingPreparation.lines
-                        val cachedFallbackRowsWithoutReason = if (cached != null) {
-                            dubbingPreparation.originalAudioFallbackIndices.count { index ->
-                                translatedLinesBeforeDubbingPreparation.getOrNull(index)
-                                    ?.translationFallbackReason.isNullOrBlank()
-                            }
-                        } else 0
-                        if (dubbingPreparation.originalAudioFallbackIndices.isNotEmpty()) {
-                            withContext(Dispatchers.IO) {
-                                io.translatetube.local.util.AppLogStore.error(
-                                    this@PlaybackService,
-                                    "DubbingFallback",
-                                    "字幕翻译出现原声兜底：${dubbingPreparation.originalAudioFallbackIndices.size} 条字幕无法生成有效中文配音文本",
-                                    diagnosticContext = mapOf(
-                                        "视频来源" to when {
-                                            key.startsWith("youtube:") -> "YouTube"
-                                            key.startsWith("remote:") -> "网页视频/远程媒体"
-                                            key.startsWith("local:") -> "本地视频"
-                                            else -> "其他"
-                                        },
-                                        "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
-                                        "字幕处理流程" to ui.value.processingFlow.name,
-                                        "字幕译文来源" to if (cached != null) {
-                                            "复用翻译缓存；缓存只保存原声兜底标记，不保存当时的模型响应/校验失败原因"
-                                        } else {
-                                            "本次处理生成或导入的字幕译文"
-                                        },
-                                        "翻译引擎名称" to ui.value.engineName.ifBlank { "未记录/未执行自动翻译" },
-                                        "翻译配置编号" to selectedTranslationId.toString(),
-                                        "源语言代码" to srcLang,
-                                        "目标语言代码" to "zh",
-                                        "配音引擎配置 ID" to getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge").orEmpty(),
-                                        "字幕总行数" to translatedLines.size.toString(),
-                                        "明确原声兜底字幕行数" to dubbingPreparation.originalAudioFallbackIndices.size.toString(),
-                                        "明确原声兜底字幕行号（从1开始）" to dubbingPreparation.originalAudioFallbackIndices.joinToString(",") { (it + 1).toString() },
-                                        "逐行原因" to dubbingPreparation.originalAudioFallbackIndices.take(80).joinToString("；") { index ->
-                                            val line = translatedLines.getOrNull(index)
-                                            val rawLine = translatedLinesBeforeDubbingPreparation.getOrNull(index)
-                                            val reason = dubbingPreparation.fallbackReasons[index].orEmpty()
-                                            val translationWasMarkedFallback = line?.translationFallbackOriginalAudio == true
-                                            "${index + 1}行：$reason（时间轴=${line?.startMs ?: -1}..${line?.endMs ?: -1} ms，原文字符数=${line?.text?.length ?: 0}，原始译文字符数=${rawLine?.zh?.length ?: 0}，翻译阶段已标记兜底=$translationWasMarkedFallback）"
-                                        },
-                                        "逐行原因未展开数量" to (dubbingPreparation.originalAudioFallbackIndices.size - 80).coerceAtLeast(0).toString(),
-                                        "旧缓存缺少具体根因的兜底行数" to cachedFallbackRowsWithoutReason.toString(),
-                                        "排查提示" to when {
-                                            cachedFallbackRowsWithoutReason > 0 -> "有部分旧缓存没有保存原声兜底原因；这些旧行无法追溯历史模型响应，重新执行翻译后会保存逐行根因"
-                                            cached != null -> "本次从缓存恢复时已保留逐行兜底原因；可按上方行号和原因代码排查"
-                                            else -> "翻译阶段的详细重试/模型返回信息见同一会话的 Translation 错误日志"
-                                        },
-                                        "处理策略" to "仅跳过无法生成中文语音的字幕，保留原视频音轨，不影响其他字幕配音",
-                                    ),
-                                )
-                            }
-                        }
                     }
                     lines = translatedLines
 
@@ -9834,7 +9763,7 @@ updateUiForSession(key, pipelineGeneration) {
                                         .put("e", line.endMs)
                                         .put("t", line.text)
                                         .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
+                            
                                 )
                             }
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -10098,7 +10027,6 @@ updateUiForSession(key, pipelineGeneration) {
                                 )
                             }
                             withContext(Dispatchers.Main) {
-                                if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
                             }
                         }
                     } else {
@@ -10131,7 +10059,6 @@ updateUiForSession(key, pipelineGeneration) {
                             )
                         }
                         withContext(Dispatchers.Main) {
-                            if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
                         }
                     }
                 }
@@ -10376,9 +10303,6 @@ updateUiForSession(key, pipelineGeneration) {
                 )
 android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
-                if (ui.value.key == key && videoKey == key) {
-                    runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
-                }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -10394,7 +10318,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // A TTS constructor can fail before the subtitle list is published to UI.
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
-                runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -10404,7 +10327,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         } else pipelineFailureMessage(e, failureState.phase, "视频解析或配音初始化失败"),
                         cloudAsrSubmissionUncertain = cloudAsrSubmissionUncertain,
                         noModelHint = if (dubbingStageEntered) {
-                            "配音初始化失败，已恢复视频原声以避免无声播放。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。"
+                            "配音初始化失败，未生成中文配音以避免无声播放。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。"
                         } else {
                             null
                         },
@@ -10465,7 +10388,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "已准备配音行数" to memoryFailureState.preparedCount.toString(),
                     "当前字幕索引" to memoryFailureState.currentLine.toString(),
                     "配音引擎" to memoryFailureState.ttsEngineName.ifBlank { "未确定" },
-                    "本次处理状态" to "捕获内存错误后释放本地转写、配音和音频缓存资源，尝试恢复原声",
+                    "本次处理状态" to "捕获内存错误后释放本地转写、配音和音频缓存资源，停止配音并报告错误",
                 ),
             )
             android.util.Log.e("PlaybackService", "Insufficient memory while preparing video/TTS for key=${key.substringBefore('?').take(80)}", e)
@@ -10497,7 +10420,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 runCatching {
                     withContext(Dispatchers.Main) {
                         if (videoKey == key && ui.value.key == key && ::pm.isInitialized) {
-                            safelySetOriginalVolume(1f, "source audio restore requested")
+                            safelySetOriginalVolume(1f, "preserve original audio preference")
                             pm.play()
                         }
                     }
@@ -10637,11 +10560,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         updateUiForSession(key, pipelineGeneration) { state ->
             if (state.key == key) state.copy(engineName = engineName) else state
         }
-        // The Google hybrid engine can fall back to offline ML Kit. For these Google paths,
-        // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
-        // to abort every subtitle and prevent the video from playing.
-        val sourceEchoAsUntranslatedFallback =
-            TranslationBatchFallbackPolicy.shouldTreatSourceEchoAsUntranslatedFallback(engine!!.id)
+        // Every engine must return usable Chinese text for each nonblank source cue.
         val pendingIndices = ArrayList<Int>()
         val translationPreviewRows = ArrayList<SubLine>(2)
         var completed = 0
@@ -10747,8 +10666,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
             val translationBatches = pendingIndices.chunked(batchSize)
-            // A subtitle is reported once as soon as its final per-batch dubbing eligibility is known.
-            val loggedFallbackIndices = mutableSetOf<Int>()
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     engineName = engineName,
@@ -10798,18 +10715,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val resolvedBatch = linkedMapOf<Int, String>()
                 var attempt = 0
                 var lastRejectedRows = emptyList<io.translatetube.local.translate.TranslationRowRejection>()
-                val batchAttemptDiagnostics = mutableListOf<String>()
-                val acceptedSourceEchoFallbacks = linkedMapOf<Int, String>()
-                val lastRawOutputByIndex = linkedMapOf<Int, String>()
-                val lastAttemptByIndex = linkedMapOf<Int, Int>()
-                var lastRawBatchOutput = ""
-                var lastRawBatchOutputAligned = false
                 var lastRequestRowCount = 0
                 var lastResponseRowCount = 0
-                // A single malformed/short/long provider response is enough to disable
-                // original-audio fallback for this batch, even if a later retry is aligned.
+                // An unrepaired malformed/short/long response makes this batch fail.
                 var hadResponseCountMismatch = false
-                val finalFallbackReasons = linkedMapOf<Int, String>()
 
                 fun describeRejectedTranslationRows(
                     rows: List<io.translatetube.local.translate.TranslationRowRejection>,
@@ -10833,88 +10742,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                     val omitted = rows.size - minOf(rows.size, 20)
                     return shown + if (omitted > 0) "；另有 $omitted 行未展开" else ""
-                }
-
-                fun fallbackReasonCode(line: io.translatetube.local.subs.SubLine): String {
-                    val reason = line.translationFallbackReason.orEmpty()
-                    return when {
-                        reason.contains("行数不匹配") -> "ROW_COUNT_MISMATCH"
-                        reason.contains("原文回显") || reason.contains("原文相同") -> "SOURCE_ECHO"
-                        reason.contains("目标语言") -> "TARGET_LANGUAGE_MISMATCH"
-                        reason.contains("占位内容") || reason.contains("非字幕文本") -> "EMPTY_AFTER_CLEANUP"
-                        reason.contains("为空") || reason.contains("空白") -> "EMPTY_TRANSLATION"
-                        reason.contains("可朗读") || reason.contains("标点") || reason.contains("符号") -> "UNSPEAKABLE_CONTENT"
-                        else -> "DUBBING_TEXT_REJECTED"
-                    }
-                }
-
-                suspend fun logConfirmedFallbackRows(
-                    entries: List<Pair<Int, io.translatetube.local.subs.SubLine>>,
-                    processedRows: Int,
-                ) {
-                    if (entries.isEmpty()) return
-                    val rowDiagnostics = entries.take(40).joinToString("\n") { (rowIndex, line) ->
-                        val reason = line.translationFallbackReason
-                            ?.takeIf { it.isNotBlank() }
-                            ?: "译文未通过最终中文配音可用性校验"
-                        val reasonCode = fallbackReasonCode(line)
-                        val retryCount = lastAttemptByIndex[rowIndex] ?: attempt.coerceAtLeast(1)
-                        val rawOutput = if (lastRawBatchOutputAligned) {
-                            lastRawOutputByIndex[rowIndex]?.take(600)?.ifBlank { "（模型返回为空）" }
-                                ?: "（未取得逐行返回内容）"
-                        } else {
-                            "（本轮返回数量不匹配，不能安全逐行映射；请查看本批原始返回）"
-                        }
-                        "${rowIndex + 1}行 [$reasonCode] 第${retryCount}次请求，时间轴=${line.startMs}..${line.endMs} ms；原因=$reason；原文=${line.text.take(180)}；模型原始返回=$rawOutput"
-                    }
-                    val unmappedRawResponse = if (lastRawBatchOutputAligned) {
-                        "本轮请求与返回行数一致，已按行号关联"
-                    } else {
-                        lastRawBatchOutput.take(6_000).ifBlank { "无可用原始返回内容" }
-                    }
-                    val omittedRows = (entries.size - 40).coerceAtLeast(0)
-                    withContext(Dispatchers.IO) {
-                        io.translatetube.local.util.AppLogStore.error(
-                            this@PlaybackService,
-                            "DubbingFallback",
-                            "字幕翻译过程中出现原声兜底：第${batchIndex + 1}/${translationBatches.size}批，${entries.size}条字幕",
-                            diagnosticContext = mapOf(
-                                "视频来源" to when {
-                                    key.startsWith("youtube:") -> "YouTube"
-                                    key.startsWith("remote:") -> "网页视频/远程媒体"
-                                    key.startsWith("local:") -> "本地视频"
-                                    else -> "导入字幕/其他"
-                                },
-                                "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
-                                "翻译引擎名称" to engineName,
-                                "翻译引擎 ID" to (engine?.id ?: "未知"),
-                                "翻译配置编号" to activeId.toString(),
-                                "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
-                                "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
-                                "源语言代码" to src,
-                                "目标语言代码" to tgt,
-                                "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
-                                "本批原声兜底行数" to entries.size.toString(),
-                                "本批原声兜底字幕行号（从1开始）" to entries.joinToString(",") { (index, _) -> (index + 1).toString() },
-                                "每条兜底字幕的原因代码、重试次数、时间轴、原文和模型原始返回" to rowDiagnostics,
-                                "最后一次模型返回的逐行对齐状态" to lastRawBatchOutputAligned.toString(),
-                                "最后一次模型批次原始返回（无法逐行对齐时参考）" to unmappedRawResponse,
-                                "逐行诊断未展开数量" to omittedRows.toString(),
-                                "当前累计原声兜底数量" to updatedLines.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }.toString(),
-                                "当前累计已处理字幕数" to processedRows.coerceAtMost(updatedLines.size).toString(),
-                                "字幕总行数" to updatedLines.size.toString(),
-                                "处理代数" to (pipelineGeneration ?: -1L).toString(),
-                                "日志触发时机" to "单条字幕完成最终判定后立即记录；重试中的字幕不提前计入",
-                            ),
-                            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
-                                "DubbingFallback",
-                                "${key.substringBefore('?')}|${activeId}|" +
-                                    entries.joinToString("|") { (index, line) ->
-                                        "$index:${fallbackReasonCode(line)}"
-                                    },
-                            ),
-                        )
-                    }
                 }
 
                 while (unresolvedIndices.isNotEmpty() && attempt < 3) {
@@ -10968,7 +10795,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         io.translatetube.local.util.AppLogStore.error(
                             this@PlaybackService,
                             "Translation",
-                            "字幕翻译请求失败：已禁止原声兜底",
+                            "字幕翻译请求失败",
                             e,
                             diagnosticContext = mapOf(
                                 "翻译引擎 ID" to engine?.id.orEmpty(),
@@ -10984,7 +10811,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "${index + 1}行：${row?.startMs ?: -1}..${row?.endMs ?: -1} ms"
                                 },
                                 "当前重试次数（0表示首次请求）" to attempt.toString(),
-                                "是否允许原声兜底" to "否；请求异常只按引擎策略重试，失败后终止翻译",
+                                "处理结果" to "请求失败，按引擎策略重试；耗尽后停止翻译",
                                 "异常类型链" to generateSequence(e) { it.cause }
                                     .take(8)
                                     .joinToString(" -> ") { it.javaClass.simpleName },
@@ -11058,68 +10885,29 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         rawTranslations = batchTranslations,
                         sourceTexts = unresolvedIndices.associateWith { plain[it] },
                         sourceLanguage = src,
-                        sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
                         targetLanguage = tgt,
                     )
-                    // Keep the model's last raw output for diagnostics. Only map it to cue indices
-                    // when request and response counts match; otherwise positional attribution is unsafe.
-                    lastRawBatchOutputAligned = batchTranslations.size == attemptedIndices.size
-                    lastRawBatchOutput = batchTranslations.mapIndexed { responseIndex, output ->
-                        "返回第${responseIndex + 1}行：${output.take(600)}"
-                    }.joinToString("\n").take(8_000)
-                    attemptedIndices.forEach { sourceIndex ->
-                        lastRawOutputByIndex.remove(sourceIndex)
-                        lastAttemptByIndex[sourceIndex] = attempt + 1
-                    }
-                    if (lastRawBatchOutputAligned) {
-                        attemptedIndices.forEachIndexed { responseIndex, sourceIndex ->
-                            lastRawOutputByIndex[sourceIndex] = batchTranslations[responseIndex].take(600)
-                        }
-                    }
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices
                     lastRejectedRows = parsedBatch.rejectedRows
                     lastRequestRowCount = attemptedIndices.size
                     lastResponseRowCount = batchTranslations.size
-                    if (batchTranslations.size != attemptedIndices.size) {
-                        hadResponseCountMismatch = true
-                    }
+                    if (batchTranslations.size != attemptedIndices.size) hadResponseCountMismatch = true
 
-                    // Google/ML Kit may intentionally accept an unchanged proper name/acronym.
-                    // The empty translation is a deliberate original-audio fallback, not a missing row.
-                    val acceptedEchoRows = parsedBatch.translations.filterValues { it.isBlank() }.keys.toList()
-                    acceptedEchoRows.forEach { sourceIndex ->
-                        val responsePosition = attemptedIndices.indexOf(sourceIndex)
-                        val rawOutput = batchTranslations.getOrNull(responsePosition).orEmpty()
-                        val sourceLine = updatedLines.getOrNull(sourceIndex)
-                        acceptedSourceEchoFallbacks[sourceIndex] =
-                            "原文回显被当前引擎策略视为不可翻译内容并保留原声；原文字符数=${sourceLine?.text?.length ?: 0}，模型返回字符数=${rawOutput.length}"
-                    }
-
-                    // Every accepted row is now final for dubbing purposes. Publish valid translations
-                    // and confirmed fallback rows immediately, even while other rows in this batch retry.
+                    // Publish only validated Chinese output. Invalid, blank and source-echo rows
+                    // remain unresolved for retry and are never marked as completed.
                     val checkedAcceptedRows = parsedBatch.translations.mapNotNull { (sourceIndex, translation) ->
+                        if (translation.isBlank()) return@mapNotNull null
                         val sourceLine = updatedLines.getOrNull(sourceIndex) ?: return@mapNotNull null
-                        val candidateLine = sourceLine.copy(
-                            zh = translation.takeIf { it.isNotBlank() },
-                            translationFallbackOriginalAudio = translation.isBlank(),
-                            translationFallbackReason = if (translation.isBlank()) {
-                                acceptedSourceEchoFallbacks[sourceIndex]
-                            } else {
-                                null
-                            },
-                        )
                         val checkedLine = DubbingTranslationPolicy.prepareLinesForDubbing(
-                            lines = listOf(candidateLine),
+                            lines = listOf(sourceLine.copy(zh = translation)),
                             sourceLanguage = src,
-                        ).lines.first()
+                        ).first()
                         sourceIndex to checkedLine
                     }
                     if (checkedAcceptedRows.isNotEmpty()) {
                         val acceptedByIndex = checkedAcceptedRows.toMap()
-                        updatedLines = updatedLines.mapIndexed { index, line ->
-                            acceptedByIndex[index] ?: line
-                        }
+                        updatedLines = updatedLines.mapIndexed { index, line -> acceptedByIndex[index] ?: line }
                         val processedRows = (completed + resolvedBatch.size).coerceAtMost(updatedLines.size)
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
@@ -11133,69 +10921,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 progress = "正在处理第 ${batchIndex + 1}/${translationBatches.size} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
                             )
                         }
-                        val rowsToLog = checkedAcceptedRows.filter { (index, line) ->
-                            line.text.isNotBlank() &&
-                                line.translationFallbackOriginalAudio &&
-                                loggedFallbackIndices.add(index)
-                        }
-                        logConfirmedFallbackRows(
-                            entries = rowsToLog,
-                            processedRows = processedRows,
-                        )
-                        // Persist the newly confirmed result immediately. A process death during
-                        // the remaining retries must not discard rows already shown as fallback.
-                        if (rowsToLog.isNotEmpty()) {
-                            pipelineGeneration?.let { generation ->
-                                persistInProgressProcessingCheckpoint(key, generation)
-                            }
-                        }
                     }
 
-                    val validResponseRows = parsedBatch.translations.values.count { it.isNotBlank() }
-                    val acceptedFallbackRows = parsedBatch.translations.values.count { it.isBlank() }
-                    batchAttemptDiagnostics += buildString {
-                        append("第${attempt + 1}次请求：请求 ${attemptedIndices.size} 行，模型返回 ${batchTranslations.size} 行，")
-                        append("通过校验 ${validResponseRows} 行，策略性原声兜底 ${acceptedFallbackRows} 行，")
-                        append("未通过/待重试 ${parsedBatch.missingIndices.size} 行")
-                        if (parsedBatch.rejectedRows.isNotEmpty()) {
+                    if (parsedBatch.rejectedRows.isNotEmpty()) {
                             append("；失败明细：")
                             append(describeRejectedTranslationRows(parsedBatch.rejectedRows))
-                        }
-                    }
-
-                    if (acceptedEchoRows.isNotEmpty()) {
-                        withContext(Dispatchers.IO) {
-                            io.translatetube.local.util.AppLogStore.error(
-                                this@PlaybackService,
-                                "Translation",
-                                "翻译结果命中原文回显规则，按当前引擎策略将字幕保留为原声",
-                                diagnosticContext = mapOf(
-                                    "视频来源" to when {
-                                        key.startsWith("youtube:") -> "YouTube"
-                                        key.startsWith("remote:") -> "网页视频/远程媒体"
-                                        key.startsWith("local:") -> "本地视频"
-                                        else -> "导入字幕/其他"
-                                    },
-                                    "翻译引擎名称" to engineName,
-                                    "翻译引擎 ID" to (engine?.id ?: "未知"),
-                                    "翻译配置编号" to activeId.toString(),
-                                    "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
-                                    "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
-                                    "源语言代码" to src,
-                                    "目标语言代码" to tgt,
-                                    "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
-                                    "本轮请求行数" to attemptedIndices.size.toString(),
-                                    "本轮模型返回行数" to batchTranslations.size.toString(),
-                                    "原文回显兜底行号（从1开始）" to acceptedEchoRows.joinToString(",") { (it + 1).toString() },
-                                    "逐行原声兜底原因" to acceptedEchoRows.joinToString("；") { index ->
-                                        val sourceLine = updatedLines.getOrNull(index)
-                                        val response = batchTranslations.getOrNull(attemptedIndices.indexOf(index)).orEmpty()
-                                        "${index + 1}行 [SOURCE_ECHO_ALLOWED]：原文与模型译文经忽略空格/标点/大小写归一化后相同；可能是专有名词、缩写或引擎主动保留的未翻译内容（时间轴=${sourceLine?.startMs ?: -1}..${sourceLine?.endMs ?: -1} ms，原文字符数=${sourceLine?.text?.length ?: 0}，模型返回字符数=${response.length}）"
-                                    },
-                                    "策略说明" to "该引擎启用了 sourceEchoAsUntranslatedFallback；这类行没有被当作请求失败重试，而是显式标记为原声兜底",
-                                    "处理代数" to (pipelineGeneration ?: -1L).toString(),
-                                ),
-                            )
                         }
                     }
 
@@ -11240,150 +10970,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
 
-                // Judge a tiny unresolved tail against the complete transcript. Valid cached rows
-                // count too, so one missing cue among hundreds does not abort the playback pipeline.
-                val hasUsableTranslation =
-                    resolvedBatch.values.any { it.isNotBlank() } ||
-                        updatedLines.any { line ->
-                            !line.translationFallbackOriginalAudio &&
-                                !needsSubtitleTranslation(line, src)
-                        }
-                if (
-                    TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
-                        unresolvedCount = unresolvedIndices.size,
-                        batchSize = batchIndices.size,
-                        totalSubtitleRows = lines.size,
-                        hasUsableTranslation = hasUsableTranslation,
-                        sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
-                        isLocalTranslationEngine = EngineFactory.isLocalTranslationEngine(activeId),
-                        isApiLanguageModelEngine =
-                            TranslationBatchFallbackPolicy.isApiLanguageModelEngine(engine!!.id) || active != null,
-                        responseIntegrityVerified = !hadResponseCountMismatch,
-                    )
-                ) {
-                    unresolvedIndices.forEach { sourceIndex ->
-                        val rejection = lastRejectedRows.firstOrNull { it.sourceIndex == sourceIndex }
-                        val rowReason = rejection?.let { item ->
-                            val codeLabel = when (item.reasonCode) {
-                                "ROW_COUNT_MISMATCH" -> "模型返回行数不匹配"
-                                "EMPTY_OR_STATUS_PLACEHOLDER" -> "模型未返回有效译文"
-                                "TARGET_LANGUAGE_MISMATCH" -> "译文不符合中文目标语言"
-                                "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" -> "模型返回原文且未生成中文"
-                                "SOURCE_ECHO" -> "模型返回内容与原文相同"
-                                else -> item.reasonCode
-                            }
-                            "$codeLabel [${item.reasonCode}] ${item.diagnosticReason.orEmpty()}".trim()
-                        }
-                        finalFallbackReasons[sourceIndex] = buildString {
-                            append(rowReason?.takeIf { it.isNotBlank() } ?: "重试结束后仍未获得可用中文译文")
-                            append("；本批请求次数=").append(attempt)
-                            append("；最后请求行数=").append(lastRequestRowCount)
-                            append("；最后返回行数=").append(lastResponseRowCount)
-                        }
-                    }
-                    // If a batch contains useful translations but a small number of rows remain
-                    // invalid after retry, preserve only those rows on original audio. A completely
-                    // failed local model or a remote API failure still fails the batch.
-                    android.util.Log.w(
-                        "PlaybackService",
-                        "Keeping ${unresolvedIndices.size} unresolved subtitle cues on original audio",
-                    )
-                    withContext(Dispatchers.IO) {
-                        io.translatetube.local.util.AppLogStore.error(
-                            this@PlaybackService,
-                            "Translation",
-                            "字幕翻译失败：少量无效译文经重试后仍保留原声",
-                            diagnosticContext = mapOf(
-                                "视频来源" to when {
-                                    key.startsWith("youtube:") -> "YouTube"
-                                    key.startsWith("remote:") -> "网页视频/远程媒体"
-                                    key.startsWith("local:") -> "本地视频"
-                                    else -> "导入字幕/其他"
-                                },
-                                "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
-                                "翻译引擎名称" to engineName,
-                                "翻译引擎 ID" to (engine?.id ?: "未知"),
-                                "翻译配置编号" to activeId.toString(),
-                                "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
-                                "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
-                                "源语言代码" to src,
-                                "目标语言代码" to tgt,
-                                "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
-                                "本批原始字幕行号（从1开始）" to batchIndices.joinToString(",") { (it + 1).toString() },
-                                "原声兜底字幕索引（0-based）" to unresolvedIndices.joinToString(","),
-                                "原声兜底字幕行号（从1开始）" to unresolvedIndices.joinToString(",") { (it + 1).toString() },
-                                "逐行失败原因" to describeRejectedTranslationRows(lastRejectedRows.filter { it.sourceIndex in unresolvedIndices }),
-                                "被策略允许的原文回显兜底行" to acceptedSourceEchoFallbacks.entries
-                                    .filter { it.key in batchIndices }
-                                    .joinToString("；") { "${it.key + 1}行：${it.value}" }.ifBlank { "无" },
-                                "每轮模型请求与校验结果" to batchAttemptDiagnostics.joinToString("\n").ifBlank { "无可用响应记录" },
-                                "最后一次请求字幕行数" to lastRequestRowCount.toString(),
-                                "最后一次模型返回行数" to lastResponseRowCount.toString(),
-                                "本批重试请求次数（含首次请求）" to attempt.toString(),
-                                "本次兜底行数" to unresolvedIndices.size.toString(),
-                                "字幕总行数" to lines.size.toString(),
-                                "是否有其他字幕行已获得有效中文译文" to hasUsableTranslation.toString(),
-                                "原声兜底判定" to "有其他可用译文，且仅剩少量字幕在最多三轮请求后仍未通过行数对齐、非空、中文目标语言或原文回显校验；仅这些行保留原声",
-                            ),
-                        )
-                    }
-                    val finalFallbackIndices = unresolvedIndices.toList()
-                    finalFallbackIndices.forEach { resolvedBatch[it] = "" }
-                    val finalFallbackUpdates = finalFallbackIndices.mapNotNull { sourceIndex ->
-                        val sourceLine = updatedLines.getOrNull(sourceIndex) ?: return@mapNotNull null
-                        val fallbackLine = sourceLine.copy(
-                            zh = null,
-                            translationFallbackOriginalAudio = true,
-                            translationFallbackReason = finalFallbackReasons[sourceIndex]
-                                ?: "重试结束后仍未获得可用中文译文",
-                        )
-                        val checkedLine = DubbingTranslationPolicy.prepareLinesForDubbing(
-                            lines = listOf(fallbackLine),
-                            sourceLanguage = src,
-                        ).lines.first()
-                        sourceIndex to checkedLine
-                    }
-                    if (finalFallbackUpdates.isNotEmpty()) {
-                        val fallbackByIndex = finalFallbackUpdates.toMap()
-                        updatedLines = updatedLines.mapIndexed { index, line ->
-                            fallbackByIndex[index] ?: line
-                        }
-                        val processedRows = (completed + resolvedBatch.size).coerceAtMost(updatedLines.size)
-                        updateUiForSession(key, pipelineGeneration) {
-                            it.copy(
-                                lines = updatedLines,
-                                totalLines = updatedLines.size,
-                                translatedLineCount = processedRows,
-                                sourceLang = src,
-                                translationCurrentBatch = batchIndex + 1,
-                                translationTotalBatches = translationBatches.size,
-                                translationRetryCount = attempt.coerceAtLeast(1),
-                                progress = "第 ${batchIndex + 1}/${translationBatches.size} 批已完成重试 · 已确认 ${processedRows}/${updatedLines.size} 行",
-                            )
-                        }
-                        val rowsToLog = finalFallbackUpdates.filter { (index, line) ->
-                            line.text.isNotBlank() && loggedFallbackIndices.add(index)
-                        }
-                        logConfirmedFallbackRows(
-                            entries = rowsToLog,
-                            processedRows = processedRows,
-                        )
-                        // Persist the newly confirmed result immediately. A process death during
-                        // the remaining retries must not discard rows already shown as fallback.
-                        if (rowsToLog.isNotEmpty()) {
-                            pipelineGeneration?.let { generation ->
-                                persistInProgressProcessingCheckpoint(key, generation)
-                            }
-                        }
-                    }
-                    unresolvedIndices = emptyList()
-                }
-
                 if (unresolvedIndices.isNotEmpty()) {
                     val finalRejections = lastRejectedRows.filter { it.sourceIndex in unresolvedIndices }
                     val missingRows = unresolvedIndices.joinToString(",")
                     val failureDetail = if (hadResponseCountMismatch) {
-                        "翻译接口响应数量曾与请求不一致；已重试和拆分恢复，但仍有字幕未通过校验。为避免把网络/接口异常伪装成成功，本批次已禁止原声兜底。"
+                        "翻译接口响应数量曾与请求不一致；已重试和拆分恢复，但仍有字幕未通过校验。"
                     } else {
                         "字幕翻译多次重试后仍有行未通过校验。"
                     }
@@ -11392,7 +10983,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             this@PlaybackService,
                             "Translation",
                             if (hadResponseCountMismatch) {
-                                "字幕翻译接口响应数量异常：已禁止原声兜底"
+                                "字幕翻译接口响应数量异常：重试后仍有字幕缺少有效译文"
                             } else {
                                 "字幕翻译多次重试后仍有行未通过校验"
                             },
@@ -11408,11 +10999,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "是否曾出现响应数量不匹配" to hadResponseCountMismatch.toString(),
                                 "最后一次请求字幕行数" to lastRequestRowCount.toString(),
                                 "最后一次接口返回行数" to lastResponseRowCount.toString(),
-                                "原声兜底策略" to if (hadResponseCountMismatch) {
-                                    "禁止：本批次曾出现响应数量不匹配"
-                                } else {
-                                    "未使用：剩余字幕未通过翻译校验"
-                                },
+                                "处理结果" to "停止翻译，不进入配音阶段",
                                 "字幕总行数" to lines.size.toString(),
                                 "最终缺失字幕索引（0-based）" to missingRows,
                                 "最终缺失字幕行号（从1开始）" to unresolvedIndices.joinToString(",") { (it + 1).toString() },
@@ -11423,7 +11010,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                     throw TranslationFailureException(
                         if (hadResponseCountMismatch) {
-                            "翻译接口响应数量异常：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文，已禁止原声兜底。请检查网络和翻译服务后重试。"
+                            "翻译接口响应数量异常：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。请检查网络和翻译服务后重试。"
                         } else {
                             "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。"
                         },
@@ -11437,13 +11024,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     nextRows += resolvedBatch[rowIndex]?.let { translation ->
                         val translatedLine = line.copy(
                             zh = translation.takeIf { it.isNotBlank() },
-                            translationFallbackOriginalAudio = translation.isBlank(),
-                            translationFallbackReason = if (translation.isBlank()) {
-                                acceptedSourceEchoFallbacks[rowIndex] ?: finalFallbackReasons[rowIndex]
-                                    ?: "翻译阶段已标记原声兜底，但未找到本批拒绝明细"
-                            } else {
-                                null
-                            },
                         )
                         // Run the same final speech-eligibility guard now, per completed cue.
                         // This catches non-empty echoes, non-Chinese text and non-speakable output
@@ -11451,7 +11031,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         DubbingTranslationPolicy.prepareLinesForDubbing(
                             lines = listOf(translatedLine),
                             sourceLanguage = src,
-                        ).lines.first()
+                        ).first()
                     } ?: line
                 }
                 translationJob?.ensureActive()
@@ -11480,24 +11060,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已处理 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                     )
                 }
-                // Publish a dedicated error as soon as this batch contains confirmed fallbacks.
-                // The UI state above is updated first; later batches continue normally.
-                val batchFallbackEntries = batchIndices.mapNotNull { rowIndex ->
-                    val line = updatedLines.getOrNull(rowIndex) ?: return@mapNotNull null
-                    if (
-                        line.text.isBlank() ||
-                        !line.translationFallbackOriginalAudio ||
-                        !loggedFallbackIndices.add(rowIndex)
-                    ) {
-                        null
-                    } else {
-                        rowIndex to line
-                    }
-                }
-                logConfirmedFallbackRows(
-                    entries = batchFallbackEntries,
-                    processedRows = completed.coerceAtMost(updatedLines.size),
-                )
                 // Unlike the coarser Room cache checkpoint, persist each completed batch so
                 // force-stop recovery resumes from the exact remaining cue rather than from audio.
                 pipelineGeneration?.let { generation ->
@@ -11507,7 +11069,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val completedBatchCount = batchIndex + 1
                 if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
                     val batchResolvedCount = resolvedBatch.values.count { it.isNotBlank() }
-                    val batchFallbackCount = resolvedBatch.values.count { it.isBlank() }
                     withContext(Dispatchers.IO) {
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
@@ -11519,14 +11080,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "批次进度" to "${completedBatchCount}/${translationBatches.size}",
                                 "本批字幕行数" to batchIndices.size.toString(),
                                 "本批已获得有效译文行数" to batchResolvedCount.toString(),
-                                "本批空译文/原声兜底行数" to batchFallbackCount.toString(),
+                                "本批未通过校验字幕行数" to (batchIndices.size - batchResolvedCount).coerceAtLeast(0).toString(),
                                 "本批重试次数" to attempt.toString(),
                                 "本批处理耗时 ms" to (((System.nanoTime() - batchStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
                                 "源语言代码" to src,
                                 "目标语言代码" to tgt,
                                 "当前累计已完成行数" to completed.coerceAtMost(updatedLines.size).toString(),
                                 "字幕总行数" to updatedLines.size.toString(),
-                                "翻译失败后是否采用原声兜底" to (batchFallbackCount > 0).toString(),
                             ),
                         )
                     }
@@ -11551,7 +11111,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
+                            
                             .put("sp", line.speakerId)
                     )
                 }
@@ -11789,12 +11349,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (ui.value.key == sessionKey && videoId == failedVideoId) {
                     pm.errorSink.value = null
-                    runCatching {
-                        safelySetOriginalVolume(
-                            if (ui.value.originalVolume <= 0f) 0f else 1f,
-                            "source audio fallback",
-                        )
-                    }
                     playbackRecoveryInProgress = false
                     val detail = PlaybackHintPolicy.safeReason(e.message ?: originalError)
                     playbackRecoveryFailure = if (playbackRecoveryMessage?.contains("地址已失效") == true) {
@@ -13646,7 +13200,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "是否开启配音" to state.dubbingOn.toString(),
                     "是否静音原声" to (state.originalVolume <= 0f).toString(),
                     "当前配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
-                    "恢复策略" to "恢复原声音量并清除活动配音行，继续视频播放",
+                    "恢复策略" to "保持当前音量设置并清除活动配音行，继续视频播放",
                 ),
             )
             android.util.Log.e("PlaybackService", "Unable to synchronize dubbing during $source", error)
@@ -14133,11 +13687,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 syncOriginalVolumeWithDubbing(d, st, "catch-up dubbing playback")
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
-                d.logSilentCueFallback(dubLine)
+                d.logSilentCueError(dubLine)
                 if (d.currentLineIdx() >= 0) d.stop()
-                // No synthesized voice is playing for this cue, so source audio is the only
-                // available narration; it can never overlap a live dubbed cue.
-                safelySetOriginalVolume(1f, "source audio restore requested")
                 ui.update { state ->
                     if (state.key == st.key) {
                         state.copy(
@@ -14196,7 +13747,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
                 if (d.currentLineIdx() >= 0) d.stop()
-                safelySetOriginalVolume(1f, "source audio restore requested")
+                safelySetOriginalVolume(1f, "preserve original audio preference")
             } else {
                 // Outside a dubbed cue, keep the original track as the only audio source.
                 if (d.currentLineIdx() >= 0) d.stop()
@@ -14829,7 +14380,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 for (line in updated) arr.put(
                     org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
                         .put("t", line.text).put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty()).put("sp", line.speakerId)
+                            .put("sp", line.speakerId)
                 )
                 ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
@@ -14942,7 +14493,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             activePipelineGeneration == pipelineGeneration &&
                             activeDubbingMutationGeneration == mutationGeneration
                         ) {
-                            safelySetOriginalVolume(1f, "source audio restore requested")
+                            safelySetOriginalVolume(1f, "preserve original audio preference")
                         }
                     }
                 }
@@ -15187,7 +14738,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
+                            
                             .put("sp", line.speakerId)
                     )
                 }
@@ -15262,7 +14813,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             activePipelineGeneration == pipelineGeneration &&
                             activeDubbingMutationGeneration == mutationGeneration
                         ) {
-                            safelySetOriginalVolume(1f, "source audio restore requested")
+                            safelySetOriginalVolume(1f, "preserve original audio preference")
                         }
                     }
                 }
@@ -15598,7 +15149,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cancelDubbingDrainAfterVideoEnd()
         clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
         if (!nowOn) {
-            if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
+            if (::pm.isInitialized) safelySetOriginalVolume(1f, "preserve original audio preference")
             val currentDubbing = dubbing
             if (position >= 0L) currentDubbing?.prepareForBackgroundPlayback(currentDubbing.lineAt(position))
         } else {
@@ -15612,7 +15163,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 } else state
             }
             // Source audio and Chinese dubbing now use independent volume gains; users may hear both.
-            if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
+            if (::pm.isInitialized) safelySetOriginalVolume(1f, "preserve original audio preference")
             lastLineIdx = Int.MIN_VALUE
             if (::pm.isInitialized) {
                 tickFromPlayerCallback(pm.position(), "dubbing enabled")
@@ -15625,7 +15176,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (ui.value.originalVolume <= 0f) {
             toggleOriginalVolume()
         } else if (::pm.isInitialized) {
-            safelySetOriginalVolume(1f, "source audio restore requested")
+            safelySetOriginalVolume(1f, "preserve original audio preference")
         }
     }
 
