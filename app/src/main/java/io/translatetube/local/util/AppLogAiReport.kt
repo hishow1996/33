@@ -447,6 +447,8 @@ internal object AppLogAiReport {
             append("5. 根据 diagnosticContext 判断视频来源、处理阶段、引擎、请求状态、批次/句子索引等字段；缺失字段不得猜测。\n")
             append("6. 给出最小修复方案、可能影响的 YouTube/网页/本地入口、回归测试和验证标准。\n")
             append("7. 不得通过吞掉异常、返回空成功、跳过错误或原声兜底来掩盖真实失败。\n")
+            append("8. 若 exceptionCaptureStatus 表示未提供 Throwable，使用 logCallSite/logCallChain 定位写出失败日志的源码分支；该位置不是异常抛出位置，不能替代真实 cause/stackFrames。检查分支中的返回码、状态枚举、请求结果和最后成功步骤。\n")
+            append("9. INFO 事件也是还原任务过程的证据；结合 operationId、时间、阶段和调用位置分析，但不能只凭时间相邻判断因果。")
             append("\n隐私说明：报告对常见密钥、令牌、Cookie 和签名 URL 参数执行脱敏；分享前仍请检查字幕片段、文件名和业务内容。\n")
         }
     }
