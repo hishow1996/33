@@ -2203,13 +2203,12 @@ class PlaybackService : MediaSessionService() {
         dubCollectJob?.cancel()
         dubCollectJob = null
         runCatching { retireCurrentDubbing() }
-        if (playerReady && ::pm.isInitialized) runCatching { safelySetOriginalVolume(1f, "preserve original audio preference") }
+        if (playerReady && ::pm.isInitialized) runCatching { safelySetOriginalVolume(current.originalVolume, "cancel processing") }
         updateUiForSession(current.key) {
             it.copy(
                 phase = Phase.ERROR,
                 progress = "",
                 error = "已取消处理。点击重试即可重新开始。",
-                muteOriginal = false,
                 noModelHint = null,
                             waitingForTranscriptionEngine = false,
                             waitingForDubbingEngine = false,
@@ -2542,7 +2541,7 @@ class PlaybackService : MediaSessionService() {
                     ) {
                         enqueueDubbingCatchUpCue(sessionKey, activeIndex)
                     }
-                    safelySetOriginalVolume(1f, "video ended; draining remaining dubbing")
+                    safelySetOriginalVolume(ui.value.originalVolume, "video ended; draining remaining dubbing")
                     ui.update {
                         if (it.key == sessionKey) it.copy(
                             isPlaying = false,
@@ -2556,7 +2555,7 @@ class PlaybackService : MediaSessionService() {
                     cancelDubbingDrainAfterVideoEnd()
                     clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = pm.position())
                     safelyControlDubbing("player ended") { dubbing?.stop() }
-                    safelySetOriginalVolume(1f, "player ended")
+                    safelySetOriginalVolume(ui.value.originalVolume, "player ended")
                     ui.update { it.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1) }
                 }
             }
@@ -6721,7 +6720,6 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         progress = "",
                         error = "设备可用内存不足，无法合成已导入字幕的中文配音。",
                         noModelHint = "未生成中文配音。请关闭其他应用后重试；不会自动切换配音引擎。",
-                        muteOriginal = false,
                         dubbingHasErrors = true,
                         waitingForTranscriptionEngine = false,
                         waitingForDubbingEngine = false,
@@ -6755,7 +6753,6 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         phase = Phase.ERROR,
                         progress = "",
                         error = "已翻译字幕导入失败：" + (e.message ?: e.javaClass.simpleName),
-                        muteOriginal = false,
                     )
                 }
                 if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
@@ -10011,9 +10008,7 @@ updateUiForSession(key, pipelineGeneration) {
                                     },
                                     waitingForTranscriptionEngine = false,
                                     waitingForDubbingEngine = true,
-                                    // A constructor failure means there is no dubbing output to replace
-                                    // the source track; never keep the entire video muted.
-                                    muteOriginal = false,
+                                    // A constructor failure is an error; preserve the user's source-audio setting.
                                     error = null
                                 )
                             }
@@ -10044,9 +10039,7 @@ updateUiForSession(key, pipelineGeneration) {
                                 noModelHint = message,
                                 waitingForTranscriptionEngine = false,
                                 waitingForDubbingEngine = true,
-                                // The selected local model is unavailable, so no voice can be heard.
-                                // Keep the selected engine unchanged but return to audible source audio.
-                                muteOriginal = false,
+                                // The selected local model is unavailable. Keep the engine and volume setting unchanged.
                             )
                         }
                         withContext(Dispatchers.Main) {
@@ -10300,14 +10293,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         progress = "",
                         error = e.message ?: "API 翻译失败",
                         noModelHint = null,
-                        muteOriginal = false,
                         waitingForTranscriptionEngine = false,
                         waitingForDubbingEngine = false,
                     )
                 }
             } else {
             // A TTS constructor can fail before the subtitle list is published to UI.
-            // Restore original volume immediately so default mute never silences the whole video.
+            // Keep the selected source-audio preference unchanged and report the initialization error.
             if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
@@ -10318,11 +10310,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         } else pipelineFailureMessage(e, failureState.phase, "视频解析或配音初始化失败"),
                         cloudAsrSubmissionUncertain = cloudAsrSubmissionUncertain,
                         noModelHint = if (dubbingStageEntered) {
-                            "配音初始化失败，未生成中文配音以避免无声播放。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。"
+                            "配音初始化失败，未生成中文配音。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。"
                         } else {
                             null
                         },
-                        muteOriginal = false,
                     )
                 }
             } else {
@@ -13473,7 +13464,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 } else {
                     cancelDubbingDrainAfterVideoEnd()
                     engine.stop()
-                    safelySetOriginalVolume(1f, "remaining dubbing completed")
+                    safelySetOriginalVolume(ui.value.originalVolume, "remaining dubbing completed")
                     updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                         state.copy(
                             isPlaying = false,
