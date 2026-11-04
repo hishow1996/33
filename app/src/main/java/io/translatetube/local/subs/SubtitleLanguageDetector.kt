@@ -35,8 +35,10 @@ object SubtitleLanguageDetector {
      * are English or another language. Strong script detection wins. If the provider claims
      * Chinese but the content is not Chinese-dominant, use "auto" so translation is not skipped.
      */
-    fun resolveTranscriptionLanguage(providerLanguage: String?, transcript: String): String =
-        resolveLanguageUsingContent(providerLanguage, detect(transcript))
+    fun resolveTranscriptionLanguage(providerLanguage: String?, transcript: String): String {
+        val sample = transcript.take(12_000)
+        return resolveLanguageUsingContent(providerLanguage, detect(sample), sample)
+    }
 
     /**
      * Resolve a provider hint directly from subtitle cues, avoiding a large joinToString allocation
@@ -50,11 +52,19 @@ object SubtitleLanguageDetector {
         // With no sampled cue text, neither the content nor the provider hint is reliable enough
         // to choose a source language; keep auto-detection enabled.
         if (maxCues <= 0) return "auto"
-        return resolveLanguageUsingContent(providerLanguage, detectFromCues(cues, maxCues))
+        val sample = sampleFromCues(cues, maxCues)
+        return resolveLanguageUsingContent(providerLanguage, detect(sample), sample)
     }
 
-    private fun resolveLanguageUsingContent(providerLanguage: String?, contentLanguage: String): String {
+    private fun resolveLanguageUsingContent(
+        providerLanguage: String?,
+        contentLanguage: String,
+        sampleText: String,
+    ): String {
         if (contentLanguage != "auto") return contentLanguage
+        // A Han-only sample can be Chinese or Japanese written without kana. Do not let a provider
+        // hint force either result; the on-device language identifier gets the next chance.
+        if (isHanDominantAmbiguous(sampleText)) return "auto"
         val supplied = normalizeProviderLanguage(providerLanguage)
         return if (supplied.startsWith("zh") || supplied == "cmn" || supplied.startsWith("yue")) {
             "auto"
@@ -107,6 +117,10 @@ object SubtitleLanguageDetector {
      */
     fun detectFromCues(cues: Iterable<String>, maxCues: Int = 120): String {
         if (maxCues <= 0) return "auto"
+        return detect(sampleFromCues(cues, maxCues))
+    }
+
+    private fun sampleFromCues(cues: Iterable<String>, maxCues: Int): String {
         val sample = StringBuilder()
         var cueCount = 0
         for (cue in cues) {
@@ -119,7 +133,25 @@ object SubtitleLanguageDetector {
             if (remaining <= 0) break
             sample.append(cue, 0, minOf(cue.length, remaining))
         }
-        return detect(sample.toString())
+        return sample.toString()
+    }
+
+    /** True when Han characters dominate but no kana/Hangul resolves Chinese vs Japanese. */
+    internal fun isHanDominantAmbiguous(text: String): Boolean {
+        val sample = text.take(12_000)
+        if (sample.isBlank()) return false
+        val hasKanaOrHangul = sample.any {
+            Character.UnicodeScript.of(it.code) in setOf(
+                Character.UnicodeScript.HIRAGANA,
+                Character.UnicodeScript.KATAKANA,
+                Character.UnicodeScript.HANGUL,
+            )
+        }
+        if (hasKanaOrHangul) return false
+        val hanCount = sample.count { it in '\u4E00'..'\u9FFF' }
+        val otherLetterCount = sample.count { it.isLetter() && it !in '\u4E00'..'\u9FFF' }
+        val totalLetters = (hanCount + otherLetterCount).coerceAtLeast(1)
+        return hanCount > 0 && hanCount.toDouble() / totalLetters >= 0.65
     }
 
     fun detect(text: String): String {
@@ -153,9 +185,9 @@ object SubtitleLanguageDetector {
             has(12) -> "tr"
             has(13) -> "pl"
             has(14) -> "vi"
-            // Detect Chinese only when Han characters dominate; short foreign-language
-            // captions with an embedded Chinese name should still be passed to auto-detection.
-            hanDominates -> "zh"
+            // Han-only text is not enough to distinguish Chinese from Japanese written without
+            // kana. Keep it ambiguous so ML Kit or an explicit source-language selection can decide.
+            hanDominates -> "auto"
             else -> "auto"
         }
     }
