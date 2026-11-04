@@ -586,8 +586,19 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 ModelKind.TTS -> {
                     runCatching {
                         if (ModelFiles.ttsCoreReady(ctx)) ModelFiles.installBundledTtsSupportFiles(ctx)
-                    }.onFailure {
-                        Log.w("ModelDL", "无法修复 Kokoro 应用内附属文件，将检查完整模型包：${it.message}")
+                    }.onFailure { failure ->
+                        logModelWarning(
+                            "Kokoro 应用内附属文件修复失败，正在检查完整模型包",
+                            failure,
+                            modelKindDetails(ModelKind.TTS) + mapOf(
+                                "失败阶段" to "安装内置 TTS 附属文件",
+                                "TTS 核心模型是否已存在" to ModelFiles.ttsCoreReady(ctx).toString(),
+                                "TTS 完整性是否已通过" to ModelFiles.ttsReady(ctx).toString(),
+                                "是否终止后续完整模型检查" to "否",
+                                "后续处理" to "继续检查完整模型包；不删除现有核心模型",
+                            ),
+                        )
+                        Log.w("ModelDL", "无法修复 Kokoro 应用内附属文件，将检查完整模型包：${failure.message}")
                     }
                     if (ModelFiles.ttsReady(ctx)) {
                         _tts.value = ModelState(status = ModelStatus.READY, progress = 100)
