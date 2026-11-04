@@ -1,9 +1,11 @@
 package io.translatetube.local.tts
 
+import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import io.translatetube.local.player.Wsola
+import io.translatetube.local.util.AppLogStore
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URLEncoder
@@ -16,7 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 调用谷歌翻译朗读接口获取 MP3 音频流并解码为 24kHz 单声道 FloatArray PCM。
  * 多端点自动互备（tw-ob / gtx / dict-chrome-ex），无需 API Key、不占本地算力。
  */
-internal class GoogleTts : TtsEngine {
+internal class GoogleTts(context: Context) : TtsEngine {
+    private val appCtx = context.applicationContext
 
     override val name: String = "谷歌在线语音"
     override val cacheKey: String = "google-tts-v2"
@@ -131,16 +134,21 @@ internal class GoogleTts : TtsEngine {
             "https://translate.google.com/translate_tts?ie=UTF-8&client=dict-chrome-ex&tl=zh-CN&ttsspeed=$nativeSpeed&q=$encoded",
         )
         var lastError: Throwable? = null
-        for (url in urls) {
+        for ((index, url) in urls.withIndex()) {
             checkOpen()
             checkActive()
+            var stage = "HTTP 音频请求"
+            var responseBytes = 0
             try {
                 val bytes = httpGet(url)
+                responseBytes = bytes.size
                 checkOpen()
                 checkActive()
+                stage = "MP3 音频解码"
                 val decoded = decodeMp3(bytes, checkActive)
                 checkOpen()
                 checkActive()
+                stage = "音频变速处理"
                 val postStretchRatio = TtsProviderSpeedPolicy.googlePostStretchRatio(normalizedSpeed)
                 val samples = if (postStretchRatio < 0.999f) {
                     Wsola.stretch(decoded.first, postStretchRatio)
@@ -154,13 +162,66 @@ internal class GoogleTts : TtsEngine {
                 throw cancelled
             } catch (e: Exception) {
                 lastError = e
+                val host = runCatching { android.net.Uri.parse(url).host }.getOrNull().orEmpty().ifBlank { "未知" }
+                val path = runCatching { android.net.Uri.parse(url).path }.getOrNull().orEmpty().take(160)
+                val willTryNext = index < urls.lastIndex
+                AppLogStore.warning(
+                    appCtx,
+                    "GoogleTTS",
+                    "Google 在线 TTS 当前接口端点失败，${if (willTryNext) "继续尝试下一个端点" else "已无备用端点"}",
+                    e,
+                    diagnosticContext = mapOf(
+                        "服务商" to "Google Translate TTS",
+                        "失败阶段" to stage,
+                        "当前端点序号" to (index + 1).toString(),
+                        "候选端点总数" to urls.size.toString(),
+                        "请求主机" to host,
+                        "请求路径（不含查询参数）" to path,
+                        "完整请求 URL 是否写入日志" to "否",
+                        "当前文本字符数" to text.length.toString(),
+                        "当前字幕正文是否写入日志" to "否",
+                        "请求语速" to normalizedSpeed.toString(),
+                        "HTTP 返回音频字节数" to responseBytes.toString(),
+                        "MP3 最低有效字节数" to MIN_MP3_BYTES.toString(),
+                        "异常类型" to e.javaClass.name,
+                        "异常摘要" to (e.message ?: "无异常消息").take(320),
+                        "失败分类" to when {
+                            e.message.orEmpty().contains("HTTP 401") || e.message.orEmpty().contains("HTTP 403") -> "HTTP 鉴权/访问拒绝"
+                            e.message.orEmpty().contains("HTTP 429") -> "HTTP 限流"
+                            e.message.orEmpty().contains("HTTP 5") -> "HTTP 服务端错误"
+                            e.message.orEmpty().contains("过短") -> "响应音频为空或过短"
+                            e.message.orEmpty().contains("解码") || stage.contains("解码") -> "MP3 音频解码"
+                            else -> "网络请求或音频处理"
+                        },
+                        "是否继续备用端点" to willTryNext.toString(),
+                        "重试策略" to if (willTryNext) "切换到下一 Google TTS 端点" else "全部端点已尝试",
+                    ),
+                )
                 android.util.Log.w(TAG, "Google TTS endpoint failed: ${e.message}")
             }
         }
-        throw IllegalStateException(
+        val finalFailure = IllegalStateException(
             "谷歌在线语音请求或解码失败（${lastError?.message ?: "网络不可达"}），请检查网络或切换其他配音引擎",
             lastError,
         )
+        AppLogStore.error(
+            appCtx,
+            "GoogleTTS",
+            "Google 在线 TTS 所有备用端点均失败",
+            finalFailure,
+            diagnosticContext = mapOf(
+                "服务商" to "Google Translate TTS",
+                "候选端点总数" to urls.size.toString(),
+                "已尝试端点主机" to urls.mapNotNull { runCatching { android.net.Uri.parse(it).host }.getOrNull() }.distinct().joinToString(", "),
+                "当前文本字符数" to text.length.toString(),
+                "当前字幕正文是否写入日志" to "否",
+                "请求语速" to normalizedSpeed.toString(),
+                "最后异常类型" to (lastError?.javaClass?.name ?: "未知"),
+                "最后异常摘要" to (lastError?.message ?: "未提供").take(320),
+                "恢复建议" to "检查网络可达性、Google TTS 接口返回状态及 MP3 解码器；也可切换其他配音引擎",
+            ),
+        )
+        throw finalFailure
     }
 
     private fun httpGet(url: String): ByteArray {
