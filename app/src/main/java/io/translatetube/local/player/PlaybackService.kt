@@ -10989,10 +10989,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "Keeping ${unresolvedIndices.size} unresolved subtitle cues on original audio",
                     )
                     withContext(Dispatchers.IO) {
-                        io.translatetube.local.util.AppLogStore.info(
+                        io.translatetube.local.util.AppLogStore.error(
                             this@PlaybackService,
                             "Translation",
-                            "少量无效译文已按策略保留原声",
+                            "字幕翻译失败：少量无效译文经重试后仍保留原声",
                             diagnosticContext = mapOf(
                                 "翻译引擎名称" to engineName,
                                 "原声兜底字幕索引（0-based）" to unresolvedIndices.joinToString(","),
