@@ -4137,7 +4137,7 @@ class DubbingEngine(
                 "实际中文配音文本预览" to cue.zh.orEmpty().take(240),
                 "字幕时间轴 ms" to "${rawCue?.startMs ?: cue.startMs}–${rawCue?.endMs ?: cue.endMs}",
                 "源语言标记" to sourceLanguageForDiagnostics,
-                "处理动作" to "该句没有可播放的中文配音，播放服务将停止视频，不启用原声兜底",
+                "处理动作" to "该句没有可播放的中文配音，播放服务将停止视频并保留用户设置的原声音量",
             ),
             tag = "Dubbing",
         )
