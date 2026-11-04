@@ -218,15 +218,15 @@ object NewPipeRepo {
         response: okhttp3.Response? = null,
     ) {
         val status = response?.code
-        val statusMeaning = when (status) {
-            401 -> "身份验证失败"
-            403 -> "无权限、风控挑战或地区/账号限制"
-            404 -> "资源或请求路径不存在/已失效"
-            408 -> "服务端请求超时"
-            410 -> "媒体或字幕链接已过期/失效"
-            429 -> "请求过于频繁或触发限流"
+        val statusMeaning = when {
+            status == 401 -> "身份验证失败"
+            status == 403 -> "无权限、风控挑战或地区/账号限制"
+            status == 404 -> "资源或请求路径不存在/已失效"
+            status == 408 -> "服务端请求超时"
+            status == 410 -> "媒体或字幕链接已过期/失效"
+            status == 429 -> "请求过于频繁或触发限流"
             status != null && status in 500..599 -> "YouTube 或上游服务端错误"
-            null -> "未取得 HTTP 响应，检查 DNS、连接、TLS 或超时"
+            status == null -> "未取得 HTTP 响应，检查 DNS、连接、TLS 或超时"
             else -> "HTTP 请求未成功"
         }
         val responseHeaders = listOf(
