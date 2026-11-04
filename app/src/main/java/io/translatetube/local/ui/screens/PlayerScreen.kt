@@ -6621,7 +6621,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             .windowInsetsPadding(WindowInsets.navigationBars),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val edgePadding = if (maxWidth < 360.dp) 8.dp else 14.dp
+            val edgePadding = if (maxWidth < 360.dp) 2.dp else 6.dp
             val bottomReserved = 40.dp
             val availableControlHeight = (maxHeight - bottomReserved).coerceAtLeast(0.dp)
             val preferredControlSize = when {
