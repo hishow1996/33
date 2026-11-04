@@ -28,8 +28,6 @@ internal data class TranslationBatchResult(
             rawTranslations: List<String>,
             sourceTexts: Map<Int, String> = emptyMap(),
             sourceLanguage: String = "auto",
-            /** Google/ML Kit may validly leave a name or untranslatable cue unchanged. */
-            sourceEchoAsUntranslatedFallback: Boolean = false,
             targetLanguage: String = "zh",
         ): TranslationBatchResult {
             // Positional output is safe only when every requested cue has exactly one result.
@@ -68,7 +66,7 @@ internal data class TranslationBatchResult(
                 }
                 val targetMismatch = targetMismatchDetail != null
                 // 纯语气词（Mm-hmm / Hmm / Oh）机器翻译常原样返回或只给标点；译文失败时用固定中文语气词，
-                // 这样这一句也有中文字幕和配音，而不是三轮重试后落到原声兜底。
+                // 确保这一句也有中文字幕和配音。
                 val interjection = if (value.isNullOrBlank() || sourceEcho || targetMismatch) {
                     SubtitleInterjectionPolicy.chineseFor(sourceText, sourceLanguage, targetLanguage)
                 } else {
@@ -84,7 +82,7 @@ internal data class TranslationBatchResult(
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"
                     targetMismatch -> "TARGET_LANGUAGE_MISMATCH"
-                    sourceEcho && !sourceEchoAsUntranslatedFallback -> "SOURCE_ECHO"
+                    sourceEcho -> "SOURCE_ECHO"
                     else -> null
                 }
                 when {
@@ -111,14 +109,6 @@ internal data class TranslationBatchResult(
                                 )
                             }
                         }
-                    }
-                    sourceEcho && sourceEchoAsUntranslatedFallback -> {
-                        // Keep an explicit empty translation for this cue: subtitles can still
-                        // show the original text and DubbingTranslationPolicy will preserve its
-                        // original audio rather than speaking the source with a Chinese voice.
-                        if (sourceIndex !in translated) translated[sourceIndex] = ""
-                        missing.remove(sourceIndex)
-                        rejectionByIndex.remove(sourceIndex)
                     }
                     sourceEcho -> {
                         // Other engines must retry an echoed source row instead of presenting it
