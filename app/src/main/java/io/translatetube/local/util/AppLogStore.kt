@@ -757,47 +757,50 @@ object AppLogStore {
                 }
                 pruneOldFiles(directory)
                 val file = File(directory, LOG_NAME)
-                val shouldIncludeTrail = level == "WARN" || level == "ERROR" || level == "FATAL"
-                val effectiveDiagnosticContext = AppLogOperationContextHolder.current.get()
-                    ?.let { operation -> applyOperationContext(diagnosticContext, operation) }
-                    ?: diagnosticContext
-                val operationIdForTrail = extractOperationId(effectiveDiagnosticContext, details)
-                val trailSnapshot = if (shouldIncludeTrail) {
-                    recentEventTrail.snapshot(operationIdForTrail, Thread.currentThread().id, timestampMs)
-                } else {
-                    AppLogRecentEventTrailSnapshot("不适用", "")
-                }
-                val contextWithTrailScope = if (shouldIncludeTrail) {
-                    effectiveDiagnosticContext + ("近期操作轨迹关联方式" to trailSnapshot.scopeLabel)
-                } else {
-                    effectiveDiagnosticContext
-                }
-                val safeDetails = truncatePreservingEdges(
-                    redact(
-                        enrichDetails(
-                            context,
-                            level,
-                            tag,
-                            details,
-                            threadName,
-                            contextWithTrailScope,
-                            trailSnapshot.summary,
-                            trailSnapshot.scopeLabel,
-                        ),
-                    ),
-                    MAX_DETAIL_CHARS,
-                )
-                val effectiveIssueKey = issueKey?.takeIf { it.isNotBlank() }
-                    ?: if (isIssueLevel(level)) stableIssueKey(tag, message) else ""
                 val currentThread = Thread.currentThread()
                 val eventId = UUID.randomUUID().toString()
                 val sequence = eventSequence.incrementAndGet()
                 val sessionId = activeSessionId(context)
+                val elapsedRealtimeMs = SystemClock.elapsedRealtime()
                 val safeMessage = redact(message).take(1_000)
                 val safeTag = redact(tag).take(80)
                 val category = runCatching {
                     AppLogTitleResolver.featureLabel(safeTag, safeMessage)
                 }.getOrDefault("未分类日志")
+                val effectiveIssueKey = issueKey?.takeIf { it.isNotBlank() }
+                    ?: if (isIssueLevel(level)) stableIssueKey(tag, message) else ""
+                val effectiveDiagnosticContext = AppLogOperationContextHolder.current.get()
+                    ?.let { operation -> applyOperationContext(diagnosticContext, operation) }
+                    ?: diagnosticContext
+                val callSiteFields = if (tag == "ProcessExitInfo") {
+                    mapOf(
+                        "日志调用位置采集状态" to "历史进程退出记录；系统未提供原进程的应用调用栈",
+                        "日志调用位置" to "不可用",
+                        "日志调用链（最多8帧）" to "ApplicationExitInfo 不包含原进程 Java/Kotlin 调用链",
+                    )
+                } else {
+                    AppLogCallSitePolicy.diagnosticFields(currentThread.stackTrace)
+                }
+                val exceptionCaptureFields = mapOf(
+                    "异常对象采集状态" to when {
+                        failure != null -> "已提供 Throwable；将保存 cause、suppressed 和异常自身堆栈"
+                        isIssueLevel(level) -> "调用方未提供 Throwable；本记录没有异常对象堆栈，仅有日志调用位置和事件上下文"
+                        else -> "普通事件未提供 Throwable；不代表发生异常",
+                    },
+                )
+                val baseDiagnosticContext = effectiveDiagnosticContext + callSiteFields + exceptionCaptureFields
+                val operationIdForTrail = extractOperationId(baseDiagnosticContext, details)
+                val shouldIncludeTrail = isIssueLevel(level)
+                val trailSnapshot = if (shouldIncludeTrail) {
+                    recentEventTrail.snapshot(operationIdForTrail, currentThread.id, timestampMs)
+                } else {
+                    AppLogRecentEventTrailSnapshot("不适用", "")
+                }
+                val contextWithTrailScope = if (shouldIncludeTrail) {
+                    baseDiagnosticContext + ("近期操作轨迹关联方式" to trailSnapshot.scopeLabel)
+                } else {
+                    baseDiagnosticContext
+                }
                 val diagnosticPriorityKeys = setOf(
                     "操作关联 ID",
                     "视频来源",
@@ -820,29 +823,71 @@ object AppLogStore {
                     "当前视频字幕索引",
                     "当前实际配音字幕索引",
                     "近期操作轨迹关联方式",
+                    "日志调用位置采集状态",
+                    "日志调用位置",
+                    "日志调用类",
+                    "日志调用方法",
+                    "日志调用文件",
+                    "日志调用行号",
+                    "日志调用链（最多8帧）",
+                    "异常对象采集状态",
                 )
-                // Prefer task/stage evidence before optional request fields. The budget policy
-                // reserves explicit omission/truncation counters instead of silently dropping keys.
+                // Keep the exact same bounded field set in the visible details and AI export.
                 val contextBudget = AppLogDiagnosticContextPolicy.bound(
                     input = contextWithTrailScope,
                     priorityKeys = diagnosticPriorityKeys,
                     sanitize = { value -> redact(value) },
                 )
                 val safeContext = contextBudget.fields
+                val operationId = extractOperationId(safeContext, details)
+                val eventMetadata = linkedMapOf(
+                    "发生时间" to formatTime(timestampMs),
+                    "日志级别" to redact(level).take(12),
+                    "日志模块" to safeTag,
+                    "事件摘要" to safeMessage,
+                    "事件 ID" to eventId,
+                    "进程会话 ID" to sessionId,
+                    "事件序号" to sequence.toString(),
+                    "操作关联 ID" to operationId.ifBlank { "未记录" },
+                    "进程 PID" to Process.myPid().toString(),
+                    "线程 ID" to currentThread.id.toString(),
+                    "线程名称" to threadName,
+                    "进程内单调时间 ms" to elapsedRealtimeMs.toString(),
+                    "异常对象采集状态" to exceptionCaptureFields.getValue("异常对象采集状态"),
+                )
+                val safeDetails = truncatePreservingEdges(
+                    redact(
+                        enrichDetails(
+                            context,
+                            level,
+                            safeTag,
+                            details,
+                            threadName,
+                            safeContext,
+                            trailSnapshot.summary,
+                            trailSnapshot.scopeLabel,
+                            eventMetadata,
+                        ),
+                    ),
+                    MAX_DETAIL_CHARS,
+                )
                 val errorClass = extractExceptionClass(safeMessage, safeDetails)
                 val rootCauseMessage = extractRootCauseMessage(safeDetails)
                 val firstAppStackFrame = extractFirstAppStackFrame(safeDetails)
-                val operationId = extractOperationId(safeContext, safeDetails)
                 val httpStatusCode = extractHttpStatusCode(safeMessage, safeDetails, safeContext)
                 val structuredException = failure?.let { thrown ->
                     runCatching { snapshotExceptionTree(thrown) }.getOrNull()
                 }
                 val row = JSONObject()
-                    .put("schemaVersion", 4)
+                    .put("schemaVersion", 5)
                     .put("eventId", eventId)
+                    .put("logCallSiteStatus", redact(safeContext["日志调用位置采集状态"].orEmpty()))
+                    .put("logCallSite", redact(safeContext["日志调用位置"].orEmpty()))
+                    .put("logCallChain", redact(safeContext["日志调用链（最多8帧）"].orEmpty()))
+                    .put("exceptionCaptureStatus", redact(safeContext["异常对象采集状态"].orEmpty()))
                     .put("sessionId", sessionId)
                     .put("sequence", sequence)
-                    .put("elapsedRealtimeMs", SystemClock.elapsedRealtime())
+                    .put("elapsedRealtimeMs", elapsedRealtimeMs)
                     .put("processId", Process.myPid())
                     .put("threadId", currentThread.id)
                     .put("timestampMs", timestampMs)
@@ -894,12 +939,17 @@ object AppLogStore {
         diagnosticContext: Map<String, String>,
         recentTrail: String,
         recentTrailScope: String,
+        eventMetadata: Map<String, String>,
     ): String = buildString {
         if (diagnosticContext.isNotEmpty()) {
             append("故障上下文（用于定位发生时的状态）：\n")
             diagnosticContext.toSortedMap().forEach { (key, value) ->
                 append("- ").append(key).append("：").append(value).append('\n')
             }
+        }
+        append("日志事件元数据：\\n")
+        eventMetadata.forEach { (key, value) ->
+            append("- ").append(key).append("：").append(value).append('\\n')
         }
         if (level == "WARN" || level == "ERROR" || level == "FATAL") {
             append("近期操作轨迹关联方式：").append(recentTrailScope).append('\n')
