@@ -2291,7 +2291,7 @@ private fun VideoParsingPage(
             .ifBlank { "等待继续" }
         displayPhase == Phase.TRANSLATING && !state.manualTranslationModeEnabled &&
             !state.manualTranslationWaiting && state.totalLines > 0 ->
-            "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+            translationProgressSummary(state)
         displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
             "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
                 if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else ""
@@ -3236,10 +3236,7 @@ private fun ProcessingStageCards(
                                 }
                                 add("翻译方向" to sourceLanguageDisplay + " → 简体中文")
                                 if (state.totalLines > 0) {
-                                    val translated = state.translatedLineCount.coerceIn(0, state.totalLines)
-                                    VideoProcessingFlowPolicy.progressCounterLabel(
-                                        translated, state.totalLines, "行",
-                                    )?.let { add("翻译进度" to it) }
+                                    add("翻译进度" to translationProgressSummary(state))
                                 }
                                 VideoProcessingFlowPolicy.translationBatchLabel(
                                     state.translationCurrentBatch,
@@ -7921,7 +7918,7 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
         }
         Phase.TRANSLATING -> {
             if (state.totalLines > 0 && !state.manualTranslationWaiting && !state.manualTranslationModeEnabled) {
-                "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行"
+                translationProgressSummary(state)
             } else {
                 compactProcessingProgress(state.progress, phase)
             }
@@ -7937,7 +7934,21 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
     }
 }
 
-private fun compactProcessingProgress(progress: String, phase: Phase): String {
+private fun translationProgressSummary(state: PlayerUiState): String {
+    val total = state.totalLines.coerceAtLeast(0)
+    val rows = state.lines
+    val fallback = rows.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }
+    val valid = rows.count {
+        it.text.isNotBlank() &&
+            !it.translationFallbackOriginalAudio &&
+            !SubtitleParsers.cleanTranslatedText(it.zh).isNullOrBlank()
+    }
+    val skipped = rows.count { it.text.isBlank() }
+    val pending = (total - valid - fallback - skipped).coerceAtLeast(0)
+    return "中文译文 $valid · 原声兜底 $fallback · 待处理 $pending"
+}
+
+private fun compactProcessingProgress(progress: String, phase: Phase) {
     val raw = progress.trim()
     if (raw.isBlank()) return ""
 

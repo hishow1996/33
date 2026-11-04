@@ -3921,7 +3921,7 @@ class PlaybackService : MediaSessionService() {
             Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
             Phase.TRANSCRIBING -> "正在转写原文字幕" to state.progress.ifBlank { "正在生成与视频时间轴对齐的原文字幕" }
             Phase.TRANSLATING -> "正在将原文字幕翻译成中文" to state.progress.ifBlank {
-                if (state.totalLines > 0) "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
+                if (state.totalLines > 0) "已处理 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
             }
             Phase.SYNTHESIZING -> "正在按时间轴生成中文配音" to if (state.totalLines > 0) {
                 "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
@@ -11071,7 +11071,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         translationCurrentBatch = batchIndex + 1,
                         translationTotalBatches = translationBatches.size,
                         translationRetryCount = 0,
-                        progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已翻译 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                        progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已处理 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                     )
                 }
                 // Unlike the coarser Room cache checkpoint, persist each completed batch so

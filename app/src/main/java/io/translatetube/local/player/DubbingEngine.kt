@@ -418,6 +418,7 @@ class DubbingEngine(
             val rawCue = lines.getOrNull(index)
             if (rawCue?.translationFallbackOriginalAudio == true) {
                 explicitOriginalAudioFallbackIndices += index
+                preflightReasons[index] = "已明确采用原声兜底，不生成中文配音"
                 continue
             }
             val reason = when {
