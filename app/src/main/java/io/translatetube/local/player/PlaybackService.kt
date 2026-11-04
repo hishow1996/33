@@ -7512,7 +7512,30 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         var transientCloudUploadAudio: File? = null
         // Updated at each real stage boundary so the outer failure record keeps the last known
         // business state even when a lower-level helper throws before it can log locally.
-        val currentStageDiagnostics = linkedMapOf<String, String>()
+        val currentOperationLogContext = io.translatetube.local.util.AppLogOperationContextHolder.current.get()
+        // Keep stage-specific evidence separate from the frequently refreshed PlayerUiState
+        // snapshot. AppLogOperationContext merges both into every event for this operation.
+        val currentStageDiagnostics = object : LinkedHashMap<String, String>() {
+            private fun publish() {
+                currentOperationLogContext?.updateSupplementalSnapshot(this)
+            }
+
+            override fun put(key: String, value: String): String? {
+                val previous = super.put(key, value)
+                publish()
+                return previous
+            }
+
+            override fun putAll(from: Map<out String, String>) {
+                super.putAll(from)
+                publish()
+            }
+
+            override fun clear() {
+                super.clear()
+                publish()
+            }
+        }
         currentStageDiagnostics["当前处理阶段"] = "PIPELINE_START"
         currentStageDiagnostics["当前处理代数"] = pipelineGeneration.toString()
         // True once the pipeline reaches the dubbing-engine step. Only a failure from that point
