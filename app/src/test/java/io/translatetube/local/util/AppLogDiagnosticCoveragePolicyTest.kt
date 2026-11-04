@@ -36,7 +36,7 @@ class AppLogDiagnosticCoveragePolicyTest {
         assertEquals("字幕翻译", coverage.domain)
         assertEquals(100, coverage.completenessPercent)
         assertTrue(coverage.missingEvidence.isEmpty())
-        assertEquals(10, coverage.requiredEvidenceCount)
+        assertEquals(11, coverage.requiredEvidenceCount)
     }
 
     @Test
@@ -83,6 +83,28 @@ class AppLogDiagnosticCoveragePolicyTest {
         assertTrue(coverage.missingEvidence.contains("转写引擎及模型名称/版本"))
         assertTrue(coverage.missingEvidence.contains("音频时长或音频文件大小"))
         assertTrue(coverage.missingEvidence.contains("采样率、声道及音频格式"))
+    }
+
+
+    @Test
+    fun contextBudgetLossIsReportedAsMissingDiagnosticEvidence() {
+        val record = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "Translation",
+            category = "字幕翻译",
+            message = "字幕翻译失败",
+            details = "",
+            thread = "worker",
+            diagnosticContext = mapOf(
+                "日志诊断字段总数" to "70",
+                "日志诊断字段已保留数" to "58",
+                "日志诊断字段省略数" to "12",
+                "日志诊断字段截断数" to "1",
+            ),
+        )
+        val coverage = AppLogDiagnosticCoveragePolicy.analyze(record)
+        assertTrue(coverage.missingEvidence.contains("诊断字段没有因日志容量上限而省略或截断"))
     }
 
     @Test
