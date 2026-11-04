@@ -8133,7 +8133,6 @@ private fun translationProgressSummary(state: PlayerUiState): String {
         val translated = SubtitleParsers.cleanTranslatedText(line.zh)
         if (
             line.text.isBlank() ||
-            line.translationFallbackOriginalAudio ||
             translated.isNullOrBlank()
         ) {
             false
