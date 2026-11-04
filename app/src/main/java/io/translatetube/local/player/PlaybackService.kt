@@ -9753,10 +9753,10 @@ updateUiForSession(key, pipelineGeneration) {
                         translatedLines = dubbingPreparation.lines
                         if (dubbingPreparation.originalAudioFallbackIndices.isNotEmpty()) {
                             withContext(Dispatchers.IO) {
-                                io.translatetube.local.util.AppLogStore.info(
+                                io.translatetube.local.util.AppLogStore.error(
                                     this@PlaybackService,
                                     "DubbingFallback",
-                                    "配音前已将无法生成中文语音的字幕明确标记为原声兜底",
+                                    "字幕翻译出现原声兜底：${dubbingPreparation.originalAudioFallbackIndices.size} 条字幕无法生成有效中文配音文本",
                                     diagnosticContext = mapOf(
                                         "视频来源" to when {
                                             key.startsWith("youtube:") -> "YouTube"
