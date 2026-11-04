@@ -6219,7 +6219,6 @@ private data class FullscreenCaptionDragMetrics(
     val maxLeftPx: Float,
     val minTopPx: Float,
     val maxTopPx: Float,
-    val bottomLocked: Boolean,
     val bottomSnapEnterThresholdPx: Float,
     val bottomSnapExitThresholdPx: Float,
 )
@@ -7183,7 +7182,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             maxLeftPx = maxLeftPx,
                             minTopPx = minTopPx,
                             maxTopPx = maxTopPx,
-                            bottomLocked = fullscreenCaptionBottomLocked,
                             bottomSnapEnterThresholdPx = bottomSnapEnterThresholdPx,
                             bottomSnapExitThresholdPx = bottomSnapExitThresholdPx,
                         ),
@@ -7279,7 +7277,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                         metrics.containerWidthPx * fullscreenCaptionCenterX -
                                             metrics.captionWidthPx / 2f
                                     ).coerceIn(metrics.minLeftPx, metrics.maxLeftPx)
-                                    val currentTop = if (metrics.bottomLocked) {
+                                    val currentTop = if (fullscreenCaptionBottomLocked) {
                                         metrics.maxTopPx
                                     } else {
                                         (
@@ -7293,7 +7291,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                         (nextLeft + metrics.captionWidthPx / 2f) /
                                             metrics.containerWidthPx
                                     ).coerceIn(0f, 1f)
-                                    if (metrics.bottomLocked) {
+                                    if (fullscreenCaptionBottomLocked) {
                                         // Do not unlock on tiny finger jitter. Measure the full
                                         // upward travel from the moment this gesture began.
                                         fullscreenCaptionDragTravelY += dragAmount.y
