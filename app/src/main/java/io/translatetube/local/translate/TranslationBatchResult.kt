@@ -159,8 +159,8 @@ internal data class TranslationBatchResult(
                         }
                     }
                     else -> {
-                        // A real translation should replace a previous empty echo fallback, while
-                        // duplicate indices must never let a later blank erase a valid translation.
+                        // Keep the first accepted translation for duplicate indices; a later
+                        // rejected or blank output must never erase it.
                         if (translated[sourceIndex].isNullOrEmpty()) {
                             translated[sourceIndex] = value
                         } else {
