@@ -16281,7 +16281,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val isDubbingPreparing = isDubbingPreparationIncomplete(ui.value)
         val isSpeakerRecognitionActive = ui.value.speakerRecognition.isActive && speakerJob?.isActive == true
         saveProgress()
-        if (isProcessing) persistCurrentProcessingCheckpoint()
+        // READY can still mean that only the startup dubbing buffer is prepared.
+        // Flush every phase accepted by the checkpoint policy so task removal cannot skip
+        // the durable translated timeline while the remaining dubbing queue is running.
+        if (InProgressProcessingCheckpointPhasePolicy.canPersist(phase)) {
+            persistCurrentProcessingCheckpoint()
+        }
         if (isProcessing || isDubbingPreparing || isSpeakerRecognitionActive) {
             // Keep service-owned recognition alive when the Activity task is dismissed from recents.
             android.util.Log.i(
