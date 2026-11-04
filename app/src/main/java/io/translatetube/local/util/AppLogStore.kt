@@ -819,6 +819,7 @@ object AppLogStore {
                     "已生成可播放配音行数",
                     "当前视频字幕索引",
                     "当前实际配音字幕索引",
+                    "近期操作轨迹关联方式",
                 )
                 // Keep common operation/stage evidence even when a specialised failure branch
                 // contributes many keys. Otherwise take(64) may silently drop the stage snapshot.
