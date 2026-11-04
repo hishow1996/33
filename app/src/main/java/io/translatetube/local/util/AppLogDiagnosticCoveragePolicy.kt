@@ -57,8 +57,8 @@ internal object AppLogDiagnosticCoveragePolicy {
     private fun commonRules() = listOf(
         EvidenceRule("异常类型、根因消息或服务端错误码", { hasFailureCause(it) },
             "在真实失败分支记录异常类型、最深层 cause、服务商错误码或明确失败分类；不要只写“处理失败”。"),
-        EvidenceRule("首个应用代码调用位置", { hasApplicationFrame(it) },
-            "保留 Throwable 原始对象和完整异常树，并提取首个 io.translatetube.local 自有代码栈帧（文件、方法、行号）。"),
+        EvidenceRule("异常堆栈或日志调用位置", { hasApplicationFrame(it) },
+            "优先保留 Throwable 原始对象、cause/suppressed 和异常自身堆栈；若调用方没有 Throwable，至少记录日志调用文件、方法、行号及调用链，并明确它不是异常抛出位置。"),
         EvidenceRule("任务关联标识", { hasOperationCorrelation(it) },
             "为完整任务记录稳定 operationId；子请求另记 requestId/diagnosticId，并通过协程上下文传递。"),
         EvidenceRule("失败阶段与具体子步骤", { hasStageEvidence(it) },
@@ -184,6 +184,8 @@ internal object AppLogDiagnosticCoveragePolicy {
 
     private fun hasApplicationFrame(record: AppLogRecord): Boolean {
         if (record.firstAppStackFrame.isNotBlank() || record.details.contains("at io.translatetube.local.")) return true
+        val callSite = record.diagnosticContext["日志调用位置"].orEmpty().trim()
+        if (callSite.isNotBlank() && callSite !in setOf("未采集", "不可用", "旧版日志未记录")) return true
         fun containsFrame(snapshot: AppLogExceptionSnapshot?): Boolean {
             if (snapshot == null) return false
             return snapshot.stackFrames.any { it.className.startsWith("io.translatetube.local.") } ||
@@ -206,7 +208,7 @@ internal object AppLogDiagnosticCoveragePolicy {
 
     private fun hasStageEvidence(record: AppLogRecord): Boolean =
         hasContext(record, "当前处理阶段", "失败阶段", "故障阶段", "当前 UI 阶段", "请求阶段",
-            "处理阶段", "当前处理步骤", "最近处理步骤", "调用位置")
+            "处理阶段", "当前处理步骤", "最近处理步骤")
 
     private fun containsAny(value: String, vararg terms: String): Boolean =
         terms.any { value.contains(it, ignoreCase = true) }
