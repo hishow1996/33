@@ -8,7 +8,7 @@ class AppLogDiagnosticContextPolicyTest {
     @Test
     fun priorityEvidenceIsRetainedAndOmittedFieldsAreCounted() {
         val input = linkedMapOf<String, String>()
-        repeat(70) { input["extra-$it"] = "value-$it" }
+        repeat(90) { input["extra-$it"] = "value-$it" }
         input["当前处理阶段"] = "TRANSLATING"
         input["操作关联 ID"] = "operation-123"
         val result = AppLogDiagnosticContextPolicy.bound(
@@ -18,7 +18,7 @@ class AppLogDiagnosticContextPolicyTest {
         assertTrue(result.fields.size <= AppLogDiagnosticContextPolicy.MAX_FIELDS)
         assertEquals("TRANSLATING", result.fields["当前处理阶段"])
         assertEquals("operation-123", result.fields["操作关联 ID"])
-        assertEquals(72, result.totalFieldCount)
+        assertEquals(92, result.totalFieldCount)
         assertTrue(result.omittedFieldCount > 0)
         assertEquals(result.omittedFieldCount.toString(), result.fields["日志诊断字段省略数"])
     }
