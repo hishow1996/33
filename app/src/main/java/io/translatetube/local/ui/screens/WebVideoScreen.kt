@@ -1685,7 +1685,10 @@ fun WebVideoScreen(
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(fixedWebHeight)
+                    // Alpha alone does not remove an AndroidView from hit testing. Keep the
+                    // WebView instance alive while hidden, but give it no touchable bounds so
+                    // it cannot intercept taps on Home, history, or other Compose screens.
+                    .height(if (visible) fixedWebHeight else 0.dp)
                     .align(Alignment.TopCenter),
                 factory = { ctx ->
                     WebView(ctx).apply {

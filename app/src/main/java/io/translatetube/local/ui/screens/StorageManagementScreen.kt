@@ -151,7 +151,14 @@ fun StorageManagementScreen(
     val allVisibleHistorySelected = visibleHistoryKeys.isNotEmpty() &&
         selectedHistoryKeys.containsAll(visibleHistoryKeys)
 
-    LaunchedEffect(refresh) {
+    // The history page does not display storage statistics. Avoid a full cache/model scan
+    // there; while scanning, the previous implementation disabled all history controls.
+    val skipStorageScan = historyOnly || category == StorageCategory.HISTORY
+    LaunchedEffect(refresh, skipStorageScan) {
+        if (skipStorageScan) {
+            scanning = false
+            return@LaunchedEffect
+        }
         scanning = true
         try {
             val snapshot = withContext(Dispatchers.IO) { scanStorage(ctx, db) }
@@ -590,7 +597,7 @@ fun StorageManagementScreen(
                             DropdownMenuItem(
                                 text = { Text("选择记录") },
                                 leadingIcon = { Icon(Icons.Filled.CheckBox, null, tint = BrandBright) },
-                                enabled = !destructiveBusy && !actionBusy && historyVideos.isNotEmpty(),
+                                enabled = !actionBusy && historyVideos.isNotEmpty(),
                                 onClick = {
                                     historyMenuExpanded = false
                                     historySelectionMode = true
@@ -600,7 +607,7 @@ fun StorageManagementScreen(
                             DropdownMenuItem(
                                 text = { Text("全部清除", color = DangerRed) },
                                 leadingIcon = { Icon(Icons.Filled.Delete, null, tint = DangerRed) },
-                                enabled = !destructiveBusy && !actionBusy && !scanning && historyVideos.isNotEmpty(),
+                                enabled = !actionBusy && historyVideos.isNotEmpty(),
                                 onClick = {
                                     historyMenuExpanded = false
                                     requestHistoryDelete(historyVideos.map { it.key }, clearAll = true)
@@ -626,7 +633,6 @@ fun StorageManagementScreen(
                 if (category == StorageCategory.HISTORY) {
                     StorageHistoryDetail(
                         videos = historyVideos,
-                        busy = destructiveBusy || scanning,
                         actionBusy = actionBusy,
                         selectionMode = historySelectionMode,
                         selectedKeys = selectedHistoryKeys,
@@ -1011,7 +1017,6 @@ private fun StoragePiperModelRow(
 @Composable
 private fun StorageHistoryDetail(
     videos: List<VideoEntity>,
-    busy: Boolean,
     actionBusy: Boolean,
     selectionMode: Boolean,
     selectedKeys: Set<String>,
@@ -1086,7 +1091,7 @@ private fun StorageHistoryDetail(
                         video = video,
                         selected = video.key in selectedKeys,
                         selectionMode = selectionMode,
-                        enabled = !busy && !actionBusy,
+                        enabled = !actionBusy,
                         favoriteEnabled = !actionBusy,
                         onClick = {
                             if (selectionMode) onToggleSelection(video.key)
@@ -1109,7 +1114,7 @@ private fun StorageHistoryDetail(
             ) {
                 Button(
                     onClick = onDeleteSelected,
-                    enabled = !busy && !actionBusy && selectedKeys.isNotEmpty(),
+                    enabled = !actionBusy && selectedKeys.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth().padding(8.dp).height(48.dp),
                     shape = RoundedCornerShape(13.dp),
                     colors = ButtonDefaults.buttonColors(
