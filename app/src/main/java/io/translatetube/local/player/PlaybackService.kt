@@ -6947,6 +6947,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                     // treat absent/null translations as missing so they are retried.
                                     translatedText = row.optString("zh", "").takeIf { it.isNotBlank() },
                                     originalAudioFallback = row.optBoolean("oa", false),
+                                    originalAudioFallbackReason = row.optString("oaReason").takeIf { it.isNotBlank() },
                                 )
                             }
                             SubtitleCacheValidationPolicy.restoreTranslationsForSource(
@@ -7014,7 +7015,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio)
+                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
                             .put("sp", line.speakerId)
                     )
                     ensureCurrentSession(sessionKey, pipelineGeneration)
@@ -7131,7 +7132,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         .put("e", line.endMs)
                         .put("t", line.text)
                         .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio)
+                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
                         .put("sp", line.speakerId)
                 )
                 ensureCurrentSession(sessionKey, pipelineGeneration)
@@ -9637,6 +9638,7 @@ updateUiForSession(key, pipelineGeneration) {
                             i, o.getLong("s"), o.getLong("e"),
                             originalText, cachedTranslation, o.optInt("sp", -1),
                             o.optBoolean("oa", false),
+                            o.optString("oaReason").takeIf { it.isNotBlank() },
                         )
                     }
                     // A legacy cache can have a blank source-language field. Preserve a trusted
@@ -9752,6 +9754,12 @@ updateUiForSession(key, pipelineGeneration) {
                             sourceLanguage = srcLang,
                         )
                         translatedLines = dubbingPreparation.lines
+                        val cachedFallbackRowsWithoutReason = if (cached != null) {
+                            dubbingPreparation.originalAudioFallbackIndices.count { index ->
+                                translatedLinesBeforeDubbingPreparation.getOrNull(index)
+                                    ?.translationFallbackReason.isNullOrBlank()
+                            }
+                        } else 0
                         if (dubbingPreparation.originalAudioFallbackIndices.isNotEmpty()) {
                             withContext(Dispatchers.IO) {
                                 io.translatetube.local.util.AppLogStore.error(
@@ -9788,10 +9796,11 @@ updateUiForSession(key, pipelineGeneration) {
                                             "${index + 1}行：$reason（时间轴=${line?.startMs ?: -1}..${line?.endMs ?: -1} ms，原文字符数=${line?.text?.length ?: 0}，原始译文字符数=${rawLine?.zh?.length ?: 0}，翻译阶段已标记兜底=$translationWasMarkedFallback）"
                                         },
                                         "逐行原因未展开数量" to (dubbingPreparation.originalAudioFallbackIndices.size - 80).coerceAtLeast(0).toString(),
-                                        "排查提示" to if (cached != null) {
-                                            "该兜底来自旧缓存时，缓存没有保留历史失败根因；需让该视频重新执行翻译，才能记录模型响应和逐行校验失败原因"
-                                        } else {
-                                            "翻译阶段的详细重试/模型返回信息见同一会话的 Translation 错误日志"
+                                        "旧缓存缺少具体根因的兜底行数" to cachedFallbackRowsWithoutReason.toString(),
+                                        "排查提示" to when {
+                                            cachedFallbackRowsWithoutReason > 0 -> "有部分旧缓存没有保存原声兜底原因；这些旧行无法追溯历史模型响应，重新执行翻译后会保存逐行根因"
+                                            cached != null -> "本次从缓存恢复时已保留逐行兜底原因；可按上方行号和原因代码排查"
+                                            else -> "翻译阶段的详细重试/模型返回信息见同一会话的 Translation 错误日志"
                                         },
                                         "处理策略" to "仅跳过无法生成中文语音的字幕，保留原视频音轨，不影响其他字幕配音",
                                     ),
@@ -9825,7 +9834,7 @@ updateUiForSession(key, pipelineGeneration) {
                                         .put("e", line.endMs)
                                         .put("t", line.text)
                                         .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio)
+                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
                                 )
                             }
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -10791,6 +10800,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val acceptedSourceEchoFallbacks = linkedMapOf<Int, String>()
                 var lastRequestRowCount = 0
                 var lastResponseRowCount = 0
+                val finalFallbackReasons = linkedMapOf<Int, String>()
 
                 fun describeRejectedTranslationRows(
                     rows: List<io.translatetube.local.translate.TranslationRowRejection>,
@@ -10804,6 +10814,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" -> "返回原文，未生成中文译文"
                             "SOURCE_ECHO" -> "译文与原文实质相同"
                             else -> row.reasonCode
+                        }.let { baseReason ->
+                            row.diagnosticReason?.takeIf { it.isNotBlank() }
+                                ?.let { "$baseReason；$it" } ?: baseReason
                         }
                         val sourceLine = updatedLines.getOrNull(row.sourceIndex)
                         val timeRange = sourceLine?.let { "，时间轴 ${it.startMs}..${it.endMs} ms" }.orEmpty()
@@ -11075,6 +11088,26 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             TranslationBatchFallbackPolicy.isApiLanguageModelEngine(engine!!.id) || active != null,
                     )
                 ) {
+                    unresolvedIndices.forEach { sourceIndex ->
+                        val rejection = lastRejectedRows.firstOrNull { it.sourceIndex == sourceIndex }
+                        val rowReason = rejection?.let { item ->
+                            val codeLabel = when (item.reasonCode) {
+                                "ROW_COUNT_MISMATCH" -> "模型返回行数不匹配"
+                                "EMPTY_OR_STATUS_PLACEHOLDER" -> "模型未返回有效译文"
+                                "TARGET_LANGUAGE_MISMATCH" -> "译文不符合中文目标语言"
+                                "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" -> "模型返回原文且未生成中文"
+                                "SOURCE_ECHO" -> "模型返回内容与原文相同"
+                                else -> item.reasonCode
+                            }
+                            "$codeLabel [${item.reasonCode}] ${item.diagnosticReason.orEmpty()}".trim()
+                        }
+                        finalFallbackReasons[sourceIndex] = buildString {
+                            append(rowReason?.takeIf { it.isNotBlank() } ?: "重试结束后仍未获得可用中文译文")
+                            append("；本批请求次数=").append(attempt)
+                            append("；最后请求行数=").append(lastRequestRowCount)
+                            append("；最后返回行数=").append(lastResponseRowCount)
+                        }
+                    }
                     // If a batch contains useful translations but a small number of rows remain
                     // invalid after retry, preserve only those rows on original audio. A completely
                     // failed local model or a remote API failure still fails the batch.
@@ -11163,6 +11196,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         line.copy(
                             zh = translation.takeIf { it.isNotBlank() },
                             translationFallbackOriginalAudio = translation.isBlank(),
+                            translationFallbackReason = if (translation.isBlank()) {
+                                acceptedSourceEchoFallbacks[rowIndex] ?: finalFallbackReasons[rowIndex]
+                                    ?: "翻译阶段已标记原声兜底，但未找到本批拒绝明细"
+                            } else {
+                                null
+                            },
                         )
                     } ?: line
                 }
@@ -11245,7 +11284,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio)
+                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
                             .put("sp", line.speakerId)
                     )
                 }
@@ -14523,7 +14562,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 for (line in updated) arr.put(
                     org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
                         .put("t", line.text).put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio).put("sp", line.speakerId)
+                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty()).put("sp", line.speakerId)
                 )
                 ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
@@ -14881,7 +14920,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
-                            .put("oa", line.translationFallbackOriginalAudio)
+                            .put("oa", line.translationFallbackOriginalAudio).put("oaReason", line.translationFallbackReason.orEmpty())
                             .put("sp", line.speakerId)
                     )
                 }

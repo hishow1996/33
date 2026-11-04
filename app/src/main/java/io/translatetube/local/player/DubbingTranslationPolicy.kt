@@ -79,7 +79,8 @@ internal object DubbingTranslationPolicy {
             if (line.text.isBlank()) return@mapIndexed line
             if (line.translationFallbackOriginalAudio) {
                 fallbackIndices += index
-                fallbackReasons[index] = "已由翻译阶段明确采用原声兜底"
+                fallbackReasons[index] = line.translationFallbackReason
+                    ?: "已由翻译阶段明确采用原声兜底（旧缓存未保存具体失败原因）"
                 return@mapIndexed line.copy(zh = null)
             }
 
@@ -89,11 +90,16 @@ internal object DubbingTranslationPolicy {
             }
             if (speakable.isNullOrBlank()) {
                 fallbackIndices += index
-                fallbackReasons[index] = resolution.reason
+                val reason = resolution.reason
                     ?: "译文只有标点、符号或表情，没有可朗读内容"
-                line.copy(zh = null, translationFallbackOriginalAudio = true)
+                fallbackReasons[index] = reason
+                line.copy(
+                    zh = null,
+                    translationFallbackOriginalAudio = true,
+                    translationFallbackReason = reason,
+                )
             } else {
-                line.copy(zh = speakable)
+                line.copy(zh = speakable, translationFallbackReason = null)
             }
         }
         return DubbingTranslationPreparation(

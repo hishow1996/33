@@ -12,6 +12,8 @@ data class SubLine(
     val speakerId: Int = -1,   // -1=使用当前默认音色；非负数=Kokoro 音色 ID
     /** Translation retries are complete for this cue; keep its source audio on future restores. */
     val translationFallbackOriginalAudio: Boolean = false,
+    /** Content-free reason retained with subtitle caches for future diagnostics. */
+    val translationFallbackReason: String? = null,
 )
 
 object SubtitleParsers {

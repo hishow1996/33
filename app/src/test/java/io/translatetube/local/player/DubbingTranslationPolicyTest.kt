@@ -107,7 +107,26 @@ class DubbingTranslationPolicyTest {
         assertEquals("译文与原文相同，命中原文回显过滤规则", prepared.fallbackReasons[1])
         assertEquals("翻译结果为空或只有空白字符", prepared.fallbackReasons[2])
         assertEquals("译文未达到中文目标语言", prepared.fallbackReasons[3])
-        assertEquals("已由翻译阶段明确采用原声兜底", prepared.fallbackReasons[5])
+        assertEquals("已由翻译阶段明确采用原声兜底（旧缓存未保存具体失败原因）", prepared.fallbackReasons[5])
+    }
+
+    @Test
+    fun keepsTheSpecificFallbackReasonWhenRestoringCachedSubtitleRows() {
+        val source = io.translatetube.local.subs.SubLine(
+            0, 0L, 900L, "Hello world", null,
+            translationFallbackOriginalAudio = true,
+            translationFallbackReason = "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
+        )
+        val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(listOf(source), "en")
+
+        assertEquals(
+            "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
+            prepared.fallbackReasons[0],
+        )
+        assertEquals(
+            "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
+            prepared.lines[0].translationFallbackReason,
+        )
     }
 
     @Test

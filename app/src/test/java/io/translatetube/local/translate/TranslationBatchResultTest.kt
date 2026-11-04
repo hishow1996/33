@@ -199,6 +199,7 @@ class TranslationBatchResultTest {
         )
         assertEquals(listOf(11, 12, 14), result.rejectedRows.map { it.sourceCharCount })
         assertEquals(listOf(11, 12, 0), result.rejectedRows.map { it.rawOutputCharCount })
+        assertTrue(result.rejectedRows[0].diagnosticReason.orEmpty().contains("未检测到汉字"))
     }
 
     @Test

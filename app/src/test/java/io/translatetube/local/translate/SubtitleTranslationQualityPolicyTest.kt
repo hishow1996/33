@@ -41,6 +41,50 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun reportsSpecificReasonsForChineseTargetLanguageMismatch() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                "I think we should leave now.",
+                "I think we should leave now.",
+                "en",
+                "zh-CN",
+            ).orEmpty().contains("未检测到汉字"),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                "今日はいい天気ですね。",
+                "こんにちは、元気ですか。",
+                "ja",
+                "zh-CN",
+            ).orEmpty().contains("日文假名占主导"),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                "오늘은 날씨가 좋네요.",
+                "안녕하세요, 만나서 반가워요.",
+                "ko",
+                "zh-CN",
+            ).orEmpty().contains("韩文音节占主导"),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                "I think we should leave now.",
+                "当然，I think we should leave now.",
+                "en",
+                "zh-CN",
+            ).orEmpty().contains("外语文本"),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                "Hello",
+                "……",
+                "en",
+                "zh-CN",
+            ).orEmpty().contains("标点/符号"),
+        )
+    }
+
+    @Test
     fun acceptsChineseOutputAndLegitimateUntranslatedNamesAndNumbers() {
         assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(

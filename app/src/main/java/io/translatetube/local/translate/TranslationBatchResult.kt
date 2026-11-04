@@ -8,6 +8,7 @@ internal data class TranslationRowRejection(
     val reasonCode: String,
     val sourceCharCount: Int,
     val rawOutputCharCount: Int,
+    val diagnosticReason: String? = null,
 )
 
 /**
@@ -44,6 +45,7 @@ internal data class TranslationBatchResult(
                             reasonCode = "ROW_COUNT_MISMATCH",
                             sourceCharCount = sourceTexts[sourceIndex]?.length ?: 0,
                             rawOutputCharCount = 0,
+                            diagnosticReason = "请求 ${indices.size} 行，但模型返回 ${rawTranslations.size} 行；返回数量不匹配，无法安全按位置对应字幕",
                         )
                     },
                 )
@@ -59,11 +61,12 @@ internal data class TranslationBatchResult(
                 val sourceEcho = value?.let {
                     SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, it, sourceLanguage)
                 } == true
-                val targetMismatch = value?.let {
-                    SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                val targetMismatchDetail = value?.let {
+                    SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
                         sourceText, it, sourceLanguage, targetLanguage,
                     )
-                } == true
+                }
+                val targetMismatch = targetMismatchDetail != null
                 val rejectionReason = when {
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"
@@ -84,6 +87,13 @@ internal data class TranslationBatchResult(
                                         reasonCode = reason,
                                         sourceCharCount = sourceText?.length ?: 0,
                                         rawOutputCharCount = rawValue?.length ?: 0,
+                                        diagnosticReason = when {
+                                            value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
+                                            sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
+                                            sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
+                                            targetMismatch -> targetMismatchDetail
+                                            else -> null
+                                        },
                                     ),
                                 )
                             }
@@ -110,6 +120,13 @@ internal data class TranslationBatchResult(
                                         reasonCode = reason,
                                         sourceCharCount = sourceText?.length ?: 0,
                                         rawOutputCharCount = rawValue?.length ?: 0,
+                                        diagnosticReason = when {
+                                            value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
+                                            sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
+                                            sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
+                                            targetMismatch -> targetMismatchDetail
+                                            else -> null
+                                        },
                                     ),
                                 )
                             }

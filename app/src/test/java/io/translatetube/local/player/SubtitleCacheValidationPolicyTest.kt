@@ -209,7 +209,9 @@ class SubtitleCacheValidationPolicyTest {
         val cached = listOf(
             SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "Hello", "你好"),
             SubtitleCacheValidationPolicy.CachedTranslationRow(
-                1_000L, 2_000L, "Goodbye", null, originalAudioFallback = true,
+                1_000L, 2_000L, "Goodbye", null,
+                originalAudioFallback = true,
+                originalAudioFallbackReason = "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
             ),
         )
 
@@ -219,6 +221,10 @@ class SubtitleCacheValidationPolicyTest {
 
         assertEquals(listOf("你好", null), restored.map { it.zh })
         assertTrue(restored[1].translationFallbackOriginalAudio)
+        assertEquals(
+            "TARGET_LANGUAGE_MISMATCH：未检测到汉字",
+            restored[1].translationFallbackReason,
+        )
         assertTrue(
             SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(
                 listOf("你好", null),

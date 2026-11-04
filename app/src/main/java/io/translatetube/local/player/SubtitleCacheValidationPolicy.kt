@@ -15,6 +15,7 @@ internal object SubtitleCacheValidationPolicy {
         val sourceText: String,
         val translatedText: String?,
         val originalAudioFallback: Boolean = false,
+        val originalAudioFallbackReason: String? = null,
     )
 
     /**
@@ -89,6 +90,7 @@ internal object SubtitleCacheValidationPolicy {
                     source.text, cachedRows[index].translatedText, sourceLanguage, targetLanguage,
                 ),
                 translationFallbackOriginalAudio = cachedRows[index].originalAudioFallback,
+                translationFallbackReason = cachedRows[index].originalAudioFallbackReason,
             )
         }
         checkActive()
@@ -137,6 +139,7 @@ internal object SubtitleCacheValidationPolicy {
             it.copy(
                 zh = it.text.takeIf { text -> text.isNotBlank() },
                 translationFallbackOriginalAudio = false,
+                translationFallbackReason = null,
             )
         }
 }

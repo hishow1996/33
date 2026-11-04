@@ -41,11 +41,23 @@ internal object SubtitleTranslationQualityPolicy {
         translatedText: String?,
         sourceLanguage: String,
         targetLanguage: String,
-    ): Boolean {
-        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
-        if (!SourceLanguagePolicy.isChinese(targetLanguage)) return false
-        if (SourceLanguagePolicy.isChinese(sourceLanguage) || isNonTranslatableCue(sourceText)) return false
-        if (isPunctuationOnlyTranslation(sourceText, translatedText)) return true
+    ): Boolean = targetLanguageMismatchReason(
+        sourceText, translatedText, sourceLanguage, targetLanguage,
+    ) != null
+
+    /** Content-free explanation for a rejected Chinese-target response; subtitle text is not logged. */
+    fun targetLanguageMismatchReason(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String? {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
+        if (!SourceLanguagePolicy.isChinese(targetLanguage)) return null
+        if (SourceLanguagePolicy.isChinese(sourceLanguage) || isNonTranslatableCue(sourceText)) return null
+        if (isPunctuationOnlyTranslation(sourceText, translatedText)) {
+            return "模型只返回标点/符号，未返回可翻译文字"
+        }
 
         var han = 0
         var kana = 0
@@ -61,10 +73,20 @@ internal object SubtitleTranslationQualityPolicy {
                 else -> Unit
             }
         }
-        if (lettersOrDigits == 0) return false
-        if (han == 0) return true
-        if ((kana >= 2 && kana > han) || (hangul >= 2 && hangul > han)) return true
-        return hasDominantForeignText(sourceText, translatedText, han)
+        if (lettersOrDigits == 0) return null
+        if (han == 0) {
+            return "未检测到汉字（汉字=0，日文假名=$kana，韩文音节=$hangul，字母/数字=$lettersOrDigits）"
+        }
+        if (kana >= 2 && kana > han) {
+            return "译文日文假名占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+        }
+        if (hangul >= 2 && hangul > han) {
+            return "译文韩文音节占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+        }
+        if (hasDominantForeignText(sourceText, translatedText, han)) {
+            return "译文保留过多非汉字外语文本，汉字字符占比低于质量阈值"
+        }
+        return null
     }
 
     /**
