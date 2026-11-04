@@ -78,13 +78,32 @@ class AppLogDiagnosticsTest {
     }
 
     @Test
-    fun unknownFailureIsExplicitlyMarkedAsInsufficientEvidence() {
+    fun failureWithoutThrowableIsExplicitlyMarkedAsMissingEvidence() {
         val diagnosis = AppLogDiagnostics.analyze(
             record("SomeModule", "操作没有成功", "只有普通提示，没有异常类型、状态码或调用栈。"),
         )
-        assertEquals("根因信息不足", diagnosis.category)
-        assertEquals("证据不足", diagnosis.confidence)
-        assertTrue(diagnosis.nextSteps.isNotEmpty())
+        assertEquals("失败事件缺少异常对象", diagnosis.category)
+        assertEquals("调用位置和异常根因均缺失", diagnosis.confidence)
+        assertTrue(diagnosis.finding.contains("不能代表异常真正抛出位置"))
+        assertTrue(diagnosis.nextSteps.any { it.contains("Throwable") })
+    }
+
+    @Test
+    fun failureWithoutThrowableUsesCallSiteOnlyAsTheLoggingBranchLocation() {
+        val diagnosis = AppLogDiagnostics.analyze(
+            record("SomeModule", "操作没有成功", "失败结果：false").copy(
+                diagnosticContext = mapOf(
+                    "日志调用位置" to "io.translatetube.local.feature.TaskRunner.run(TaskRunner.kt:128)",
+                    "异常对象采集状态" to "调用方未提供 Throwable",
+                ),
+            ),
+        )
+
+        assertEquals("失败事件缺少异常对象", diagnosis.category)
+        assertEquals("日志调用位置已记录，根因待补充", diagnosis.confidence)
+        assertTrue(diagnosis.evidence.contains("TaskRunner.kt:128"))
+        assertTrue(diagnosis.finding.contains("不能代表异常真正抛出位置"))
+        assertTrue(diagnosis.nextSteps.any { it.contains("源码分支") })
     }
     @Test
     fun structuredHttpContextIsUsedForClassificationAndEvidence() {
