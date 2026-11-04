@@ -102,7 +102,7 @@ class DubbingEngine(
                 tag,
                 message,
                 failure,
-                diagnosticContext = diagnosticContext,
+                diagnosticContext = withOperationContext(diagnosticContext),
             )
         }
     }
