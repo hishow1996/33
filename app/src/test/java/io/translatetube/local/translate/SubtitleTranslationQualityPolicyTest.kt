@@ -230,6 +230,25 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun acceptsConfirmedShortNamesButNotWordsWithKnownChineseInterjectionTranslations() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                "John", "John", "en", "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                "Sarah", "Sara", "en", "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                "Hello", "Hello", "en", "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun ordinaryWordsAndPhrasesReturnedUnchangedAreStillFailedTranslations() {
         listOf("Hello", "Thank you very much", "I think so.", "Good morning everyone").forEach {
             assertTrue("'$it'", SubtitleTranslationQualityPolicy.isSourceEcho(it, it, "en"))

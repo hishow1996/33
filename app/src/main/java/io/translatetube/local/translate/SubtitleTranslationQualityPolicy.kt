@@ -47,6 +47,11 @@ internal object SubtitleTranslationQualityPolicy {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         if (!SourceLanguagePolicy.isChinese(targetLanguage)) return false
         if (SourceLanguagePolicy.isChinese(SourceLanguagePolicy.normalizeTag(sourceLanguage))) return false
+        // A short word with a known Chinese interjection equivalent must not be cached as an
+        // untranslated proper name (for example Hello -> Hello instead of Hello -> 你好).
+        if (SubtitleInterjectionPolicy.chineseFor(sourceText, sourceLanguage, targetLanguage) != null) {
+            return false
+        }
         val source = sourceText.trim()
         val translated = translatedText.trim()
         if (source.length > 40 || translated.length > 48) return false

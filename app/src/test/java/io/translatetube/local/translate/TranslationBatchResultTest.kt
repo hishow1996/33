@@ -239,6 +239,30 @@ class TranslationBatchResultTest {
     }
 
     @Test
+    fun confirmsShortNameOnlyAfterRetryAndUsesChineseInterjectionSubstitutionForHello() {
+        val firstAttempt = TranslationBatchResult.from(
+            indices = listOf(0, 1),
+            rawTranslations = listOf("John", "Hello"),
+            sourceTexts = mapOf(0 to "John", 1 to "Hello"),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertEquals(mapOf(1 to "你好"), firstAttempt.translations)
+        assertEquals(listOf(0), firstAttempt.missingIndices)
+
+        val retry = TranslationBatchResult.from(
+            indices = listOf(0),
+            rawTranslations = listOf("John"),
+            sourceTexts = mapOf(0 to "John"),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+            acceptShortUnchanged = true,
+        )
+        assertEquals(mapOf(0 to "John"), retry.translations)
+        assertTrue(retry.missingIndices.isEmpty())
+    }
+
+    @Test
     fun ordinarySentenceEchoIsStillRejectedAndNonEnglishSourceIsNotSubstituted() {
         val sentence = TranslationBatchResult.from(
             listOf(1),

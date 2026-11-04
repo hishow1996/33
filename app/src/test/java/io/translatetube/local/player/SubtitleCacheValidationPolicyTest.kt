@@ -125,6 +125,31 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun restoresConfirmedShortNamesButStillRejectsHelloReturnedUnchanged() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "John"),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "Hello"),
+            io.translatetube.local.subs.SubLine(2, 2_000L, 3_000L, "Sarah"),
+            io.translatetube.local.subs.SubLine(3, 3_000L, 4_000L, "Taxi"),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "John", "John"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Hello", "Hello"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "Sarah", "Sara"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(3_000L, 4_000L, "Taxi", "Taxi"),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source,
+            cached,
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected valid translations and confirmed short names to restore")
+
+        assertEquals(listOf("John", null, "Sara", "Taxi"), restored.map { it.zh })
+    }
+
+    @Test
     fun treatsCachedSourceLanguageParaphrasesAsMissingForChineseTarget() {
         val source = listOf(
             io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "I think so."),
