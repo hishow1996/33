@@ -784,7 +784,7 @@ object AppLogStore {
                 }
                 val exceptionCaptureFields = mapOf(
                     "异常对象采集状态" to when {
-                        failure != null -> "已提供 Throwable；将保存 cause、suppressed 和异常自身堆栈"
+                        failure != null -> "已提供 Throwable；将尝试保存 cause、suppressed 和异常自身堆栈"
                         isIssueLevel(level) -> "调用方未提供 Throwable；本记录没有异常对象堆栈，仅有日志调用位置和事件上下文"
                         else -> "普通事件未提供 Throwable；不代表发生异常",
                     },
