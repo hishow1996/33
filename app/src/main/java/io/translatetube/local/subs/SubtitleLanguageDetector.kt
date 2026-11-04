@@ -154,6 +154,11 @@ object SubtitleLanguageDetector {
         return hanCount > 0 && hanCount.toDouble() / totalLetters >= 0.65
     }
 
+    internal fun isHanDominantAmbiguousFromCues(
+        cues: Iterable<String>,
+        maxCues: Int = 120,
+    ): Boolean = maxCues > 0 && isHanDominantAmbiguous(sampleFromCues(cues, maxCues))
+
     fun detect(text: String): String {
         val sample = text.take(12_000)
         if (sample.isBlank()) return "auto"
