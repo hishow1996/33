@@ -6727,15 +6727,6 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         waitingForDubbingEngine = false,
                     )
                 }
-                if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
-                    withContext(Dispatchers.Main) {
-                        if (
-                            activePipelineGeneration == pipelineGeneration &&
-                            videoKey == sessionKey &&
-                            ui.value.key == sessionKey
-                        ) pm.play()
-                    }
-                }
             } catch (e: Exception) {
                 if (
                     activePipelineGeneration != pipelineGeneration ||
@@ -10372,8 +10363,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 return
             }
             // Native ASR/TTS engines can exhaust the app heap/native budget when a history replay
-            // switches engines in the same service process. Prefer original-audio playback and an
-            // actionable warning over letting this recoverable initialization failure kill the app.
+            // switches engines in the same service process. Stop dubbing and pause playback with
+            // an actionable warning instead of silently continuing on the original audio track.
             val memoryFailureState = ui.value
             io.translatetube.local.util.AppLogStore.error(
                 this@PlaybackService, "PlaybackPipeline",
@@ -10401,7 +10392,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             runCatching { withContext(Dispatchers.IO) { awaitRetiredDubbingEngines() } }
             System.gc()
             val memoryMessage =
-                "设备可用内存不足，已停止生成中文配音并恢复视频原声。请稍后重试，或在设置中选择占用更低的配音引擎。"
+                "设备可用内存不足，中文配音已停止，视频已暂停。请稍后重试，或在设置中选择占用更低的配音引擎。"
             if (ui.value.key == key && videoKey == key) {
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
@@ -10410,7 +10401,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         error = if (it.lines.isNotEmpty()) null else memoryMessage,
                         noModelHint = memoryMessage,
                         dubbingStatus = "内存不足，配音已暂停",
-                        muteOriginal = false,
                         activeDubbingLine = -1,
                         waitingForTranscriptionEngine = false,
                         waitingForDubbingEngine = false,
@@ -10420,8 +10410,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 runCatching {
                     withContext(Dispatchers.Main) {
                         if (videoKey == key && ui.value.key == key && ::pm.isInitialized) {
-                            safelySetOriginalVolume(1f, "preserve original audio preference")
-                            pm.play()
+                            pm.pause()
                         }
                     }
                 }
