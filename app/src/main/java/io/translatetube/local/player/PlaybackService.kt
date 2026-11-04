@@ -10715,6 +10715,27 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 var unresolvedIndices = batchIndices
                 val resolvedBatch = linkedMapOf<Int, String>()
                 var attempt = 0
+                var lastRejectedRows = emptyList<io.translatetube.local.translate.TranslationRowRejection>()
+
+                fun describeRejectedTranslationRows(
+                    rows: List<io.translatetube.local.translate.TranslationRowRejection>,
+                ): String {
+                    if (rows.isEmpty()) return "无"
+                    val shown = rows.take(20).joinToString("；") { row ->
+                        val reason = when (row.reasonCode) {
+                            "ROW_COUNT_MISMATCH" -> "返回行数不匹配，无法安全对齐"
+                            "EMPTY_OR_STATUS_PLACEHOLDER" -> "译文为空或仅含状态占位内容"
+                            "TARGET_LANGUAGE_MISMATCH" -> "译文未达到中文目标语言"
+                            "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" -> "返回原文，未生成中文译文"
+                            "SOURCE_ECHO" -> "译文与原文实质相同"
+                            else -> row.reasonCode
+                        }
+                        "${row.sourceIndex + 1}行：$reason（原文${row.sourceCharCount}字符，返回${row.rawOutputCharCount}字符）"
+                    }
+                    val omitted = rows.size - minOf(rows.size, 20)
+                    return shown + if (omitted > 0) "；另有 $omitted 行未展开" else ""
+                }
+
                 while (unresolvedIndices.isNotEmpty() && attempt < 3) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     val batch = unresolvedIndices.map { plain[it] }
@@ -10848,6 +10869,38 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices
+                    lastRejectedRows = parsedBatch.rejectedRows
+                    if (parsedBatch.rejectedRows.isNotEmpty()) {
+                        withContext(Dispatchers.IO) {
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "Translation",
+                                "模型译文存在未通过校验的字幕行，正在重试",
+                                diagnosticContext = mapOf(
+                                    "翻译引擎名称" to engineName,
+                                    "翻译引擎 ID" to (engine?.id ?: "未知"),
+                                    "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                                    "源语言代码" to src,
+                                    "目标语言代码" to tgt,
+                                    "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
+                                    "请求字幕行数" to batch.size.toString(),
+                                    "模型返回行数" to batchTranslations.size.toString(),
+                                    "当前已重试次数" to attempt.toString(),
+                                    "失败字幕索引（0-based）" to parsedBatch.rejectedRows.joinToString(",") { it.sourceIndex.toString() },
+                                    "失败字幕行号（从1开始）" to parsedBatch.rejectedRows.joinToString(",") { (it.sourceIndex + 1).toString() },
+                                    "逐行失败原因" to describeRejectedTranslationRows(parsedBatch.rejectedRows),
+                                    "本轮失败行数" to parsedBatch.rejectedRows.size.toString(),
+                                    "视频来源" to when {
+                                        key.startsWith("youtube:") -> "YouTube"
+                                        key.startsWith("remote:") -> "网页视频/远程媒体"
+                                        key.startsWith("local:") -> "本地视频"
+                                        else -> "导入字幕/其他"
+                                    },
+                                    "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                                ),
+                            )
+                        }
+                    }
                     attempt += 1
                     if (unresolvedIndices.isNotEmpty() && attempt < 3) {
                         android.util.Log.w(
@@ -10885,14 +10938,53 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "PlaybackService",
                         "Keeping ${unresolvedIndices.size} unresolved subtitle cues on original audio",
                     )
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "Translation",
+                            "少量无效译文已按策略保留原声",
+                            diagnosticContext = mapOf(
+                                "翻译引擎名称" to engineName,
+                                "原声兜底字幕索引（0-based）" to unresolvedIndices.joinToString(","),
+                                "原声兜底字幕行号（从1开始）" to unresolvedIndices.joinToString(",") { (it + 1).toString() },
+                                "逐行失败原因" to describeRejectedTranslationRows(lastRejectedRows.filter { it.sourceIndex in unresolvedIndices }),
+                                "本次兜底行数" to unresolvedIndices.size.toString(),
+                                "字幕总行数" to lines.size.toString(),
+                            ),
+                        )
+                    }
                     unresolvedIndices.forEach { resolvedBatch[it] = "" }
                     unresolvedIndices = emptyList()
                 }
 
                 if (unresolvedIndices.isNotEmpty()) {
+                    val finalRejections = lastRejectedRows.filter { it.sourceIndex in unresolvedIndices }
+                    val missingRows = unresolvedIndices.joinToString(",")
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.error(
+                            this@PlaybackService,
+                            "Translation",
+                            "字幕翻译多次重试后仍有行未通过校验",
+                            IllegalStateException("Missing subtitle translation rows: $missingRows"),
+                            diagnosticContext = mapOf(
+                                "翻译引擎名称" to engineName,
+                                "翻译引擎 ID" to (engine?.id ?: "未知"),
+                                "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                                "源语言代码" to src,
+                                "目标语言代码" to tgt,
+                                "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
+                                "当前批次重试请求次数（含首次）" to attempt.toString(),
+                                "字幕总行数" to lines.size.toString(),
+                                "最终缺失字幕索引（0-based）" to missingRows,
+                                "最终缺失字幕行号（从1开始）" to unresolvedIndices.joinToString(",") { (it + 1).toString() },
+                                "最终逐行失败原因" to describeRejectedTranslationRows(finalRejections),
+                                "是否有其他行获得有效译文" to (resolvedBatch.values.any { it.isNotBlank() }).toString(),
+                            ),
+                        )
+                    }
                     throw TranslationFailureException(
                         "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。",
-                        IllegalStateException("Missing subtitle translation rows: ${unresolvedIndices.joinToString()}"),
+                        IllegalStateException("Missing subtitle translation rows: $missingRows"),
                     )
                 }
 

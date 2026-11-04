@@ -174,4 +174,43 @@ class TranslationBatchResultTest {
         assertEquals(listOf(1), result.missingIndices)
     }
 
+    @Test
+    fun exposesSpecificReasonsForRejectedSubtitleRows() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(252, 253, 254),
+            rawTranslations = listOf("I think so.", "Hello there.", ""),
+            sourceTexts = mapOf(
+                252 to "I guess so.",
+                253 to "Hello there.",
+                254 to "Where are you?",
+            ),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+
+        assertEquals(listOf(252, 253, 254), result.missingIndices)
+        assertEquals(
+            listOf(
+                "TARGET_LANGUAGE_MISMATCH",
+                "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH",
+                "EMPTY_OR_STATUS_PLACEHOLDER",
+            ),
+            result.rejectedRows.map { it.reasonCode },
+        )
+        assertEquals(listOf(10, 11, 13), result.rejectedRows.map { it.sourceCharCount })
+        assertEquals(listOf(11, 11, 0), result.rejectedRows.map { it.rawOutputCharCount })
+    }
+
+    @Test
+    fun identifiesEveryAffectedRowWhenResponseLengthDoesNotMatchRequest() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(10, 12),
+            rawTranslations = listOf("only one output"),
+            sourceTexts = mapOf(10 to "First source", 12 to "Second source"),
+        )
+
+        assertEquals(listOf(10, 12), result.missingIndices)
+        assertEquals(listOf("ROW_COUNT_MISMATCH", "ROW_COUNT_MISMATCH"), result.rejectedRows.map { it.reasonCode })
+        assertEquals(listOf(12, 13), result.rejectedRows.map { it.sourceCharCount })
+    }
 }
