@@ -101,8 +101,11 @@ object AppLogStore {
     private const val KEY_LAST_EXIT_TIMESTAMP = "last_system_exit_timestamp"
     private const val KEY_LAST_UNKNOWN_SESSION_START = "last_unknown_session_start"
     private val lock = Any()
-    private val recentEvents = java.util.ArrayDeque<String>()
-    private const val MAX_RECENT_EVENTS = 24
+    private val recentEventTrail = AppLogRecentEventTrail(
+        maxTrackedScopes = 12,
+        maxEventsPerScope = 24,
+        unscopedThreadWindowMs = 120_000L,
+    )
     private val failedWriteCount = java.util.concurrent.atomic.AtomicLong(0L)
     private val eventSequence = java.util.concurrent.atomic.AtomicLong(0L)
     @Volatile private var currentSessionId: String = ""
@@ -701,7 +704,7 @@ object AppLogStore {
         val legacy = File(File(context.filesDir, "crash"), "last_exception.txt")
         if (legacy.exists() && !legacy.delete()) success = false
         // Do not let pre-clear operations leak into the next error's "recent activity" context.
-        recentEvents.clear()
+        recentEventTrail.clear()
         success
     }
 
@@ -755,14 +758,33 @@ object AppLogStore {
                 pruneOldFiles(directory)
                 val file = File(directory, LOG_NAME)
                 val shouldIncludeTrail = level == "WARN" || level == "ERROR" || level == "FATAL"
-                val trail = if (shouldIncludeTrail && recentEvents.isNotEmpty()) {
-                    recentEvents.joinToString(separator = "\n")
-                } else ""
                 val effectiveDiagnosticContext = AppLogOperationContextHolder.current.get()
                     ?.let { operation -> applyOperationContext(diagnosticContext, operation) }
                     ?: diagnosticContext
+                val operationIdForTrail = extractOperationId(effectiveDiagnosticContext, details)
+                val trailSnapshot = if (shouldIncludeTrail) {
+                    recentEventTrail.snapshot(operationIdForTrail, Thread.currentThread().id, timestampMs)
+                } else {
+                    AppLogRecentEventTrailSnapshot("不适用", "")
+                }
+                val contextWithTrailScope = if (shouldIncludeTrail) {
+                    effectiveDiagnosticContext + ("近期操作轨迹关联方式" to trailSnapshot.scopeLabel)
+                } else {
+                    effectiveDiagnosticContext
+                }
                 val safeDetails = truncatePreservingEdges(
-                    redact(enrichDetails(context, level, tag, details, threadName, effectiveDiagnosticContext, trail)),
+                    redact(
+                        enrichDetails(
+                            context,
+                            level,
+                            tag,
+                            details,
+                            threadName,
+                            contextWithTrailScope,
+                            trailSnapshot.summary,
+                            trailSnapshot.scopeLabel,
+                        ),
+                    ),
                     MAX_DETAIL_CHARS,
                 )
                 val effectiveIssueKey = issueKey?.takeIf { it.isNotBlank() }
@@ -800,14 +822,12 @@ object AppLogStore {
                 )
                 // Keep common operation/stage evidence even when a specialised failure branch
                 // contributes many keys. Otherwise take(64) may silently drop the stage snapshot.
-                val prioritisedDiagnosticEntries = effectiveDiagnosticContext.entries.sortedBy {
-                    if (it.key in diagnosticPriorityKeys) 0 else 1
-                }
-                val safeContext = prioritisedDiagnosticEntries
-                    .take(64)
-                    .associate { entry ->
-                        redact(entry.key).take(100) to redact(entry.value).take(2_000)
-                    }
+                val contextBudget = AppLogDiagnosticContextPolicy.bound(
+                    input = contextWithTrailScope,
+                    priorityKeys = diagnosticPriorityKeys,
+                    sanitize = { value -> redact(value) },
+                )
+                val safeContext = contextBudget.fields
                 val errorClass = extractExceptionClass(safeMessage, safeDetails)
                 val rootCauseMessage = extractRootCauseMessage(safeDetails)
                 val firstAppStackFrame = extractFirstAppStackFrame(safeDetails)
@@ -855,8 +875,7 @@ object AppLogStore {
                 val crumb = "${formatTime(timestampMs)} [${redact(level)}] event=${eventId.take(8)} seq=$sequence category=$category $safeTag · $safeMessage"
                     .replace(Regex("\\s+"), " ")
                     .take(720)
-                recentEvents.addLast(crumb)
-                while (recentEvents.size > MAX_RECENT_EVENTS) recentEvents.removeFirst()
+                recentEventTrail.add(operationId, currentThread.id, timestampMs, crumb)
             } catch (failure: Throwable) {
                 // Diagnostics must never cause or amplify an application crash. Report write
                 // failures through Logcat and an in-memory health counter instead of recursing.
@@ -873,6 +892,7 @@ object AppLogStore {
         threadName: String,
         diagnosticContext: Map<String, String>,
         recentTrail: String,
+        recentTrailScope: String,
     ): String = buildString {
         if (diagnosticContext.isNotEmpty()) {
             append("故障上下文（用于定位发生时的状态）：\n")
@@ -880,9 +900,14 @@ object AppLogStore {
                 append("- ").append(key).append("：").append(value).append('\n')
             }
         }
-        if (recentTrail.isNotBlank() && (level == "WARN" || level == "ERROR" || level == "FATAL")) {
-            append("出错前最近操作/异常轨迹（最多 24 条，按先后顺序）：\n")
-            append(recentTrail).append('\n')
+        if (level == "WARN" || level == "ERROR" || level == "FATAL") {
+            append("近期操作轨迹关联方式：").append(recentTrailScope).append('\n')
+            if (recentTrail.isNotBlank()) {
+                append("出错前最近操作/异常轨迹（最多 24 条，按先后顺序）：\n")
+                append(recentTrail).append('\n')
+            } else {
+                append("同一关联范围内没有可用的前序事件；不使用其他任务或线程的事件补齐。\n")
+            }
         }
         if (level == "WARN" || level == "ERROR" || level == "FATAL") {
             val runtime = Runtime.getRuntime()
