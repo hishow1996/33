@@ -2,11 +2,7 @@ package io.translatetube.local.translate
 
 import io.translatetube.local.subs.SubtitleParsers
 
-/**
- * Maps model output back to requested source-row indices without accepting progress/status
- * strings as subtitle translations. Short or misaligned output is represented as missing rows
- * so the caller can retry those rows only.
- */
+/** Structured, content-free reason for rejecting one model output row. */
 internal data class TranslationRowRejection(
     val sourceIndex: Int,
     val reasonCode: String,

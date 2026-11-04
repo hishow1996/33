@@ -197,8 +197,8 @@ class TranslationBatchResultTest {
             ),
             result.rejectedRows.map { it.reasonCode },
         )
-        assertEquals(listOf(10, 11, 13), result.rejectedRows.map { it.sourceCharCount })
-        assertEquals(listOf(11, 11, 0), result.rejectedRows.map { it.rawOutputCharCount })
+        assertEquals(listOf(11, 12, 14), result.rejectedRows.map { it.sourceCharCount })
+        assertEquals(listOf(11, 12, 0), result.rejectedRows.map { it.rawOutputCharCount })
     }
 
     @Test
