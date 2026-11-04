@@ -9607,8 +9607,6 @@ updateUiForSession(key, pipelineGeneration) {
                         restored += SubLine(
                             i, o.getLong("s"), o.getLong("e"),
                             originalText, cachedTranslation, o.optInt("sp", -1),
-                            o.optBoolean("oa", false),
-                            o.optString("oaReason").takeIf { it.isNotBlank() },
                         )
                     }
                     // A legacy cache can have a blank source-language field. Preserve a trusted
@@ -9716,7 +9714,6 @@ updateUiForSession(key, pipelineGeneration) {
                             // happens to resemble a progress label instead of running translation cleanup on it.
                             translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
                         }
-                    }
                     }
                     if (ui.value.dubbingOn) {
                         translatedLines = DubbingTranslationPolicy.prepareLinesForDubbing(
@@ -10899,12 +10896,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 translationRetryCount = attempt,
                                 progress = "正在处理第 ${batchIndex + 1}/${translationBatches.size} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
                             )
-                        }
-                    }
-
-                    if (parsedBatch.rejectedRows.isNotEmpty()) {
-                            append("；失败明细：")
-                            append(describeRejectedTranslationRows(parsedBatch.rejectedRows))
                         }
                     }
 
