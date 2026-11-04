@@ -10809,7 +10809,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                         android.util.Log.e(
                             "PlaybackService",
-                            "Translation request failed; original-audio fallback is disabled for this failure",
+                            "Translation request failed; stopping the translation stage without marking this batch complete",
                             e,
                         )
                         // Distinguish API provider failures from Google offline language-pack errors.
@@ -12943,8 +12943,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
     /**
      * Report synthesis failures without silently replacing the engine selected in Settings.
-     * When the selected engine cannot produce voice output, pause the video rather than
-     * silently substituting the original audio as an automatic fallback.
+     * When the selected engine cannot produce voice output, pause the video and leave the
+     * user's audio selection unchanged.
      */
     private fun pausePlaybackAfterDubbingFailure(
         engine: DubbingEngine,
@@ -13045,8 +13045,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (engine.currentTtsName != "系统TTS" || !isCurrentDubbingEngine(engine, sessionKey)) {
                 false
             } else {
-                // Return false so DubbingEngine marks this cue unavailable. Never replace the
-                // user's explicitly selected System TTS engine; pause video instead of source fallback.
+                // Return false so DubbingEngine marks this cue unavailable. Keep the user's
+                // explicitly selected System TTS engine and pause video instead of switching engines.
                 updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                     state.copy(
                         dubbingStatus = "系统 TTS 合成失败，保持当前引擎",
