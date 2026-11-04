@@ -827,6 +827,7 @@ class PlaybackService : MediaSessionService() {
     /** 仅在本轮网页/本地视频源已挂载后，才读取其可选视频轨。 */
     @Volatile private var adaptiveQualitySourceReady = false
     @Volatile private var activeOpenRequestToken: Long = 0L
+    @Volatile private var activePendingResumeTaskGeneration: Long = 0L
     // A media key can be reopened from History without changing the key. Give each open
     // a unique generation so a cancelled previous pipeline cannot resume beside the new TTS engine.
     private val pipelineGenerationLock = Any()
@@ -2386,6 +2387,10 @@ class PlaybackService : MediaSessionService() {
             var lastWriteAtMs = 0L
             ui.collect { state ->
                 if (state.key.isBlank() || state.phase == Phase.IDLE || state.key != videoKey || activePipelineGeneration == 0L) return@collect
+                // Capture the Home request generation before dispatching to IO. A same-key retry
+                // must reject writes already queued by the previous run of this video.
+                val writeGeneration = activePendingResumeTaskGeneration
+                if (writeGeneration <= 0L) return@collect
                 val phaseChanged = state.key != lastKey || state.phase != lastPhase
                 val progress = state.progress.ifBlank { state.error.orEmpty() }.trim().take(180)
                 val progressChanged = progress != lastProgress
@@ -2401,6 +2406,7 @@ class PlaybackService : MediaSessionService() {
                     PendingProcessingResumeStore.record(
                         context = this@PlaybackService,
                         sessionKey = state.key,
+                        expectedGeneration = writeGeneration,
                         phase = state.phase,
                         progress = progress,
                     )
@@ -4699,6 +4705,8 @@ class PlaybackService : MediaSessionService() {
         localIdentityResolutionToken: Long? = null,
         skipInProgressCheckpointRestore: Boolean = false,
     ) {
+        activePendingResumeTaskGeneration =
+            PendingProcessingResumeStore.activeGeneration(this, key) ?: 0L
         val verifiedSelectedWebMediaMetadata = selectedWebMediaMetadata?.takeIf { metadata ->
             !remoteMediaUrl.isNullOrBlank() &&
                 SelectedWebMediaMetadataIdentityPolicy.matches(
