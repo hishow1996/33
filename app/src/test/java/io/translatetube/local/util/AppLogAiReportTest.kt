@@ -93,7 +93,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 2_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/v6"))
+        assertTrue(report.contains("report_schema: elephant-app-log/v7"))
         assertTrue(report.contains("最近最多 800 条"))
         assertTrue(report.contains("优先检查的故障事件"))
         assertTrue(report.contains("完整事件时间线（JSONL"))
@@ -121,6 +121,10 @@ class AppLogAiReportTest {
         assertTrue(report.contains("FIRST_RECORDED_ANOMALY_CANDIDATE"))
         assertTrue(report.contains("不能直接认定为真实根因"))
         assertTrue(report.contains("operationFailureRole"))
+        assertTrue(report.contains("诊断证据覆盖率"))
+        assertTrue(report.contains("缺失证据="))
+        assertTrue(report.contains("diagnosticCoverage"))
+        assertTrue(report.contains("aiDiagnosis"))
     }
 
     @Test
@@ -136,7 +140,7 @@ class AppLogAiReportTest {
         assertTrue(report.contains("legacy/unknown"))
         assertTrue(report.contains("legacy-1000-1"))
         assertTrue(report.contains("\"schemaVersion\":1"))
-        assertTrue(report.contains("\"reportSchemaVersion\":6"))
+        assertTrue(report.contains("\"reportSchemaVersion\":7"))
         assertFalse(report.contains("undefined"))
     }
     @Test
@@ -196,7 +200,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v4"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v5"))
         assertTrue(report.contains("failure-2"))
         assertTrue(report.contains("start-1"))
         assertTrue(report.contains("rootCauseMessage"))
@@ -213,6 +217,9 @@ class AppLogAiReportTest {
         assertTrue(report.contains("SAME_OPERATION_CONTEXT"))
         assertTrue(report.contains("EARLIER_ANOMALY_SAME_OPERATION"))
         assertTrue(report.contains("仅是上游候选"))
+        assertTrue(report.contains("诊断证据覆盖率"))
+        assertTrue(report.contains("diagnosticCoverage"))
+        assertTrue(report.contains("aiDiagnosis"))
     }
 
 }

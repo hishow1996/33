@@ -1,5 +1,6 @@
 package io.translatetube.local.util
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -41,7 +42,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 修复诊断报告\n")
-            append("report_schema: elephant-app-log/v6\n")
+            append("report_schema: elephant-app-log/v7\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -61,6 +62,15 @@ internal object AppLogAiReport {
             append("- ERROR：").append(errors).append('\n')
             append("- WARN：").append(warnings).append('\n')
             append("- INFO/其他：").append(ordered.size - fatal - errors - warnings).append('\n')
+            val coverageRows = ordered.filter { it.level in setOf("WARN", "ERROR", "FATAL") }
+                .map(AppLogDiagnosticCoveragePolicy::analyze)
+            val averageCoverage = coverageRows.takeIf { it.isNotEmpty() }
+                ?.map { it.completenessPercent }?.average()?.toInt()
+            val incompleteCoverage = coverageRows.count { it.missingEvidence.isNotEmpty() }
+            append("- 异常日志诊断证据覆盖率：")
+                .append(averageCoverage?.let { "$it%" } ?: "无异常日志")
+                .append("；需要补充证据的异常数：").append(incompleteCoverage)
+                .append("/").append(coverageRows.size).append('\n')
             append("- 尚未确认恢复的故障编号：").append(unresolved.size).append('\n')
             append("- 已有明确恢复记录的故障编号：").append(recovered.size).append('\n')
             append("- 日志写入器当前状态：").append(if (writerHealth.isHealthy) "正常" else "异常").append('\n')
@@ -123,6 +133,7 @@ internal object AppLogAiReport {
             } else {
                 priorityEvents.forEachIndexed { index, event ->
                     val diagnosis = AppLogDiagnostics.analyze(event)
+                    val coverage = AppLogDiagnosticCoveragePolicy.analyze(event)
                     append(index + 1).append(". ")
                         .append(AppLogStore.formatTime(event.timestampMs))
                         .append(" [").append(event.level).append("] ")
@@ -134,6 +145,12 @@ internal object AppLogAiReport {
                         .append("；首个应用栈帧=").append(event.firstAppStackFrame.ifBlank { "未记录" })
                         .append("；AI 分类=").append(diagnosis.category)
                         .append("；置信度=").append(diagnosis.confidence)
+                        .append("；AI 判断=").append(AppLogStore.redactForExport(diagnosis.finding))
+                        .append("；证据=").append(AppLogStore.redactForExport(diagnosis.evidence))
+                        .append("；建议=").append(diagnosis.nextSteps.joinToString(" | ") { AppLogStore.redactForExport(it) })
+                        .append("；证据覆盖率=").append(coverage.completenessPercent).append('%')
+                        .append("；缺失证据=").append(coverage.missingEvidence.joinToString("、").ifBlank { "当前清单未发现缺项" })
+                        .append("；补采建议=").append(coverage.collectionAdvice.joinToString(" | ").ifBlank { "结合源码继续验证" })
                         .append("；HTTP=").append(event.httpStatusCode.takeIf { it > 0 } ?: "未知")
                         .append("；故障编号=").append(event.issueKey.ifBlank { "无" })
                         .append("；状态=")
@@ -161,7 +178,7 @@ internal object AppLogAiReport {
                 }
                 val json = JSONObject()
                     .put("schemaVersion", event.schemaVersion)
-                    .put("reportSchemaVersion", 6)
+                    .put("reportSchemaVersion", 7)
                     .put("index", index + 1)
                     .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + (index + 1) })
                     .put("sessionId", event.sessionId.ifBlank { "legacy/unknown" })
@@ -219,6 +236,8 @@ internal object AppLogAiReport {
                     .put("processId", event.processId)
                     .put("threadId", event.threadId)
                     .put("thread", AppLogStore.redactForExport(event.thread))
+                    .put("diagnosticCoverage", diagnosticCoverageJson(event))
+                    .put("aiDiagnosis", aiDiagnosisJson(event))
                     .put("details", AppLogStore.redactForExport(event.details))
                 append(json.toString()).append('\n')
             }
@@ -234,8 +253,9 @@ internal object AppLogAiReport {
             append("7. 网络问题同时分析 HTTP 状态码、服务商错误码、requestId、Content-Type、响应长度、重试和解析器结果；不要把所有失败归为网络问题。\n")
             append("8. 对 YouTube、网页视频和本地视频分别核对同一阶段的实现路径，并指出需要同步修复的入口。\n")
             append("9. 提出最小且可验证的修复，说明文件、方法、风险和回归测试；不得用静默吞错、空结果或原声兜底掩盖失败。\n")
-            append("10. 日志不足时先指出应在真实失败分支补采的字段，不得臆造运行状态。\n")
-            append("11. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
+            append("10. 先查看每条异常的 diagnosticCoverage，按模块缺失清单定位真实失败分支补采证据；覆盖率只衡量日志采集情况，不代表根因判断准确率。\n")
+            append("11. 缺失字段必须明确标记为未采集，并定位源码补采；不得根据相邻事件或默认值推测实际状态。\n")
+            append("12. 注意导出范围与旧版记录字段缺失；空字段表示当时未采集，不得推断为数值零或功能未执行。\n")
             append("\n隐私说明：导出前再次执行凭据脱敏；分享前仍应检查字幕片段、文件名和业务内容是否包含个人信息。\n")
         }
     }
@@ -304,6 +324,8 @@ internal object AppLogAiReport {
                     }
                 },
             )
+            .put("diagnosticCoverage", diagnosticCoverageJson(event))
+            .put("aiDiagnosis", aiDiagnosisJson(event))
             .put("details", AppLogStore.redactForExport(event.details))
             .put("relationToSelectedEvent", relation.role)
             .put("relationEvidence", AppLogStore.redactForExport(relation.evidence))
@@ -311,7 +333,7 @@ internal object AppLogAiReport {
 
         return buildString {
             append("# 大象翻译 AI 单条故障修复包\n")
-            append("report_schema: elephant-app-log/incident-v4\n")
+            append("report_schema: elephant-app-log/incident-v5\n")
             append("导出时间：").append(exportedAt).append('\n')
             append("应用版本：").append(AppLogStore.redactForExport(appVersion)).append('\n')
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
@@ -342,6 +364,14 @@ internal object AppLogAiReport {
             append("- 置信度：").append(diagnosis.confidence).append('\n')
             append("- 判断：").append(diagnosis.finding).append('\n')
             append("- 证据：").append(diagnosis.evidence).append('\n')
+            val primaryCoverage = AppLogDiagnosticCoveragePolicy.analyze(primary)
+            append("- 诊断证据覆盖率：").append(primaryCoverage.completenessPercent)
+                .append("%（").append(primaryCoverage.collectedEvidenceCount).append("/")
+                .append(primaryCoverage.requiredEvidenceCount).append(" 项已采集）\n")
+            append("- 缺失证据：").append(primaryCoverage.missingEvidence.joinToString("、").ifBlank { "当前清单未发现缺项" }).append('\n')
+            primaryCoverage.collectionAdvice.forEachIndexed { index, advice ->
+                append("- 建议补采 ").append(index + 1).append("：").append(advice).append('\n')
+            }
             diagnosis.nextSteps.forEachIndexed { index, step ->
                 append("- 排查建议 ").append(index + 1).append("：").append(step).append('\n')
             }
@@ -372,6 +402,35 @@ internal object AppLogAiReport {
             append("7. 不得通过吞掉异常、返回空成功、跳过错误或原声兜底来掩盖真实失败。\n")
             append("\n隐私说明：报告对常见密钥、令牌、Cookie 和签名 URL 参数执行脱敏；分享前仍请检查字幕片段、文件名和业务内容。\n")
         }
+    }
+
+
+    private fun diagnosticCoverageJson(record: AppLogRecord): JSONObject {
+        val coverage = AppLogDiagnosticCoveragePolicy.analyze(record)
+        return JSONObject()
+            .put("domain", AppLogStore.redactForExport(coverage.domain))
+            .put("collectedEvidenceCount", coverage.collectedEvidenceCount)
+            .put("requiredEvidenceCount", coverage.requiredEvidenceCount)
+            .put("completenessPercent", coverage.completenessPercent)
+            .put("missingEvidence", JSONArray().apply {
+                coverage.missingEvidence.forEach { put(AppLogStore.redactForExport(it)) }
+            })
+            .put("collectionAdvice", JSONArray().apply {
+                coverage.collectionAdvice.forEach { put(AppLogStore.redactForExport(it)) }
+            })
+    }
+
+    private fun aiDiagnosisJson(record: AppLogRecord): Any {
+        if (record.level !in setOf("WARN", "ERROR", "FATAL")) return JSONObject.NULL
+        val diagnosis = AppLogDiagnostics.analyze(record)
+        return JSONObject()
+            .put("category", AppLogStore.redactForExport(diagnosis.category))
+            .put("confidence", AppLogStore.redactForExport(diagnosis.confidence))
+            .put("finding", AppLogStore.redactForExport(diagnosis.finding))
+            .put("evidence", AppLogStore.redactForExport(diagnosis.evidence))
+            .put("nextSteps", JSONArray().apply {
+                diagnosis.nextSteps.forEach { put(AppLogStore.redactForExport(it)) }
+            })
     }
 
 }

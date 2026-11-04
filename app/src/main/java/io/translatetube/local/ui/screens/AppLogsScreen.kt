@@ -42,6 +42,8 @@ import io.translatetube.local.util.AppLogRecord
 import io.translatetube.local.util.AppLogTitleResolver
 import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.util.AppLogDiagnostics
+import io.translatetube.local.util.AppLogDiagnosticCoverage
+import io.translatetube.local.util.AppLogDiagnosticCoveragePolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -493,8 +495,12 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     val diagnosis = remember(record.timestampMs, record.tag, record.message, record.details) {
                         AppLogDiagnostics.analyze(record)
                     }
+                    val coverage = remember(record.eventId, record.tag, record.message, record.diagnosticContext) {
+                        AppLogDiagnosticCoveragePolicy.analyze(record)
+                    }
                     if (isRecoverableLevel(record.level)) {
                         DiagnosisSummaryCard(diagnosis)
+                        DiagnosticCoverageCard(coverage)
                     }
 
                     // Put request/response facts up front; users should not have to scan a long
@@ -905,6 +911,65 @@ private fun DiagnosisSummaryCard(diagnosis: io.translatetube.local.util.AppLogDi
                 Text(
                     (index + 1).toString() + ". " + step,
                     color = Color(0xFF4D5968),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticCoverageCard(coverage: AppLogDiagnosticCoverage) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xFFF7F8FA),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5E8EC)),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "AI 诊断证据 · " + coverage.domain,
+                    color = Color(0xFF202124),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    coverage.completenessPercent.toString() + "%",
+                    color = if (coverage.missingEvidence.isEmpty()) Color(0xFF247347) else Color(0xFF946200),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text(
+                "已采集 " + coverage.collectedEvidenceCount + "/" + coverage.requiredEvidenceCount + " 项关键证据",
+                color = Color(0xFF68707A),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (coverage.missingEvidence.isNotEmpty()) {
+                Text("缺失证据", color = Color(0xFF202124), style = MaterialTheme.typography.labelLarge)
+                coverage.missingEvidence.forEach {
+                    Text("· " + it, color = Color(0xFF4D5968), style = MaterialTheme.typography.bodySmall)
+                }
+                Text("建议补采", color = Color(0xFF202124), style = MaterialTheme.typography.labelLarge)
+                coverage.collectionAdvice.forEachIndexed { index, advice ->
+                    Text(
+                        (index + 1).toString() + ". " + advice,
+                        color = Color(0xFF4D5968),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            } else {
+                Text(
+                    "当前模块关键证据采集项齐全；仍需结合代码和事件关系验证真实根因。",
+                    color = Color(0xFF247347),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
