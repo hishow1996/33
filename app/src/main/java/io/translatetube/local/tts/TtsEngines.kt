@@ -90,6 +90,7 @@ class KokoroTts(
     private val numThreads: Int = TtsCpuThreadPolicy.recommendedThreads(ctx),
 ) : TtsEngine, LocalCpuBoundTtsEngine {
     override val name = "Kokoro"
+    private val appCtx = ctx.applicationContext
     private val runtimeSignature by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         io.translatetube.local.data.ModelFiles.ttsCacheSignature(ctx)
     }
@@ -143,17 +144,136 @@ class KokoroTts(
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
-        val audio = guard.use { tts.generate(normalizedText, selectedSpeaker, safeSpeed) }
+        val startedAtMs = android.os.SystemClock.elapsedRealtime()
+        val audio = try {
+            guard.use { tts.generate(normalizedText, selectedSpeaker, safeSpeed) }
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            logKokoroFailure(
+                "Kokoro 本地神经 TTS 推理失败",
+                failure,
+                "Sherpa-ONNX Kokoro 原生推理",
+                normalizedText.length,
+                selectedSpeaker,
+                safeSpeed,
+                android.os.SystemClock.elapsedRealtime() - startedAtMs,
+            )
+            throw failure
+        }
         checkActive()
         val sampleRate = audio.sampleRate
-        if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
-            android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=${audio.samples.size}")
+        val rawSamples = audio.samples.size
+        if (sampleRate !in 8_000..192_000 || rawSamples == 0) {
+            val failure = IllegalStateException("Kokoro 模型返回无效音频：采样率=$sampleRate Hz，样本数=$rawSamples")
+            android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=$rawSamples")
+            logKokoroFailure(
+                "Kokoro 推理完成但返回无效 PCM",
+                failure,
+                "原生推理输出格式校验",
+                normalizedText.length,
+                selectedSpeaker,
+                safeSpeed,
+                android.os.SystemClock.elapsedRealtime() - startedAtMs,
+                sampleRate,
+                rawSamples,
+            )
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
-        val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples, checkActive)
-        val trimmed = TtsEdgeSilenceTrimmer.trim(clean, sampleRate, checkActive)
+        val clean: FloatArray
+        val trimmed: FloatArray
+        try {
+            clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples, checkActive)
+            trimmed = TtsEdgeSilenceTrimmer.trim(clean, sampleRate, checkActive)
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            logKokoroFailure(
+                "Kokoro PCM 后处理失败",
+                failure,
+                "PCM 数值清理/首尾静音裁剪",
+                normalizedText.length,
+                selectedSpeaker,
+                safeSpeed,
+                android.os.SystemClock.elapsedRealtime() - startedAtMs,
+                sampleRate,
+                rawSamples,
+            )
+            throw failure
+        }
         checkActive()
+        if (trimmed.isEmpty()) {
+            val failure = IllegalStateException("Kokoro PCM 后处理后没有剩余可播放样本")
+            logKokoroFailure(
+                "Kokoro 音频后处理结果为空",
+                failure,
+                "PCM 后处理结果校验",
+                normalizedText.length,
+                selectedSpeaker,
+                safeSpeed,
+                android.os.SystemClock.elapsedRealtime() - startedAtMs,
+                sampleRate,
+                rawSamples,
+                trimmed.size,
+            )
+        }
         return TtsAudio(trimmed, sampleRate)
+    }
+
+    private fun logKokoroFailure(
+        message: String,
+        failure: Throwable,
+        stage: String,
+        textLength: Int,
+        speaker: Int,
+        speed: Float,
+        elapsedMs: Long,
+        sampleRate: Int? = null,
+        sampleCount: Int? = null,
+        outputSampleCount: Int? = null,
+    ) {
+        val dir = io.translatetube.local.data.ModelFiles.ttsDir(appCtx)
+        val requiredFiles = listOf(
+            "model.int8.onnx",
+            "voices.bin",
+            "tokens.txt",
+            "lexicon-zh.txt",
+            "phone-zh.fst",
+            "date-zh.fst",
+            "number-zh.fst",
+        )
+        runCatching {
+            io.translatetube.local.util.AppLogStore.error(
+                appCtx,
+                "KokoroTTS",
+                message,
+                failure,
+                diagnosticContext = mapOf(
+                    "配音服务商" to "Kokoro / Sherpa-ONNX",
+                    "失败阶段" to stage,
+                    "模型版本" to "Kokoro v1.1 int8",
+                    "音色 ID" to speaker.toString(),
+                    "ONNX 推理线程数" to numThreads.toString(),
+                    "推理设备" to "CPU",
+                    "当前语速" to speed.toString(),
+                    "当前文本字符数" to textLength.toString(),
+                    "当前字幕正文是否写入日志" to "否",
+                    "模型目录是否存在" to dir.isDirectory.toString(),
+                    "模型必需文件状态" to requiredFiles.joinToString(",") { name ->
+                        val file = java.io.File(dir, name)
+                        "$name:${file.isFile && file.length() > 0L}(${file.takeIf { it.isFile }?.length() ?: 0L} bytes)"
+                    },
+                    "多语言语音数据目录是否存在" to java.io.File(dir, "espeak-ng-data").isDirectory.toString(),
+                    "模型目录可用空间 bytes" to dir.usableSpace.toString(),
+                    "推理/处理耗时 ms" to elapsedMs.coerceAtLeast(0L).toString(),
+                    "输出采样率 Hz" to (sampleRate?.toString() ?: "未知"),
+                    "原始 PCM 样本数" to (sampleCount?.toString() ?: "未知"),
+                    "后处理 PCM 样本数" to (outputSampleCount?.toString() ?: "未执行"),
+                    "异常类型" to failure.javaClass.name,
+                    "异常摘要" to (failure.message ?: "无异常消息").take(360),
+                ),
+            )
+        }
     }
 
     override fun close() = guard.close()
