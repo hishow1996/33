@@ -206,4 +206,24 @@ class TranslationAdaptiveRecoveryTest {
     }
 
 
+
+    @Test
+    fun doesNotReturnUnresolvedCuesAfterAnUnalignedResponseWasSeen() = runBlocking {
+        val error = runCatching {
+            translateBatchWithAdaptiveRecovery(
+                lines = listOf("first", "unresolved", "last"),
+            ) { rows, _ ->
+                when (rows) {
+                    listOf("first") -> listOf("中文:first")
+                    listOf("unresolved") -> listOf("")
+                    listOf("last") -> listOf("中文:last")
+                    else -> listOf("truncated provider response")
+                }
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("已禁止原声兜底"))
+    }
+
 }
