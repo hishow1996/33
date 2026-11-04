@@ -17,6 +17,7 @@ class AppLogAiReportTest {
                 thread = "DefaultDispatcher-worker-2",
                 eventId = "event-2",
                 sessionId = "session-a",
+                operationId = "pipeline-test-1",
                 sequence = 2L,
                 category = "字幕翻译",
                 errorClass = "java.net.SocketTimeoutException",
@@ -61,6 +62,7 @@ class AppLogAiReportTest {
                 thread = "main",
                 eventId = "event-1",
                 sessionId = "session-a",
+                operationId = "pipeline-test-1",
                 sequence = 1L,
                 category = "视频处理流程",
             ),
@@ -93,6 +95,7 @@ class AppLogAiReportTest {
         assertTrue(report.indexOf("\"eventId\":\"event-1\"") < report.indexOf("\"eventId\":\"event-2\""))
         assertTrue(report.contains("不要把不同进程会话混为一次任务"))
         assertTrue(report.contains("任务故障关系候选"))
+        assertTrue(report.contains("最早异常候选事件=event-2"))
         assertTrue(report.contains("FIRST_RECORDED_ANOMALY_CANDIDATE"))
         assertTrue(report.contains("不能直接认定为真实根因"))
         assertTrue(report.contains("operationFailureRole"))
