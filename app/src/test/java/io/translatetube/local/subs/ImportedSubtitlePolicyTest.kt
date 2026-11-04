@@ -1,6 +1,7 @@
 package io.translatetube.local.subs
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ImportedSubtitlePolicyTest {
@@ -64,20 +65,33 @@ OK""")
     }
 
     @Test
-    fun fillsMissingImportedTranslationWithoutRequestingAutomaticTranslation() {
+    fun keepsMissingImportedTranslationEmptyInsteadOfCopyingTheSourceText() {
         val restored = ImportedSubtitlePolicy.preserveImportedTranslations(
             listOf(
                 SubLine(
                     index = 9,
                     startMs = 0L,
                     endMs = 900L,
-                    text = "你好",
+                    text = "Hello there",
                     zh = null,
                 ),
             ),
         )
 
-        assertEquals("你好", restored.single().zh)
+        assertEquals("Hello there", restored.single().text)
+        assertNull(restored.single().zh)
+    }
+
+    @Test
+    fun completesOnlyMissingChineseSourceCaptions() {
+        val restored = ImportedSubtitlePolicy.completeChineseSourceCaptions(
+            listOf(
+                SubLine(0, 0L, 900L, "你好", null),
+                SubLine(1, 900L, 1_800L, "你好", "您好"),
+            ),
+        )
+
+        assertEquals(listOf("你好", "您好"), restored.map { it.zh })
     }
 
 }
