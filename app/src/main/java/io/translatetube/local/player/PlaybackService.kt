@@ -9413,27 +9413,92 @@ updateUiForSession(key, pipelineGeneration) {
                                     chunkStart + AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT,
                                     segs.size,
                                 )
-                                val chunkRows = engine.transcribeBySegments(
-                                    pcmFile,
-                                    segs.subList(chunkStart, chunkEnd),
-                                    checkActive = { ownerJob?.ensureActive() },
-                                    sharedPcmReader = sharedPcmReader,
-                                ) { done, _ ->
-                                    val completedSegment = segs.getOrNull((chunkStart + done - 1).coerceAtLeast(0))
-                                    val progressTimeMs = completedSegment?.second ?: 0L
-                                    val progressMinutes = progressTimeMs / 60_000L
-                                    val progressSeconds = (progressTimeMs / 1_000L) % 60L
-                                    val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
-                                    updateUiForSession(key, pipelineGeneration) { state ->
-                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                            state.copy(
-                                                progress = progressLabel,
-                                                transcriptionProgressPercent = null,
-                                                transcriptionCompletedSegments = chunkStart + done,
-                                                transcriptionTotalSegments = segs.size,
-                                            )
-                                        } else state
+                                val currentChunkStartMs = segs.getOrNull(chunkStart)?.first ?: 0L
+                                val currentChunkEndMs = segs.getOrNull(chunkEnd - 1)?.second ?: currentChunkStartMs
+                                currentStageDiagnostics.putAll(
+                                    mapOf(
+                                        "当前处理子步骤" to "本地 ASR 正在识别当前分段组",
+                                        "当前正在识别分段起始序号" to (chunkStart + 1).toString(),
+                                        "当前正在识别分段结束序号" to chunkEnd.toString(),
+                                        "当前正在识别分段组数量" to (chunkEnd - chunkStart).toString(),
+                                        "当前分段组音频起始 ms" to currentChunkStartMs.toString(),
+                                        "当前分段组音频结束 ms" to currentChunkEndMs.toString(),
+                                        "当前分段组 PCM 样本数" to (
+                                            (currentChunkEndMs - currentChunkStartMs).coerceAtLeast(0L) *
+                                                pcmFile.sampleRate / 1_000L
+                                            ).toString(),
+                                        "当前本地 ASR 已恢复分段数" to processed.toString(),
+                                        "当前部分转写检查点键是否存在" to partialAsrCacheKey.isNotBlank().toString(),
+                                        "当前字幕分段缓存前缀是否存在" to asrChunkKeyPrefix.isNotBlank().toString(),
+                                    ),
+                                )
+                                val chunkRows = try {
+                                    engine.transcribeBySegments(
+                                        pcmFile,
+                                        segs.subList(chunkStart, chunkEnd),
+                                        checkActive = { ownerJob?.ensureActive() },
+                                        sharedPcmReader = sharedPcmReader,
+                                    ) { done, _ ->
+                                        val completedSegment = segs.getOrNull((chunkStart + done - 1).coerceAtLeast(0))
+                                        val progressTimeMs = completedSegment?.second ?: 0L
+                                        val progressMinutes = progressTimeMs / 60_000L
+                                        val progressSeconds = (progressTimeMs / 1_000L) % 60L
+                                        val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
+                                        currentStageDiagnostics.putAll(
+                                            mapOf(
+                                                "当前 ASR 组内已完成分段数" to done.toString(),
+                                                "当前 ASR 组内总分段数" to (chunkEnd - chunkStart).toString(),
+                                                "当前转写音频位置 ms" to progressTimeMs.toString(),
+                                            ),
+                                        )
+                                        updateUiForSession(key, pipelineGeneration) { state ->
+                                            if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                state.copy(
+                                                    progress = progressLabel,
+                                                    transcriptionProgressPercent = null,
+                                                    transcriptionCompletedSegments = chunkStart + done,
+                                                    transcriptionTotalSegments = segs.size,
+                                                )
+                                            } else state
+                                        }
                                     }
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                    throw cancelled
+                                } catch (failure: Exception) {
+                                    val chunkDiagnostics = currentStageDiagnostics.toMap() + mapOf(
+                                        "诊断事件类型" to "LOCAL_ASR_CHUNK_FAILURE",
+                                        "失败子阶段" to "本地 ASR 模型分段识别",
+                                        "本地 ASR 模型 ID" to selectedModelId,
+                                        "本地 ASR 模型名称" to io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(selectedModelId),
+                                        "本地 ASR 实现类" to engine.javaClass.name,
+                                        "失败分段组起始序号" to (chunkStart + 1).toString(),
+                                        "失败分段组结束序号" to chunkEnd.toString(),
+                                        "失败分段组音频起始 ms" to currentChunkStartMs.toString(),
+                                        "失败分段组音频结束 ms" to currentChunkEndMs.toString(),
+                                        "失败分段组数量" to (chunkEnd - chunkStart).toString(),
+                                        "失败分段组 PCM 样本数" to (
+                                            (currentChunkEndMs - currentChunkStartMs).coerceAtLeast(0L) *
+                                                pcmFile.sampleRate / 1_000L
+                                            ).toString(),
+                                        "已从检查点恢复分段数" to restoredProcessedSegments.toString(),
+                                        "当前组内已完成分段数" to (currentStageDiagnostics["当前 ASR 组内已完成分段数"] ?: "0"),
+                                        "累计已完成分段数" to processed.toString(),
+                                        "累计已生成字幕行数" to rows.size.toString(),
+                                        "本地 ASR 总分段数" to segs.size.toString(),
+                                        "是否保留既有已完成检查点" to "是；当前未成功分组不会计入完成进度",
+                                    )
+                                    runCatching {
+                                        io.translatetube.local.util.AppLogStore.error(
+                                            this@PlaybackService,
+                                            "LocalAsr",
+                                            "本地 ASR 第 ${chunkStart + 1}-${chunkEnd}/${segs.size} 段识别失败（${selectedModelId}）",
+                                            failure,
+                                            diagnosticContext = chunkDiagnostics,
+                                        )
+                                    }.onFailure { loggingFailure ->
+                                        android.util.Log.w("PlaybackService", "Unable to persist local ASR chunk failure", loggingFailure)
+                                    }
+                                    throw failure
                                 }
                                 rows.addAll(chunkRows)
                                 processed = chunkEnd
