@@ -1,6 +1,0 @@
-{
-  "name": "大象翻译",
-  "description": "TranslateTube local video player with speech recognition, translation, and TTS",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
