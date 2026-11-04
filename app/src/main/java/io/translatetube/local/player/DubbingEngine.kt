@@ -84,11 +84,12 @@ class DubbingEngine(
         message: String,
         failure: Throwable? = null,
         diagnosticContext: Map<String, String> = emptyMap(),
+        tag: String = "DubbingEngine",
     ) {
         DubbingLogDispatcher.enqueue {
             io.translatetube.local.util.AppLogStore.error(
                 appContext,
-                "DubbingEngine",
+                tag,
                 message,
                 failure,
                 diagnosticContext = diagnosticContext,
@@ -444,8 +445,8 @@ class DubbingEngine(
             }
         }
         if (explicitOriginalAudioFallbackIndices.isNotEmpty()) {
-            logDubbingInfo(
-                "已按翻译结果标记保留部分字幕原声",
+            logDubbingError(
+                "字幕翻译原声兜底：已按翻译结果标记保留部分字幕原声",
                 mapOf(
                     "配音引擎名称" to tts.name,
                     "字幕总行数" to preparedLines.size.toString(),
@@ -457,8 +458,8 @@ class DubbingEngine(
             )
         }
         if (preflightIssueCount > 0) {
-            logDubbingInfo(
-                "配音字幕预检发现 $preflightIssueCount 条字幕无法生成中文配音",
+            logDubbingError(
+                "配音字幕预检失败：$preflightIssueCount 条字幕无法生成中文配音",
                 mapOf(
                     "配音引擎名称" to tts.name,
                     "配音引擎实现类" to tts.javaClass.name,
@@ -4145,8 +4146,8 @@ class DubbingEngine(
                 "译文只有标点、符号或表情，没有可朗读内容"
             else -> "该句未获得可播放 PCM；没有记录到更具体的失败原因"
         }
-        logDubbingInfo(
-            "播放第 ${index + 1}/${lines.size} 句时未检测到可播放中文配音，已恢复原声",
+        logDubbingError(
+            "配音播放错误：第 ${index + 1}/${lines.size} 句未检测到可播放中文配音，已恢复原声",
             mapOf(
                 "字幕行号" to "${index + 1}/${lines.size}",
                 "原因" to reason,
