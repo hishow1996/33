@@ -1,5 +1,6 @@
 package io.translatetube.local.tts
 
+import android.content.Context
 import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -20,13 +21,15 @@ import java.util.UUID
 import java.util.TimeZone
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 /** Microsoft Edge Read Aloud online neural TTS; distinct from System TTS and Youdao/Baidu. */
-internal class EdgeTts : TtsEngine {
+internal class EdgeTts(context: Context) : TtsEngine {
+    private val appCtx = context.applicationContext
     override val name = "微软 Edge TTS"
     private val closed = AtomicBoolean(false)
     private val activeSockets = CopyOnWriteArraySet<WebSocket>()
@@ -69,17 +72,55 @@ internal class EdgeTts : TtsEngine {
         val rate = (((speed.takeIf { it.isFinite() } ?: 1.0f) - 1.0f) * 100f)
             .roundToInt().coerceIn(-50, 100)
         val decodedParts = ArrayList<FloatArray>()
-        for (part in splitForRequest(spoken)) {
+        val requestParts = splitForRequest(spoken)
+        for ((partIndex, part) in requestParts.withIndex()) {
             checkOpen()
             checkActive()
-            val decoded = synthesizePart(part, voice, rate, checkActive)
+            val decoded = synthesizePart(
+                part,
+                voice,
+                rate,
+                checkActive,
+                requestPartIndex = partIndex + 1,
+                requestPartCount = requestParts.size,
+            )
             if (decoded.isNotEmpty()) decodedParts += decoded
         }
         if (decodedParts.isEmpty()) {
-            throw IllegalStateException("微软 Edge TTS 没有返回可解码的音频，请检查网络后重试")
+            val failure = IllegalStateException("微软 Edge TTS 没有返回可解码的音频，请检查网络后重试")
+            logSynthesisFailure(
+                "Edge TTS 合成结束但没有可播放 PCM",
+                failure,
+                spoken.length,
+                voice,
+                rate,
+                stage = "音频分段汇总",
+                requestPartIndex = 0,
+                requestPartCount = requestParts.size,
+                attempt = 0,
+                nextAction = "停止当前字幕行并检查前面各段请求/解码日志",
+                finalFailure = true,
+            )
+            throw failure
         }
         val total = decodedParts.sumOf { it.size.toLong() }
-        require(total in 1..MAX_OUTPUT_SAMPLES) { "微软 Edge TTS 返回的音频长度超出安全范围" }
+        if (total !in 1..MAX_OUTPUT_SAMPLES) {
+            val failure = IllegalArgumentException("微软 Edge TTS 返回的音频长度超出安全范围：样本数=$total")
+            logSynthesisFailure(
+                "Edge TTS 输出 PCM 超出安全长度限制",
+                failure,
+                spoken.length,
+                voice,
+                rate,
+                stage = "PCM 输出长度校验",
+                requestPartIndex = requestParts.size,
+                requestPartCount = requestParts.size,
+                attempt = 1,
+                nextAction = "停止当前字幕行；检查服务端是否返回异常长音频",
+                finalFailure = true,
+            )
+            throw failure
+        }
         val merged = FloatArray(total.toInt())
         var cursor = 0
         decodedParts.forEach { System.arraycopy(it, 0, merged, cursor, it.size); cursor += it.size }
@@ -95,6 +136,8 @@ internal class EdgeTts : TtsEngine {
         voice: String,
         ratePercent: Int,
         checkActive: () -> Unit,
+        requestPartIndex: Int,
+        requestPartCount: Int,
     ): FloatArray {
         var lastEmpty: EmptyAudioException? = null
         for (attempt in 0 until EMPTY_AUDIO_ATTEMPTS) {
@@ -105,15 +148,45 @@ internal class EdgeTts : TtsEngine {
                 checkOpen()
                 checkActive()
                 return decodeMp3(mp3).first
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (empty: EmptyAudioException) {
                 lastEmpty = empty
+                logSynthesisFailure(
+                    "Edge TTS 返回音频为空或过短，正在尝试重试/拆分",
+                    empty,
+                    part.length,
+                    voice,
+                    ratePercent,
+                    stage = "WebSocket 音频响应或 MP3 解码",
+                    requestPartIndex = requestPartIndex,
+                    requestPartCount = requestPartCount,
+                    attempt = attempt + 1,
+                    nextAction = if (attempt < EMPTY_AUDIO_ATTEMPTS - 1) "使用新 WebSocket 连接重试" else "将文本拆成更短片段合成",
+                    finalFailure = false,
+                )
                 if (attempt < EMPTY_AUDIO_ATTEMPTS - 1) sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS * (attempt + 1), checkActive)
+            } catch (failure: Exception) {
+                logSynthesisFailure(
+                    "Edge TTS 请求或音频解码失败",
+                    failure,
+                    part.length,
+                    voice,
+                    ratePercent,
+                    stage = "WebSocket 请求/MP3 音频解码",
+                    requestPartIndex = requestPartIndex,
+                    requestPartCount = requestPartCount,
+                    attempt = attempt + 1,
+                    nextAction = "终止当前片段合成并交由上层记录字幕行失败",
+                    finalFailure = true,
+                )
+                throw failure
             }
         }
         val pieces = TtsTextPolicy.splitIntoPieces(part)
         if (pieces.size > 1) {
             val decodedPieces = ArrayList<FloatArray>()
-            for (piece in pieces) {
+            for ((pieceIndex, piece) in pieces.withIndex()) {
                 if (!TtsTextPolicy.hasSpeakableContent(piece)) continue
                 var pieceAudio: FloatArray? = null
                 for (attempt in 0 until 2) {
@@ -125,12 +198,64 @@ internal class EdgeTts : TtsEngine {
                         checkActive()
                         pieceAudio = decodeMp3(mp3).first
                         break
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
                     } catch (empty: EmptyAudioException) {
                         lastEmpty = empty
+                        logSynthesisFailure(
+                            "Edge TTS 拆分后的小片段仍返回空/过短音频",
+                            empty,
+                            piece.length,
+                            voice,
+                            ratePercent,
+                            stage = "短片段 WebSocket 音频响应或 MP3 解码",
+                            requestPartIndex = requestPartIndex,
+                            requestPartCount = requestPartCount,
+                            subPartIndex = pieceIndex + 1,
+                            subPartCount = pieces.size,
+                            attempt = attempt + 1,
+                            nextAction = if (attempt == 0) "重新建立连接重试当前短片段" else "停止当前字幕行并保留失败原因",
+                            finalFailure = attempt == 1,
+                        )
                         if (attempt == 0) sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS, checkActive)
+                    } catch (failure: Exception) {
+                        logSynthesisFailure(
+                            "Edge TTS 拆分片段请求或解码失败",
+                            failure,
+                            piece.length,
+                            voice,
+                            ratePercent,
+                            stage = "短片段 WebSocket 请求/MP3 解码",
+                            requestPartIndex = requestPartIndex,
+                            requestPartCount = requestPartCount,
+                            subPartIndex = pieceIndex + 1,
+                            subPartCount = pieces.size,
+                            attempt = attempt + 1,
+                            nextAction = "终止当前字幕行",
+                            finalFailure = true,
+                        )
+                        throw failure
                     }
                 }
-                val audio = pieceAudio ?: throw lastEmpty!!
+                val audio = pieceAudio ?: run {
+                    val failure = lastEmpty ?: IllegalStateException("Edge TTS 短片段未产生音频")
+                    logSynthesisFailure(
+                        "Edge TTS 拆分后的片段最终没有可用音频",
+                        failure,
+                        piece.length,
+                        voice,
+                        ratePercent,
+                        stage = "短片段音频结果校验",
+                        requestPartIndex = requestPartIndex,
+                        requestPartCount = requestPartCount,
+                        subPartIndex = pieceIndex + 1,
+                        subPartCount = pieces.size,
+                        attempt = 2,
+                        nextAction = "停止当前字幕行",
+                        finalFailure = true,
+                    )
+                    throw failure
+                }
                 if (audio.isNotEmpty()) decodedPieces += audio
             }
             if (decodedPieces.isNotEmpty()) {
@@ -140,7 +265,65 @@ internal class EdgeTts : TtsEngine {
                 return merged
             }
         }
-        throw lastEmpty ?: IllegalStateException("微软 Edge TTS 没有返回可解码的音频，请检查网络后重试")
+        val failure = lastEmpty ?: IllegalStateException("微软 Edge TTS 没有返回可解码的音频，请检查网络后重试")
+        logSynthesisFailure(
+            "Edge TTS 多次重试和短句拆分后仍无法生成音频",
+            failure,
+            part.length,
+            voice,
+            ratePercent,
+            stage = "最终音频结果校验",
+            requestPartIndex = requestPartIndex,
+            requestPartCount = requestPartCount,
+            attempt = EMPTY_AUDIO_ATTEMPTS,
+            nextAction = "停止当前字幕行；检查 HTTP/WS 错误、音频字节数和 MP3 解码结果",
+            finalFailure = true,
+        )
+        throw failure
+    }
+
+    private fun logSynthesisFailure(
+        message: String,
+        failure: Throwable,
+        textLength: Int,
+        voice: String,
+        ratePercent: Int,
+        stage: String,
+        requestPartIndex: Int,
+        requestPartCount: Int,
+        attempt: Int,
+        nextAction: String,
+        finalFailure: Boolean,
+        subPartIndex: Int = 0,
+        subPartCount: Int = 0,
+    ) {
+        val details = mapOf(
+            "服务商" to "Microsoft Edge TTS",
+            "失败阶段" to stage,
+            "音色" to voice,
+            "语速百分比" to ratePercent.toString(),
+            "当前文本字符数" to textLength.toString(),
+            "当前文本是否写入日志" to "否",
+            "长文本请求分段序号" to requestPartIndex.toString(),
+            "长文本请求分段总数" to requestPartCount.toString(),
+            "短句拆分序号" to subPartIndex.takeIf { it > 0 }?.toString().orEmpty().ifBlank { "未拆分" },
+            "短句拆分总数" to subPartCount.takeIf { it > 0 }?.toString().orEmpty().ifBlank { "未拆分" },
+            "当前重试轮次" to attempt.toString(),
+            "WebSocket 连接超时秒" to "12",
+            "WebSocket 读取超时秒" to "40",
+            "WebSocket 写入超时秒" to "15",
+            "WebSocket 心跳间隔秒" to "20",
+            "异常类型" to failure.javaClass.name,
+            "异常摘要" to (failure.message ?: "无异常消息").take(320),
+            "下一步策略" to nextAction,
+        )
+        runCatching {
+            if (finalFailure) {
+                io.translatetube.local.util.AppLogStore.error(appCtx, "EdgeTTS", message, failure, diagnosticContext = details)
+            } else {
+                io.translatetube.local.util.AppLogStore.warning(appCtx, "EdgeTTS", message, failure, diagnosticContext = details)
+            }
+        }
     }
 
     private fun sleepChecking(totalMs: Long, checkActive: () -> Unit) {
