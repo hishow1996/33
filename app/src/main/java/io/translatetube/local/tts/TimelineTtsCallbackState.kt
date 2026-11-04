@@ -17,6 +17,7 @@ internal class TimelineTtsCallbackState {
     private var startCallbackRunning: Boolean = false
     private var terminal: Boolean = false
     private var completionRequested: Boolean = false
+    private var cancelled: Boolean = false
     private var completionError: String? = null
 
     fun beginStart(): Boolean {
@@ -45,7 +46,7 @@ internal class TimelineTtsCallbackState {
 
     fun finishStart(callbackFailure: Throwable?): Decision {
         startCallbackRunning = false
-        if (callbackFailure != null) {
+        if (callbackFailure != null && !cancelled) {
             terminal = true
             completionRequested = true
             completionError = "系统 TTS 开始回调执行异常：${callbackFailure.message ?: callbackFailure.javaClass.simpleName}"
@@ -59,6 +60,7 @@ internal class TimelineTtsCallbackState {
 
     /** Deliberate seek/pause/replacement cancellation must not be reported as a speech failure. */
     fun cancel() {
+        cancelled = true
         terminal = true
         completionRequested = false
         completionError = null

@@ -61,6 +61,19 @@ class TimelineTtsCallbackStateTest {
     }
 
     @Test
+    fun intentionalCancellationAlsoSuppressesALateStartCallbackException() {
+        val state = TimelineTtsCallbackState()
+        assertTrue(state.beginStart())
+        state.cancel()
+
+        val lateStartReturn = state.finishStart(IllegalStateException("late callback error"))
+
+        assertFalse(lateStartReturn.accepted)
+        assertFalse(lateStartReturn.completionReady)
+        assertEquals(null, lateStartReturn.error)
+    }
+
+    @Test
     fun intentionalCancellationDoesNotDeliverACompletionCallback() {
         val state = TimelineTtsCallbackState()
         assertTrue(state.beginStart())
