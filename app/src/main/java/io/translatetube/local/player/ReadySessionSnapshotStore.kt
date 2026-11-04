@@ -76,7 +76,11 @@ internal object ReadySessionSnapshotStore {
             if (root.optBoolean("ignoreTranscription", false) != ignoreTranscription) continue
 
             val stateObject = root.optJSONObject("state") ?: continue
-            val state = decodeState(videoKey, stateObject) ?: continue
+            val state = decodeState(videoKey, stateObject)
+            if (state == null) {
+                runCatching { AtomicFile(file).delete() }
+                continue
+            }
             if (!ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                     snapshotFlow = state.processingFlow,
                     snapshotIgnoresTranscription = ignoreTranscription,
@@ -152,7 +156,10 @@ internal object ReadySessionSnapshotStore {
             }
 
             val stateObject = root.optJSONObject("state") ?: return@mapNotNull null
-            val state = decodeState(videoKey, stateObject) ?: return@mapNotNull null
+            val state = decodeState(videoKey, stateObject) ?: run {
+                runCatching { AtomicFile(file).delete() }
+                return@mapNotNull null
+            }
             if (!ReadySessionSnapshotReusePolicy.isSnapshotFlowCompatible(
                     snapshotFlow = state.processingFlow,
                     snapshotIgnoresTranscription = ignoreTranscription,
@@ -187,7 +194,7 @@ internal object ReadySessionSnapshotStore {
             !fingerprintPattern.matches(fingerprint) ||
             state.lines.isEmpty() ||
             state.lines.size > MAX_SNAPSHOT_LINES ||
-            state.lines.any { it.zh.isNullOrBlank() && !it.translationFallbackOriginalAudio } ||
+            state.lines.any { it.zh.isNullOrBlank() } ||
             state.phase != Phase.READY ||
             !state.dubbingOn ||
             state.dubbingHasErrors ||
@@ -304,8 +311,7 @@ internal object ReadySessionSnapshotStore {
                     .put("e", line.endMs)
                     .put("t", line.text)
                     .put("zh", line.zh ?: JSONObject.NULL)
-                    .put("sp", line.speakerId)
-                    .put("oa", line.translationFallbackOriginalAudio),
+                    .put("sp", line.speakerId),
             )
         }
         val qualityOptions = JSONArray()
@@ -357,10 +363,8 @@ internal object ReadySessionSnapshotStore {
                 val rawTranslation = row.opt("zh")
                 val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) null
                     else rawTranslation.toString().takeIf { it.isNotBlank() }
-                lines += SubLine(
-                    index, startMs, endMs, text, translation, row.optInt("sp", -1),
-                    row.optBoolean("oa", false),
-                )
+                if (translation.isNullOrBlank()) return@runCatching null
+                lines += SubLine(index, startMs, endMs, text, translation, row.optInt("sp", -1))
             }
 
             val qualities = obj.optJSONArray("qualityOptions") ?: JSONArray()
@@ -396,7 +400,7 @@ internal object ReadySessionSnapshotStore {
                 thumbUrl = thumbUrl,
                 durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L),
                 lines = lines,
-                translatedLineCount = lines.count { !it.zh.isNullOrBlank() || it.translationFallbackOriginalAudio },
+                translatedLineCount = lines.count { !it.zh.isNullOrBlank() },
                 activeDubbingLine = -1,
                 currentLine = -1,
                 preparedUntil = 0,

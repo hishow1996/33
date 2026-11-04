@@ -78,6 +78,24 @@ class ReadySessionSnapshotMigrationPolicyTest {
     }
 
     @Test
+    fun rejectsLegacyOriginalAudioFallbackRowsWithoutChineseTranslation() {
+        val (fileName, bytes) = snapshot(
+            hasChineseTranslation = false,
+            legacyOriginalAudioFallback = true,
+        )
+
+        assertFalse(
+            ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
+                fileName = fileName,
+                bytes = bytes,
+                expectedVersion = 1,
+                maxBytes = 1024L,
+                maxLines = 10,
+            ),
+        )
+    }
+
+    @Test
     fun rejectsInvalidSubtitleTimelineAndTooManyRows() {
         val (invalidTimelineName, invalidTimelineBytes) = snapshot(startMs = 500L, endMs = 400L)
         assertFalse(
@@ -99,18 +117,21 @@ class ReadySessionSnapshotMigrationPolicyTest {
         startMs: Long = 0L,
         endMs: Long = 100L,
         lineCount: Int = 1,
+        hasChineseTranslation: Boolean = true,
+        legacyOriginalAudioFallback: Boolean = false,
     ): Pair<String, ByteArray> {
         val identityPart = if (identity == null || identity == keyHash) "" else "${identity}_"
         val fileName = "ready_${keyHash}_${identityPart}${fingerprint}_include_asr.json"
         val lines = JSONArray()
         repeat(lineCount) { index ->
             val lineStartMs = startMs + index * 100L
-            lines.put(
-                JSONObject()
-                    .put("s", lineStartMs)
-                    .put("e", endMs + index * 100L)
-                    .put("t", "hello"),
-            )
+            val row = JSONObject()
+                .put("s", lineStartMs)
+                .put("e", endMs + index * 100L)
+                .put("t", "hello")
+                .put("zh", if (hasChineseTranslation) "你好" else JSONObject.NULL)
+            if (legacyOriginalAudioFallback) row.put("oa", true)
+            lines.put(row)
         }
         val root = JSONObject()
             .put("version", 1)

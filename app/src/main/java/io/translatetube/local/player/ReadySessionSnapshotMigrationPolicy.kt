@@ -45,7 +45,15 @@ internal object ReadySessionSnapshotMigrationPolicy {
                 val startMs = row.optLong("s", Long.MIN_VALUE)
                 val endMs = row.optLong("e", Long.MIN_VALUE)
                 val text = row.optString("t")
-                if (startMs < 0L || endMs <= startMs || text.isBlank()) {
+                val translation = row.opt("zh")
+                if (
+                    startMs < 0L ||
+                    endMs <= startMs ||
+                    text.isBlank() ||
+                    translation == null ||
+                    translation == JSONObject.NULL ||
+                    translation.toString().isBlank()
+                ) {
                     return@runCatching false
                 }
             }

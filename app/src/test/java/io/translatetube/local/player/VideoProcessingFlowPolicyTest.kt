@@ -292,7 +292,7 @@ class VideoProcessingFlowPolicyTest {
         )
         assertTrue(VideoProcessingFlowPolicy.isCompleted(Phase.READY, dubbingHasErrors = false))
         assertEquals(
-            "配音部分失败 · 失败字幕已恢复原声",
+            "配音失败 · 播放已暂停",
             VideoProcessingFlowPolicy.readyNotificationFailureTitle(dubbingHasErrors = true),
         )
         assertEquals(null, VideoProcessingFlowPolicy.readyNotificationFailureTitle(dubbingHasErrors = false))

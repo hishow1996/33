@@ -71,8 +71,8 @@ internal data class InProgressCheckpointLoadResult(
 internal object InProgressProcessingCheckpointStore {
     private const val DIRECTORY_NAME = "in_progress_processing"
     // Versions 2–5 added gzip/restart metadata; version 6 added content fingerprints.
-    // Version 7 also fingerprints terminal original-audio translation fallbacks.
-    private const val VERSION = 7
+    // Version 8 removes persisted original-audio fallback state. Version 7 remains readable;
+    // its legacy fallback rows are restored as untranslated cues and retried.
     private const val MAX_FILE_BYTES = 24L * 1024L * 1024L
     private const val MAX_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BYTES = 96L * 1024L * 1024L
@@ -440,6 +440,7 @@ internal object InProgressProcessingCheckpointStore {
                 youtubeSubtitleMode = readNullableString(root, "youtubeSubtitleMode"),
                 state = restored,
                 version = version,
+                legacyLineRows = stateObject.optJSONArray("lines"),
             )
             if (root.optString("contentFingerprint") != expectedFingerprint) {
                 discard(file)
@@ -529,8 +530,7 @@ internal object InProgressProcessingCheckpointStore {
                     .put("e", line.endMs)
                     .put("t", line.text)
                     .put("zh", line.zh?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                    .put("sp", line.speakerId)
-                    .put("oa", line.translationFallbackOriginalAudio),
+                    .put("sp", line.speakerId),
             )
         }
 
@@ -585,10 +585,7 @@ internal object InProgressProcessingCheckpointStore {
             } else {
                 rawTranslation.toString().takeIf { it.isNotBlank() }
             }
-            lines += SubLine(
-                index, start, end, original, translation, row.optInt("sp", -1),
-                row.optBoolean("oa", false),
-            )
+            lines += SubLine(index, start, end, original, translation, row.optInt("sp", -1))
         }
 
         val qualityArray = obj.optJSONArray("qualityOptions") ?: JSONArray()
@@ -626,7 +623,7 @@ internal object InProgressProcessingCheckpointStore {
             thumbUrl = thumb,
             durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L),
             lines = lines,
-            translatedLineCount = lines.count { !it.zh.isNullOrBlank() || it.translationFallbackOriginalAudio },
+            translatedLineCount = lines.count { !it.zh.isNullOrBlank() },
             totalLines = lines.size,
             audioOnly = obj.optBoolean("audioOnly", false),
             videoAspect = obj.optDouble("videoAspect", 16.0 / 9.0).toFloat()
@@ -651,6 +648,7 @@ internal object InProgressProcessingCheckpointStore {
         youtubeSubtitleMode: String?,
         state: PlayerUiState,
         version: Int = VERSION,
+        legacyLineRows: JSONArray? = null,
     ): String {
         val digest = MessageDigest.getInstance("SHA-256")
         fun updateField(value: String?) {
@@ -709,12 +707,20 @@ internal object InProgressProcessingCheckpointStore {
         }
 
         updateField(state.lines.size.toString())
-        state.lines.forEach { line ->
+        state.lines.forEachIndexed { index, line ->
             updateField(line.startMs.toString())
             updateField(line.endMs.toString())
             updateField(line.text)
             updateField(line.zh?.takeIf { it.isNotBlank() })
-            if (version >= 7) updateField(line.translationFallbackOriginalAudio.toString())
+            if (version == 7) {
+                // Reproduce the version-7 digest from the serialized legacy flag only. The flag
+                // is intentionally not restored into SubLine and cannot count as a translation.
+                val legacyFallback = legacyLineRows
+                    ?.optJSONObject(index)
+                    ?.optBoolean("oa", false)
+                    ?: false
+                updateField(legacyFallback.toString())
+            }
             updateField(line.speakerId.toString())
         }
         return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }

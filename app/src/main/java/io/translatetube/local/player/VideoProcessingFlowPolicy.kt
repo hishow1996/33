@@ -302,7 +302,7 @@ object VideoProcessingFlowPolicy {
     ): Boolean = phase != Phase.SYNTHESIZING || playbackHasEnteredPlayer
 
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
-        if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null
+        if (dubbingHasErrors) "配音失败 · 播放已暂停" else null
 
     fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int = 2
 
