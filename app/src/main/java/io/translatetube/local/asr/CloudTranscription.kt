@@ -494,6 +494,7 @@ object CloudTranscription {
             else -> "Kawa"
         }
         var latestProgress = ""
+        val latestRequestDiagnostics = linkedMapOf<String, String>()
         fun publishProgress(message: String) {
             latestProgress = message.replace(Regex("\\s+"), " ").take(240)
             onProgress(message)
@@ -527,7 +528,9 @@ object CloudTranscription {
                         "失败子阶段" to stage,
                         "请求文件当前是否存在" to wavFile.isFile.toString(),
                         "请求文件当前大小字节" to wavFile.takeIf { it.isFile }?.length()?.toString().orEmpty(),
-                    ) + mapOf("最近转写进度" to latestProgress.ifBlank { "未提供" }) + extra,
+                    ) + latestRequestDiagnostics + mapOf(
+                        "最近转写进度" to latestProgress.ifBlank { "未提供" },
+                    ) + extra,
                 )
             }.onFailure { loggingFailure ->
                 android.util.Log.w("CloudTranscription", "Unable to persist cloud ASR diagnostic", loggingFailure)
@@ -678,8 +681,39 @@ object CloudTranscription {
         while (responseText == null) {
             checkActive()
             submissionGuardFile?.let { CloudAsrSubmissionGuardStore.markInFlight(it) }
+            val requestStartedAtNanos = System.nanoTime()
+            latestRequestDiagnostics.putAll(
+                mapOf(
+                    "HTTP 请求方法" to request.method,
+                    "HTTP 请求主机名" to request.url.host,
+                    "HTTP 请求路径" to request.url.encodedPath.take(180),
+                    "本轮请求尝试序号" to (retriesUsed + 1).toString(),
+                    "之前已重试次数" to retriesUsed.toString(),
+                ),
+            )
             try {
                 responseText = executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
+                    latestRequestDiagnostics.putAll(
+                        mapOf(
+                            "HTTP 状态码" to response.code.toString(),
+                            "HTTP 状态说明" to response.message.take(160),
+                            "HTTP 协议版本" to response.protocol.toString(),
+                            "响应 Content-Type" to (response.body?.contentType()?.toString()?.take(160) ?: "未返回"),
+                            "响应 Content-Length" to response.body?.contentLength()?.takeIf { it >= 0L }?.toString().orEmpty().ifBlank { "未提供" },
+                            "服务商请求 ID" to (
+                                response.header("x-request-id")
+                                    ?: response.header("request-id")
+                                    ?: response.header("x-correlation-id")
+                                    ?: "未返回"
+                                ).take(180),
+                            "服务商 Retry-After" to response.header("Retry-After").orEmpty().take(120).ifBlank { "未提供" },
+                            "服务商限流剩余额度头" to (
+                                response.header("x-ratelimit-remaining")
+                                    ?: response.header("ratelimit-remaining")
+                                    ?: "未提供"
+                                ).take(120),
+                        ),
+                    )
                     val body = readResponseBody(response.body, checkActive)
                     checkActive()
                     if (!response.isSuccessful) {
@@ -701,10 +735,24 @@ object CloudTranscription {
                     }
                     body
                 }
+                latestRequestDiagnostics["最近一次 HTTP 请求耗时 ms"] =
+                    ((System.nanoTime() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L).toString()
+                latestRequestDiagnostics["最近一次 HTTP 请求结果"] = "已收到响应正文"
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
                 val statusCode = cloudSubmissionHttpStatus(error)
+                latestRequestDiagnostics.putAll(
+                    mapOf(
+                        "最近一次 HTTP 请求耗时 ms" to
+                            ((System.nanoTime() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L).toString(),
+                        "最近一次 HTTP 请求结果" to if (statusCode != null) "收到非成功 HTTP 响应" else "连接/读取/请求处理异常，未提取到 HTTP 状态码",
+                        "最近一次 HTTP 错误状态码" to (statusCode?.toString() ?: "未提取"),
+                        "请求异常类型" to error.javaClass.name,
+                        "请求异常摘要" to (error.message ?: "未提供").take(300),
+                        "当前已使用重试次数" to retriesUsed.toString(),
+                    ),
+                )
                 when {
                     statusCode == 429 -> {
                         submissionGuardFile?.let { CloudAsrSubmissionGuardStore.clear(it) }
