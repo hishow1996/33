@@ -67,6 +67,19 @@ internal data class TranslationBatchResult(
                     )
                 }
                 val targetMismatch = targetMismatchDetail != null
+                // 纯语气词（Mm-hmm / Hmm / Oh）机器翻译常原样返回或只给标点；译文失败时用固定中文语气词，
+                // 这样这一句也有中文字幕和配音，而不是三轮重试后落到原声兜底。
+                val interjection = if (value.isNullOrBlank() || sourceEcho || targetMismatch) {
+                    SubtitleInterjectionPolicy.chineseFor(sourceText, sourceLanguage, targetLanguage)
+                } else {
+                    null
+                }
+                if (interjection != null) {
+                    if (translated[sourceIndex].isNullOrEmpty()) translated[sourceIndex] = interjection
+                    missing.remove(sourceIndex)
+                    rejectionByIndex.remove(sourceIndex)
+                    return@forEachIndexed
+                }
                 val rejectionReason = when {
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"

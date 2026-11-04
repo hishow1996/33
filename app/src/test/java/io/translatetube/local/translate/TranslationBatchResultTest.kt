@@ -214,4 +214,70 @@ class TranslationBatchResultTest {
         assertEquals(listOf("ROW_COUNT_MISMATCH", "ROW_COUNT_MISMATCH"), result.rejectedRows.map { it.reasonCode })
         assertEquals(listOf(12, 13), result.rejectedRows.map { it.sourceCharCount })
     }
+
+    @Test
+    fun echoedInterjectionGetsChineseSubstituteInsteadOfBeingRetried() {
+        val result = TranslationBatchResult.from(
+            listOf(252, 253),
+            listOf("嗯哼。", "Mm-hmm."),
+            sourceTexts = mapOf(252 to "Right.", 253 to "Mm-hmm."),
+            sourceLanguage = "en",
+        )
+
+        assertEquals(mapOf(252 to "嗯哼。", 253 to "嗯哼"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+    }
+
+    @Test
+    fun punctuationOnlyOrBlankInterjectionTranslationUsesSubstitute() {
+        val result = TranslationBatchResult.from(
+            listOf(1, 2, 3),
+            listOf("。", "", "Oh"),
+            sourceTexts = mapOf(1 to "Hmm...", 2 to "Uh-huh?", 3 to "Oh"),
+            sourceLanguage = "auto",
+        )
+
+        assertEquals(mapOf(1 to "嗯", 2 to "嗯哼？", 3 to "哦"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+    }
+
+    @Test
+    fun validChineseTranslationOfInterjectionIsKept() {
+        val result = TranslationBatchResult.from(
+            listOf(1),
+            listOf("哦，原来如此"),
+            sourceTexts = mapOf(1 to "Oh"),
+            sourceLanguage = "en",
+        )
+
+        assertEquals(mapOf(1 to "哦，原来如此"), result.translations)
+    }
+
+    @Test
+    fun ordinarySentenceEchoIsStillRejectedAndNonEnglishSourceIsNotSubstituted() {
+        val sentence = TranslationBatchResult.from(
+            listOf(1),
+            listOf("Right here."),
+            sourceTexts = mapOf(1 to "Right here."),
+            sourceLanguage = "en",
+        )
+        assertTrue(sentence.translations.isEmpty())
+        assertEquals(listOf(1), sentence.missingIndices)
+
+        val french = TranslationBatchResult.from(
+            listOf(1),
+            listOf("Oh"),
+            sourceTexts = mapOf(1 to "Oh"),
+            sourceLanguage = "fr",
+        )
+        assertEquals(listOf(1), french.missingIndices)
+    }
+
+    @Test
+    fun symbolOnlyCueIsNotGivenAnInterjection() {
+        assertEquals(null, SubtitleInterjectionPolicy.chineseFor("♪", "en", "zh"))
+        assertEquals("哈哈", SubtitleInterjectionPolicy.chineseFor("Hahaha", "en", "zh-CN"))
+        assertEquals("嗯", SubtitleInterjectionPolicy.chineseFor("Hmmmm", "en", "zh"))
+        assertEquals(null, SubtitleInterjectionPolicy.chineseFor("Hmm", "en", "ja"))
+    }
 }
