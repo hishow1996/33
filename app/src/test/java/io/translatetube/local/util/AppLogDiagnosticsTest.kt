@@ -78,6 +78,30 @@ class AppLogDiagnosticsTest {
     }
 
     @Test
+    fun businessOutcomeWithoutThrowableIsNotMisclassifiedAsAnExceptionFailure() {
+        val diagnosis = AppLogDiagnostics.analyze(
+            record(
+                "WebSourceDetection",
+                "网页媒体源检测等待结束，仍没有确认可直接播放的候选源",
+                "候选源总数：3；已验证可访问的候选源数：0。",
+                level = "WARN",
+            ).copy(
+                diagnosticContext = mapOf(
+                    "日志调用位置" to "io.translatetube.local.ui.screens.WebVideoScreen.detectSources(WebVideoScreen.kt:1350)",
+                    "异常对象采集状态" to "普通业务状态日志未提供 Throwable",
+                    "候选源总数" to "3",
+                    "已验证可访问的候选源数" to "0",
+                ),
+            ),
+        )
+
+        assertEquals("业务状态未达成（未抛出异常）", diagnosis.category)
+        assertTrue(diagnosis.confidence.contains("业务结果与判定位置已记录"))
+        assertTrue(diagnosis.finding.contains("没有 Throwable 不等于程序抛出异常"))
+        assertTrue(diagnosis.nextSteps.any { it.contains("DRM") })
+    }
+
+    @Test
     fun failureWithoutThrowableIsExplicitlyMarkedAsMissingEvidence() {
         val diagnosis = AppLogDiagnostics.analyze(
             record("SomeModule", "操作没有成功", "只有普通提示，没有异常类型、状态码或调用栈。"),
