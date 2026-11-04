@@ -1012,6 +1012,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             addAll(orderedSources)
         }
         var lastError: String? = null
+        var lastDownloadFailure: Exception? = null
         var primarySourceWasSlow = false
         for ((sourceIndex, url) in sourceAttempts) {
             awaitDownloadsResumed()
@@ -1327,6 +1328,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     pkg.delete()
                 }
                 lastError = e.message ?: e.javaClass.simpleName
+                lastDownloadFailure = e
                 if (sourceIndex == 0) {
                     primarySourceWasSlow = e is SlowDownloadSourceException
                 }
@@ -1342,7 +1344,15 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         "目标目录类型" to destDir.name,
                         "当前阶段" to state.value.stageMessage.orEmpty().ifBlank { state.value.status.name },
                         "下载进度百分比" to state.value.progress.toString(),
+                        "当前已下载字节数" to state.value.downloadedBytes.toString(),
+                        "当前预期总字节数" to state.value.totalBytes.toString(),
+                        "本次来源已下载分片字节数" to (sourcePart?.length() ?: 0L).toString(),
+                        "已完成模型压缩包字节数" to pkg.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                        "模型缓存目录可用空间 bytes" to ctx.cacheDir.usableSpace.toString(),
+                        "模型目标目录可用空间 bytes" to destDir.usableSpace.toString(),
+                        "本次下载是否复用已有完整包" to reuseExistingPackage.toString(),
                         "本次失败是否属于主下载源慢响应" to (e is SlowDownloadSourceException).toString(),
+                        "是否继续尝试下一下载源" to "是",
                     ),
                 )
                 Log.w("ModelDL", "$kind 源失败: $lastError，尝试下一源")
@@ -1351,6 +1361,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         state.value = state.value.copy(status = ModelStatus.FAILED, error = lastError ?: "全部下载源失败")
         logModelError(
             "模型全部下载源尝试失败",
+            failure = lastDownloadFailure,
             details = modelKindDetails(kind) + mapOf(
                 "候选下载源数量" to urls.size.toString(),
                 "所有下载源主机" to urls.map { runCatching { android.net.Uri.parse(it).host }.getOrNull() ?: "未知" }.distinct().joinToString(", "),
@@ -1358,6 +1369,17 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 "最终阶段" to state.value.stageMessage.orEmpty().ifBlank { state.value.status.name },
                 "累计耗时 ms" to (System.currentTimeMillis() - downloadStartedAtMs).coerceAtLeast(0L).toString(),
                 "完整压缩包是否保留供续传" to pkg.exists().toString(),
+                "完整压缩包当前大小 bytes" to pkg.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
+                "下载临时分片文件是否保留" to urls.any { url ->
+                    ResumableModelArchiveDownloader.partFileFor(pkg, url).isFile
+                }.toString(),
+                "下载临时分片文件总字节数" to urls.sumOf { url ->
+                    ResumableModelArchiveDownloader.partFileFor(pkg, url).takeIf { it.isFile }?.length() ?: 0L
+                }.toString(),
+                "模型缓存目录可用空间 bytes" to ctx.cacheDir.usableSpace.toString(),
+                "模型目标目录可用空间 bytes" to destDir.usableSpace.toString(),
+                "最终失败异常类型" to (lastDownloadFailure?.javaClass?.name ?: "未保留异常对象"),
+                "最终失败异常摘要" to (lastDownloadFailure?.message ?: lastError ?: "未提供").take(360),
             ),
         )
     }
