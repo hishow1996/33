@@ -5427,7 +5427,7 @@ private fun CurrentSubtitleStrip(
                                     .wrapContentWidth()
                                     .heightIn(min = 42.dp, max = captionMaxHeight)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(Color.Black.copy(alpha = 0.55f))
+                                    .background(Color.Black.copy(alpha = 0.66f))
                             } else {
                                 // Keep the inline current-caption area visually continuous
                                 // with the surrounding white subtitle list.
@@ -7192,6 +7192,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     .windowInsetsPadding(WindowInsets.displayCutout)
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(start = 2.dp, top = 2.dp)
+                    .graphicsLayer {
+                        translationX = -4.dp.toPx()
+                        translationY = -4.dp.toPx()
+                    }
                     .size(44.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -7199,7 +7203,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     icon = Icons.Filled.ArrowBack,
                     contentDescription = "返回播放页面",
                     touchSize = 44.dp,
-                    iconSize = 22.dp,
+                    iconSize = 20.dp,
+                    tint = Color.White.copy(alpha = 0.82f),
                     onInteraction = recordInteraction,
                     onClick = onExitFullscreen,
                 )
