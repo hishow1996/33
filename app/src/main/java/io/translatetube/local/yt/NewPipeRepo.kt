@@ -531,6 +531,17 @@ object NewPipeRepo {
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            logWarning(
+                "YouTube 字幕轨读取失败，不能把本次失败视为视频确实没有字幕",
+                e,
+                mapOf(
+                    "YouTube 视频 ID" to videoId,
+                    "失败阶段" to "读取 StreamInfo.subtitles 字段",
+                    "异常类型" to e.javaClass.name,
+                    "异常摘要" to (e.message ?: "未提供").take(300),
+                    "后续流程" to "当前调用返回空候选；上层需结合元数据读取日志判断是否继续转写",
+                ),
+            )
             android.util.Log.w("NewPipeRepo", "Could not obtain YouTube subtitle tracks", e)
             emptyList()
         }
