@@ -73,6 +73,7 @@ internal object InProgressProcessingCheckpointStore {
     // Versions 2–5 added gzip/restart metadata; version 6 added content fingerprints.
     // Version 8 removes persisted original-audio fallback state. Version 7 remains readable;
     // its legacy fallback rows are restored as untranslated cues and retried.
+    private const val VERSION = 8
     private const val MAX_FILE_BYTES = 24L * 1024L * 1024L
     private const val MAX_UNCOMPRESSED_BYTES = 64L * 1024L * 1024L
     private const val MAX_TOTAL_BYTES = 96L * 1024L * 1024L
