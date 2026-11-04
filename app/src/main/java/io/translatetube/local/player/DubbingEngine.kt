@@ -80,12 +80,13 @@ class DubbingEngine(
         diagnosticContext: Map<String, String> = emptyMap(),
         tag: String = "DubbingEngine",
     ) {
+        val correlatedContext = withOperationContext(diagnosticContext)
         DubbingLogDispatcher.enqueue {
             io.translatetube.local.util.AppLogStore.info(
                 appContext,
                 tag,
                 message,
-                diagnosticContext = withOperationContext(diagnosticContext),
+                diagnosticContext = correlatedContext,
             )
         }
     }
@@ -96,13 +97,14 @@ class DubbingEngine(
         diagnosticContext: Map<String, String> = emptyMap(),
         tag: String = "DubbingEngine",
     ) {
+        val correlatedContext = withOperationContext(diagnosticContext)
         DubbingLogDispatcher.enqueue {
             io.translatetube.local.util.AppLogStore.error(
                 appContext,
                 tag,
                 message,
                 failure,
-                diagnosticContext = withOperationContext(diagnosticContext),
+                diagnosticContext = correlatedContext,
             )
         }
     }
