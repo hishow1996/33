@@ -1205,6 +1205,42 @@ class PlaybackService : MediaSessionService() {
             ui.value.key == key
 
     /**
+     * Reconnect a history tap to this video's active processing job. Reopening the same item
+     * would cancel the current generation and start translation again from its checkpoint.
+     */
+    fun resumeProcessingSessionIfCompatible(key: String, requestToken: Long): Boolean {
+        if (!playerReady || !::pm.isInitialized || requestToken <= 0L) return false
+        val state = ui.value
+        if (
+            key.isBlank() ||
+            key != videoKey ||
+            key != state.key ||
+            prepJob?.isActive != true ||
+            state.phase !in setOf(
+                Phase.PARSING,
+                Phase.TRANSCRIBING,
+                Phase.TRANSLATING,
+                Phase.SYNTHESIZING,
+            )
+        ) return false
+
+        activeOpenRequestToken = requestToken
+        io.translatetube.local.util.AppLogStore.info(
+            this,
+            "PlaybackFlow",
+            "历史记录重新进入时复用正在处理的视频任务",
+            diagnosticContext = mapOf(
+                "当前阶段" to state.phase.name,
+                "当前进度" to state.progress.take(120),
+                "当前处理代数" to activePipelineGeneration.toString(),
+                "新播放请求标记" to requestToken.toString(),
+                "是否重新启动处理管线" to "否",
+            ),
+        )
+        return true
+    }
+
+    /**
      * Reuse an already prepared video when it is opened again from Home history. This deliberately
      * does not call open(): open() invalidates the playback pipeline, retires the dubbing engine,
      * and returns the UI to PARSING. YouTube does not depend on the selected ASR engine once its
