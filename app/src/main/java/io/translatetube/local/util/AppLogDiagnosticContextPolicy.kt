@@ -12,10 +12,10 @@ internal data class AppLogDiagnosticContextBudget(
 
 /** Bounds persisted context and reserves six fields to report every omission or truncation. */
 internal object AppLogDiagnosticContextPolicy {
-    const val MAX_FIELDS = 64
+    const val MAX_FIELDS = 80
     const val MAX_VALUE_CHARS = 2_000
     private const val METADATA_FIELD_COUNT = 6
-    private const val MAX_REPORTED_KEYS = 16
+    private const val MAX_REPORTED_KEYS = 24
 
     fun bound(
         input: Map<String, String>,
