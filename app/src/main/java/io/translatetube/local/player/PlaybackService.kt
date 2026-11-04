@@ -9007,7 +9007,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         "音频上传/识别方式" to if (asrProvider == "local") "本地模型读取 PCM 文件" else "PCM16 WAV 云端上传",
                         "PCM 音频文件字节数" to pcmFile.file.length().toString(),
                         "PCM 音频时长 ms" to pcmFile.durationMs.toString(),
-                        "PCM 采样率 Hz" to "16000",
+                        "PCM 采样率 Hz" to pcmFile.sampleRate.toString(),
                         "PCM 声道数" to "1",
                         "PCM 位深 bits" to "16",
                         "PCM 采样点数" to pcmFile.sampleCount.toString(),
