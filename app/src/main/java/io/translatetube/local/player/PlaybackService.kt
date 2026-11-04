@@ -9079,7 +9079,25 @@ updateUiForSession(key, pipelineGeneration) {
                 } else {
                     firstPassSegs
                 }
-                if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
+                if (segs.isEmpty()) {
+                    currentStageDiagnostics.putAll(
+                        mapOf(
+                            "当前处理阶段" to Phase.TRANSCRIBING.name,
+                            "当前处理子步骤" to "两次语音活动检测均未产生可识别分段",
+                            "VAD 首次检测分段数" to firstPassSegs.size.toString(),
+                            "VAD 低音量重试是否执行" to firstPassSegs.isEmpty().toString(),
+                            "VAD 最终检测分段数" to segs.size.toString(),
+                            "VAD 最终结果" to "空分段列表",
+                            "PCM 音频时长 ms" to pcmFile.durationMs.toString(),
+                            "PCM 采样率 Hz" to pcmFile.sampleRate.toString(),
+                            "PCM 采样点数" to pcmFile.sampleCount.toString(),
+                            "PCM 音频文件字节数" to pcmFile.file.length().toString(),
+                            "语音识别模型是否已开始加载" to "否；在 VAD 产出有效分段前已终止",
+                            "失败原因分类" to "未检测到语音活动；尚不能据此判断转写模型异常",
+                        ),
+                    )
+                    throw IllegalStateException("未检测到语音内容")
+                }
                 currentStageDiagnostics.putAll(
                     mapOf(
                         "当前处理阶段" to Phase.TRANSCRIBING.name,
