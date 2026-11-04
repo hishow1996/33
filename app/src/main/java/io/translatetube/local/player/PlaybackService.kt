@@ -11128,6 +11128,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             entries = rowsToLog,
                             processedRows = processedRows,
                         )
+                        // Persist the newly confirmed result immediately. A process death during
+                        // the remaining retries must not discard rows already shown as fallback.
+                        if (rowsToLog.isNotEmpty()) {
+                            pipelineGeneration?.let { generation ->
+                                persistInProgressProcessingCheckpoint(key, generation)
+                            }
+                        }
                     }
 
                     val validResponseRows = parsedBatch.translations.values.count { it.isNotBlank() }
@@ -11346,6 +11353,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             entries = rowsToLog,
                             processedRows = processedRows,
                         )
+                        // Persist the newly confirmed result immediately. A process death during
+                        // the remaining retries must not discard rows already shown as fallback.
+                        if (rowsToLog.isNotEmpty()) {
+                            pipelineGeneration?.let { generation ->
+                                persistInProgressProcessingCheckpoint(key, generation)
+                            }
+                        }
                     }
                     unresolvedIndices = emptyList()
                 }
