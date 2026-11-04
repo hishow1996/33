@@ -860,6 +860,10 @@ class PlaybackService : MediaSessionService() {
     private val pipelineGenerationLock = Any()
     private var pipelineGenerationCounter = 0L
     @Volatile private var activePipelineGeneration = 0L
+    // A dubbing-control failure may trigger another Media3 callback while pausing.
+    // Limit the fail-closed pause request to once per pipeline generation.
+    private val dubbingControlFailurePauseGeneration =
+        java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE)
     private var dubbingMutationGenerationCounter = 0L
     @Volatile private var activeDubbingMutationGeneration = 0L
     @Volatile private var processingEngineConfigFingerprint = ""
@@ -13402,16 +13406,47 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "是否开启配音" to state.dubbingOn.toString(),
                     "是否静音原声" to (state.originalVolume <= 0f).toString(),
                     "当前配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
-                    "恢复策略" to "保持当前音量设置并清除活动配音行，继续视频播放",
+                    "恢复策略" to "配音控制异常后停止视频播放并保留用户原声开关设置；不再自动切换为原声播放",
                 ),
             )
             android.util.Log.e("PlaybackService", "Unable to synchronize dubbing during $source", error)
-            safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, source)
-            ui.update { state ->
-                state.copy(
-                    activeDubbingLine = -1,
-                    dubbingStatus = "配音音频正在恢复，视频播放继续",
-                )
+            val failureKey = state.key
+            val failureGeneration = activePipelineGeneration
+            ui.update { current ->
+                if (current.key == failureKey) {
+                    current.copy(
+                        isPlaying = false,
+                        activeDubbingLine = -1,
+                        dubbingHasErrors = true,
+                        dubbingStatus = "配音控制失败，视频已暂停",
+                        noModelHint = current.noModelHint
+                            ?: "配音播放控制出现异常，视频已暂停。请检查配音引擎后重试。",
+                    )
+                } else {
+                    current
+                }
+            }
+            if (
+                failureKey.isNotBlank() &&
+                dubbingControlFailurePauseGeneration.getAndSet(failureGeneration) != failureGeneration
+            ) {
+                scope.launch(Dispatchers.Main) {
+                    if (
+                        ::pm.isInitialized &&
+                        videoKey == failureKey &&
+                        ui.value.key == failureKey &&
+                        activePipelineGeneration == failureGeneration
+                    ) {
+                        runCatching { pm.pause() }
+                            .onFailure {
+                                android.util.Log.w(
+                                    "PlaybackService",
+                                    "Unable to pause video after dubbing-control failure",
+                                    it,
+                                )
+                            }
+                    }
+                }
             }
         }
     }
