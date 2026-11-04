@@ -20,16 +20,32 @@ internal object PendingProcessingResumeStore {
     const val KEY_LAST_PROGRESS = "last_progress"
     const val KEY_LAST_UPDATED_AT = "last_updated_at"
 
+    /** Returns the generation only when this exact media key still owns the Home resume task. */
+    fun activeGeneration(context: Context, sessionKey: String): Long? {
+        if (sessionKey.isBlank()) return null
+        val preferences = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (preferences.getString(KEY_ACTIVE, null) != sessionKey) return null
+        return preferences.getLong(KEY_GENERATION, 0L).takeIf { it > 0L }
+    }
+
     fun record(
         context: Context,
         sessionKey: String,
+        expectedGeneration: Long,
         phase: Phase,
         progress: String,
     ) {
-        if (sessionKey.isBlank() || phase == Phase.IDLE) return
+        if (sessionKey.isBlank() || expectedGeneration <= 0L || phase == Phase.IDLE) return
         val preferences = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        // Never let an obsolete service session overwrite a newer Home request.
-        if (preferences.getString(KEY_ACTIVE, null) != sessionKey) return
+        // A key alone is insufficient: a new request may reopen the same video while an old
+        // service write is still queued on IO. Both key and generation must still match.
+        if (!PendingProcessingResumeWritePolicy.shouldWrite(
+                activeSessionKey = preferences.getString(KEY_ACTIVE, null),
+                activeGeneration = preferences.getLong(KEY_GENERATION, 0L),
+                expectedSessionKey = sessionKey,
+                expectedGeneration = expectedGeneration,
+            )
+        ) return
         preferences.edit()
             .putString(KEY_LAST_PHASE, phase.name)
             .putString(KEY_LAST_PROGRESS, progress.trim().take(180))
