@@ -6658,7 +6658,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             val controlVerticalGap = preferredControlGap.coerceAtMost(freeControlGap)
             // In normal playback, lower only the quality/fullscreen buttons by 4.dp.
             // Fullscreen keeps its existing offset; the upper speed/floating controls stay put.
-            val lowerSideControlOffset = if (isFullscreen) 16.dp else 12.dp
+            val lowerSideControlOffset = if (isFullscreen) 20.dp else 12.dp
             val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
             val seekThumbRadiusPx = with(LocalDensity.current) { seekThumbRadius.toPx() }
             val durationForUi = (PlaybackService.instance?.duration() ?: 0L)
