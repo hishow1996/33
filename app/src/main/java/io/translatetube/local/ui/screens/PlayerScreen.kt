@@ -2708,17 +2708,29 @@ private fun VideoParsingPage(
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        val isCompactTranslationSummary = displayPhase == Phase.TRANSLATING &&
+                            !state.manualTranslationModeEnabled &&
+                            !state.manualTranslationWaiting &&
+                            state.totalLines > 0
                         Text(
                             highlightOriginalAudioFallback(detail),
                             color = Color(0xFF71819B),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = if (isCompactTranslationSummary) 9.sp else 11.sp,
+                                lineHeight = if (isCompactTranslationSummary) 13.sp else 16.sp,
+                                fontFeatureSettings = if (isCompactTranslationSummary) "tnum" else "",
+                            ),
+                            maxLines = if (isCompactTranslationSummary) 1 else 2,
+                            softWrap = !isCompactTranslationSummary,
+                            overflow = if (isCompactTranslationSummary) TextOverflow.Clip else TextOverflow.Ellipsis,
                         )
                     }
                     Column(
                         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(start = 1.dp).widthIn(max = 68.dp),
+                        modifier = Modifier
+                            .padding(start = 1.dp)
+                            .widthIn(max = 68.dp)
+                            .offset(y = (-7).dp),
                     ) {
                         val stateColor = when {
                             isError || isCancelled -> Color(0xFFCB3E4D)
@@ -8069,7 +8081,7 @@ private fun translationProgressSummary(state: PlayerUiState): String {
     }
     val skipped = rows.count { it.text.isBlank() }
     val pending = (total - valid - fallback - skipped).coerceAtLeast(0)
-    return "中文译文 $valid · 原声兜底 $fallback · 待处理 $pending"
+    return "原声兜底 $fallback · 中文译文 $valid/$total · 待处理 $pending"
 }
 
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
