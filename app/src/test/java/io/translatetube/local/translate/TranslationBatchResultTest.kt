@@ -117,7 +117,7 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun acceptsGoogleSourceEchoAsAnUntranslatedCueWithoutFailingOtherRows() {
+    fun sourceEchoesAreAlwaysRejectedForRetryInsteadOfAcceptedAsBlankRows() {
         val result = TranslationBatchResult.from(
             indices = listOf(1, 4, 7),
             rawTranslations = listOf("你好世界", "J. K. Rowling", "正在翻译"),
@@ -127,26 +127,10 @@ class TranslationBatchResultTest {
                 7 to "This row is still missing",
             ),
             sourceLanguage = "en",
-            sourceEchoAsUntranslatedFallback = true,
         )
 
-        // 人名/缩写原样返回是正确的翻译，保留下来才能被配音念出来，而不是留空回退原声。
-        assertEquals(mapOf(1 to "你好世界", 4 to "J. K. Rowling"), result.translations)
-        assertEquals(listOf(7), result.missingIndices)
-    }
-
-    @Test
-    fun sourceEchoFallbackDoesNotAcceptActuallyMissingTranslations() {
-        val result = TranslationBatchResult.from(
-            indices = listOf(2, 3),
-            rawTranslations = listOf("", "SomeBrandName"),
-            sourceTexts = mapOf(2 to "Hello there", 3 to "SomeBrandName"),
-            sourceLanguage = "en",
-            sourceEchoAsUntranslatedFallback = true,
-        )
-
-        assertEquals(mapOf(3 to "SomeBrandName"), result.translations)
-        assertEquals(listOf(2), result.missingIndices)
+        assertEquals(mapOf(1 to "你好世界"), result.translations)
+        assertEquals(listOf(4, 7), result.missingIndices)
     }
 
     @Test
