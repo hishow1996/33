@@ -5458,11 +5458,13 @@ private fun CurrentSubtitleStrip(
                             text = translated,
                             color = if (fullscreen) Color.White else BrandBright,
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                shadow = androidx.compose.ui.graphics.Shadow(
-                                    color = Color.Black.copy(alpha = 0.92f),
-                                    offset = Offset(0f, 1.5f),
-                                    blurRadius = 2.5f,
-                                ),
+                                shadow = if (fullscreen) {
+                                    androidx.compose.ui.graphics.Shadow(
+                                        color = Color.Black.copy(alpha = 0.92f),
+                                        offset = Offset(0f, 1.5f),
+                                        blurRadius = 2.5f,
+                                    )
+                                } else null,
                             ),
                             fontSize = if (fullscreen) fullscreenChineseSize else 15.sp,
                             lineHeight = if (fullscreen) fullscreenChineseLineHeight else 18.sp,
