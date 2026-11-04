@@ -2709,7 +2709,7 @@ private fun VideoParsingPage(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            detail,
+                            highlightOriginalAudioFallback(detail),
                             color = Color(0xFF71819B),
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
                             maxLines = 2,
@@ -3601,7 +3601,7 @@ private fun ProcessingStageCards(
                                         ),
                                     )
                                     Text(
-                                        stageProgressText,
+                                        highlightOriginalAudioFallback(stageProgressText),
                                         color = if (failed) Color(0xFFCB3E4D) else Color(0xFF3268F5),
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontSize = 10.sp,
@@ -7931,6 +7931,25 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
             }
         }
         else -> compactProcessingProgress(state.progress, phase)
+    }
+}
+
+private fun highlightOriginalAudioFallback(text: String): androidx.compose.ui.text.AnnotatedString {
+    val label = "原声兜底 "
+    val start = text.indexOf(label)
+    if (start < 0) return androidx.compose.ui.text.AnnotatedString(text)
+
+    val end = text.indexOf(" ·", start).takeIf { it >= 0 } ?: text.length
+    val fallbackCount = text.substring(start + label.length, end).trim().toIntOrNull() ?: 0
+    if (fallbackCount <= 0) return androidx.compose.ui.text.AnnotatedString(text)
+
+    return androidx.compose.ui.text.buildAnnotatedString {
+        append(text)
+        addStyle(
+            androidx.compose.ui.text.SpanStyle(color = Color(0xFFD32F2F)),
+            start,
+            end,
+        )
     }
 }
 
