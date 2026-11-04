@@ -218,7 +218,7 @@ internal object TranslationFailureDiagnosticPolicy {
         "RESPONSE_TRUNCATED" -> "检查响应流是否提前关闭、SSE 事件是否读完整、JSON 结束标记及连接重置；不能把截断结果当作成功。"
         "NETWORK_IO_FAILURE" -> "检查网络连接中断、读取流失败和代理/VPN 状态；核对失败发生在请求发送还是响应读取阶段。"
         "RESPONSE_FORMAT_OR_PARSE" -> "检查模型返回格式、JSON/SSE 解码和批次行数映射；不能按位置可靠对应时必须保留为缺失行。"
-        "MEMORY_LIMIT" -> "检查本地模型内存峰值、输入长度、线程数和批次大小；避免用原声或空译文标记成功。"
+        "MEMORY_LIMIT" -> "检查本地模型内存峰值、输入长度、线程数和批次大小；未通过校验的字幕必须保持失败状态。"
         else -> "沿异常根因链检查引擎初始化、请求构造、响应解析和译文质量校验；定位到具体文件/方法后再修改。"
     }
 
