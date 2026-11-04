@@ -24,7 +24,7 @@ class AppLogRecentEventTrailTest {
     @Test
     fun eventsWithoutOperationIdAreIsolatedByThreadAndTimeWindow() {
         val trails = AppLogRecentEventTrail(unscopedThreadWindowMs = 2_000L)
-        trails.add("", 10L, 1_000L, "thread-10-old")
+        trails.add("", 10L, 900L, "thread-10-old")
         trails.add("", 10L, 2_900L, "thread-10-new")
         trails.add("", 11L, 2_900L, "thread-11")
         val recent = trails.snapshot("", 10L, 3_000L)
