@@ -2774,7 +2774,7 @@ private fun VideoParsingPage(
                     state.totalLines > 0
                 if (detail.isNotBlank()) {
                     Text(
-                        highlightOriginalAudioFallback(detail),
+                        detail,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 4.dp),
@@ -3619,7 +3619,7 @@ private fun ProcessingStageCards(
                                         ),
                                     )
                                     Text(
-                                        highlightOriginalAudioFallback(stageProgressText),
+                                        stageProgressText,
                                         color = if (failed) Color(0xFFCB3E4D) else Color(0xFF3268F5),
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontSize = 10.sp,
@@ -8126,29 +8126,9 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
     }
 }
 
-private fun highlightOriginalAudioFallback(text: String): androidx.compose.ui.text.AnnotatedString {
-    val label = "原声兜底 "
-    val start = text.indexOf(label)
-    if (start < 0) return androidx.compose.ui.text.AnnotatedString(text)
-
-    val end = text.indexOf(" ·", start).takeIf { it >= 0 } ?: text.length
-    val fallbackCount = text.substring(start + label.length, end).trim().toIntOrNull() ?: 0
-    if (fallbackCount <= 0) return androidx.compose.ui.text.AnnotatedString(text)
-
-    return androidx.compose.ui.text.buildAnnotatedString {
-        append(text)
-        addStyle(
-            androidx.compose.ui.text.SpanStyle(color = Color(0xFFD32F2F)),
-            start,
-            end,
-        )
-    }
-}
-
 private fun translationProgressSummary(state: PlayerUiState): String {
     val total = state.totalLines.coerceAtLeast(0)
     val rows = state.lines
-    val fallback = rows.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }
     val valid = rows.count { line ->
         val translated = SubtitleParsers.cleanTranslatedText(line.zh)
         if (
@@ -8174,9 +8154,7 @@ private fun translationProgressSummary(state: PlayerUiState): String {
                 )
         }
     }
-    val skipped = rows.count { it.text.isBlank() }
-    val pending = (total - valid - fallback - skipped).coerceAtLeast(0)
-    return "原声兜底 $fallback · 中文译文 $valid/$total · 待处理 $pending"
+    return "中文译文 $valid/$total"
 }
 
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
