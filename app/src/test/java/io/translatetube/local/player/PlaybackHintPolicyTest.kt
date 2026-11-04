@@ -88,17 +88,16 @@ class PlaybackHintPolicyTest {
     }
 
     @Test
-    fun playbackBlockedByUnreadyDubbingOffersOriginalOnlyAndSettings() {
+    fun playbackBlockedByUnreadyDubbingOffersSettingsOnly() {
         val h = hint(
             PlaybackHintInput(
                 blockedMessage = "配音模型还在准备中，准备好后自动播放",
-                blockedOffersOriginalOnly = true,
             ),
         )!!
         assertTrue(h.showSpinner)
-        assertEquals(PlaybackHintAction.PLAY_ORIGINAL_ONLY, h.action)
-        assertEquals("仅播放原声", h.actionLabel)
-        assertEquals(PlaybackHintAction.OPEN_SETTINGS, h.secondaryAction)
+        assertEquals(PlaybackHintAction.OPEN_SETTINGS, h.action)
+        assertEquals("去设置", h.actionLabel)
+        assertNull(h.secondaryAction)
     }
 
     @Test
@@ -106,11 +105,10 @@ class PlaybackHintPolicyTest {
         val h = hint(
             PlaybackHintInput(
                 blockedMessage = "配音语音失败：系统 TTS 没有中文语音数据",
-                blockedOffersOriginalOnly = true,
             ),
         )!!
         assertTrue(h.message.contains("系统 TTS 没有中文语音数据"))
-        assertEquals(PlaybackHintAction.PLAY_ORIGINAL_ONLY, h.action)
+        assertEquals(PlaybackHintAction.OPEN_SETTINGS, h.action)
     }
 
     @Test
