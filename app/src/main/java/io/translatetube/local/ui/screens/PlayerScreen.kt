@@ -6257,6 +6257,13 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     }
     val latestFullscreenCaptionCenterX by rememberUpdatedState(fullscreenCaptionCenterX)
     val latestFullscreenCaptionCenterY by rememberUpdatedState(fullscreenCaptionCenterY)
+    // Gesture handlers read current UI state without restarting an active pointer coroutine.
+    val latestControlsVisible by rememberUpdatedState(controlsVisible)
+    val latestQualityExpanded by rememberUpdatedState(qualityExpanded)
+    val latestSpeedExpanded by rememberUpdatedState(speedExpanded)
+    val latestScrubbing by rememberUpdatedState(scrubbing)
+    val latestFullscreenCaptionVisible by rememberUpdatedState(fullscreenCaptionVisible)
+    val latestIsPlaying by rememberUpdatedState(state.isPlaying)
     fun persistFullscreenCaptionPosition() {
         fullscreenCaptionPrefs.edit()
             .putFloat("player_fullscreen_caption_center_x_v1", fullscreenCaptionCenterX)
@@ -6422,11 +6429,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 audioManager,
                 maxMusicVolume,
                 isFullscreen,
-                controlsVisible,
-                qualityExpanded,
-                speedExpanded,
-                scrubbing,
-                fullscreenCaptionVisible,
             ) {
                 awaitEachGesture {
                     val down = awaitFirstDown(
@@ -6441,9 +6443,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     val rightControlSafeEdge = if (controlsVisible) {
                         with(this) { 64.dp.toPx() }
                     } else 0f
-                    val startsInsideRightControls = controlsVisible &&
+                    val controlsAreVisible = latestControlsVisible
+                    val captionIsVisible = latestFullscreenCaptionVisible
+                    val startsInsideRightControls = controlsAreVisible &&
                         down.position.x > size.width - rightControlSafeEdge
-                    val startsInsideFullscreenCaption = fullscreenCaptionVisible && isFullscreen &&
+                    val startsInsideFullscreenCaption = captionIsVisible && isFullscreen &&
                         abs(down.position.x - size.width * latestFullscreenCaptionCenterX) <= size.width * 0.43f &&
                         abs(down.position.y - size.height * latestFullscreenCaptionCenterY) <= with(this) { 64.dp.toPx() }
                     if (
@@ -6453,9 +6457,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         down.position.y > size.height - seekbarSafeBottom ||
                         audioManager == null ||
                         maxMusicVolume <= 0 ||
-                        qualityExpanded ||
-                        speedExpanded ||
-                        scrubbing
+                        latestQualityExpanded ||
+                        latestSpeedExpanded ||
+                        latestScrubbing
                     ) {
                         return@awaitEachGesture
                     }
@@ -6537,11 +6541,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     }
                 }
             }
-            .pointerInput(state.key, state.isPlaying, controlsVisible) {
+            .pointerInput(state.key) {
                 detectTapGestures {
                     fullscreenCaptionAdjusting = false
                     recordInteraction()
-                    controlsVisible = if (!state.isPlaying) true else !controlsVisible
+                    controlsVisible = if (!latestIsPlaying) true else !latestControlsVisible
                 }
             },
     )
