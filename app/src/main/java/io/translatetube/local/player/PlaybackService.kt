@@ -10806,6 +10806,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 var lastRawBatchOutputAligned = false
                 var lastRequestRowCount = 0
                 var lastResponseRowCount = 0
+                // A single malformed/short/long provider response is enough to disable
+                // original-audio fallback for this batch, even if a later retry is aligned.
+                var hadResponseCountMismatch = false
                 val finalFallbackReasons = linkedMapOf<Int, String>()
 
                 fun describeRejectedTranslationRows(
@@ -11070,6 +11073,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     lastRejectedRows = parsedBatch.rejectedRows
                     lastRequestRowCount = attemptedIndices.size
                     lastResponseRowCount = batchTranslations.size
+                    if (batchTranslations.size != attemptedIndices.size) {
+                        hadResponseCountMismatch = true
+                    }
 
                     // Google/ML Kit may intentionally accept an unchanged proper name/acronym.
                     // The empty translation is a deliberate original-audio fallback, not a missing row.
@@ -11244,6 +11250,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         isLocalTranslationEngine = EngineFactory.isLocalTranslationEngine(activeId),
                         isApiLanguageModelEngine =
                             TranslationBatchFallbackPolicy.isApiLanguageModelEngine(engine!!.id) || active != null,
+                        responseIntegrityVerified = !hadResponseCountMismatch,
                     )
                 ) {
                     unresolvedIndices.forEach { sourceIndex ->
