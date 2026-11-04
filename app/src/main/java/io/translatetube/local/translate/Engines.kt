@@ -189,15 +189,19 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
         translation.isNotBlank()
     },
     retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)? = null,
+    acceptAfterRecovery: ((source: String, translation: String) -> Boolean)? = null,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
     val budget = TranslationRecoveryBudget()
     val result = translateBatchWithAdaptiveRecoveryInternal(
-        lines, context, isAcceptableTranslation, retrySingle, translate, budget,
+        lines, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery, translate, budget,
     )
     if (budget.hadUnalignedResponse && lines.indices.any { index ->
-            lines[index].isNotBlank() && !isAcceptableTranslation(lines[index], result.getOrNull(index).orEmpty())
+            val candidate = result.getOrNull(index).orEmpty()
+            lines[index].isNotBlank() &&
+                !isAcceptableTranslation(lines[index], candidate) &&
+                acceptAfterRecovery?.invoke(lines[index], candidate) != true
         }
     ) {
         throw IllegalStateException(
@@ -212,6 +216,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     context: Pair<List<String>, List<String>>?,
     isAcceptableTranslation: (source: String, translation: String) -> Boolean,
     retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)?,
+    acceptAfterRecovery: ((source: String, translation: String) -> Boolean)?,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
     budget: TranslationRecoveryBudget,
 ): List<String> {
@@ -284,6 +289,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                     retryContext,
                     isAcceptableTranslation,
                     retrySingle,
+                    acceptAfterRecovery,
                     translate,
                     budget,
                 )
@@ -314,7 +320,10 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         }?.trim()
         if (lines.single().isBlank()) return listOf("")
         if (!retryCandidate.isNullOrBlank() &&
-            isAcceptableTranslation(lines.single(), retryCandidate)
+            (isAcceptableTranslation(lines.single(), retryCandidate) ||
+                // A short name/brand/loanword the model still returns unchanged after a forced
+                // retry has nothing left to translate; it must not abort the whole batch.
+                acceptAfterRecovery?.invoke(lines.single(), retryCandidate) == true)
         ) {
             return listOf(retryCandidate)
         }
@@ -337,15 +346,46 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     val leftSource = lines.subList(0, midpoint)
     val rightSource = lines.subList(midpoint, lines.size)
     val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        leftSource, context, isAcceptableTranslation, retrySingle, translate, budget,
+        leftSource, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery, translate, budget,
     )
     val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
     val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
     val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
     val rightTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        rightSource, rightContext, isAcceptableTranslation, retrySingle, translate, budget,
+        rightSource, rightContext, isAcceptableTranslation, retrySingle, acceptAfterRecovery, translate, budget,
     )
     return leftTranslation + rightTranslation
+}
+
+/**
+ * Per-cue acceptance used by the model engines' batch recovery. It must agree with
+ * [TranslationBatchResult] so a cue is neither retried forever nor rejected here only to be
+ * accepted later (or the other way around):
+ * - a pure interjection/vocalization ("Mm-hmm", "Aaaah", "La la la") is accepted as soon as the
+ *   model returned anything, because [TranslationBatchResult] replaces it with a fixed Chinese
+ *   interjection; spending retries (and the batch's isolated-failure budget) on it is wasteful;
+ * - everything else must be speakable, not an echo of the source, and in the target language.
+ */
+internal fun subtitleTranslationAcceptor(
+    srcLang: String,
+    tgtLang: String,
+): (source: String, translation: String) -> Boolean = { original, candidate ->
+    when {
+        candidate.isBlank() -> false
+        SubtitleInterjectionPolicy.chineseFor(original, srcLang, tgtLang) != null -> true
+        !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(candidate) -> false
+        else ->
+            !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang) &&
+                !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(original, candidate, srcLang, tgtLang)
+    }
+}
+
+/** Accept a short name/brand/loanword that stays unchanged even after the forced single-cue retry. */
+internal fun subtitleShortUntranslatedAcceptor(
+    srcLang: String,
+    tgtLang: String,
+): (source: String, translation: String) -> Boolean = { original, candidate ->
+    SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(original, candidate, srcLang, tgtLang)
 }
 
 private val JSON = "application/json; charset=utf-8".toMediaType()
@@ -1529,12 +1569,8 @@ class OpenAiCompatEngine(
             val translated = translateBatchWithAdaptiveRecovery(
                 lines = batch,
                 context = context,
-                isAcceptableTranslation = { original, candidate ->
-                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang) &&
-                        !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
-                            original, candidate, srcLang, tgtLang,
-                        )
-                },
+                isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
+                acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                 retrySingle = { source, cueContext ->
                     translateBatch(
                         listOf(source),
@@ -1702,12 +1738,8 @@ class GeminiEngine(
             val translated = translateBatchWithAdaptiveRecovery(
                 lines = batch,
                 context = context,
-                isAcceptableTranslation = { original, candidate ->
-                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang) &&
-                        !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
-                            original, candidate, srcLang, tgtLang,
-                        )
-                },
+                isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
+                acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                 retrySingle = { source, cueContext ->
                     translateBatch(
                         listOf(source),

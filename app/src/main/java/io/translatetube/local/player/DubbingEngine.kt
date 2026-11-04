@@ -421,6 +421,8 @@ class DubbingEngine(
             val reason = when {
                 rawCue == null -> "找不到原始字幕记录"
                 rawCue.text.isBlank() -> null
+                // 原文只有 ♪、…、- 这类符号：没有可朗读内容，不算译文缺失。
+                io.translatetube.local.translate.SubtitleTranslationQualityPolicy.hasNothingToSpeak(rawCue.text) -> null
                 cue.startMs < 0L || cue.endMs <= cue.startMs ->
                     "字幕时间轴无效（开始=${cue.startMs} ms，结束=${cue.endMs} ms）"
                 cue.zh.isNullOrBlank() ->

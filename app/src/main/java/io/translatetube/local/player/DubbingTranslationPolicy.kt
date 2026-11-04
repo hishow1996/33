@@ -65,6 +65,14 @@ internal object DubbingTranslationPolicy {
                 "译文只有标点、符号或表情，没有可朗读内容",
             )
         }
+        // 人名/品牌/外来词这类短行翻译后仍是拉丁字母写法：没有可翻内容，作为有效译文保留，
+        // 不能让一行本来就不用翻译的字幕卡住整个视频的翻译和配音。
+        if (SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                sourceText, cleaned, detectedSource,
+            )
+        ) {
+            return DubbingTranslationResolution(cleaned)
+        }
         if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {
             return DubbingTranslationResolution(
                 null,
@@ -94,6 +102,8 @@ internal object DubbingTranslationPolicy {
     ): List<SubLine> =
         lines.mapIndexed { index, line ->
             if (line.text.isBlank()) return@mapIndexed line
+            // 只有 ♪、…、- 这类符号的原文没有可朗读内容，保持无译文，不当作翻译失败。
+            if (SubtitleTranslationQualityPolicy.hasNothingToSpeak(line.text)) return@mapIndexed line
             val resolution = resolveText(line.text, line.zh, sourceLanguage)
             val speakable = resolution.text?.takeIf {
                 io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(it)

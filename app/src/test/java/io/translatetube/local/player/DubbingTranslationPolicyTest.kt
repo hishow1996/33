@@ -155,4 +155,22 @@ class DubbingTranslationPolicyTest {
         assertNull(DubbingTranslationPolicy.usableText("♪♪", "♪♪", "zh-Hans"))
     }
 
+    @Test
+    fun shortNameOrLoanwordKeptUnchangedIsAValidTranslation() {
+        assertEquals("Sarah.", DubbingTranslationPolicy.usableText("Sarah.", "Sarah.", "en"))
+        assertEquals("Taxi", DubbingTranslationPolicy.usableText("Taxi", "Taxi", "en"))
+        // Whole sentences returned unchanged remain a failed translation.
+        assertNull(DubbingTranslationPolicy.usableText("Thank you.", "Thank you.", "en"))
+        assertNull(DubbingTranslationPolicy.usableText("Where are you?", "Where are you?", "en"))
+    }
+
+    @Test
+    fun symbolOnlySourceCuesDoNotFailDubbingPreflight() {
+        val symbolOnly = io.translatetube.local.subs.SubLine(0, 0L, 900L, "♪♪", null)
+        val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(listOf(symbolOnly), "en")
+
+        assertEquals(1, prepared.size)
+        assertNull(prepared.single().zh)
+    }
+
 }

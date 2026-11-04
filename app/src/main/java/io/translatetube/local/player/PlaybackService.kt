@@ -7407,6 +7407,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
      */
     private fun needsSubtitleTranslation(line: SubLine, srcLang: String): Boolean {
         if (line.text.isBlank()) return false
+        // 原文只有 ♪、…、- 这类符号：没有可翻译、可朗读的内容，不进翻译队列，也不会产生配音。
+        if (io.translatetube.local.translate.SubtitleTranslationQualityPolicy.hasNothingToSpeak(line.text)) return false
         // Use the same quality + speechability gate as dubbing preflight, so bad cache rows
         // are marked unfinished in stage 4 rather than surviving until stage 5.
         return DubbingTranslationPolicy.usableText(line.text, line.zh, srcLang).isNullOrBlank()
@@ -11090,6 +11092,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         sourceTexts = unresolvedIndices.associateWith { plain[it] },
                         sourceLanguage = src,
                         targetLanguage = tgt,
+                        // 第一次返回仍严格校验；同一行重试后仍是人名/品牌/外来词原样返回，说明没有可翻内容，接受它。
+                        acceptShortUnchanged = attempt >= 1,
                     )
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices

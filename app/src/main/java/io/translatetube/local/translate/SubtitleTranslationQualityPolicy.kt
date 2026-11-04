@@ -31,6 +31,51 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     /**
+     * 短字幕（人名、地名、品牌、外来词，如 "Sarah." / "Taxi" / "Tom Hanks?"）译文可以和原文相同，
+     * 也可能只是换了拉丁字母写法（Sarah → Sara）。这类行没有可翻的内容，模型/引擎反复返回也不会变；
+     * 普通整句原样返回才是翻译失败。
+     *
+     * 只在重试之后才使用：第一次返回时仍按失败处理，让引擎有机会真的翻成中文。
+     * 条件很窄：目标是中文、原文和译文都是 1~3 个纯拉丁字母词，且多词时每个词都首字母大写。
+     */
+    fun isAcceptableShortUntranslatedCue(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String = "zh",
+    ): Boolean {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
+        if (!SourceLanguagePolicy.isChinese(targetLanguage)) return false
+        if (SourceLanguagePolicy.isChinese(SourceLanguagePolicy.normalizeTag(sourceLanguage))) return false
+        val source = sourceText.trim()
+        val translated = translatedText.trim()
+        if (source.length > 40 || translated.length > 48) return false
+        if (!translated.any { it.isLetterOrDigit() }) return false
+        val sourceTokens = shortLatinTokens(source) ?: return false
+        val translatedTokens = shortLatinTokens(translated) ?: return false
+        if (sourceTokens.size > 1 && !sourceTokens.all { it.first().isUpperCase() }) return false
+        return translatedTokens.isNotEmpty()
+    }
+
+    /** 1~3 个词、每个词都由拉丁字母（可含 ' . - ’）组成时返回词列表，否则返回 null。 */
+    private fun shortLatinTokens(value: String): List<String>? {
+        val tokens = value.trim().trim('"', '\'', '“', '”', '‘', '’').split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty() || tokens.size > 3) return null
+        val cleaned = tokens.map { token -> token.trim { !it.isLetter() } }
+        if (cleaned.any { it.length < 2 }) return null
+        if (cleaned.any { token ->
+                token.any { it.isLetter() && Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN } ||
+                    token.any { it.isDigit() }
+            }
+        ) return null
+        return cleaned
+    }
+
+    /** 原文里没有任何可朗读内容（只有 ♪、…、- 之类的符号）：不需要翻译，也不会有配音。 */
+    fun hasNothingToSpeak(sourceText: String?): Boolean =
+        !sourceText.isNullOrBlank() && !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(sourceText)
+
+    /**
      * Detect a likely wrong-language response for Chinese subtitle output.
      * Names, abbreviations, URLs, numbers and symbol-only cues may legitimately have no Han text.
      * Japanese kana or Korean Hangul dominating a result is rejected even when a few Han

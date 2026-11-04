@@ -34,6 +34,11 @@ internal data class TranslationBatchResult(
             sourceTexts: Map<Int, String> = emptyMap(),
             sourceLanguage: String = "auto",
             targetLanguage: String = "zh",
+            /**
+             * 重试之后才打开：1~3 个词的人名/品牌/外来词，引擎反复原样返回时当作有效结果，
+             * 避免一个本来就不用翻译的短行让整段字幕翻译失败。首次返回仍按失败处理，让引擎有机会真的翻成中文。
+             */
+            acceptShortUnchanged: Boolean = false,
         ): TranslationBatchResult {
             // Positional output is safe only when every requested cue has exactly one result.
             // A short/long response has no reliable row mapping, so retry the complete set.
@@ -84,6 +89,11 @@ internal data class TranslationBatchResult(
                     rejectionByIndex.remove(sourceIndex)
                     return@forEachIndexed
                 }
+                val shortUntranslatedAccepted = acceptShortUnchanged &&
+                    !value.isNullOrBlank() && !unspeakable && (sourceEcho || targetMismatch) &&
+                    SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                        sourceText, value, sourceLanguage, targetLanguage,
+                    )
                 val rejectionReason = when {
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
                     unspeakable -> "UNSPEAKABLE_TRANSLATION"
@@ -93,6 +103,11 @@ internal data class TranslationBatchResult(
                     else -> null
                 }
                 when {
+                    shortUntranslatedAccepted -> {
+                        if (translated[sourceIndex].isNullOrEmpty()) translated[sourceIndex] = value!!
+                        missing.remove(sourceIndex)
+                        rejectionByIndex.remove(sourceIndex)
+                    }
                     value.isNullOrBlank() || targetMismatch || unspeakable -> {
                         // Empty output and status text still need another attempt.
                         if (sourceIndex !in translated) {
