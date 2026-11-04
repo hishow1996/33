@@ -838,6 +838,8 @@ class PlaybackService : MediaSessionService() {
     private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
     @Volatile private var processingPaused = false
     @Volatile private var videoKey = ""
+    // Manual source-audio selection is scoped to one processing/playback generation.
+    @Volatile private var manualOriginalAudioOverrideGeneration = Long.MIN_VALUE
     private var videoId: String? = null
     private var localUri: Uri? = null
     @Volatile private var activeLocalMediaIdentityKey: String? = null
@@ -9725,6 +9727,12 @@ updateUiForSession(key, pipelineGeneration) {
                             .preserveImportedTranslations(translatedLines)
                         srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
                             .detectFromCues(translatedLines.asSequence().map { it.text }.asIterable())
+                        if (isChineseLanguage(srcLang)) {
+                            // Known Chinese source text is already valid Chinese output. Do not
+                            // apply this normalization to foreign-language rows with missing zh.
+                            translatedLines = io.translatetube.local.subs.ImportedSubtitlePolicy
+                                .completeChineseSourceCaptions(translatedLines)
+                        }
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
                                 phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
@@ -13468,8 +13476,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             dubbingEnabled = latest.dubbingOn,
             dubbingStarted = speechStarted,
             dubbingCuePending = dubbingCuePending,
+            manualOriginalAudioOverride = activePipelineGeneration > 0L &&
+                manualOriginalAudioOverrideGeneration == activePipelineGeneration,
         )
         safelySetOriginalVolume(sourceGain, source)
+    }
+
+    private fun updateManualOriginalAudioOverride(enabled: Boolean) {
+        manualOriginalAudioOverrideGeneration =
+            if (enabled && activePipelineGeneration > 0L) {
+                activePipelineGeneration
+            } else {
+                Long.MIN_VALUE
+            }
     }
 
     private fun safelySetOriginalVolume(volume: Float, source: String) {
@@ -15058,8 +15077,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     ),
                 )
                 // Restore the persisted assignment and translated captions if setup failed before
-                // a replacement engine became usable. If the old native engine was already retired,
-                // restore original audio rather than leaving the video silent.
+                // a replacement engine became usable. If the old engine was already retired, keep
+                // playback paused when replacement fails instead of switching to source audio.
                 if (replacementDubbing != null && dubbing === replacementDubbing) {
                     dubbing = null
                 }
@@ -15464,8 +15483,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     fun selectOriginalPlayback() {
         if (ui.value.originalVolume <= 0f) {
             toggleOriginalVolume()
-        } else if (::pm.isInitialized) {
-            safelySetOriginalVolume(1f, "preserve original audio preference")
+        } else {
+            updateManualOriginalAudioOverride(true)
+            if (::pm.isInitialized) {
+                safelySetOriginalVolume(1f, "preserve original audio preference")
+            }
         }
     }
 
@@ -15489,6 +15511,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     fun setOriginalVolume(volume: Float, persist: Boolean = true) {
         val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
         if (persist) persistOriginalVolume(normalized)
+        updateManualOriginalAudioOverride(normalized > 0f)
         ui.update { state ->
             state.copy(
                 originalVolume = normalized,
