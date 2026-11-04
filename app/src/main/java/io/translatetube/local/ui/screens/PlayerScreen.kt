@@ -7948,7 +7948,7 @@ private fun translationProgressSummary(state: PlayerUiState): String {
     return "中文译文 $valid · 原声兜底 $fallback · 待处理 $pending"
 }
 
-private fun compactProcessingProgress(progress: String, phase: Phase) {
+private fun compactProcessingProgress(progress: String, phase: Phase): String {
     val raw = progress.trim()
     if (raw.isBlank()) return ""
 
