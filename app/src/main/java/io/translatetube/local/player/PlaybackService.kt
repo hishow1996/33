@@ -9764,7 +9764,7 @@ updateUiForSession(key, pipelineGeneration) {
                                             key.startsWith("local:") -> "本地视频"
                                             else -> "其他"
                                         },
-                                        "配音引擎名称" to ui.value.ttsEngineName,
+                                        "配音引擎配置 ID" to getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge").orEmpty(),
                                         "字幕总行数" to translatedLines.size.toString(),
                                         "明确原声兜底字幕行数" to dubbingPreparation.originalAudioFallbackIndices.size.toString(),
                                         "明确原声兜底字幕行号（从1开始）" to dubbingPreparation.originalAudioFallbackIndices.joinToString(",") { (it + 1).toString() },

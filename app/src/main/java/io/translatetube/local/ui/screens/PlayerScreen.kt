@@ -7938,10 +7938,30 @@ private fun translationProgressSummary(state: PlayerUiState): String {
     val total = state.totalLines.coerceAtLeast(0)
     val rows = state.lines
     val fallback = rows.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }
-    val valid = rows.count {
-        it.text.isNotBlank() &&
-            !it.translationFallbackOriginalAudio &&
-            !SubtitleParsers.cleanTranslatedText(it.zh).isNullOrBlank()
+    val valid = rows.count { line ->
+        val translated = SubtitleParsers.cleanTranslatedText(line.zh)
+        if (
+            line.text.isBlank() ||
+            line.translationFallbackOriginalAudio ||
+            translated.isNullOrBlank()
+        ) {
+            false
+        } else {
+            val sourceLanguage = if (
+                io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(state.sourceLang)
+            ) {
+                io.translatetube.local.subs.SubtitleLanguageDetector.detect(line.text)
+            } else {
+                state.sourceLang
+            }
+            io.translatetube.local.translate.SourceLanguagePolicy.isChinese(sourceLanguage) ||
+                (
+                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                        .isSourceEcho(line.text, translated, sourceLanguage) &&
+                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                        .isTargetLanguageMismatch(line.text, translated, sourceLanguage, "zh")
+                )
+        }
     }
     val skipped = rows.count { it.text.isBlank() }
     val pending = (total - valid - fallback - skipped).coerceAtLeast(0)
@@ -7983,7 +8003,7 @@ private fun compactProcessingProgress(progress: String, phase: Phase): String {
         }
         Phase.TRANSLATING -> {
             val ratio = Regex("""(\d+)\s*/\s*(\d+)\s*行""").find(raw)
-            if (ratio != null) "已翻译 ${ratio.groupValues[1]}/${ratio.groupValues[2]} 行" else "翻译字幕"
+            if (ratio != null) "已处理 ${ratio.groupValues[1]}/${ratio.groupValues[2]} 行" else "翻译字幕"
         }
         Phase.SYNTHESIZING -> {
             val ratio = Regex("""(\d+)\s*/\s*(\d+)""").find(raw)
