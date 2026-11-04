@@ -27,8 +27,11 @@ internal object TranslationBatchFallbackPolicy {
         isLocalTranslationEngine: Boolean,
         isApiLanguageModelEngine: Boolean = false,
         totalSubtitleRows: Int = batchSize,
+        /** False after any malformed/misaligned provider response or transport-integrity failure. */
+        responseIntegrityVerified: Boolean = true,
     ): Boolean {
         if (
+            !responseIntegrityVerified ||
             unresolvedCount <= 0 ||
             batchSize <= 0 ||
             totalSubtitleRows <= 0 ||
