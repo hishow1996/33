@@ -21,6 +21,7 @@ import java.nio.ByteBuffer
 private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 /** ExoPlayer 封装：源装配 / 音量 / 倍速 / 时间轴轮询 */
+@OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerManager(private val ctx: Context) {
 
     /** 配音混流总线：DubbingEngine 按媒体时间挂 PCM，音频处理器逐窗相加。 */
@@ -30,6 +31,11 @@ class PlayerManager(private val ctx: Context) {
     private val mixerLogExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "dubbing-mixer-log").apply { isDaemon = true }
     }
+    @Volatile private var diagnosticAudioSessionId: Int = -1
+    @Volatile private var firstAudioAdvancingSourceGeneration: Long = Long.MIN_VALUE
+    @Volatile private var lastAudioUnderrunLoggedAtMs: Long = 0L
+    @Volatile private var diagnosticAudioDecoderName: String = "未知"
+    @Volatile private var diagnosticAudioInputFormat: String = "未知"
 
     /** 混流处理器（与 bus 成对，注入 ExoPlayer 音频渲染管线）。 */
     private val dubbingProcessor = DubbingAudioProcessor(dubbingBus) { isWarning, message, details ->
@@ -125,6 +131,17 @@ class PlayerManager(private val ctx: Context) {
             }
         }.onFailure { error ->
             android.util.Log.e("PlayerManager", "无法安装配音混流处理器，回退系统音频 sink", error)
+            logPlayerDiagnostic(
+                isWarning = true,
+                message = "安装配音混流处理器失败，当前音频输出回退到系统 AudioSink",
+                details = io.translatetube.local.util.AudioOutputDiagnostics.snapshot(ctx) + mapOf(
+                    "失败组件" to "DubbingAudioProcessor / DefaultAudioSink",
+                    "回退行为" to "使用 Media3 默认音频输出；本次会话无法确认配音是否成功混入",
+                    "异常类型" to error.javaClass.name,
+                    "异常摘要" to (error.message ?: "无异常消息").take(500),
+                ),
+                failure = error,
+            )
         }.getOrNull() ?: super.buildAudioSink(
             context, enableFloatOutput, enableAudioTrackPlaybackParams,
         )
@@ -305,6 +322,26 @@ class PlayerManager(private val ctx: Context) {
         }
     }
 
+    private fun audioOutputDiagnosticSnapshot(
+        extra: Map<String, String> = emptyMap(),
+    ): Map<String, String> = linkedMapOf<String, String>().apply {
+        putAll(io.translatetube.local.util.AudioOutputDiagnostics.snapshot(ctx))
+        putAll(
+            mapOf(
+                "播放器音频会话 ID" to diagnosticAudioSessionId.toString(),
+                "播放器音量" to runCatching { player.volume.toString() }.getOrDefault("读取失败"),
+                "播放器是否有播放意图" to runCatching { player.playWhenReady.toString() }.getOrDefault("读取失败"),
+                "播放器是否正在推进" to runCatching { player.isPlaying.toString() }.getOrDefault("读取失败"),
+                "播放器状态" to runCatching { playerStateName(player.playbackState) }.getOrDefault("读取失败"),
+                "当前播放位置 ms" to runCatching { player.currentPosition.toString() }.getOrDefault("读取失败"),
+                "当前媒体源代次" to _sourceGeneration.value.toString(),
+                "当前音频解码器" to diagnosticAudioDecoderName,
+                "当前音频输入格式" to diagnosticAudioInputFormat,
+            ),
+        )
+        putAll(extra)
+    }
+
     private fun playerStateName(state: Int): String = when (state) {
         Player.STATE_IDLE -> "IDLE（空闲/未准备）"
         Player.STATE_BUFFERING -> "BUFFERING（缓冲中）"
@@ -341,7 +378,7 @@ class PlayerManager(private val ctx: Context) {
                 "异常链" to chain.joinToString(" <- ") {
                     it.javaClass.simpleName + (it.message?.take(120)?.let { m -> ": $m" } ?: "")
                 },
-            ),
+            ) + audioOutputDiagnosticSnapshot(),
         )
     }
 
@@ -554,6 +591,210 @@ class PlayerManager(private val ctx: Context) {
         })
         // 真实网络信号：每次视频数据请求失败（超时/断连/HTTP 错误）ExoPlayer 都会回调一次，随后自动重试。
         player.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+            override fun onAudioDecoderInitialized(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long,
+            ) {
+                diagnosticAudioDecoderName = decoderName
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "播放器音频解码器已初始化",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "音频解码器名称" to decoderName,
+                            "解码器初始化时间 ms" to initializedTimestampMs.toString(),
+                            "解码器初始化耗时 ms" to initializationDurationMs.toString(),
+                            "事件播放位置 ms" to eventTime.currentPlaybackPositionMs.toString(),
+                        ),
+                    ),
+                )
+            }
+
+            override fun onAudioTrackInitialized(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                audioTrackConfig: androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig,
+            ) {
+                diagnosticAudioInputFormat =
+                    "encoding=${audioTrackConfig.encoding}, sampleRate=${audioTrackConfig.sampleRate}, " +
+                        "channelConfig=${audioTrackConfig.channelConfig}, buffer=${audioTrackConfig.bufferSize}"
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "播放器 AudioTrack 已初始化",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "AudioTrack PCM 编码值" to audioTrackConfig.encoding.toString(),
+                            "AudioTrack 采样率 Hz" to audioTrackConfig.sampleRate.toString(),
+                            "AudioTrack 声道配置" to audioTrackConfig.channelConfig.toString(),
+                            "AudioTrack 缓冲区字节数" to audioTrackConfig.bufferSize.toString(),
+                            "AudioTrack 是否启用 tunneling" to audioTrackConfig.tunneling.toString(),
+                            "AudioTrack 是否启用 offload" to audioTrackConfig.offload.toString(),
+                            "事件播放位置 ms" to eventTime.currentPlaybackPositionMs.toString(),
+                        ),
+                    ),
+                )
+            }
+
+            override fun onAudioTrackReleased(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                audioTrackConfig: androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig,
+            ) {
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "播放器 AudioTrack 已释放",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "释放的 AudioTrack 采样率 Hz" to audioTrackConfig.sampleRate.toString(),
+                            "释放的 AudioTrack PCM 编码值" to audioTrackConfig.encoding.toString(),
+                            "释放的 AudioTrack 缓冲区字节数" to audioTrackConfig.bufferSize.toString(),
+                        ),
+                    ),
+                )
+            }
+
+            override fun onAudioPositionAdvancing(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                playoutStartSystemTimeMs: Long,
+            ) {
+                val generation = _sourceGeneration.value
+                if (firstAudioAdvancingSourceGeneration == generation) return
+                firstAudioAdvancingSourceGeneration = generation
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "播放器音频输出位置开始推进",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "音频输出位置开始推进的系统时间 ms" to playoutStartSystemTimeMs.toString(),
+                            "事件播放位置 ms" to eventTime.currentPlaybackPositionMs.toString(),
+                            "输出确认边界" to "Media3 已报告 AudioTrack 回放位置推进；这不等同于麦克风测得的声学响度",
+                        ),
+                    ),
+                )
+            }
+
+            override fun onAudioUnderrun(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                bufferSize: Int,
+                bufferSizeMs: Long,
+                elapsedSinceLastFeedMs: Long,
+            ) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastAudioUnderrunLoggedAtMs < 1_000L) return
+                lastAudioUnderrunLoggedAtMs = now
+                logPlayerDiagnostic(
+                    isWarning = true,
+                    message = "播放器音频输出缓冲区发生 underrun",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "AudioTrack 缓冲区字节数" to bufferSize.toString(),
+                            "AudioTrack 缓冲区时长 ms" to bufferSizeMs.toString(),
+                            "距离上次写入输出缓冲区 ms" to elapsedSinceLastFeedMs.toString(),
+                            "事件播放位置 ms" to eventTime.currentPlaybackPositionMs.toString(),
+                            "日志节流间隔 ms" to "1000",
+                        ),
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "PlayerManager", "AudioTrack 输出缓冲区 underrun",
+                    ),
+                )
+            }
+
+            override fun onAudioSinkError(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                audioSinkError: Exception,
+            ) {
+                val initialization = audioSinkError as? androidx.media3.exoplayer.audio.AudioSink.InitializationException
+                val write = audioSinkError as? androidx.media3.exoplayer.audio.AudioSink.WriteException
+                val recoverable = initialization?.isRecoverable ?: write?.isRecoverable
+                val format = initialization?.format ?: write?.format
+                val details = audioOutputDiagnosticSnapshot(
+                    mapOf(
+                        "AudioSink 异常类型" to audioSinkError.javaClass.name,
+                        "AudioSink 异常摘要" to (audioSinkError.message ?: "无异常消息").take(500),
+                        "AudioSink 是否可恢复" to (recoverable?.toString() ?: "Media3 未提供"),
+                        "AudioTrack 初始化状态码" to (initialization?.audioTrackState?.toString() ?: "不适用"),
+                        "AudioTrack 写入错误码" to (write?.errorCode?.toString() ?: "不适用"),
+                        "AudioSink 异常格式" to (format?.let {
+                            "${it.sampleMimeType ?: "未知"} ${it.sampleRate}Hz ${it.channelCount}ch"
+                        } ?: "未提供"),
+                        "事件播放位置 ms" to eventTime.currentPlaybackPositionMs.toString(),
+                    ),
+                )
+                logPlayerDiagnostic(
+                    isWarning = recoverable != false,
+                    isError = recoverable == false,
+                    message = "播放器 AudioSink 音频输出失败",
+                    details = details,
+                    failure = audioSinkError,
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "PlayerManager", "AudioSink 输出错误|${audioSinkError.javaClass.name}",
+                    ),
+                )
+            }
+
+            override fun onAudioCodecError(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                audioCodecError: Exception,
+            ) {
+                logPlayerDiagnostic(
+                    isWarning = true,
+                    message = "播放器音频解码器报告异常",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "音频解码器异常类型" to audioCodecError.javaClass.name,
+                            "音频解码器异常摘要" to (audioCodecError.message ?: "无异常消息").take(500),
+                            "事件播放位置 ms" to eventTime.currentPlaybackPositionMs.toString(),
+                        ),
+                    ),
+                    failure = audioCodecError,
+                )
+            }
+
+            override fun onAudioSessionIdChanged(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                audioSessionId: Int,
+            ) {
+                diagnosticAudioSessionId = audioSessionId
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "播放器音频会话 ID 已变化",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf("新音频会话 ID" to audioSessionId.toString()),
+                    ),
+                )
+            }
+
+            override fun onAudioAttributesChanged(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                audioAttributes: androidx.media3.common.AudioAttributes,
+            ) {
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "播放器音频属性已变化",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "音频 Usage" to audioAttributes.usage.toString(),
+                            "音频 ContentType" to audioAttributes.contentType.toString(),
+                            "音频 Flags" to audioAttributes.flags.toString(),
+                        ),
+                    ),
+                )
+            }
+
+            override fun onVolumeChanged(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                volume: Float,
+            ) {
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "播放器输出音量已变化",
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf("Media3 播放器音量" to volume.toString()),
+                    ),
+                )
+            }
+
             override fun onLoadError(
                 eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
                 loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
@@ -566,10 +807,12 @@ class PlayerManager(private val ctx: Context) {
                 logPlayerDiagnostic(
                     isWarning = true,
                     message = "视频数据加载失败，播放器将自动重试",
-                    details = mapOf(
-                        "累计失败次数" to _loadRetryCount.value.toString(),
-                        "视频流域名" to (loadEventInfo.uri.host ?: "未知"),
-                        "已缓冲 ms" to bufferedAheadMs().toString(),
+                    details = audioOutputDiagnosticSnapshot(
+                        mapOf(
+                            "累计失败次数" to _loadRetryCount.value.toString(),
+                            "视频流域名" to (loadEventInfo.uri.host ?: "未知"),
+                            "已缓冲 ms" to bufferedAheadMs().toString(),
+                        ),
                     ),
                     failure = error,
                     issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(

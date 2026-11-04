@@ -34,6 +34,7 @@ class DubbingAudioProcessor(
     private var appliedOriginalGain = 1f
     private var voiceScratch = FloatArray(0)
     private var firstInputLogged = false
+    private var firstVoiceMixLogged = false
     private var timestampFallbackLogged = false
 
     /** Diagnostics only: the renderer stream offset the sink wrapper already removed from PTS. */
@@ -94,6 +95,7 @@ class DubbingAudioProcessor(
         consumedFramesTotal = 0L
         appliedOriginalGain = DubbingGainPolicy.sanitizeGain(originalGain)
         firstInputLogged = false
+        firstVoiceMixLogged = false
         timestampFallbackLogged = false
     }
 
@@ -107,6 +109,7 @@ class DubbingAudioProcessor(
         appliedOriginalGain = DubbingGainPolicy.sanitizeGain(originalGain)
         voiceScratch = FloatArray(0)
         firstInputLogged = false
+        firstVoiceMixLogged = false
         timestampFallbackLogged = false
     }
 
@@ -215,6 +218,9 @@ class DubbingAudioProcessor(
         // Do not run source separation or auto-ducking: the source track should retain its
         // original sound and be affected only by its own gain slider.
         var frame = 0
+        var voicePeak = 0f
+        var voiceEnergy = 0.0
+        var voiceActiveFrames = 0
         while (frame < frames) {
             // The user can turn dubbing off after mixInto() has copied this buffer's voice
             // into voiceScratch. Re-check the live bus gate for every output frame so those
@@ -225,6 +231,13 @@ class DubbingAudioProcessor(
                 enabled = bus.isDubbingEnabled(),
                 generationMatches = bus.generationToken() == voiceBusGeneration,
             )
+            val voiceMagnitude = abs(voiceSample)
+            if (voiceMagnitude > VOICE_MIX_DIAGNOSTIC_THRESHOLD) {
+                voiceActiveFrames++
+                if (voiceMagnitude > voicePeak) voicePeak = voiceMagnitude
+            }
+            voiceEnergy += voiceSample.toDouble() * voiceSample.toDouble()
+
             appliedOriginalGain += (requestedOriginalGain - appliedOriginalGain) *
                 if (requestedOriginalGain < appliedOriginalGain) sourceAttack else sourceRelease
             val sourceGain = appliedOriginalGain
@@ -241,6 +254,29 @@ class DubbingAudioProcessor(
         framesConsumedFromBuffer += frame.toLong()
         consumedFramesTotal += frame.toLong()
         output.flip()
+
+        if (!firstVoiceMixLogged && voiceActiveFrames > 0) {
+            firstVoiceMixLogged = true
+            runCatching {
+                onDiagnostic?.invoke(
+                    false,
+                    "中文配音 PCM 已实际混入播放器输出缓冲区",
+                    mapOf(
+                        "音频缓冲区媒体起始时间 us" to windowStartUs.toString(),
+                        "PCM 采样率 Hz" to sampleRate.toString(),
+                        "播放器输出声道数" to channels.toString(),
+                        "本次缓冲区总帧数" to frames.toString(),
+                        "检测到非静音配音帧数" to voiceActiveFrames.toString(),
+                        "配音样本峰值" to voicePeak.toString(),
+                        "配音样本 RMS" to kotlin.math.sqrt(voiceEnergy / frames.coerceAtLeast(1)).toString(),
+                        "配音增益" to requestedDubbingGain.toString(),
+                        "混流总线代次" to voiceBusGeneration.toString(),
+                        "输出缓冲区字节数" to output.remaining().toString(),
+                        "诊断边界说明" to "只证明配音样本已进入 Media3 AudioProcessor 输出缓冲区；设备端播放位置由 AudioTrack 回调另行确认",
+                    ),
+                )
+            }
+        }
     }
 
     private fun readSample(inputBuffer: ByteBuffer, isFloat: Boolean): Float =
@@ -287,6 +323,7 @@ class DubbingAudioProcessor(
         const val LIMIT_THRESHOLD = 0.92f
         const val LIMIT_RANGE = 0.08f
         const val MAX_TIMESTAMP_SKEW_US = 750_000L
+        const val VOICE_MIX_DIAGNOSTIC_THRESHOLD = 1e-5f
         const val INVALID_TIME_US = -1L
     }
 }

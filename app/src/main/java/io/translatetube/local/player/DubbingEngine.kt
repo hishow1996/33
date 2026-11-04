@@ -1797,7 +1797,7 @@ class DubbingEngine(
                     "首句输出是否已确认" to firstPlaybackReported.get().toString(),
                     "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
                     "混流总线代次" to outputBus.generationToken().toString(),
-                )),
+                ) + io.translatetube.local.util.AudioOutputDiagnostics.snapshot(appContext)),
             )
             // A UI/notification callback must never terminate the synthesis worker itself.
             runCatching { onSynthesisError?.invoke(message) }
@@ -3591,7 +3591,7 @@ class DubbingEngine(
                             if (stillCurrent) {
                                 if (firstPlaybackReported.compareAndSet(false, true)) {
                                     logDubbingInfo(
-                                        "首句系统 TTS 已触发实际朗读回调",
+                                        "首句系统 TTS 开始朗读回调已到达（不等同于设备端实际输出确认）",
                                         mapOf(
                                             "字幕行号" to "${idx + 1}/${lines.size}",
                                             "配音引擎名称" to (tts?.name ?: "未知引擎"),
@@ -3607,7 +3607,7 @@ class DubbingEngine(
                                                 (appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
                                                     ?.isMusicActive?.toString() ?: "不可用"
                                             }.getOrDefault("读取失败"),
-                                        ),
+                                        ) + io.translatetube.local.util.AudioOutputDiagnostics.snapshot(appContext),
                                     )
                                 }
                                 runCatching { onPlaybackStarted?.invoke(idx, generation) }

@@ -289,6 +289,39 @@ enum class SystemTtsPlaybackMode {
     }
 }
 
+private object SystemTtsCallbackLogDispatcher {
+    private val executor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "system-tts-callback-log").apply { isDaemon = true }
+    }
+
+    fun error(
+        context: Context,
+        stage: String,
+        utteranceId: String,
+        failure: Throwable,
+    ) {
+        runCatching {
+            executor.execute {
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.error(
+                        context,
+                        "SystemTTS",
+                        "系统 TTS 即时朗读回调处理异常：$stage",
+                        failure,
+                        diagnosticContext = mapOf(
+                            "回调阶段" to stage,
+                            "朗读任务 ID" to utteranceId.take(120),
+                            "播放模式" to "INSTANT",
+                            "异常类型" to failure.javaClass.name,
+                            "异常摘要" to (failure.message ?: "无异常消息").take(360),
+                        ) + io.translatetube.local.util.AudioOutputDiagnostics.snapshot(context),
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** 系统 TTS：支持预生成 PCM 和即时朗读两种模式，复用同一个系统中文音色目录。 */
 class SystemTts(
     context: Context,
@@ -314,6 +347,7 @@ class SystemTts(
     private data class TimelineCallbacks(
         val onStarted: () -> Unit,
         val onCompleted: (String?) -> Unit,
+        val state: TimelineTtsCallbackState = TimelineTtsCallbackState(),
     )
 
     private val timelineCallbacks =
@@ -508,9 +542,35 @@ class SystemTts(
 
         tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
-                val callbacks = utteranceId?.let { timelineCallbacks[it] } ?: return
-                runCatching { callbacks.onStarted() }
-                    .onFailure { android.util.Log.w("SystemTts", "Instant TTS start callback failed", it) }
+                val id = utteranceId?.takeIf { it.isNotBlank() } ?: return
+                val callbacks = synchronized(lifecycleLock) {
+                    val current = timelineCallbacks[id] ?: return
+                    if (closed || activeTimelineUtteranceId != id || !current.state.beginStart()) return
+                    current
+                }
+
+                val callbackFailure = runCatching { callbacks.onStarted() }.exceptionOrNull()
+                if (callbackFailure != null) {
+                    android.util.Log.e("SystemTts", "Instant TTS start callback failed", callbackFailure)
+                    SystemTtsCallbackLogDispatcher.error(
+                        appCtx,
+                        "onStart",
+                        id,
+                        callbackFailure,
+                    )
+                }
+
+                val completion = synchronized(lifecycleLock) {
+                    val decision = callbacks.state.finishStart(callbackFailure)
+                    if (decision.completionReady) {
+                        timelineCallbacks.remove(id, callbacks)
+                        if (activeTimelineUtteranceId == id) activeTimelineUtteranceId = null
+                    }
+                    decision
+                }
+                if (completion.completionReady) {
+                    dispatchTimelineCompletion(id, callbacks, completion.error)
+                }
             }
 
             override fun onDone(utteranceId: String?) {
@@ -579,14 +639,39 @@ class SystemTts(
         })
     }
 
+    private fun dispatchTimelineCompletion(
+        utteranceId: String,
+        callbacks: TimelineCallbacks,
+        error: String?,
+    ) {
+        runCatching { callbacks.onCompleted(error) }
+            .onFailure { failure ->
+                android.util.Log.e("SystemTts", "Instant TTS completion callback failed", failure)
+                SystemTtsCallbackLogDispatcher.error(
+                    appCtx,
+                    "onCompleted",
+                    utteranceId,
+                    failure,
+                )
+            }
+    }
+
     private fun finishTimelineUtterance(utteranceId: String?, error: String?): Boolean {
         if (utteranceId.isNullOrBlank()) return false
-        val callbacks = timelineCallbacks.remove(utteranceId) ?: return false
-        synchronized(lifecycleLock) {
-            if (activeTimelineUtteranceId == utteranceId) activeTimelineUtteranceId = null
+        val result = synchronized(lifecycleLock) {
+            val callbacks = timelineCallbacks[utteranceId] ?: return@synchronized null
+            val decision = callbacks.state.requestFinish(error)
+            if (!decision.accepted) return@synchronized null
+            if (decision.completionReady) {
+                timelineCallbacks.remove(utteranceId, callbacks)
+                if (activeTimelineUtteranceId == utteranceId) activeTimelineUtteranceId = null
+            }
+            callbacks to decision
+        } ?: return false
+
+        if (result.second.completionReady) {
+            dispatchTimelineCompletion(utteranceId, result.first, result.second.error)
         }
-        runCatching { callbacks.onCompleted(error) }
-            .onFailure { android.util.Log.w("SystemTts", "Instant TTS completion callback failed", it) }
         return true
     }
 
@@ -601,18 +686,21 @@ class SystemTts(
         onCompleted: (String?) -> Unit,
     ): Boolean {
         if (!useDirectTimelinePlayback || text.isBlank() || utteranceId.isBlank()) return false
+        var callbackRegistered = false
         return try {
             TtsTextPolicy.validate(text)
             val normalizedText = text.replace(Regex("\\s+"), " ").trim()
             if (normalizedText.isEmpty()) return false
             val engine = synchronized(lifecycleLock) {
-                if (closed || !ok) return false
-                ttsRef.get() ?: return false
+                if (closed || !ok) {
+                    throw IllegalStateException("系统 TTS 已关闭或尚未初始化成功")
+                }
+                ttsRef.get() ?: throw IllegalStateException("系统 TTS 引擎实例不可用")
             }
             val voices = chineseVoiceCatalog
             val voiceIndex = SystemTtsSpeakerVoicePolicy.indexForSpeaker(speakerId, voices.size)
             val targetVoice = voices.getOrNull(voiceIndex) ?: defaultChineseVoice
-                ?: return false
+                ?: throw IllegalStateException("系统 TTS 没有可用的中文音色")
             if (engine.voice?.name != targetVoice.name && engine.setVoice(targetVoice) != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 无法切换到所选中文音色：${targetVoice.name}")
             }
@@ -627,9 +715,12 @@ class SystemTts(
                 putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
             }
             synchronized(lifecycleLock) {
-                if (closed || ttsRef.get() !== engine) return false
+                if (closed || ttsRef.get() !== engine) {
+                    throw IllegalStateException("系统 TTS 在提交朗读前已关闭或被替换")
+                }
                 activeTimelineUtteranceId = utteranceId
                 timelineCallbacks[utteranceId] = TimelineCallbacks(onStarted, onCompleted)
+                callbackRegistered = true
             }
             val result = engine.speak(
                 normalizedText,
@@ -648,10 +739,26 @@ class SystemTts(
                 true
             }
         } catch (cancelled: java.util.concurrent.CancellationException) {
+            if (callbackRegistered) {
+                finishTimelineUtterance(utteranceId, "系统 TTS 即时朗读请求提交期间被取消")
+            }
             throw cancelled
         } catch (error: Exception) {
             android.util.Log.e("SystemTts", "Instant TTS request failed", error)
-            runCatching { onCompleted(error.message ?: error.javaClass.simpleName) }
+            val detail = "系统 TTS 即时朗读请求异常：${error.message ?: error.javaClass.simpleName}"
+            if (callbackRegistered) {
+                finishTimelineUtterance(utteranceId, detail)
+            } else {
+                runCatching { onCompleted(detail) }
+                    .onFailure { callbackFailure ->
+                        SystemTtsCallbackLogDispatcher.error(
+                            appCtx,
+                            "请求失败后的 onCompleted",
+                            utteranceId,
+                            callbackFailure,
+                        )
+                    }
+            }
             false
         }
     }
@@ -663,7 +770,7 @@ class SystemTts(
             if (active == null || (utteranceId != null && utteranceId != active)) {
                 null
             } else {
-                timelineCallbacks.remove(active)
+                timelineCallbacks.remove(active)?.state?.cancel()
                 activeTimelineUtteranceId = null
                 ttsRef.get()
             }
@@ -902,6 +1009,7 @@ class SystemTts(
             } else {
                 closed = true
                 activeLatch?.countDown()
+                timelineCallbacks.values.forEach { it.state.cancel() }
                 timelineCallbacks.clear()
                 activeTimelineUtteranceId = null
                 ttsRef.getAndSet(null)
