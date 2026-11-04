@@ -155,7 +155,7 @@ private class TranslationRecoveryBudget {
     private var attempts = 0
     private var isolatedCueFailures = 0
 
-    /** Shared by every split/retry: malformed response alignment must never become audio fallback. */
+    /** Shared by every split/retry: malformed response alignment must not be treated as a completed translation. */
     var hadUnalignedResponse: Boolean = false
 
     /** True while this batch may still hand an unusable single cue back to the caller. */
@@ -201,7 +201,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
         }
     ) {
         throw IllegalStateException(
-            "翻译服务响应曾出现行数不匹配或编号/格式不完整；拆分重试后仍有字幕未通过校验，已禁止原声兜底。"
+            "翻译服务响应曾出现行数不匹配或编号/格式不完整；拆分重试后仍有字幕未通过校验，翻译失败。"
         )
     }
     return result
