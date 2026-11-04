@@ -63,6 +63,23 @@ class AppLogDiagnosticContextPolicyTest {
     }
 
     @Test
+    fun allPriorityFieldsFitInsideTheProductionContextBudget() {
+        val priority = (0 until 81).associate { index ->
+            "priority-$index" to "value-$index"
+        }
+        val result = AppLogDiagnosticContextPolicy.bound(
+            input = priority + mapOf("optional-1" to "extra-1", "optional-2" to "extra-2"),
+            priorityKeys = priority.keys,
+        )
+
+        priority.forEach { (key, value) ->
+            assertEquals(value, result.fields[key])
+        }
+        assertEquals(0, result.omittedFieldCount)
+        assertTrue(result.fields.size <= AppLogDiagnosticContextPolicy.MAX_FIELDS)
+    }
+
+    @Test
     fun overlongValuesAreTruncatedWithAnExplicitMarkerAndCount() {
         val result = AppLogDiagnosticContextPolicy.bound(
             input = mapOf("响应摘要" to "x".repeat(3_000)),
