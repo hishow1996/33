@@ -153,7 +153,6 @@ private class TranslationRecoveryBudget {
 
     /** Shared by every split/retry: malformed response alignment must never become audio fallback. */
     var hadUnalignedResponse: Boolean = false
-        private set
 
     /** True while this batch may still hand an unusable single cue back to the caller. */
     fun tolerateIsolatedCueFailure(): Boolean {
