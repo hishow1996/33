@@ -12,9 +12,20 @@ internal data class AppLogOperationContext(
     val startedAtElapsedRealtimeMs: Long = System.nanoTime() / 1_000_000L,
 ) {
     @Volatile private var stageSnapshot: Map<String, String> = emptyMap()
+    @Volatile private var supplementalSnapshot: Map<String, String> = emptyMap()
 
+    /** Replaces the frequently refreshed playback/UI snapshot. */
     fun updateSnapshot(fields: Map<String, String>) {
         stageSnapshot = fields.toMap()
+    }
+
+    /**
+     * Replaces stable per-stage evidence that is not represented in PlayerUiState
+     * (audio format, model IDs, VAD segments, request metadata, and similar fields).
+     * UI progress refreshes must not erase this evidence.
+     */
+    fun updateSupplementalSnapshot(fields: Map<String, String>) {
+        supplementalSnapshot = fields.toMap()
     }
 
     fun diagnosticFields(): Map<String, String> = buildMap {
@@ -25,6 +36,7 @@ internal data class AppLogOperationContext(
         val elapsedMs = (System.nanoTime() / 1_000_000L - startedAtElapsedRealtimeMs).coerceAtLeast(0L)
         put("本轮处理已耗时 ms", elapsedMs.toString())
         putAll(stageSnapshot)
+        putAll(supplementalSnapshot)
     }
 }
 
