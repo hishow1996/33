@@ -6528,8 +6528,11 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         zh = cue.translationText,
                     )
                 })
-                val importedSourceLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
-                    .detectFromCues(translatedLines.asSequence().map { it.text }.asIterable())
+                val importedSourceCues = translatedLines.asSequence().map { it.text }.asIterable()
+                val importedSourceLanguage = resolveSourceLanguageForCues(
+                    importedSourceCues,
+                    io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(importedSourceCues),
+                )
                 translatedLines = DubbingTranslationPolicy.prepareLinesForDubbing(
                     translatedLines,
                     importedSourceLanguage,
@@ -7350,8 +7353,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             return scriptDetected
         }
 
-        // Run bundled on-device language identification for ambiguous Latin-script subtitles,
-        // including cases where an ASR provider's language hint may be wrong.
+        // Run bundled on-device language identification for ambiguous Latin-script and
+        // Han-only subtitles, including Chinese/Japanese Kanji-only text without kana.
         val identified = io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(cues)
         if (!SourceLanguagePolicy.isUndetermined(identified)) {
             return identified
@@ -9725,8 +9728,11 @@ updateUiForSession(key, pipelineGeneration) {
                         // active translation engine again. Keep the imported zh text and timestamps.
                         translatedLines = io.translatetube.local.subs.ImportedSubtitlePolicy
                             .preserveImportedTranslations(translatedLines)
-                        srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
-                            .detectFromCues(translatedLines.asSequence().map { it.text }.asIterable())
+                        val importedSourceCues = translatedLines.asSequence().map { it.text }.asIterable()
+                        srcLang = resolveSourceLanguageForCues(
+                            importedSourceCues,
+                            io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(importedSourceCues),
+                        )
                         if (isChineseLanguage(srcLang)) {
                             // Known Chinese source text is already valid Chinese output. Do not
                             // apply this normalization to foreign-language rows with missing zh.
