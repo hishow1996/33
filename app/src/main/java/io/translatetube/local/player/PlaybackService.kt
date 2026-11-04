@@ -6603,6 +6603,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     d.attach(
                         tts,
                         translatedLines,
+                        sourceLanguage = importedSourceLanguage,
                         forceRegenerateDubbing = true,
                     )
                 } catch (e: Throwable) {
