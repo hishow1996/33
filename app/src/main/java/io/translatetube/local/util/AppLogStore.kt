@@ -758,8 +758,11 @@ object AppLogStore {
                 val trail = if (shouldIncludeTrail && recentEvents.isNotEmpty()) {
                     recentEvents.joinToString(separator = "\n")
                 } else ""
+                val effectiveDiagnosticContext = AppLogOperationContextHolder.current.get()
+                    ?.let { operation -> applyOperationContext(diagnosticContext, operation) }
+                    ?: diagnosticContext
                 val safeDetails = truncatePreservingEdges(
-                    redact(enrichDetails(context, level, tag, details, threadName, diagnosticContext, trail)),
+                    redact(enrichDetails(context, level, tag, details, threadName, effectiveDiagnosticContext, trail)),
                     MAX_DETAIL_CHARS,
                 )
                 val effectiveIssueKey = issueKey?.takeIf { it.isNotBlank() }
@@ -773,7 +776,7 @@ object AppLogStore {
                 val category = runCatching {
                     AppLogTitleResolver.featureLabel(safeTag, safeMessage)
                 }.getOrDefault("未分类日志")
-                val safeContext = diagnosticContext.entries
+                val safeContext = effectiveDiagnosticContext.entries
                     .take(64)
                     .associate { entry ->
                         redact(entry.key).take(100) to redact(entry.value).take(2_000)
@@ -1307,10 +1310,22 @@ object AppLogStore {
         return (rootFrame ?: namedException).orEmpty().take(240)
     }
 
-    private fun extractOperationId(
+    internal fun applyOperationContext(
+        diagnosticContext: Map<String, String>,
+        operation: AppLogOperationContext,
+    ): Map<String, String> = diagnosticContext + mapOf(
+        "操作关联 ID" to operation.operationId,
+        "视频来源" to operation.mediaSource,
+        "视频会话指纹" to operation.videoSessionFingerprint,
+        "处理代数" to operation.pipelineGeneration.toString(),
+    )
+
+    internal fun extractOperationId(
         diagnosticContext: Map<String, String>,
         details: String,
     ): String {
+        val explicitOperationId = diagnosticContext["操作关联 ID"]?.takeIf { it.isNotBlank() }
+        if (explicitOperationId != null) return explicitOperationId.take(120)
         val keyPattern = Regex(
             """(?i)(diagnostic|operation|correlation|trace|request|task|job|flow).*id|翻译诊断\s*id|操作\s*id|请求\s*id|任务\s*id|关联\s*id""",
         )

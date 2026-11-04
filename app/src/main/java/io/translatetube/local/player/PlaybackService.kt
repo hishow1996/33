@@ -18,6 +18,8 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import io.translatetube.local.R
 import io.translatetube.local.util.AudioDownloadProgressFormatter
+import io.translatetube.local.util.AppLogOperationContext
+import io.translatetube.local.util.AppLogOperationContextHolder
 import io.translatetube.local.asr.AudioExtract
 import io.translatetube.local.asr.AudioTrackSelectionPolicy
 import io.translatetube.local.asr.LocalAsrEngine
@@ -59,6 +61,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -5374,18 +5377,28 @@ class PlaybackService : MediaSessionService() {
             pm.dubbingVolume = dubbingVolume
             pm.dubbingBus.setDubbingEnabled(ui.value.dubbingOn)
         }
+        val processingSourceLabel = when {
+            !importedLinesSnapshot.isNullOrEmpty() -> "导入字幕"
+            videoId != null -> "YouTube"
+            remoteMediaUrl != null -> "网页视频/远程媒体"
+            localUri != null -> "本地视频"
+            else -> "未知来源"
+        }
+        val processingOperationContext = AppLogOperationContext(
+            operationId = java.util.UUID.randomUUID().toString(),
+            mediaSource = processingSourceLabel,
+            videoSessionFingerprint = safeDiagnosticSessionFingerprint(key),
+            pipelineGeneration = pipelineGeneration,
+        )
         io.translatetube.local.util.AppLogStore.info(
             this@PlaybackService,
             "PlaybackFlow",
             if (restoreCompletedSnapshot) "恢复该视频已成功的配置结果" else if (effectiveResumeState != null) "恢复历史任务并重新进入处理管线" else "开始新的视频处理任务",
             diagnosticContext = mapOf(
-                "视频来源" to when {
-                    !importedLinesSnapshot.isNullOrEmpty() -> "导入字幕"
-                    videoId != null -> "YouTube"
-                    remoteMediaUrl != null -> "网页视频/远程媒体"
-                    localUri != null -> "本地视频"
-                    else -> "未知来源"
-                },
+                "视频来源" to processingSourceLabel,
+                "操作关联 ID" to processingOperationContext.operationId,
+                "视频会话指纹" to processingOperationContext.videoSessionFingerprint,
+                "处理代数" to processingOperationContext.pipelineGeneration.toString(),
                 "初始阶段" to if (restoreCompletedSnapshot) Phase.READY.name else if (effectiveResumeState != null) Phase.TRANSLATING.name else Phase.PARSING.name,
                 "处理流程" to ui.value.processingFlow.name,
                 "本次处理代数" to pipelineGeneration.toString(),
@@ -5410,7 +5423,9 @@ class PlaybackService : MediaSessionService() {
             ),
         )
         pm.pause()
-        prepJob = scope.launch {
+        prepJob = scope.launch(
+            context = AppLogOperationContextHolder.current.asContextElement(processingOperationContext),
+        ) {
             pipelineExecutionMutex.withLock {
                 ensureCurrentSession(key, pipelineGeneration)
                 var pipelineResumeState = effectiveResumeState
