@@ -1555,12 +1555,14 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     sessionKey = state.key,
                     currentLine = state.lines.getOrNull(state.currentLine),
                     captionOverride = state.captionOverride,
-                    modifier = Modifier.padding(horizontal = 8.dp),
+                    // Flush the portrait caption card to both phone edges and give it
+                    // the same compact vertical breathing room on both sides.
+                    modifier = Modifier.padding(top = 5.dp),
                 )
             }
 
             if (!isFullscreen) {
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(5.dp))
 
             // 模型/配音问题提示可以单独关闭；关闭只隐藏提示，不会改变播放状态。
             (state.noModelHint?.takeIf {
