@@ -194,9 +194,13 @@ internal fun parseBaiduTranslation(body: String, targetCode: String): String {
         throw IllegalStateException("百度翻译返回了非预期内容（可能需要验证或接口已调整），请换用其他翻译引擎", e)
     }
     val data = root.optJSONArray("data")
-        ?: throw IllegalStateException(
+    if (data == null) {
+        // 单词/短语查询返回词典格式，没有 data[].dst。
+        parseBaiduDictionaryResult(root)?.let { return it }
+        throw IllegalStateException(
             "百度翻译未返回译文" + if (root.has("error")) "（错误码 ${root.opt("error")}）" else "",
         )
+    }
     val pieces = (0 until data.length()).mapNotNull { index ->
         data.optJSONObject(index)?.optString("dst")?.trim()?.takeIf { it.isNotEmpty() }
     }
@@ -204,6 +208,35 @@ internal fun parseBaiduTranslation(body: String, targetCode: String): String {
     // 中日韩泰目标语言的分句直接相连，其他语言用空格隔开。
     val joiner = if (targetCode in setOf("zh", "cht", "yue", "jp", "kor", "th")) "" else " "
     return pieces.joinToString(joiner)
+}
+
+/**
+ * 百度对单词/短语返回词典格式：{"status":0,"type":1,"result":"<JSON 字符串>"}。
+ * 释义是 result.content[].mean[].cont 的键（如 {"你好":0,"(用于问候)喂":0}），取第一条释义作译文，
+ * 并去掉开头的括号注释（"(用于问候)喂" → "喂"）。解析不出就返回 null，由调用方如实报错。
+ */
+private fun parseBaiduDictionaryResult(root: JSONObject): String? {
+    val resultText = root.optString("result").takeIf { it.isNotBlank() } ?: return null
+    val result = try {
+        JSONObject(resultText)
+    } catch (e: Exception) {
+        return null
+    }
+    result.optString("dst").trim().takeIf { it.isNotEmpty() }?.let { return it }
+    val content = result.optJSONArray("content") ?: return null
+    for (i in 0 until content.length()) {
+        val means = content.optJSONObject(i)?.optJSONArray("mean") ?: continue
+        for (j in 0 until means.length()) {
+            val cont = means.optJSONObject(j)?.optJSONObject("cont") ?: continue
+            val keys = cont.keys()
+            while (keys.hasNext()) {
+                val raw = keys.next().trim()
+                val gloss = raw.replace(Regex("""^[（(][^）)]*[）)]"""), "").trim().ifEmpty { raw }
+                if (gloss.isNotEmpty()) return gloss
+            }
+        }
+    }
+    return null
 }
 
 private fun isAuthRejected(error: Throwable): Boolean {
@@ -596,7 +629,10 @@ private object BaiduWebViewHost {
             append("acsConf:{useAcsToken:true,useCaptcha:false}})")
             append(".then(function(r){try{AndroidBaiduBridge.onResult(id,JSON.stringify(r));}catch(e){}})")
             append(".catch(function(e){try{")
-            append("if(e&&e.data){AndroidBaiduBridge.onResult(id,JSON.stringify(e));return;}")
+            // 句子查询成功响应带 data[]；单词/短语查询成功响应是词典格式（status:0 + result 字符串，
+            // 没有 data），同样缺 errno 而被 v2FetchJSON 当错误 throw，所以两种都按成功回传。
+            append("if(e&&(e.data||(e.status===0&&typeof e.result==='string'))){")
+            append("AndroidBaiduBridge.onResult(id,JSON.stringify(e));return;}")
             append("AndroidBaiduBridge.onError(id,typeof e==='string'?e:JSON.stringify(e));")
             append("}catch(err){}})")
             append("})();")

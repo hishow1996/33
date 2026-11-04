@@ -108,4 +108,29 @@ class WebEnginesTest {
             parseBaiduTranslation("""{"data":[{"dst":"  "}]}""", "zh")
         }
     }
+
+    @Test
+    fun baiduDictionaryResponseForSingleWordIsTranslated() {
+        // 真机日志里的形状：单词 "hello" 没有 data[]，译文在 result 字符串的释义里。
+        val body = """{"status":0,"from":"en","to":"zh","type":1,"version":1,
+            "result":"{\"content\":[{\"mean\":[{\"pre\":\"int.\",\"cont\":{\"你好\":0}}]}],\"src\":\"hello\"}"}"""
+        assertEquals("你好", parseBaiduTranslation(body, "zh"))
+    }
+
+    @Test
+    fun baiduDictionaryResponseDropsLeadingParentheticalNote() {
+        val body = """{"status":0,"type":1,
+            "result":"{\"content\":[{\"mean\":[{\"cont\":{\"(用于问候、接电话)喂\":0}}]}]}"}"""
+        assertEquals("喂", parseBaiduTranslation(body, "zh"))
+    }
+
+    @Test
+    fun baiduDictionaryResponseWithoutMeaningsStillFailsLoudly() {
+        assertThrows(IllegalStateException::class.java) {
+            parseBaiduTranslation("""{"status":0,"result":"not json"}""", "zh")
+        }
+        assertThrows(IllegalStateException::class.java) {
+            parseBaiduTranslation("""{"status":0,"result":"{\"content\":[]}"}""", "zh")
+        }
+    }
 }
