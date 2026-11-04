@@ -10800,6 +10800,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 var lastRejectedRows = emptyList<io.translatetube.local.translate.TranslationRowRejection>()
                 val batchAttemptDiagnostics = mutableListOf<String>()
                 val acceptedSourceEchoFallbacks = linkedMapOf<Int, String>()
+                val lastRawOutputByIndex = linkedMapOf<Int, String>()
+                val lastAttemptByIndex = linkedMapOf<Int, Int>()
+                var lastRawBatchOutput = ""
+                var lastRawBatchOutputAligned = false
                 var lastRequestRowCount = 0
                 var lastResponseRowCount = 0
                 val finalFallbackReasons = linkedMapOf<Int, String>()
@@ -10828,17 +10832,44 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     return shown + if (omitted > 0) "；另有 $omitted 行未展开" else ""
                 }
 
+                fun fallbackReasonCode(line: io.translatetube.local.subs.SubLine): String {
+                    val reason = line.translationFallbackReason.orEmpty()
+                    return when {
+                        reason.contains("行数不匹配") -> "ROW_COUNT_MISMATCH"
+                        reason.contains("原文回显") || reason.contains("原文相同") -> "SOURCE_ECHO"
+                        reason.contains("目标语言") -> "TARGET_LANGUAGE_MISMATCH"
+                        reason.contains("占位内容") || reason.contains("非字幕文本") -> "EMPTY_AFTER_CLEANUP"
+                        reason.contains("为空") || reason.contains("空白") -> "EMPTY_TRANSLATION"
+                        reason.contains("可朗读") || reason.contains("标点") || reason.contains("符号") -> "UNSPEAKABLE_CONTENT"
+                        else -> "DUBBING_TEXT_REJECTED"
+                    }
+                }
+
                 suspend fun logConfirmedFallbackRows(
                     entries: List<Pair<Int, io.translatetube.local.subs.SubLine>>,
                     processedRows: Int,
                 ) {
                     if (entries.isEmpty()) return
-                    val fallbackRowsSummary = entries.joinToString("；") { (rowIndex, line) ->
+                    val rowDiagnostics = entries.take(40).joinToString("\n") { (rowIndex, line) ->
                         val reason = line.translationFallbackReason
                             ?.takeIf { it.isNotBlank() }
                             ?: "译文未通过最终中文配音可用性校验"
-                        "${rowIndex + 1}行（${line.startMs}..${line.endMs} ms）：$reason；原文=${line.text.take(180)}"
+                        val reasonCode = fallbackReasonCode(line)
+                        val retryCount = lastAttemptByIndex[rowIndex] ?: attempt.coerceAtLeast(1)
+                        val rawOutput = if (lastRawBatchOutputAligned) {
+                            lastRawOutputByIndex[rowIndex]?.take(600)?.ifBlank { "（模型返回为空）" }
+                                ?: "（未取得逐行返回内容）"
+                        } else {
+                            "（本轮返回数量不匹配，不能安全逐行映射；请查看本批原始返回）"
+                        }
+                        "${rowIndex + 1}行 [$reasonCode] 第${retryCount}次请求，时间轴=${line.startMs}..${line.endMs} ms；原因=$reason；原文=${line.text.take(180)}；模型原始返回=$rawOutput"
                     }
+                    val unmappedRawResponse = if (lastRawBatchOutputAligned) {
+                        "本轮请求与返回行数一致，已按行号关联"
+                    } else {
+                        lastRawBatchOutput.take(6_000).ifBlank { "无可用原始返回内容" }
+                    }
+                    val omittedRows = (entries.size - 40).coerceAtLeast(0)
                     withContext(Dispatchers.IO) {
                         io.translatetube.local.util.AppLogStore.error(
                             this@PlaybackService,
@@ -10862,17 +10893,22 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
                                 "本批原声兜底行数" to entries.size.toString(),
                                 "本批原声兜底字幕行号（从1开始）" to entries.joinToString(",") { (index, _) -> (index + 1).toString() },
+                                "每条兜底字幕的原因代码、重试次数、时间轴、原文和模型原始返回" to rowDiagnostics,
+                                "最后一次模型返回的逐行对齐状态" to lastRawBatchOutputAligned.toString(),
+                                "最后一次模型批次原始返回（无法逐行对齐时参考）" to unmappedRawResponse,
+                                "逐行诊断未展开数量" to omittedRows.toString(),
                                 "当前累计原声兜底数量" to updatedLines.count { it.text.isNotBlank() && it.translationFallbackOriginalAudio }.toString(),
                                 "当前累计已处理字幕数" to processedRows.coerceAtMost(updatedLines.size).toString(),
                                 "字幕总行数" to updatedLines.size.toString(),
-                                "逐行原声兜底原因和原文" to fallbackRowsSummary,
                                 "处理代数" to (pipelineGeneration ?: -1L).toString(),
-                                "日志触发时机" to "当前批次确认兜底后立即记录，后续字幕继续翻译",
+                                "日志触发时机" to "单条字幕完成最终判定后立即记录；重试中的字幕不提前计入",
                             ),
                             issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
                                 "DubbingFallback",
-                                "${key}|${pipelineGeneration ?: -1L}|${batchIndex + 1}|" +
-                                    entries.joinToString(",") { it.first.toString() },
+                                "${key.substringBefore('?')}|${activeId}|" +
+                                    entries.joinToString("|") { (index, line) ->
+                                        "$index:${fallbackReasonCode(line)}"
+                                    },
                             ),
                         )
                     }
@@ -11014,6 +11050,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
                         targetLanguage = tgt,
                     )
+                    // Keep the model's last raw output for diagnostics. Only map it to cue indices
+                    // when request and response counts match; otherwise positional attribution is unsafe.
+                    lastRawBatchOutputAligned = batchTranslations.size == attemptedIndices.size
+                    lastRawBatchOutput = batchTranslations.mapIndexed { responseIndex, output ->
+                        "返回第${responseIndex + 1}行：${output.take(600)}"
+                    }.joinToString("\n").take(8_000)
+                    attemptedIndices.forEach { sourceIndex ->
+                        lastRawOutputByIndex.remove(sourceIndex)
+                        lastAttemptByIndex[sourceIndex] = attempt + 1
+                    }
+                    if (lastRawBatchOutputAligned) {
+                        attemptedIndices.forEachIndexed { responseIndex, sourceIndex ->
+                            lastRawOutputByIndex[sourceIndex] = batchTranslations[responseIndex].take(600)
+                        }
+                    }
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices
                     lastRejectedRows = parsedBatch.rejectedRows
@@ -11031,9 +11082,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "原文回显被当前引擎策略视为不可翻译内容并保留原声；原文字符数=${sourceLine?.text?.length ?: 0}，模型返回字符数=${rawOutput.length}"
                     }
 
-                    // Check each accepted response row immediately, not after the whole batch's
-                    // retry loop. This exposes confirmed fallback rows even while other cues retry.
-                    val newlyConfirmedFallbackRows = parsedBatch.translations.mapNotNull { (sourceIndex, translation) ->
+                    // Every accepted row is now final for dubbing purposes. Publish valid translations
+                    // and confirmed fallback rows immediately, even while other rows in this batch retry.
+                    val checkedAcceptedRows = parsedBatch.translations.mapNotNull { (sourceIndex, translation) ->
                         val sourceLine = updatedLines.getOrNull(sourceIndex) ?: return@mapNotNull null
                         val candidateLine = sourceLine.copy(
                             zh = translation.takeIf { it.isNotBlank() },
@@ -11048,26 +11099,34 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             lines = listOf(candidateLine),
                             sourceLanguage = src,
                         ).lines.first()
-                        if (checkedLine.translationFallbackOriginalAudio) sourceIndex to checkedLine else null
+                        sourceIndex to checkedLine
                     }
-                    if (newlyConfirmedFallbackRows.isNotEmpty()) {
-                        val fallbackByIndex = newlyConfirmedFallbackRows.toMap()
+                    if (checkedAcceptedRows.isNotEmpty()) {
+                        val acceptedByIndex = checkedAcceptedRows.toMap()
                         updatedLines = updatedLines.mapIndexed { index, line ->
-                            fallbackByIndex[index] ?: line
+                            acceptedByIndex[index] ?: line
                         }
+                        val processedRows = (completed + resolvedBatch.size).coerceAtMost(updatedLines.size)
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
                                 lines = updatedLines,
                                 totalLines = updatedLines.size,
-                                translationPreviewLines = translationPreviewRows.toList(),
+                                translatedLineCount = processedRows,
+                                sourceLang = src,
+                                translationCurrentBatch = batchIndex + 1,
+                                translationTotalBatches = translationBatches.size,
+                                translationRetryCount = attempt,
+                                progress = "正在处理第 ${batchIndex + 1}/${translationBatches.size} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
                             )
                         }
-                        val rowsToLog = newlyConfirmedFallbackRows.filter { (index, _) ->
-                            loggedFallbackIndices.add(index)
+                        val rowsToLog = checkedAcceptedRows.filter { (index, line) ->
+                            line.text.isNotBlank() &&
+                                line.translationFallbackOriginalAudio &&
+                                loggedFallbackIndices.add(index)
                         }
                         logConfirmedFallbackRows(
                             entries = rowsToLog,
-                            processedRows = completed + parsedBatch.translations.size,
+                            processedRows = processedRows,
                         )
                     }
 
@@ -11246,7 +11305,48 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             ),
                         )
                     }
-                    unresolvedIndices.forEach { resolvedBatch[it] = "" }
+                    val finalFallbackIndices = unresolvedIndices.toList()
+                    finalFallbackIndices.forEach { resolvedBatch[it] = "" }
+                    val finalFallbackUpdates = finalFallbackIndices.mapNotNull { sourceIndex ->
+                        val sourceLine = updatedLines.getOrNull(sourceIndex) ?: return@mapNotNull null
+                        val fallbackLine = sourceLine.copy(
+                            zh = null,
+                            translationFallbackOriginalAudio = true,
+                            translationFallbackReason = finalFallbackReasons[sourceIndex]
+                                ?: "重试结束后仍未获得可用中文译文",
+                        )
+                        val checkedLine = DubbingTranslationPolicy.prepareLinesForDubbing(
+                            lines = listOf(fallbackLine),
+                            sourceLanguage = src,
+                        ).lines.first()
+                        sourceIndex to checkedLine
+                    }
+                    if (finalFallbackUpdates.isNotEmpty()) {
+                        val fallbackByIndex = finalFallbackUpdates.toMap()
+                        updatedLines = updatedLines.mapIndexed { index, line ->
+                            fallbackByIndex[index] ?: line
+                        }
+                        val processedRows = (completed + resolvedBatch.size).coerceAtMost(updatedLines.size)
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                lines = updatedLines,
+                                totalLines = updatedLines.size,
+                                translatedLineCount = processedRows,
+                                sourceLang = src,
+                                translationCurrentBatch = batchIndex + 1,
+                                translationTotalBatches = translationBatches.size,
+                                translationRetryCount = attempt.coerceAtLeast(1),
+                                progress = "第 ${batchIndex + 1}/${translationBatches.size} 批已完成重试 · 已确认 ${processedRows}/${updatedLines.size} 行",
+                            )
+                        }
+                        val rowsToLog = finalFallbackUpdates.filter { (index, line) ->
+                            line.text.isNotBlank() && loggedFallbackIndices.add(index)
+                        }
+                        logConfirmedFallbackRows(
+                            entries = rowsToLog,
+                            processedRows = processedRows,
+                        )
+                    }
                     unresolvedIndices = emptyList()
                 }
 
