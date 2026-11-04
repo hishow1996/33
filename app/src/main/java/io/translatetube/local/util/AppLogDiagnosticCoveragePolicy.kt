@@ -63,6 +63,8 @@ internal object AppLogDiagnosticCoveragePolicy {
             "为完整任务记录稳定 operationId；子请求另记 requestId/diagnosticId，并通过协程上下文传递。"),
         EvidenceRule("失败阶段与具体子步骤", { hasStageEvidence(it) },
             "在失败点记录当前处理阶段、具体子步骤，以及失败前最后一个成功步骤。"),
+        EvidenceRule("诊断字段没有因日志容量上限而省略或截断", { hasCompleteContextBudget(it) },
+            "检查日志诊断字段总数、省略数和截断数；如有字段丢失，优先保留阶段、引擎、请求状态、输入输出计数及失败位置。"),
     )
 
     private fun domainRules(domain: String): List<EvidenceRule> = when (domain) {
@@ -188,6 +190,14 @@ internal object AppLogDiagnosticCoveragePolicy {
                 containsFrame(snapshot.cause) || snapshot.suppressed.any(::containsFrame)
         }
         return containsFrame(record.exceptionSnapshot)
+    }
+
+    private fun hasCompleteContextBudget(record: AppLogRecord): Boolean {
+        // Legacy records predate explicit budget metadata and must not be marked incomplete.
+        if (!record.diagnosticContext.containsKey("日志诊断字段总数")) return true
+        val omitted = record.diagnosticContext["日志诊断字段省略数"]?.toIntOrNull() ?: return false
+        val truncated = record.diagnosticContext["日志诊断字段截断数"]?.toIntOrNull() ?: return false
+        return omitted == 0 && truncated == 0
     }
 
     private fun hasOperationCorrelation(record: AppLogRecord): Boolean =
