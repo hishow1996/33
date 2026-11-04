@@ -1261,7 +1261,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                         "续传分片当前大小 bytes" to partial.takeIf { it.isFile }?.length()?.toString().orEmpty().ifBlank { "不存在" },
                                         "目标目录可用空间 bytes" to vad.parentFile?.usableSpace?.toString().orEmpty().ifBlank { "未知" },
                                         "当前完整性状态" to ModelFiles.isValidVadModel(vad).toString(),
-                                        "是否保留已安装转写主模型" to ModelFiles.whisperCoreReady(ctx).toString(),
+                                        "已安装转写主模型核心文件是否可用" to (
+                                            if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) {
+                                                ModelFiles.senseVoiceCoreReady(ctx)
+                                            } else {
+                                                ModelFiles.whisperCoreReady(ctx)
+                                            }
+                                        ).toString(),
                                         "是否继续尝试其他下载源" to "是",
                                     ),
                                 )
@@ -1270,6 +1276,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         }
                     }
                     if (!ModelFiles.isValidVadModel(vad)) {
+                        if (vadLastFailure == null) {
+                            vadLastFailure = java.io.IOException(
+                                "VAD 附属模型下载尝试结束，但文件缺失或 SHA-256 完整性校验未通过",
+                            )
+                        }
                         pkg.delete()
                         ResumableModelArchiveDownloader.cleanupPartialFiles(pkg)
                         state.value = ModelState(
@@ -1293,9 +1304,15 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                 "模型目录可用空间 bytes" to vad.parentFile?.usableSpace?.toString().orEmpty().ifBlank { "未知" },
                                 "最后异常类型" to (vadLastFailure?.javaClass?.name ?: "未保留异常对象"),
                                 "最后异常摘要" to (vadLastFailure?.message ?: "未提供").take(360),
-                                "转写主模型是否仍可用" to ModelFiles.whisperCoreReady(ctx).toString(),
+                                "已安装转写主模型核心文件是否可用" to (
+                                    if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) {
+                                        ModelFiles.senseVoiceCoreReady(ctx)
+                                    } else {
+                                        ModelFiles.whisperCoreReady(ctx)
+                                    }
+                                ).toString(),
                                 "本次清理对象" to "仅清理主模型压缩包及其临时分片，不删除已安装转写模型目录",
-                                "恢复建议" to "保留已安装转写主模型，只重试 VAD 小文件下载与 SHA-256 校验",
+                                "恢复建议" to "只重试 VAD 小文件下载与 SHA-256 校验，不重新下载已安装的转写主模型",
                                 "VAD 阶段耗时 ms" to (android.os.SystemClock.elapsedRealtime() - vadStageStartedAtMs).coerceAtLeast(0L).toString(),
                             ),
                         )
