@@ -23,6 +23,16 @@ internal object DubbingCatchUpQueuePolicy {
         }
     }
 
+    /** Return the queue head only when it is prepared but has no playable dubbing audio. */
+    fun preparedSilentHead(
+        queueHead: Int?,
+        isPrepared: (Int) -> Boolean,
+        isSilent: (Int) -> Boolean,
+    ): Int? {
+        val head = queueHead ?: return null
+        return head.takeIf { isPrepared(it) && isSilent(it) }
+    }
+
     /** Convert media time into the same lead-adjusted domain used by subtitle lineAt(). */
     fun toTimelinePositionMs(mediaPositionMs: Long, offsetMs: Long): Long {
         if (mediaPositionMs < 0L) return mediaPositionMs
