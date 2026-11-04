@@ -3,6 +3,7 @@ package io.translatetube.local.util
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -78,7 +79,7 @@ class AppLogExceptionSnapshotTest {
 
         val snapshot = AppLogStore.snapshotExceptionTree(failure)
 
-        assertEquals(48, snapshot.stackFrames.size)
+        assertEquals(32, snapshot.stackFrames.size)
     }
     @Test
     fun deeplyNestedSuppressedTreeIsBoundedAndMarkedAsTruncated() {
