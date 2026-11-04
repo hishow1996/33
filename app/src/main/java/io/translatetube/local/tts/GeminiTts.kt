@@ -214,18 +214,69 @@ internal class GeminiTts(
             } catch (quota: GeminiTtsQuotaException) {
                 // HTTP 429 is an API quota/rate-limit condition, not a model-specific render error.
                 // Fail fast instead of sending another request to the next candidate model.
+                io.translatetube.local.util.AppLogStore.error(
+                    appCtx,
+                    "GeminiTTS",
+                    "Gemini TTS 请求触发配额或频率限制，已停止模型回退",
+                    quota,
+                    diagnosticContext = mapOf(
+                        "服务商" to "Google Gemini",
+                        "当前候选模型" to model,
+                        "候选模型顺序" to (CANDIDATE_MODELS.indexOf(model) + 1).toString(),
+                        "候选模型总数" to CANDIDATE_MODELS.size.toString(),
+                        "音色" to voiceName,
+                        "目标语速" to speed.toString(),
+                        "当前文本字符数" to text.length.toString(),
+                        "API Key 是否已配置" to resolvedApiKey.isNotBlank().toString(),
+                        "HTTP 状态" to "429",
+                        "是否继续尝试其他模型" to "否",
+                        "停止原因" to "配额/频率限制属于账号或项目级限制，切换候选模型不能解除",
+                    ),
+                )
                 throw quota
             } catch (e: Throwable) {
                 lastError = e
                 val msg = e.message.orEmpty()
                 // Authentication or invalid key errors should fail fast without trying fallback models.
-                if (msg.contains("API_KEY_INVALID", ignoreCase = true) ||
+                val authenticationFailure = msg.contains("API_KEY_INVALID", ignoreCase = true) ||
                     msg.contains("HTTP 401") ||
                     msg.contains("HTTP 403")
-                ) {
-                    break
-                }
+                val hasNextCandidate = CANDIDATE_MODELS.indexOf(model) < CANDIDATE_MODELS.lastIndex
+                val willFallback = !authenticationFailure && hasNextCandidate
+                io.translatetube.local.util.AppLogStore.warning(
+                    appCtx,
+                    "GeminiTTS",
+                    if (willFallback) {
+                        "Gemini TTS 当前候选模型合成失败，准备尝试下一个模型"
+                    } else {
+                        "Gemini TTS 候选模型合成失败，已无可用回退模型或鉴权失败"
+                    },
+                    e,
+                    diagnosticContext = mapOf(
+                        "服务商" to "Google Gemini",
+                        "当前候选模型" to model,
+                        "候选模型顺序" to (CANDIDATE_MODELS.indexOf(model) + 1).toString(),
+                        "候选模型总数" to CANDIDATE_MODELS.size.toString(),
+                        "音色" to voiceName,
+                        "目标语速" to speed.toString(),
+                        "当前文本字符数" to text.length.toString(),
+                        "当前文本是否写入日志" to "否",
+                        "API Key 是否已配置" to resolvedApiKey.isNotBlank().toString(),
+                        "异常类型" to e.javaClass.name,
+                        "异常摘要" to msg.take(320),
+                        "失败分类" to when {
+                            authenticationFailure -> "鉴权/API Key"
+                            msg.contains("timeout", ignoreCase = true) -> "请求超时"
+                            msg.contains("HTTP 5") -> "服务端错误"
+                            msg.contains("response", ignoreCase = true) -> "响应格式/音频数据"
+                            else -> "模型请求或音频处理失败"
+                        },
+                        "是否继续尝试其他模型" to willFallback.toString(),
+                        "不回退原因" to if (authenticationFailure) "鉴权失败，不应使用其他模型重复请求" else "已尝试到最后一个候选模型",
+                    ),
+                )
                 android.util.Log.w(TAG, "Gemini TTS model $model failed: $msg")
+                if (authenticationFailure) break
             }
         }
         throw IllegalStateException(
