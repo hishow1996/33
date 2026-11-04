@@ -74,6 +74,13 @@ internal object SubtitleTranslationQualityPolicy {
             }
         }
         if (lettersOrDigits == 0) return null
+        // Prefer script-specific diagnostics before the generic no-Han fallback.
+        if (kana >= 2 && kana > han) {
+            return "译文日文假名占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+        }
+        if (hangul >= 2 && hangul > han) {
+            return "译文韩文音节占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+        }
         if (han == 0) {
             return "未检测到汉字（汉字=0，日文假名=$kana，韩文音节=$hangul，字母/数字=$lettersOrDigits）"
         }
