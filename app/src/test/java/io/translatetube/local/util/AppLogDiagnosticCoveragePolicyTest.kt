@@ -108,6 +108,27 @@ class AppLogDiagnosticCoveragePolicyTest {
     }
 
     @Test
+    fun callSiteCountsAsCodeLocationButNeverAsProcessingStage() {
+        val record = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "TaskRunner",
+            message = "任务处理失败",
+            details = "",
+            thread = "worker",
+            diagnosticContext = mapOf(
+                "日志调用位置" to "io.translatetube.local.task.TaskRunner.run(TaskRunner.kt:128)",
+                "日志调用位置采集状态" to "已定位到应用内调用帧",
+            ),
+        )
+
+        val coverage = AppLogDiagnosticCoveragePolicy.analyze(record)
+
+        assertTrue(coverage.missingEvidence.contains("失败阶段与具体子步骤"))
+        assertTrue(coverage.missingEvidence.none { it == "异常堆栈或日志调用位置" })
+    }
+
+    @Test
     fun infoEventsAreNotScoredAsFailures() {
         val record = AppLogRecord(
             timestampMs = 1_800_000_000_000L,
