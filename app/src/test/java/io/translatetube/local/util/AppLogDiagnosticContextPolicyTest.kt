@@ -24,6 +24,45 @@ class AppLogDiagnosticContextPolicyTest {
     }
 
     @Test
+    fun stageSpecificFailureEvidenceCanBePrioritizedTogether() {
+        val important = linkedMapOf(
+            "当前处理阶段" to "TRANSCRIBING",
+            "操作关联 ID" to "pipeline-123",
+            "当前处理子步骤" to "16 kHz PCM 已准备",
+            "失败子阶段" to "云端响应解析",
+            "转写服务商 ID" to "elevenlabs",
+            "云端模型 ID" to "scribe_v2",
+            "PCM 音频文件字节数" to "6400000",
+            "PCM 音频时长 ms" to "200000",
+            "PCM 采样率 Hz" to "16000",
+            "VAD 最终分段总数" to "24",
+            "云端请求阶段" to "上传 WAV 并提交任务",
+            "最近转写进度" to "已收到服务端响应，正在整理词级时间戳",
+            "当前批次" to "2/5",
+            "本次请求耗时 ms" to "18450",
+            "字幕行号" to "17",
+            "当前视频位置 ms" to "125000",
+            "待合成队列总长度" to "8",
+            "PCM 内存缓存条目数" to "12",
+            "配音引擎 ID" to "edge",
+        )
+        val input = linkedMapOf<String, String>()
+        repeat(90) { input["optional-$it"] = "value-$it" }
+        input.putAll(important)
+
+        val result = AppLogDiagnosticContextPolicy.bound(
+            input = input,
+            priorityKeys = important.keys,
+        )
+
+        important.forEach { (key, value) ->
+            assertEquals(value, result.fields[key])
+        }
+        assertTrue(result.fields.size <= AppLogDiagnosticContextPolicy.MAX_FIELDS)
+        assertTrue(result.omittedFieldCount > 0)
+    }
+
+    @Test
     fun overlongValuesAreTruncatedWithAnExplicitMarkerAndCount() {
         val result = AppLogDiagnosticContextPolicy.bound(
             input = mapOf("响应摘要" to "x".repeat(3_000)),
