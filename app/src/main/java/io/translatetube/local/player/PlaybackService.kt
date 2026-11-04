@@ -6895,6 +6895,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                     // JSONObject.NULL.toString() can become the literal "null";
                                     // treat absent/null translations as missing so they are retried.
                                     translatedText = row.optString("zh", "").takeIf { it.isNotBlank() },
+                                    originalAudioFallback = row.optBoolean("oa", false),
                                 )
                             }
                             SubtitleCacheValidationPolicy.restoreTranslationsForSource(
@@ -6962,6 +6963,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
+                            .put("oa", line.translationFallbackOriginalAudio)
                             .put("sp", line.speakerId)
                     )
                     ensureCurrentSession(sessionKey, pipelineGeneration)
@@ -7078,6 +7080,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         .put("e", line.endMs)
                         .put("t", line.text)
                         .put("zh", line.zh ?: "")
+                            .put("oa", line.translationFallbackOriginalAudio)
                         .put("sp", line.speakerId)
                 )
                 ensureCurrentSession(sessionKey, pipelineGeneration)
@@ -7295,7 +7298,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
      * This repairs older caches where source text was mistakenly saved to the Chinese field.
      */
     private fun needsSubtitleTranslation(line: SubLine, srcLang: String): Boolean {
-        if (line.text.isBlank()) return false
+        if (line.text.isBlank() || line.translationFallbackOriginalAudio) return false
         val translated = SubtitleParsers.cleanTranslatedText(line.zh)
         if (translated.isNullOrBlank()) return true
         if (isChineseLanguage(srcLang)) return false
@@ -7310,6 +7313,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             false
         } else {
             val translations = ArrayList<String?>(rows.length())
+            val originalAudioFallbackRows = ArrayList<Boolean>(rows.length())
             val timelineRows = ArrayList<Triple<Long, Long, String>>(rows.length())
             for (i in 0 until rows.length()) {
                 val row = rows.optJSONObject(i)
@@ -7320,13 +7324,17 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 timelineRows += Triple(startMs, endMs, originalText)
 
                 translations += row.optString("zh", "")
+                originalAudioFallbackRows += row.optBoolean("oa", false)
             }
             if (!SubtitleCacheValidationPolicy.hasValidTimeline(timelineRows)) {
                 throw IllegalArgumentException("字幕缓存时间轴无效或未按开始时间排序")
             }
             // Keep any valid completed rows; restore logic cleans placeholder rows to null and
             // translates only those missing cues on retry.
-            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(translations)
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(
+                translations,
+                originalAudioFallbackRows,
+            )
         }
     } catch (e: Exception) {
         android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON or timeline", e)
@@ -9575,6 +9583,7 @@ updateUiForSession(key, pipelineGeneration) {
                         restored += SubLine(
                             i, o.getLong("s"), o.getLong("e"),
                             originalText, cachedTranslation, o.optInt("sp", -1),
+                            o.optBoolean("oa", false),
                         )
                     }
                     // A legacy cache can have a blank source-language field. Preserve a trusted
@@ -9709,6 +9718,7 @@ updateUiForSession(key, pipelineGeneration) {
                                         .put("e", line.endMs)
                                         .put("t", line.text)
                                         .put("zh", line.zh ?: "")
+                            .put("oa", line.translationFallbackOriginalAudio)
                                 )
                             }
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -10812,13 +10822,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
 
-                // Judge fallback eligibility using this batch only. Earlier successful batches
-                // must not turn a completely failed current batch into an apparent partial success.
-                val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() }
+                // Judge a tiny unresolved tail against the complete transcript. Valid cached rows
+                // count too, so one missing cue among hundreds does not abort the playback pipeline.
+                val hasUsableTranslation =
+                    resolvedBatch.values.any { it.isNotBlank() } ||
+                        updatedLines.any { line ->
+                            !line.translationFallbackOriginalAudio &&
+                                !needsSubtitleTranslation(line, src)
+                        }
                 if (
                     TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
                         unresolvedCount = unresolvedIndices.size,
                         batchSize = batchIndices.size,
+                        totalSubtitleRows = lines.size,
                         hasUsableTranslation = hasUsableTranslation,
                         sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
                         isLocalTranslationEngine = EngineFactory.isLocalTranslationEngine(activeId),
@@ -10848,7 +10864,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 for ((rowIndex, line) in updatedLines.withIndex()) {
                     checkTranslationActive(rowIndex)
                     nextRows += resolvedBatch[rowIndex]?.let { translation ->
-                        line.copy(zh = translation)
+                        line.copy(
+                            zh = translation.takeIf { it.isNotBlank() },
+                            translationFallbackOriginalAudio = translation.isBlank(),
+                        )
                     } ?: line
                 }
                 translationJob?.ensureActive()
@@ -10930,6 +10949,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
+                            .put("oa", line.translationFallbackOriginalAudio)
                             .put("sp", line.speakerId)
                     )
                 }
@@ -14206,7 +14226,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val arr = org.json.JSONArray()
                 for (line in updated) arr.put(
                     org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
-                        .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
+                        .put("t", line.text).put("zh", line.zh ?: "")
+                            .put("oa", line.translationFallbackOriginalAudio).put("sp", line.speakerId)
                 )
                 ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
@@ -14564,6 +14585,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             .put("e", line.endMs)
                             .put("t", line.text)
                             .put("zh", line.zh ?: "")
+                            .put("oa", line.translationFallbackOriginalAudio)
                             .put("sp", line.speakerId)
                     )
                 }

@@ -187,7 +187,7 @@ internal object ReadySessionSnapshotStore {
             !fingerprintPattern.matches(fingerprint) ||
             state.lines.isEmpty() ||
             state.lines.size > MAX_SNAPSHOT_LINES ||
-            state.lines.any { it.zh.isNullOrBlank() } ||
+            state.lines.any { it.zh.isNullOrBlank() && !it.translationFallbackOriginalAudio } ||
             state.phase != Phase.READY ||
             !state.dubbingOn ||
             state.dubbingHasErrors ||
@@ -304,7 +304,8 @@ internal object ReadySessionSnapshotStore {
                     .put("e", line.endMs)
                     .put("t", line.text)
                     .put("zh", line.zh ?: JSONObject.NULL)
-                    .put("sp", line.speakerId),
+                    .put("sp", line.speakerId)
+                    .put("oa", line.translationFallbackOriginalAudio),
             )
         }
         val qualityOptions = JSONArray()
@@ -356,7 +357,10 @@ internal object ReadySessionSnapshotStore {
                 val rawTranslation = row.opt("zh")
                 val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) null
                     else rawTranslation.toString().takeIf { it.isNotBlank() }
-                lines += SubLine(index, startMs, endMs, text, translation, row.optInt("sp", -1))
+                lines += SubLine(
+                    index, startMs, endMs, text, translation, row.optInt("sp", -1),
+                    row.optBoolean("oa", false),
+                )
             }
 
             val qualities = obj.optJSONArray("qualityOptions") ?: JSONArray()
