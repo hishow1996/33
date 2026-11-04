@@ -18,8 +18,13 @@ object AppLogDiagnostics {
     fun analyze(record: AppLogRecord): AppLogDiagnosis {
         val currentDetails = focusedDetails(record.details)
         val raw = buildString {
+            append(record.category).append('\n')
             append(record.tag).append('\n')
             append(record.message).append('\n')
+            append(record.errorClass).append('\n')
+            if (record.httpStatusCode in 100..599) {
+                append("HTTP 状态码：").append(record.httpStatusCode).append('\n')
+            }
             append(currentDetails)
         }
         val text = raw.lowercase(Locale.ROOT)

@@ -193,12 +193,36 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     onDismissRequest = { showActionsMenu = false },
                 ) {
                     DropdownMenuItem(
-                        text = { Text(if (exporting) "正在导出…" else "导出日志") },
+                        text = { Text(if (exporting) "正在导出…" else "导出 AI 诊断报告") },
                         leadingIcon = { Icon(Icons.Filled.FileDownload, contentDescription = null) },
                         enabled = !exporting,
                         onClick = {
                             showActionsMenu = false
-                            exportLauncher.launch("elephant-translate-logs.txt")
+                            exportLauncher.launch("elephant-translate-ai-diagnostics.txt")
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (exporting) "正在整理…" else "复制 AI 修复报告") },
+                        leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                        enabled = !exporting,
+                        onClick = {
+                            showActionsMenu = false
+                            scope.launch {
+                                exporting = true
+                                val result = withContext(Dispatchers.IO) {
+                                    runCatching { AppLogStore.exportText(ctx.applicationContext) }
+                                }
+                                result.onSuccess { report ->
+                                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        android.content.ClipData.newPlainText("AI 修复诊断报告", report),
+                                    )
+                                    message = "AI 修复报告已复制"
+                                }.onFailure { failure ->
+                                    message = "报告生成失败：${failure.message ?: "未知错误"}"
+                                }
+                                exporting = false
+                            }
                         },
                     )
                     DropdownMenuItem(

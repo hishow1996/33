@@ -5,6 +5,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import org.json.JSONObject
 import java.io.File
 import java.io.PrintWriter
@@ -12,6 +13,7 @@ import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /** Local-only diagnostic history. The log is bounded and never uploaded automatically. */
 data class AppLogRecord(
@@ -27,6 +29,25 @@ data class AppLogRecord(
     val resolvesIssueKey: String = "",
     /** Derived on read; the historical error row itself is never overwritten. */
     val recoveredAtMs: Long? = null,
+    /** Stable identifier for this individual event; blank only for legacy records. */
+    val eventId: String = "",
+    /** Process-session identifier used to correlate events across app modules. */
+    val sessionId: String = "",
+    /** Monotonic event order within the current process session. */
+    val sequence: Long = 0L,
+    /** Normalized feature/module label for AI triage. */
+    val category: String = "",
+    /** Operation/request correlation identifier when available. */
+    val operationId: String = "",
+    /** Root exception type extracted from the persisted exception chain. */
+    val errorClass: String = "",
+    /** HTTP status extracted from structured context or the error summary; zero means unknown. */
+    val httpStatusCode: Int = 0,
+    val processId: Int = 0,
+    val threadId: Long = 0L,
+    /** Monotonic clock value, only comparable within one process. */
+    val elapsedRealtimeMs: Long = 0L,
+    val schemaVersion: Int = 1,
 )
 
 data class AppLogWriterHealth(
@@ -52,12 +73,15 @@ object AppLogStore {
     private const val SESSION_PREFS = "app_log_process_session"
     private const val KEY_SESSION_START_MS = "session_start_ms"
     private const val KEY_SESSION_PID = "session_pid"
+    private const val KEY_SESSION_ID = "session_id"
     private const val KEY_LAST_EXIT_TIMESTAMP = "last_system_exit_timestamp"
     private const val KEY_LAST_UNKNOWN_SESSION_START = "last_unknown_session_start"
     private val lock = Any()
     private val recentEvents = java.util.ArrayDeque<String>()
     private const val MAX_RECENT_EVENTS = 24
     private val failedWriteCount = java.util.concurrent.atomic.AtomicLong(0L)
+    private val eventSequence = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile private var currentSessionId: String = ""
     @Volatile private var lastWriteFailureTimestampMs: Long = 0L
     @Volatile private var lastWriteFailureDescription: String = ""
     @Volatile private var lastWriteSuccessTimestampMs: Long = 0L
@@ -163,6 +187,9 @@ object AppLogStore {
         val now = System.currentTimeMillis()
         val previousStart = prefs.getLong(KEY_SESSION_START_MS, 0L)
         val previousPid = prefs.getInt(KEY_SESSION_PID, 0)
+        val previousSessionId = prefs.getString(KEY_SESSION_ID, "").orEmpty()
+        // Attribute a system exit report to the process session that just ended.
+        currentSessionId = previousSessionId.ifBlank { "legacy-unknown" }
         var capturedExit = false
 
         if (previousStart > 0L && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -199,9 +226,13 @@ object AppLogStore {
 
         // Synchronous commit is intentional: if the process dies immediately after startup, the
         // next launch should still have a reliable reference timestamp for system exit reports.
+        val newSessionId = UUID.randomUUID().toString()
+        currentSessionId = newSessionId
+        eventSequence.set(0L)
         prefs.edit()
             .putLong(KEY_SESSION_START_MS, now)
             .putInt(KEY_SESSION_PID, Process.myPid())
+            .putString(KEY_SESSION_ID, newSessionId)
             .commit()
 
         info(
@@ -214,6 +245,8 @@ object AppLogStore {
                 "Android 版本" to Build.VERSION.RELEASE.orEmpty(),
                 "SDK 版本" to Build.VERSION.SDK_INT.toString(),
                 "会话启动时间" to formatTime(now),
+                "上次会话 ID" to previousSessionId.ifBlank { "旧版日志未记录" },
+                "本次会话 ID" to newSessionId,
             ),
         )
     }
@@ -402,8 +435,15 @@ object AppLogStore {
 
         // Deduplicate only byte-for-byte equivalent events while retaining repeated failures at
         // different times or with different diagnostics.
-        val unique = parsed.distinctBy {
-            listOf(it.timestampMs, it.level, it.tag, it.message, it.details, it.thread, it.issueKey, it.resolvesIssueKey)
+        val unique = parsed.distinctBy { record ->
+            if (record.eventId.isNotBlank()) {
+                "event:" + record.eventId
+            } else {
+                listOf(
+                    record.timestampMs, record.level, record.tag, record.message,
+                    record.details, record.thread, record.issueKey, record.resolvesIssueKey,
+                ).joinToString("\u001f")
+            }
         }
         val recoveryTimesByIssue = unique.asSequence()
             .filter { it.resolvesIssueKey.isNotBlank() }
@@ -416,8 +456,10 @@ object AppLogStore {
                 recoveryTimesByIssue[record.issueKey]?.firstOrNull { it > record.timestampMs }
             } else null
             record.copy(recoveredAtMs = recoveredAt)
-        }.sortedByDescending { it.timestampMs }
-            .take(limit.coerceIn(1, MAX_READ_RECORDS))
+        }.sortedWith(
+            compareByDescending<AppLogRecord> { it.timestampMs }
+                .thenByDescending { it.sequence },
+        ).take(limit.coerceIn(1, MAX_READ_RECORDS))
     }
 
     /** Stable, one-way key: raw URLs/session IDs never appear in the log as the identity. */
@@ -511,30 +553,31 @@ object AppLogStore {
     }
 
     fun exportText(context: Context): String {
-        val date = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
-        val records = readRecent(context, MAX_READ_RECORDS).sortedBy { it.timestampMs }
-        return buildString {
-            append("大象翻译诊断日志\n")
-            append("导出时间：").append(date).append('\n')
-            append("应用版本：").append(runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知")).append('\n')
-            append("设备：").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
-            append("Android：").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n")
-            append("日志仅从本地导出；导出前仍建议检查是否包含个人信息。\n")
-            append("=".repeat(56)).append('\n')
-            records.forEach { record ->
-                append(formatTime(record.timestampMs)).append(" [").append(record.level).append("] ")
-                    .append(AppLogTitleResolver.title(record.tag, record.message))
-                    .append(" [模块：").append(record.tag).append("]").append('\n')
-                if (record.issueKey.isNotBlank() && isIssueLevel(record.level)) {
-                    append("故障状态：")
-                        .append(record.recoveredAtMs?.let { "已恢复（${formatTime(it)}）" } ?: "尚无恢复成功记录")
-                        .append('\n')
-                }
-                if (record.thread.isNotBlank()) append("线程：").append(record.thread).append('\n')
-                if (record.details.isNotBlank()) append(record.details.trimEnd()).append('\n')
-                append("-".repeat(56)).append('\n')
+        val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        return AppLogAiReport.render(
+            records = readRecent(context, MAX_READ_RECORDS),
+            exportedAt = exportedAt,
+            appVersion = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"),
+            device = Build.MANUFACTURER + " " + Build.MODEL,
+            androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+            writerHealth = writerHealth(),
+        )
+    }
+
+    /** Apply the same credential scrubber to legacy and current records before sharing. */
+    fun redactForExport(value: String): String = redact(value)
+
+    private fun activeSessionId(context: Context): String {
+        currentSessionId.takeIf { it.isNotBlank() }?.let { return it }
+        return synchronized(lock) {
+            currentSessionId.ifBlank {
+                val prefs = context.applicationContext.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
+                val stored = prefs.getString(KEY_SESSION_ID, "").orEmpty()
+                val resolved = stored.ifBlank { UUID.randomUUID().toString() }
+                currentSessionId = resolved
+                if (stored.isBlank()) prefs.edit().putString(KEY_SESSION_ID, resolved).apply()
+                resolved
             }
-            if (records.isEmpty()) append("暂时没有运行日志。\n")
         }
     }
 
@@ -599,16 +642,40 @@ object AppLogStore {
                 val trail = if (shouldIncludeTrail && recentEvents.isNotEmpty()) {
                     recentEvents.joinToString(separator = "\n")
                 } else ""
-                val safeDetails = redact(
-                    enrichDetails(context, level, tag, details, threadName, diagnosticContext, trail),
-                ).take(MAX_DETAIL_CHARS)
+                val safeDetails = truncatePreservingEdges(
+                    redact(enrichDetails(context, level, tag, details, threadName, diagnosticContext, trail)),
+                    MAX_DETAIL_CHARS,
+                )
                 val effectiveIssueKey = issueKey?.takeIf { it.isNotBlank() }
                     ?: if (isIssueLevel(level)) stableIssueKey(tag, message) else ""
+                val currentThread = Thread.currentThread()
+                val eventId = UUID.randomUUID().toString()
+                val sequence = eventSequence.incrementAndGet()
+                val sessionId = activeSessionId(context)
+                val safeMessage = redact(message).take(1_000)
+                val safeTag = redact(tag).take(80)
+                val category = runCatching {
+                    AppLogTitleResolver.featureLabel(safeTag, safeMessage)
+                }.getOrDefault("未分类日志")
+                val errorClass = extractExceptionClass(safeMessage, safeDetails)
+                val operationId = extractOperationId(diagnosticContext, safeDetails)
+                val httpStatusCode = extractHttpStatusCode(safeMessage, safeDetails)
                 val row = JSONObject()
+                    .put("schemaVersion", 2)
+                    .put("eventId", eventId)
+                    .put("sessionId", sessionId)
+                    .put("sequence", sequence)
+                    .put("elapsedRealtimeMs", SystemClock.elapsedRealtime())
+                    .put("processId", Process.myPid())
+                    .put("threadId", currentThread.id)
                     .put("timestampMs", timestampMs)
                     .put("level", redact(level).take(12))
-                    .put("tag", redact(tag).take(80))
-                    .put("message", redact(message).take(1_000))
+                    .put("category", redact(category).take(80))
+                    .put("tag", safeTag)
+                    .put("message", safeMessage)
+                    .put("operationId", redact(operationId).take(120))
+                    .put("errorClass", redact(errorClass).take(240))
+                    .put("httpStatusCode", httpStatusCode)
                     .put("details", safeDetails)
                     .put("thread", redact(threadName).take(120))
                     .put("issueKey", effectiveIssueKey.take(100))
@@ -620,9 +687,9 @@ object AppLogStore {
                 File(directory, LOG_NAME).appendText(row + "\n", Charsets.UTF_8)
                 lastWriteSuccessTimestampMs = System.currentTimeMillis()
                 lastLogOperationSucceeded = true
-                val crumb = "${formatTime(timestampMs)} [${redact(level)}] ${redact(tag)} · ${redact(message)}"
+                val crumb = "${formatTime(timestampMs)} [${redact(level)}] event=${eventId.take(8)} seq=$sequence category=$category $safeTag · $safeMessage"
                     .replace(Regex("\\s+"), " ")
-                    .take(600)
+                    .take(720)
                 recentEvents.addLast(crumb)
                 while (recentEvents.size > MAX_RECENT_EVENTS) recentEvents.removeFirst()
             } catch (failure: Throwable) {
@@ -811,17 +878,35 @@ object AppLogStore {
         val level = json.optString("level", "INFO")
         val tag = json.optString("tag", "App")
         val message = json.optString("message", "")
+        val details = json.optString("details", "")
         AppLogRecord(
             timestampMs = json.optLong("timestampMs", 0L),
             level = level,
             tag = tag,
             message = message,
-            details = json.optString("details", ""),
+            details = details,
             thread = json.optString("thread", ""),
             issueKey = json.optString("issueKey", "").ifBlank {
                 if (isIssueLevel(level)) stableIssueKey(tag, message) else ""
             },
             resolvesIssueKey = json.optString("resolvesIssueKey", ""),
+            eventId = json.optString("eventId", ""),
+            sessionId = json.optString("sessionId", ""),
+            sequence = json.optLong("sequence", 0L),
+            category = json.optString("category", "").ifBlank {
+                AppLogTitleResolver.featureLabel(tag, message)
+            },
+            operationId = json.optString("operationId", "").ifBlank {
+                extractOperationId(emptyMap(), details)
+            },
+            errorClass = json.optString("errorClass", "").ifBlank {
+                extractExceptionClass(message, details)
+            },
+            httpStatusCode = json.optInt("httpStatusCode", extractHttpStatusCode(message, details)),
+            processId = json.optInt("processId", 0),
+            threadId = json.optLong("threadId", 0L),
+            elapsedRealtimeMs = json.optLong("elapsedRealtimeMs", 0L),
+            schemaVersion = json.optInt("schemaVersion", 1),
         ).takeIf { it.timestampMs > 0L && (it.message.isNotBlank() || it.details.isNotBlank()) }
     }.getOrNull()
 
@@ -921,6 +1006,50 @@ object AppLogStore {
                 PrintWriter(writer).use { failure.printStackTrace(it) }
             }.toString())
         }
+    }
+
+    private fun extractExceptionClass(message: String, details: String): String {
+        val source = details + "\n" + message
+        val rootFrame = Regex("""(?m)^\\s*#0\\s+([A-Za-z0-9_.$]+)""").find(source)
+            ?.groupValues?.getOrNull(1)
+        val namedException = Regex(
+            """(?<![A-Za-z0-9_.$])([A-Za-z0-9_.$]*(?:Exception|Error|Throwable))(?![A-Za-z0-9_.$])""",
+        ).find(source)?.groupValues?.getOrNull(1)
+        return (rootFrame ?: namedException).orEmpty().take(240)
+    }
+
+    private fun extractOperationId(
+        diagnosticContext: Map<String, String>,
+        details: String,
+    ): String {
+        val keyPattern = Regex(
+            """(?i)(diagnostic|operation|correlation|trace|request).*id|翻译诊断\\s*id|操作\\s*id|请求\\s*id""",
+        )
+        val contextValue = diagnosticContext.entries.firstOrNull {
+            keyPattern.containsMatchIn(it.key)
+        }?.value?.takeIf { it.isNotBlank() }
+        val detailValue = Regex(
+            """(?i)(?:翻译诊断\\s*ID|诊断\\s*ID|operation[_ ]?id|correlation[_ ]?id|trace[_ ]?id|request[_ ]?id|请求\\s*ID)\\s*[:=：]\\s*([A-Za-z0-9_.:-]{6,120})""",
+        ).find(details)?.groupValues?.getOrNull(1)
+        return (contextValue ?: detailValue).orEmpty().take(120)
+    }
+
+    private fun extractHttpStatusCode(message: String, details: String): Int {
+        val source = message + "\n" + details
+        return Regex("""(?i)\\bHTTP(?:\\s*状态码)?\\s*[:：=]?\\s*(\\d{3})\\b""")
+            .find(source)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?.takeIf { it in 100..599 } ?: 0
+    }
+
+    /** Retain both the beginning and the end so the root cause/final frames are not lost. */
+    private fun truncatePreservingEdges(value: String, maxChars: Int): String {
+        if (value.length <= maxChars) return value
+        val limit = maxChars.coerceAtLeast(256)
+        val marker = "\n…[中间内容过长，已截断；保留开头和末尾，供 AI 查看异常根因及最终调用帧]…\n"
+        val remaining = (limit - marker.length).coerceAtLeast(2)
+        val head = (remaining * 0.68).toInt()
+        val tail = remaining - head
+        return value.take(head) + marker + value.takeLast(tail)
     }
 
     /** Redact common credentials, authorization headers, URL user-info and signed query parameters. */
