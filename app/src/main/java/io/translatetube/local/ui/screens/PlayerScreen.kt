@@ -7137,6 +7137,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         captionHeightPx,
                         verticalSafePx,
                     ) {
+                        // Wait for the first real measurement; the provisional lane constraints
+                        // are intentionally larger than most captions and must not move the saved
+                        // position before the actual caption bounds are known.
+                        if (fullscreenCaptionSize == IntSize.Zero) return@LaunchedEffect
                         val halfWidthFraction = (
                             captionWidthPx / (2f * containerWidthPx)
                         ).coerceIn(0f, 0.5f)
