@@ -11,7 +11,13 @@ import java.util.Locale
  * Distinctive Japanese/Korean scripts are handled first; ML Kit helps distinguish other languages.
  */
 object MlKitSourceLanguageIdentifier {
-    suspend fun detect(cues: Iterable<String>, maxCues: Int = 120): String {
+    private const val DEFAULT_CONFIDENCE_THRESHOLD = 0.55f
+
+    suspend fun detect(
+        cues: Iterable<String>,
+        maxCues: Int = 120,
+        confidenceThreshold: Float = DEFAULT_CONFIDENCE_THRESHOLD,
+    ): String {
         if (maxCues <= 0) return "auto"
         val sample = StringBuilder()
         var cueCount = 0
@@ -39,7 +45,7 @@ object MlKitSourceLanguageIdentifier {
 
         val identifier = LanguageIdentification.getClient(
             LanguageIdentificationOptions.Builder()
-                .setConfidenceThreshold(0.55f)
+                .setConfidenceThreshold(confidenceThreshold.coerceIn(0f, 1f))
                 .build(),
         )
         return try {
