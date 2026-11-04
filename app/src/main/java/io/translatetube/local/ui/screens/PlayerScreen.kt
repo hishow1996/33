@@ -2718,7 +2718,7 @@ private fun VideoParsingPage(
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontSize = if (isCompactTranslationSummary) 9.sp else 11.sp,
                                 lineHeight = if (isCompactTranslationSummary) 13.sp else 16.sp,
-                                fontFeatureSettings = if (isCompactTranslationSummary) "tnum" else "",
+                                fontFeatureSettings = if (isCompactTranslationSummary) "tnum" else null,
                             ),
                             maxLines = if (isCompactTranslationSummary) 1 else 2,
                             softWrap = !isCompactTranslationSummary,
