@@ -50,6 +50,8 @@ internal object SubtitleTranslationQualityPolicy {
         val source = sourceText.trim()
         val translated = translatedText.trim()
         if (source.length > 40 || translated.length > 48) return false
+        // Title casing alone must not turn common expressions such as "Good Morning" into names.
+        if (normalize(source) in commonShortPhrases) return false
         val sourceTokens = shortLatinTokens(source) ?: return false
         val translatedTokens = shortLatinTokens(translated) ?: return false
         if (sourceTokens.size != translatedTokens.size) return false
@@ -61,20 +63,26 @@ internal object SubtitleTranslationQualityPolicy {
         }
     }
 
-    /** 1~3 个拉丁词；只允许姓名标点及行尾标点，数字和其他文字系统不放行。 */
+    /** 1~3 个拉丁词；允许字幕包裹符号与行尾标点，但不放行数字和其他文字系统。 */
     private fun shortLatinTokens(value: String): List<String>? {
-        val rawTokens = value.trim().trim('"', '\'', '“', '”', '‘', '’')
-            .split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val rawTokens = value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (rawTokens.isEmpty() || rawTokens.size > 3) return null
-        return rawTokens.map { token ->
+        return rawTokens.map { rawToken ->
+            // Subtitle speaker labels/names are often wrapped as "(John):", "[Sarah]" or "“John”".
+            // Remove only boundary punctuation; keep apostrophes, hyphens and periods inside names.
+            val token = rawToken.trim { it in shortTokenBoundaryPunctuation }
+            if (token.isEmpty()) return null
             val letters = token.filter { it.isLetter() }
-            val dottedInitial = letters.length == 1 && token.trim().endsWith(".") && letters.first().isUpperCase()
+            val dottedInitial = letters.length == 1 && token.endsWith(".") && letters.first().isUpperCase()
             if (letters.length < 2 && !dottedInitial) return null
-            if (token.any { it.isDigit() || (!it.isLetter() && it !in ".'’-,!?") }) return null
+            if (token.any { it.isDigit() || (!it.isLetter() && it !in shortTokenInnerPunctuation) }) return null
             if (letters.any { Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN }) return null
             letters.lowercase(Locale.ROOT)
         }
     }
+
+    private const val shortTokenBoundaryPunctuation = "\"“”‘’()[]{}【】「」『』〈〉《》:;!?，。！？：；、,–—"
+    private const val shortTokenInnerPunctuation = ".'’-"
 
     private fun hasTitleCasedWords(value: String): Boolean =
         value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { token ->
@@ -147,6 +155,15 @@ internal object SubtitleTranslationQualityPolicy {
         "later", "listen", "look", "maybe", "never", "no", "now", "please", "really",
         "right", "sorry", "stop", "thanks", "thank", "there", "wait", "welcome", "what",
         "when", "where", "who", "why", "yes",
+    )
+
+    // Common expressions remain translatable even when every word is title-cased or uppercase.
+    // Values use normalize()'s punctuation-free representation.
+    private val commonShortPhrases = setOf(
+        "goodmorning", "goodafternoon", "goodevening", "goodnight",
+        "thankyou", "thanksalot", "howareyou", "nicetomeetyou",
+        "seeyou", "takecare", "welldone", "comeon", "letsgo",
+        "goodluck", "happbirthday", "haveaniceday", "whatsup",
     )
 
     /** 原文里没有任何可朗读内容（只有 ♪、…、- 之类的符号）：不需要翻译，也不会有配音。 */
@@ -345,6 +362,8 @@ internal object SubtitleTranslationQualityPolicy {
         // Compatibility forms (for example full-width Latin letters/digits) must reach the
         // NFKC-based source-echo comparison instead of being mistaken for unchanged acronyms.
         if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
+        // A capitalized greeting is still a sentence/phrase, not a proper name or product term.
+        if (normalize(value) in commonShortPhrases) return false
         val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (tokens.isEmpty() || tokens.size > 3) return false
         // 带感叹/问号/分号的是句子，不是词条。
