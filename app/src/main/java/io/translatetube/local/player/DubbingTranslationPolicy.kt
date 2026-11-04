@@ -5,13 +5,7 @@ import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.translate.SubtitleTranslationQualityPolicy
 
-internal data class DubbingTranslationPreparation(
-    val lines: List<SubLine>,
-    val originalAudioFallbackIndices: List<Int>,
-    val fallbackReasons: Map<Int, String>,
-)
-
-/** Translation result plus the specific reason that prevents it from becoming spoken audio. */
+/** Result of checking whether a subtitle can become Chinese speech. */
 internal data class DubbingTranslationResolution(
     val text: String?,
     val reason: String? = null,
@@ -53,7 +47,7 @@ internal object DubbingTranslationPolicy {
             )
         }
         if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {
-            return DubbingTranslationResolution(null, "译文与原文相同，命中原文回显过滤规则")
+            return DubbingTranslationResolution(null, "译文与原文相同，未生成中文译文")
         }
         if (SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 sourceText, cleaned, detectedSource, "zh",
@@ -65,49 +59,25 @@ internal object DubbingTranslationPolicy {
     }
 
     /**
-     * Reconcile translation quality with the actual dubbing preflight before persisting READY state.
-     * A cue that cannot become Chinese speech is explicitly marked for original-audio fallback;
-     * genuinely missing rows are still handled by the translation retry stage before reaching here.
+     * Require every nonblank source cue to have usable Chinese speech.
+     * Missing or invalid translations fail processing instead of switching that cue to source audio.
      */
     fun prepareLinesForDubbing(
         lines: List<SubLine>,
         sourceLanguage: String = "auto",
-    ): DubbingTranslationPreparation {
-        val fallbackIndices = ArrayList<Int>()
-        val fallbackReasons = linkedMapOf<Int, String>()
-        val prepared = lines.mapIndexed { index, line ->
+    ): List<SubLine> =
+        lines.mapIndexed { index, line ->
             if (line.text.isBlank()) return@mapIndexed line
-            if (line.translationFallbackOriginalAudio) {
-                fallbackIndices += index
-                fallbackReasons[index] = line.translationFallbackReason
-                    ?: "已由翻译阶段明确采用原声兜底（旧缓存未保存具体失败原因）"
-                return@mapIndexed line.copy(zh = null)
-            }
-
             val resolution = resolveText(line.text, line.zh, sourceLanguage)
             val speakable = resolution.text?.takeIf {
                 io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(it)
             }
             if (speakable.isNullOrBlank()) {
-                fallbackIndices += index
-                val reason = resolution.reason
-                    ?: "译文只有标点、符号或表情，没有可朗读内容"
-                fallbackReasons[index] = reason
-                line.copy(
-                    zh = null,
-                    translationFallbackOriginalAudio = true,
-                    translationFallbackReason = reason,
-                )
-            } else {
-                line.copy(zh = speakable, translationFallbackReason = null)
+                val reason = resolution.reason ?: "译文只有标点、符号或表情，没有可朗读内容"
+                throw IllegalStateException("第 ${index + 1} 行字幕无法生成中文配音：$reason")
             }
+            line.copy(zh = speakable)
         }
-        return DubbingTranslationPreparation(
-            lines = prepared,
-            originalAudioFallbackIndices = fallbackIndices,
-            fallbackReasons = fallbackReasons,
-        )
-    }
 
     fun usableText(
         sourceText: String,
