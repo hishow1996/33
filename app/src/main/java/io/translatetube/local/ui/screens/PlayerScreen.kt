@@ -3934,20 +3934,6 @@ private fun StageProgressVisual(
     val translationHelixGeometry = remember(translationHelixTemplate) {
         translationHelixTemplate?.let { TranslationHelixGeometry() }
     }
-    // The helix shape is static now (the turn is a layer transform), so its paths, crossings
-    // and rungs are built once per measured size instead of on every animation frame.
-    remember(translationHelixTemplate, translationHelixGeometry) {
-        val template = translationHelixTemplate
-        val geometry = translationHelixGeometry
-        if (template != null && geometry != null) {
-            buildTranslationHelixGeometry(
-                template = template,
-                rotationPhase = 0f,
-                geometry = geometry,
-            )
-        }
-        Unit
-    }
     val transition = rememberInfiniteTransition(label = "stageProgressMotion")
     val pulse by transition.animateFloat(
         initialValue = if (isAnimating) 0.45f else 1f,
@@ -4028,13 +4014,35 @@ private fun StageProgressVisual(
         }
     }
 
-    // The translation graphic stays in place (left/right ends fixed, helix shape fixed) and the
-    // WHOLE bar turns 360 degrees around its horizontal centre axis (graphicsLayer.rotationX in
-    // the Canvas modifier below). Nothing in it travels forward; the angle is stored in radians.
+    // Rotate the double helix around its horizontal longitudinal axis by advancing
+    // the helix phase. The projected wave height stays constant throughout a full turn.
     val translationAnimationActive = stageIndex == 3 && isAnimating &&
         !isPaused && !isFailed && !isCompleted && !isSkipped
     val translationWholeRotation = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
+    }
+    // Keep the original travelling highlight while the complete graphic rotates.
+    // The highlighted head repeatedly travels only within the measured progress range.
+    val translationFlowActive = translationAnimationActive && !isIndeterminate
+    val translationFlowPhase = remember(stageIndex) {
+        androidx.compose.animation.core.Animatable(0f)
+    }
+    LaunchedEffect(translationFlowActive, isPaused) {
+        if (translationFlowActive) {
+            while (true) {
+                val remaining = (1f - translationFlowPhase.value).coerceIn(0.001f, 1f)
+                translationFlowPhase.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(
+                        durationMillis = (1800f * remaining).roundToInt().coerceAtLeast(1),
+                        easing = androidx.compose.animation.core.LinearEasing,
+                    ),
+                )
+                translationFlowPhase.snapTo(0f)
+            }
+        } else if (!isPaused) {
+            translationFlowPhase.snapTo(0f)
+        }
     }
     LaunchedEffect(translationAnimationActive, isPaused) {
         if (translationAnimationActive) {
@@ -4051,17 +4059,8 @@ private fun StageProgressVisual(
                 // 0 and 2π are the same full-turn pose, so the loop is seamless.
                 translationWholeRotation.snapTo(0f)
             }
-        } else {
-            // Not turning (paused, completed, failed, skipped, ...): never leave the bar edge-on
-            // or upside down. Settle upright through the shorter way, then rest at exactly 0.
-            val fullTurn = 6.2831855f
-            val current = translationWholeRotation.value
-            if (current > 0f) {
-                translationWholeRotation.animateTo(
-                    targetValue = if (current > fullTurn / 2f) fullTurn else 0f,
-                    animationSpec = tween(260),
-                )
-            }
+        } else if (!isPaused) {
+            // A completed, failed, skipped, or stopped stage returns to its neutral pose.
             translationWholeRotation.snapTo(0f)
         }
     }
@@ -4101,20 +4100,12 @@ private fun StageProgressVisual(
                     // BlendMode.Clear must erase only this progress visual,
                     // never pixels belonging to the parent card or other UI.
                     compositingStrategy = CompositingStrategy.Offscreen
-                    // Turn the whole bar around its horizontal centre axis. Left/right ends stay
-                    // where they are; 0 and 360 degrees are the same pose, so the loop is seamless.
-                    // Reading the Animatable here only invalidates this layer, not the drawing.
-                    rotationX = translationWholeRotation.value * (180f / kotlin.math.PI.toFloat())
-                    // Long camera distance keeps the perspective subtle on this thin bar.
-                    cameraDistance = 96f * density
                 }
             },
     ) {
         val gap = 2.5.dp.toPx()
         val fill = if (isSkipped) Color(0xFFAEB8C6) else primaryColor
-        // The translation bar does not use the pulse; not reading it here also means the
-        // bar is not redrawn on every pulse frame while it turns.
-        val pulseAlpha = if (isAnimating && stageIndex != 3) pulse else 1f
+        val pulseAlpha = if (isAnimating) pulse else 1f
         val corner = CornerRadius(2.dp.toPx(), 2.dp.toPx())
 
         when (stageIndex) {
@@ -4321,12 +4312,17 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 4. Translation — four open-ended DNA double-helix cycles, drawn at a fixed pose.
-            // The turning is applied to the whole Canvas layer (see graphicsLayer above).
+            // 4. Translation — four open-ended DNA double-helix cycles.
             3 -> {
-                // Static geometry is prepared in composition (see translationHelixGeometry).
-                translationHelixTemplate ?: return@Canvas
+                // Reuse size-dependent samples, but project the helix at its current
+                // axial rotation phase on each animation frame.
+                val template = translationHelixTemplate ?: return@Canvas
                 val geometry = translationHelixGeometry ?: return@Canvas
+                buildTranslationHelixGeometry(
+                    template = template,
+                    rotationPhase = translationWholeRotation.value,
+                    geometry = geometry,
+                )
                 val progressX = size.width * fraction
                 val strandA = geometry.strandA
                 val strandB = geometry.strandB
@@ -4371,9 +4367,19 @@ private fun StageProgressVisual(
                 }
                 drawPath(strandA, color = pendingColor, style = curveStyle)
                 drawPath(strandB, color = pendingColor, style = curveStyle)
-                fun drawActiveRungs() {
+                fun drawActiveRungs(
+                    pulseHead: Float?,
+                    pulseRadius: Float,
+                    pulseIntensity: Float = 1f,
+                ) {
                     for (rungIndex in 0 until rungCount) {
                         val rung = rungs[rungIndex]
+                        val strength = if (pulseHead != null) {
+                            (1f - kotlin.math.abs(rung.x - pulseHead) / pulseRadius)
+                                .coerceIn(0f, 1f) * pulseIntensity
+                        } else {
+                            0f
+                        }
                         val gradient = Brush.linearGradient(
                             colors = rungGradientColors,
                             start = rung.start,
@@ -4383,9 +4389,18 @@ private fun StageProgressVisual(
                             brush = gradient,
                             start = rung.start,
                             end = rung.end,
-                            strokeWidth = rungStroke,
+                            strokeWidth = rungStroke + strength * 1.0.dp.toPx(),
                             cap = StrokeCap.Round,
                         )
+                        if (strength > 0.04f) {
+                            drawLine(
+                                color = Color.White.copy(alpha = strength * 0.82f),
+                                start = rung.start,
+                                end = rung.end,
+                                strokeWidth = 0.8.dp.toPx() + strength * 0.55.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
+                        }
                     }
                 }
 
@@ -4479,22 +4494,84 @@ private fun StageProgressVisual(
                     strokeWidth = curveStroke,
                 )
 
-                // No travelling highlight any more: the bar stays in place and the whole graphic
-                // turns around its horizontal centre axis (graphicsLayer.rotationX on the Canvas).
                 val motionEnabled = translationAnimationActive
+                val pulseRadius = if (isIndeterminate) 15.dp.toPx() else 24.dp.toPx()
+                val flowHead = when {
+                    !motionEnabled -> null
+                    isIndeterminate -> scanPosition * size.width
+                    else -> translationFlowPhase.value * progressX
+                }
+                // Fade the travelling glow at both loop endpoints. This makes the
+                // reset from the right edge to the left edge visually unobtrusive.
+                val flowIntensity = when {
+                    !motionEnabled -> 0f
+                    isIndeterminate ->
+                        kotlin.math.sin(kotlin.math.PI.toFloat() * scanPosition).coerceIn(0f, 1f)
+                    else ->
+                        kotlin.math.sin(kotlin.math.PI.toFloat() * translationFlowPhase.value)
+                            .coerceIn(0f, 1f)
+                }
+                var nearestCrossoverDistance = size.width
+                if (flowHead != null) {
+                    for (crossingIndex in 0 until crossingCount) {
+                        val distance = kotlin.math.abs(crossings[crossingIndex].x - flowHead)
+                        if (distance < nearestCrossoverDistance) {
+                            nearestCrossoverDistance = distance
+                        }
+                    }
+                }
+                val crossoverBlend = (
+                    (nearestCrossoverDistance - 3.dp.toPx()) / 11.dp.toPx()
+                ).coerceIn(0f, 1f)
+                val smoothCrossoverBlend = crossoverBlend * crossoverBlend *
+                    (3f - 2f * crossoverBlend)
+                // Keep at least 48% of the glow at a crossover so the flow never
+                // appears to stop; only its brightest edge is softened.
+                val crossoverIntensity = 0.48f + 0.52f * smoothCrossoverBlend
+                val effectiveFlowIntensity = flowIntensity * crossoverIntensity
 
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = progressX.coerceIn(0f, size.width)) {
-                        drawActiveRungs()
+                        drawActiveRungs(
+                            pulseHead = flowHead,
+                            pulseRadius = pulseRadius,
+                            pulseIntensity = effectiveFlowIntensity,
+                        )
                         drawActiveCurves()
                         drawOverUnderWeave(
                             colorA = blueStrandColor,
                             colorB = greenStrandColor,
                         )
+
+                        // A short, bright highlight travels along both strands and
+                        // the rungs, looping over the already-completed portion.
+                        if (motionEnabled && flowHead != null) {
+                            clipRect(
+                                left = (flowHead - pulseRadius * 1.15f).coerceAtLeast(0f),
+                                right = (flowHead + pulseRadius * 0.35f).coerceAtMost(progressX),
+                            ) {
+                                drawActiveCurves(
+                                    alpha = 0.62f * effectiveFlowIntensity,
+                                    strokeWidth = 3.1.dp.toPx(),
+                                )
+                                drawOverUnderWeave(
+                                    colorA = blueStrandColor,
+                                    colorB = greenStrandColor,
+                                    alpha = 0.78f * effectiveFlowIntensity,
+                                    strokeWidth = 3.1.dp.toPx(),
+                                    maskRear = true,
+                                )
+                            }
+                        }
                     }
                 } else if (isIndeterminate && motionEnabled) {
-                    // Unknown progress has no percentage claim: keep the full track softly active.
-                    drawActiveRungs()
+                    // Unknown progress has no percentage claim: keep the full track
+                    // softly active and move the highlight across it as an indeterminate flow.
+                    drawActiveRungs(
+                        pulseHead = flowHead,
+                        pulseRadius = pulseRadius,
+                        pulseIntensity = effectiveFlowIntensity,
+                    )
                     drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
                     drawOverUnderWeave(
                         colorA = blueStrandColor,
@@ -4502,6 +4579,24 @@ private fun StageProgressVisual(
                         alpha = 0.88f,
                         strokeWidth = 2.6.dp.toPx(),
                     )
+                    if (flowHead != null) {
+                        clipRect(
+                            left = (flowHead - pulseRadius * 1.15f).coerceAtLeast(0f),
+                            right = (flowHead + pulseRadius * 0.35f).coerceAtMost(size.width),
+                        ) {
+                            drawActiveCurves(
+                                alpha = 0.68f * effectiveFlowIntensity,
+                                strokeWidth = 3.1.dp.toPx(),
+                            )
+                            drawOverUnderWeave(
+                                colorA = blueStrandColor,
+                                colorB = greenStrandColor,
+                                alpha = 0.8f * effectiveFlowIntensity,
+                                strokeWidth = 3.1.dp.toPx(),
+                                maskRear = true,
+                            )
+                        }
+                    }
                 }
 
                 // The slim blue cursor follows the exact measured translation boundary.
