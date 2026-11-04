@@ -21,6 +21,43 @@ class DubbingSourceVolumePolicyTest {
     }
 
     @Test
+    fun sourceAudioIsTemporarilyMutedOnlyWhileTheActiveChineseCueIsPending() {
+        assertEquals(
+            0f,
+            DubbingSourceVolumePolicy.sourceGain(
+                originalVolume = 1f,
+                dubbingVolume = 1f,
+                dubbingEnabled = true,
+                dubbingStarted = false,
+                dubbingCuePending = true,
+            ),
+            0f,
+        )
+        assertEquals(
+            1f,
+            DubbingSourceVolumePolicy.sourceGain(
+                originalVolume = 1f,
+                dubbingVolume = 1f,
+                dubbingEnabled = true,
+                dubbingStarted = true,
+                dubbingCuePending = true,
+            ),
+            0f,
+        )
+        assertEquals(
+            1f,
+            DubbingSourceVolumePolicy.sourceGain(
+                originalVolume = 1f,
+                dubbingVolume = 1f,
+                dubbingEnabled = true,
+                dubbingStarted = false,
+                dubbingCuePending = false,
+            ),
+            0f,
+        )
+    }
+
+    @Test
     fun originalMutePreferenceAlwaysWins() {
         assertEquals(0f, DubbingSourceVolumePolicy.sourceGain(0f, 1f, true, false), 0f)
         assertEquals(0f, DubbingSourceVolumePolicy.sourceGain(0f, 1f, true, true), 0f)
