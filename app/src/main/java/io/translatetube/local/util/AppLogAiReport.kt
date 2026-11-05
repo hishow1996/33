@@ -502,7 +502,7 @@ internal object AppLogAiReport {
             append("判断：").append(clipped(diagnosis.finding, 420)).append('\n')
             append("证据：").append(clipped(diagnosis.evidence, 420)).append('\n')
             val coverage = AppLogDiagnosticCoveragePolicy.analyze(primary)
-            append("证据覆盖：").append(coverage.completenessPercent).append("%（")
+            append("诊断证据覆盖率：").append(coverage.completenessPercent).append("%（")
                 .append(coverage.collectedEvidenceCount).append("/")
                 .append(coverage.requiredEvidenceCount).append("）；缺失：")
                 .append(coverage.missingEvidence.take(4).joinToString("、").ifBlank { "无" })
