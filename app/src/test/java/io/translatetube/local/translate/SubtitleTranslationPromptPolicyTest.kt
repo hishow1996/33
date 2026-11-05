@@ -92,6 +92,23 @@ class SubtitleTranslationPromptPolicyTest {
     }
 
     @Test
+    fun promptProtectsBroaderProperNounCategoriesAndEntityConsistency() {
+        val english = SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES
+        assertTrue(english.contains("organizations, companies, brands, products"))
+        assertTrue(english.contains("Never invent a transliteration"))
+        assertTrue(english.contains("substitute a different person or entity"))
+
+        val simplified = SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES
+        assertTrue(simplified.contains("地名、组织机构、公司、品牌、产品、软件、作品名称"))
+        assertTrue(simplified.contains("没有可靠译名时保留原文拼写"))
+        assertTrue(simplified.contains("周围普通词语仍须翻译"))
+
+        val context = SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES
+        assertTrue(context.contains("组织机构、品牌、产品、作品"))
+        assertTrue(context.contains("不能在不同字幕行之间随意变换"))
+    }
+
+    @Test
     fun explicitlyTranslatesBracketedSoundCaptionsAndPreservesBrackets() {
         val instructions = SubtitleTranslationPromptPolicy.guidelinesForTarget("zh-CN")
         assertTrue(instructions.contains("[music] -> [音乐]"))
