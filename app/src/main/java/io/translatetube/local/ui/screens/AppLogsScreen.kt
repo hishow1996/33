@@ -221,7 +221,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             scope.launch {
                                 exporting = true
                                 val result = withContext(Dispatchers.IO) {
-                                    runCatching { AppLogStore.exportText(ctx.applicationContext) }
+                                    runCatching { AppLogStore.exportCompactText(ctx.applicationContext) }
                                 }
                                 result.onSuccess { report ->
                                     val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
