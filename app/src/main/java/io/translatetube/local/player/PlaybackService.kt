@@ -13769,11 +13769,32 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         engine.onSynthesisError = { detail ->
             val activeName = engine.currentTtsName.ifBlank { tts.name }
             val systemTtsSelected = activeName.contains("系统TTS")
+            val failedLineNumber = ui.value.activeDubbingLine.takeIf { it >= 0 }?.plus(1)
+            val failedLineLabel = failedLineNumber?.let { "第 ${it} 条字幕" } ?: "当前配音任务"
             val message = if (systemTtsSelected) {
-                "系统 TTS 合成或输出失败：$detail。当前保持系统 TTS，不会自动切换或要求下载本地模型。视频已暂停，请检查手机的文字转语音服务、中文语音数据和可用音色后重新处理。"
+                "系统 TTS 合成或音频输出失败：$failedLineLabel。请检查手机文字转语音服务、中文语音数据和可用音色。视频已暂停。"
             } else {
-                "当前配音引擎「$activeName」合成或输出失败，视频已暂停。$detail"
+                "配音引擎「$activeName」合成或音频输出失败：$failedLineLabel。请检查引擎设置后重试。视频已暂停。"
             }
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService,
+                "TTS",
+                "配音引擎合成或音频输出回调失败",
+                IllegalStateException(detail.take(1_000)),
+                diagnosticContext = mapOf(
+                    "配音引擎" to activeName,
+                    "是否为系统 TTS" to systemTtsSelected.toString(),
+                    "失败字幕序号" to (failedLineNumber?.toString() ?: "回调时未能确定"),
+                    "用户界面提示摘要" to message,
+                    "TTS 回调错误详情" to detail.take(1_000),
+                    "详情来源" to "TTS 引擎错误回调；回调未提供原始 Throwable 对象",
+                    "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
+                ),
+                issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                    "TTSOutput",
+                    sessionKey + "|" + activeName + "|" + (failedLineNumber?.toString() ?: "unknown"),
+                ),
+            )
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                 state.copy(
                     ttsEngineName = activeName,
