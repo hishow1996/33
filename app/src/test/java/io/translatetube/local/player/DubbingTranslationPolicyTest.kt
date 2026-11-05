@@ -182,6 +182,13 @@ class DubbingTranslationPolicyTest {
 
 
     @Test
+    fun bracketedSoundDescriptionTranslationSurvivesTheFinalGuard() {
+        val result = DubbingTranslationPolicy.resolveText("[music ]", "[音乐]", "en")
+        assertEquals("[音乐]", result.text)
+        assertEquals(null, result.reason)
+    }
+
+    @Test
     fun rejectsModelMetaRepliesBeforeTheyBecomeSpokenAudio() {
         val result = DubbingTranslationPolicy.resolveText(
             "Hello, how are you?",
@@ -204,76 +211,76 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
-    fun rejectsSemanticContradictionsBeforeDubbingWithSpecificReason() {
+    fun acceptsReadableRowsWhenSemanticHeuristicsOnlyProduceDiagnostics() {
         val result = DubbingTranslationPolicy.resolveText(
             "I don't agree with him.",
             "我同意他。",
             "en",
         )
-        assertNull(result.text)
-        assertTrue(result.reason.orEmpty().contains("否定"))
+        assertEquals("我同意他。", result.text)
+        assertEquals(null, result.reason)
     }
 
     @Test
-    fun rejectsChangedExplicitNumbersBeforeDubbingWithSpecificReason() {
+    fun acceptsReadableRowsWhenNumberHeuristicsFlagDifferences() {
         val result = DubbingTranslationPolicy.resolveText(
             "I have 3 cats and 2 dogs.",
             "我有4只猫和2只狗。",
             "en",
         )
-        assertNull(result.text)
-        assertTrue(result.reason.orEmpty().contains("显式数字"))
+        assertEquals("我有4只猫和2只狗。", result.text)
+        assertEquals(null, result.reason)
     }
 
     @Test
-    fun rejectsExplicitUnitSubstitutionBeforeDubbing() {
+    fun acceptsReadableRowsWhenUnitHeuristicsFlagDifferences() {
         val result = DubbingTranslationPolicy.resolveText(
             "The road is 5 km long.",
             "这条路长5米。",
             "en",
         )
-        assertNull(result.text)
-        assertTrue(result.reason.orEmpty().contains("单位类别不一致"))
+        assertEquals("这条路长5米。", result.text)
+        assertEquals(null, result.reason)
     }
     @Test
-    fun rejectsClearTraditionalChineseOutputWhenThePlaybackTargetIsSimplifiedChinese() {
+    fun acceptsReadableChineseWhenScriptStyleDiffersFromTheTargetPreference() {
         val result = DubbingTranslationPolicy.resolveText(
             "The software will be updated later.",
             "這個軟體後續會持續更新。",
             "en",
         )
-        assertNull(result.text)
-        assertTrue(result.reason.orEmpty().startsWith("TARGET_SCRIPT_MISMATCH"))
+        assertEquals("這個軟體後續會持續更新。", result.text)
+        assertEquals(null, result.reason)
     }
 
     @Test
-    fun finalDubbingGuardRejectsSwappedNumberUnitPairsAndMultilingualNegation() {
+    fun finalDubbingGuardDoesNotReapplySoftNumberOrSemanticHeuristics() {
         val units = DubbingTranslationPolicy.resolveText(
             "The first route is 3 km and the second route is 5 m.",
             "第一条路线是5公里，第二条路线是3米。",
             "en",
         )
-        assertNull(units.text)
-        assertTrue(units.reason.orEmpty().contains("数字与单位的对应关系"))
+        assertEquals("第一条路线是5公里，第二条路线是3米。", units.text)
+        assertEquals(null, units.reason)
 
         val french = DubbingTranslationPolicy.resolveText(
             "Je ne sais pas.",
             "我知道。",
             "fr",
         )
-        assertNull(french.text)
-        assertTrue(french.reason.orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertEquals("我知道。", french.text)
+        assertEquals(null, french.reason)
     }
 
     @Test
-    fun finalDubbingGuardRejectsQuestionChangedIntoAStatement() {
+    fun finalDubbingGuardDoesNotRecheckSoftQuestionIntentHeuristics() {
         val result = DubbingTranslationPolicy.resolveText(
             "Where are you?",
             "我在这里。",
             "en",
         )
-        assertNull(result.text)
-        assertTrue(result.reason.orEmpty().startsWith("SEMANTIC_INTENT_MISMATCH"))
+        assertEquals("我在这里。", result.text)
+        assertEquals(null, result.reason)
     }
 
 }
