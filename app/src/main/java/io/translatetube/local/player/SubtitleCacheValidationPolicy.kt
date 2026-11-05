@@ -43,11 +43,19 @@ internal object SubtitleCacheValidationPolicy {
      * Invalid rows retain their source cue and timing, but their cached translation is cleared so
      * reopening the video retries only those rows.
      */
-    fun sanitizeTranslationForStorage(line: SubLine, sourceLanguage: String): SubLine =
-        line.copy(
-            zh = if (line.text.isBlank()) null else
-                DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage),
-        )
+    fun sanitizeTranslationForStorage(line: SubLine, sourceLanguage: String): SubLine {
+        val cleaned = if (line.text.isBlank()) null else SubtitleParsers.cleanTranslatedText(line.zh)
+        val accepted = cleaned?.takeIf {
+            SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                sourceText = line.text,
+                translatedText = it,
+                sourceLanguage = sourceLanguage,
+                targetLanguage = "zh",
+                acceptShortUnchanged = true,
+            )
+        }
+        return line.copy(zh = accepted)
+    }
 
     /** Nonempty but invalid echoes/placeholders do not make a translation cache recoverable. */
     fun hasRecoverableTranslationRows(

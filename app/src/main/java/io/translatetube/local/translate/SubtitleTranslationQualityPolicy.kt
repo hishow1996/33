@@ -546,8 +546,12 @@ internal object SubtitleTranslationQualityPolicy {
         ) return null
         val sourcePairs = explicitNumericUnitPairs(sourceText, sourceLanguage, includeChineseNumerals = false)
         val targetPairs = explicitNumericUnitPairs(translatedText, targetLanguage, includeChineseNumerals = true)
-        if (sourcePairs.size < 2 || sourcePairs.size != targetPairs.size) return null
+        if (sourcePairs.isEmpty() || sourcePairs.size != targetPairs.size) return null
         if (sourcePairs.groupingBy { it }.eachCount() == targetPairs.groupingBy { it }.eachCount()) return null
+        if (sourcePairs.size == 1) {
+            val currencies = setOf("usd", "euro", "gbp", "jpy", "cny")
+            if (sourcePairs.single().unitId !in currencies || targetPairs.single().unitId !in currencies) return null
+        }
         return "数字与单位的对应关系发生变化；原文可识别配对数=" + sourcePairs.size +
             "，译文可识别配对数=" + targetPairs.size
     }
@@ -597,6 +601,8 @@ internal object SubtitleTranslationQualityPolicy {
                 if (protectedRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
                 val nextChar = value.getOrNull(match.range.last + 1)
                 if (match.value == "零" && nextChar == '下') return@forEach
+                val preceding = value.substring(maxOf(0, match.range.first - 6), match.range.first).trimEnd()
+                if (preceding.endsWith("第")) return@forEach
                 val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
                 val hasMagnitude = match.value.any { it in "十百千万萬亿億" }
                 val hasClassifier = listOf(
@@ -1013,6 +1019,36 @@ internal object SubtitleTranslationQualityPolicy {
             SourceLanguagePolicy.isChinese(sourceLanguage)
         ) return null
 
+        val monthDatePattern = Regex(
+            """\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{4})\b""",
+            RegexOption.IGNORE_CASE,
+        )
+        val sourceMonthDate = monthDatePattern.find(sourceText)
+        val targetCalendarDate = Regex("""(?<!\d)(\d{4})年(\d{1,2})月(\d{1,2})日""")
+            .find(translatedText)
+        val ignoredSourceDateRanges = if (sourceMonthDate != null && targetCalendarDate != null) {
+            val monthNames = listOf(
+                "january", "february", "march", "april", "may", "june",
+                "july", "august", "september", "october", "november", "december",
+            )
+            val sourceMonth = monthNames.indexOf(sourceMonthDate.groupValues[1].lowercase(Locale.ROOT)) + 1
+            val sourceDay = sourceMonthDate.groupValues[2].toIntOrNull()
+            val sourceYear = sourceMonthDate.groupValues[3].toIntOrNull()
+            val targetYear = targetCalendarDate.groupValues[1].toIntOrNull()
+            val targetMonth = targetCalendarDate.groupValues[2].toIntOrNull()
+            val targetDay = targetCalendarDate.groupValues[3].toIntOrNull()
+            if (sourceMonth != targetMonth || sourceDay != targetDay || sourceYear != targetYear) {
+                return "显式数字校验失败：译文日期中的年、月或日与原文不一致"
+            }
+            listOf(sourceMonthDate.range)
+        } else {
+            emptyList()
+        }
+        val ignoredTargetDateRanges = if (sourceMonthDate != null && targetCalendarDate != null) {
+            listOf(targetCalendarDate.range)
+        } else {
+            emptyList()
+        }
         val localizedClock = listOf("点", "點", "时", "時", "上午", "下午", "凌晨", "中午")
             .any(translatedText::contains) ||
             chineseClockPattern.containsMatchIn(translatedText)
@@ -1021,7 +1057,9 @@ internal object SubtitleTranslationQualityPolicy {
         } else {
             emptyList()
         }
-        val sourceNumbers = normalizedExplicitNumbers(sourceText, sourceLanguage, ignoredSourceClockRanges)
+        val sourceNumbers = normalizedExplicitNumbers(
+            sourceText, sourceLanguage, ignoredSourceClockRanges + ignoredSourceDateRanges,
+        )
         val ignoredTargetClockRanges = if (localizedClock) {
             (clockTimePattern.findAll(translatedText).map { it.range } +
                 chineseClockPattern.findAll(translatedText).map { it.range }).toList()
@@ -1029,7 +1067,7 @@ internal object SubtitleTranslationQualityPolicy {
             emptyList()
         }
         val translatedNumbers = normalizedTranslationNumbers(
-            translatedText, targetLanguage, ignoredTargetClockRanges,
+            translatedText, targetLanguage, ignoredTargetClockRanges + ignoredTargetDateRanges,
         )
         if (sourceNumbers.isEmpty()) return null
         // Only compare extra quantities when the source actually states an explicit number.
@@ -1239,7 +1277,7 @@ internal object SubtitleTranslationQualityPolicy {
         "next", "nice", "no", "not", "now", "of", "off", "on", "one", "only", "or", "other",
         "our", "out", "over", "own", "please", "problem", "really", "right", "run", "same", "say",
         "see", "she", "should", "so", "some", "something", "sorry", "still", "stop", "sure",
-        "take", "than", "thank", "thanks", "that", "the", "their", "them", "then",
+        "take", "taxi", "than", "thank", "thanks", "that", "the", "their", "them", "then",
         "there", "these", "they", "thing", "think", "this", "time", "to", "too", "try", "two",
         "up", "us", "very", "wait", "want", "was", "we", "well", "were", "what", "when",
         "where", "which", "while", "who", "why", "with", "work", "world", "would", "yes",
@@ -1614,9 +1652,9 @@ internal object SubtitleTranslationQualityPolicy {
             tokens.last().all { it.isDigit() }
         ) return true
 
-        // Multiword names are accepted only when every word uses true title case and no token
-        // is a common English word. All-caps sentences such as "NO WAY" cannot pass this guard.
-        return hasTitleCasedWords(value) && !hasCommonEnglishWord(value)
+        // Multi-word proper names are eligible only through the explicit retry exception.
+        // They must not bypass first-pass target-language validation as generic non-translatable cues.
+        return false
     }
 
     /** Ignore case, whitespace and punctuation so formatting-only changes do not pass as translation. */
