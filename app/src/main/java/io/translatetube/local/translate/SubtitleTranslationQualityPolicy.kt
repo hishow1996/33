@@ -1736,7 +1736,7 @@ internal object SubtitleTranslationQualityPolicy {
         }
         if (tokens.size < 2) return retained
         for (start in tokens.indices) {
-            for (length in 2..5) {
+            for (length in 2..8) {
                 val end = start + length
                 if (end > tokens.size) break
                 val candidate = tokens.subList(start, end)
@@ -1851,7 +1851,7 @@ internal object SubtitleTranslationQualityPolicy {
      * and "Hello World", while allowing name particles and the common place-name prefix "New".
      */
     private fun isKnownTitlePhrase(tokens: List<String>): Boolean {
-        if (tokens.size !in 2..5) return false
+        if (tokens.size !in 2..8) return false
         return tokens.all { raw ->
             val token = raw.trim { it in shortTokenBoundaryPunctuation }
             val word = normalize(token)
