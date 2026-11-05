@@ -31,7 +31,9 @@ internal object DubbingTranslationPolicy {
         val detectedSource = if (hasLanguageHint) hint.lowercase(java.util.Locale.ROOT)
             else SubtitleLanguageDetector.detect(sourceText)
         val chineseSource = io.translatetube.local.translate.SourceLanguagePolicy.isChinese(detectedSource)
-        val ambiguousHanSource = !hasLanguageHint &&
+        // Han-only source text can be Japanese even when a video-level language hint is present.
+        // It must not be accepted unchanged as Chinese speech unless the source is confirmed Chinese.
+        val ambiguousHanSource = !chineseSource &&
             SubtitleLanguageDetector.isHanDominantAmbiguous(sourceText)
         if (chineseSource) {
             // Preserve literal Chinese captions even if their text resembles a UI progress label.
@@ -66,6 +68,14 @@ internal object DubbingTranslationPolicy {
             return DubbingTranslationResolution(
                 null,
                 "译文只有标点、符号或表情，没有可朗读内容",
+            )
+        }
+        if (ambiguousHanSource &&
+            sourceText.trim() == cleaned.trim()
+        ) {
+            return DubbingTranslationResolution(
+                null,
+                "原字幕仅含汉字，无法确认是中文还是日语；拒绝把原文直接当成中文配音，请确认源语言或提供中文译文",
             )
         }
         val qualityDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
