@@ -343,7 +343,7 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     private const val shortTokenBoundaryPunctuation = "\"“”‘’()[]{}【】「」『』〈〉《》:;!?，。！？：；、,–—"
-    private const val shortTokenInnerPunctuation = ".'’-"
+    private const val shortTokenInnerPunctuation = ".'’‐‑‒–—-"
 
     private fun hasTitleCasedWords(value: String): Boolean =
         value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { token ->
@@ -353,6 +353,7 @@ internal object SubtitleTranslationQualityPolicy {
     /** Same spelling, or one insertion/deletion/substitution on a sufficiently long name token. */
     private fun hasSameOrNearSpelling(source: String, translated: String): Boolean {
         if (source == translated) return true
+        if (hasSameBaseLettersWithOneDiacriticDifference(source, translated)) return true
         if (source.length < 5 || translated.length < 4) return false
         if (kotlin.math.abs(source.length - translated.length) > 1) return false
         if (source.first() != translated.first()) return false
@@ -382,6 +383,37 @@ internal object SubtitleTranslationQualityPolicy {
         }
         if (sourceIndex < source.length || translatedIndex < translated.length) edits++
         return edits <= 1
+    }
+
+    private fun hasSameBaseLettersWithOneDiacriticDifference(
+        source: String,
+        translated: String,
+    ): Boolean {
+        fun signature(value: String): List<Pair<Char, String>> {
+            val result = mutableListOf<Pair<Char, StringBuilder>>()
+            Normalizer.normalize(value, Normalizer.Form.NFD).forEach { char ->
+                when {
+                    char.isLetter() -> result += char.lowercaseChar() to StringBuilder()
+                    Character.getType(char).toInt() in setOf(
+                        Character.NON_SPACING_MARK.toInt(),
+                        Character.COMBINING_SPACING_MARK.toInt(),
+                        Character.ENCLOSING_MARK.toInt(),
+                    ) -> result.lastOrNull()?.second?.append(char)
+                    else -> Unit
+                }
+            }
+            return result.map { (base, marks) -> base to marks.toString() }
+        }
+
+        val left = signature(source)
+        val right = signature(translated)
+        if (left.isEmpty() || left.size != right.size) return false
+        if (left.indices.any { left[it].first != right[it].first }) return false
+        val differentLetters = left.indices.count { left[it].second != right[it].second }
+        return differentLetters == 1 &&
+            left.indices.any { index ->
+                left[index].second.isNotEmpty() || right[index].second.isNotEmpty()
+            }
     }
 
     private fun diagnosticShortSpellingMatch(source: String, translated: String): Boolean {
@@ -1940,6 +1972,8 @@ internal object SubtitleTranslationQualityPolicy {
         "서울", "부산", "인천", "제주도", "김민수", "김연아",
         "دبي", "القاهرة", "أبوظبي", "الرياض",
         "ירושלים", "תלאביב", "חיפה",
+        "กรุงเทพ", "กรุงเทพฯ", "เชียงใหม่", "ঢাকা", "চট্টগ্রাম", "ភ្នំពេញ",
+        "ວຽງຈັນ", "ရန်ကုန်", "မန္တလေး",
     )
     private val commonNonLatinNameWords = setOf(
         // Common Russian words/greetings are never accepted as names merely because they

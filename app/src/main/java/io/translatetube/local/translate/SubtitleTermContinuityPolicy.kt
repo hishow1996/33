@@ -15,7 +15,7 @@ internal object SubtitleTermContinuityPolicy {
     // Allow Latin names embedded directly beside another writing system (e.g. このTikTokは…),
     // while still requiring a boundary between adjacent Latin letters/digits.
     private val candidateLatinToken = Regex(
-        """(?<![A-Za-z0-9])(?:\p{Lu}[\p{L}\p{M}\p{N}]*(?:['’–-][\p{L}\p{M}\p{N}]+)*|[a-z][A-Z][A-Za-z0-9]*)"""
+        """(?<![A-Za-z0-9])(?:\p{Lu}[\p{L}\p{M}\p{N}]*(?:['’\u2010-\u2015\u2212-][\p{L}\p{M}\p{N}]+)*|[a-z][A-Z][A-Za-z0-9]*)"""
     )
     private val katakanaToken = Regex("""[\u30A1-\u30FA\u30FC]{2,}""")
     // Same-script boundaries let Cyrillic and Greek names be recognized when adjacent
@@ -33,6 +33,21 @@ internal object SubtitleTermContinuityPolicy {
     )
     private val devanagariHonorificName = Regex(
         """(?:श्री|श्रीमती|डॉ\.?|प्रो\.?|माननीय)\s+([\u0900-\u097F]{2,})"""
+    )
+    private val thaiHonorificName = Regex(
+        """(?:คุณ|นาย|นางสาว|นาง|ดร\.?|ศ\.?|อาจารย์)\s+([\u0E00-\u0E7F]{2,})"""
+    )
+    private val bengaliHonorificName = Regex(
+        """(?:ডঃ|ডা\.?|শ্রী|শ্রীমতী|জনাব|অধ্যাপক|মিস)\s+([\u0980-\u09FF]{2,})"""
+    )
+    private val khmerHonorificName = Regex(
+        """(?:លោកបណ្ឌិត|លោកស្រី|លោក|អ្នកស្រី|សាស្ត្រាចារ្យ)\s+([\u1780-\u17FF]{2,})"""
+    )
+    private val laoHonorificName = Regex(
+        """(?:ທ່ານ|ນາງ|ດຣ\.?|ອາຈານ|ສາດສະດາຈານ)\s+([\u0E80-\u0EFF]{2,})"""
+    )
+    private val myanmarHonorificName = Regex(
+        """(?:ဒေါက်တာ|ဦး|ဒေါ်|ကို|မ|ဆရာမ?|ဆရာ)\s+([\u1000-\u109F]{2,})"""
     )
 
     private val commonLatinWords = setOf(
@@ -69,6 +84,8 @@ internal object SubtitleTermContinuityPolicy {
         "서울", "부산", "인천", "제주도", "김민수", "김연아",
         "دبي", "القاهرة", "أبوظبي", "الرياض",
         "ירושלים", "תלאביב", "חיפה",
+        "กรุงเทพ", "กรุงเทพฯ", "เชียงใหม่", "ঢাকা", "চট্টগ্রাম", "ភ្នំពេញ",
+        "ວຽງຈັນ", "ရန်ကုန်", "မန္တလေး",
     )
 
     fun resolveLanguage(
@@ -147,6 +164,31 @@ internal object SubtitleTermContinuityPolicy {
                     result += normalize(match.groupValues[1])
                 }
             }
+            if (language == "th") {
+                thaiHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "bn") {
+                bengaliHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "km") {
+                khmerHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "lo") {
+                laoHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "my") {
+                myanmarHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
         }
         return result
     }
@@ -168,6 +210,11 @@ internal object SubtitleTermContinuityPolicy {
             Character.UnicodeScript.ARABIC,
             Character.UnicodeScript.HEBREW,
             Character.UnicodeScript.DEVANAGARI,
+            Character.UnicodeScript.THAI,
+            Character.UnicodeScript.BENGALI,
+            Character.UnicodeScript.KHMER,
+            Character.UnicodeScript.LAO,
+            Character.UnicodeScript.MYANMAR,
         )
         return extractStableTerms(listOf(text), language).filterTo(LinkedHashSet()) { term ->
             term.isNotBlank() &&
@@ -185,6 +232,14 @@ internal object SubtitleTermContinuityPolicy {
         val language = resolveLanguage(listOf(text), sourceLanguage)
         val extracted = extractStableTerms(listOf(text), language)
         if (extracted.any(terms::contains)) return true
+
+        // Accent and punctuation variants may represent the same source-grounded name. Apply
+        // this relaxed key only when the context has exactly one candidate for that key; if two
+        // source entities differ only by diacritics, keep them distinct rather than guessing.
+        val uniqueNameKeys = terms.groupBy(::comparisonNameKey)
+            .filterValues { candidates -> candidates.size == 1 }
+            .keys
+        if (extracted.any { comparisonNameKey(it) in uniqueNameKeys }) return true
 
         // Uncased-script names can reappear without their honorific. Match them as complete
         // words in spaced scripts, and as substrings in scripts that normally omit spaces.
@@ -220,6 +275,31 @@ internal object SubtitleTermContinuityPolicy {
         }
     }
 
+    private fun comparisonNameKey(value: String): String =
+        Normalizer.normalize(
+            Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .replace("’", "'")
+                .replace("‘", "'")
+                .replace("ʼ", "'")
+                .replace("‐", "-")
+                .replace("‑", "-")
+                .replace("‒", "-")
+                .replace("–", "-")
+                .replace("—", "-")
+                .lowercase(Locale.ROOT),
+            Normalizer.Form.NFD,
+        ).replace(Regex("""\p{M}+"""), "")
+            .filter { it.isLetterOrDigit() }
+
     private fun normalize(value: String): String =
-        Normalizer.normalize(value, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+        Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .replace("’", "'")
+            .replace("‘", "'")
+            .replace("ʼ", "'")
+            .replace("‐", "-")
+            .replace("‑", "-")
+            .replace("‒", "-")
+            .replace("–", "-")
+            .replace("—", "-")
+            .lowercase(Locale.ROOT)
 }

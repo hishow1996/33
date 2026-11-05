@@ -8,7 +8,7 @@ package io.translatetube.local.translate
  * inside one pair of brackets so ordinary bracketed text remains speakable.
  */
 internal object SubtitleSoundDescriptionPolicy {
-    private val bracketedBody = Regex("""^\s*(?:\[|【|（|\()\s*(.+?)\s*(?:\]|】|）|\))\s*[.!?。！？,，;；]*\s*$""")
+    private val bracketedBody = Regex("""^\s*(?:\[|【|（|\(|\{|「|『|〈|《)\s*(.+?)\s*(?:\]|】|）|\)|\}|」|』|〉|》)\s*[.!?。！？,，;；]*\s*$""")
     private val englishLabels = setOf(
         "music", "background music", "soft music", "instrumental music", "upbeat music",
         "dramatic music", "sad music", "happy music", "theme music", "singing", "song",
@@ -26,6 +26,11 @@ internal object SubtitleSoundDescriptionPolicy {
         "indistinct", "indistinct speech", "unclear", "unclear speech",
         "muffled speech", "speech is unclear", "speech is inaudible",
         "door slams", "door slamming", "bleep", "beep", "bleeping",
+        "engine starts", "engine start", "engine stops", "engine stop",
+        "car engine starts", "car engine stops", "glass breaking", "glass shattering",
+        "footsteps approaching", "footsteps receding", "water splashing", "waves crashing",
+        "door creaking", "dog barking", "cat meowing", "baby crying", "metal clanging",
+        "wood cracking", "keys jingling", "fire crackling", "wind blowing",
     )
     private val englishPatterns = listOf(
         Regex("""^(?:(?:background|soft|instrumental|upbeat|dramatic|sad|happy|theme|gentle|quiet|loud)\s+)?music(?:\s+(?:plays?|playing|continues|fades?(?:\s+(?:in|out))?|starts?|stops?|begins?|ends?))?$"""),
@@ -34,7 +39,9 @@ internal object SubtitleSoundDescriptionPolicy {
         Regex("""^(?:phone|telephone)\s+ringing$"""),
         Regex("""^(?:birds?|dogs?|cats?)\s+(?:chirping|singing|barking|meowing)$"""),
         Regex("""^(?:heavy\s+)?(?:rain|wind|thunder|breathing|crying|laughter|applause)(?:\s+(?:continues|fades|stops))?$"""),
-        Regex("""^speaking(?:\s+in)?\s+(?:english|spanish|french|german|italian|portuguese|russian|japanese|korean|chinese|arabic|hindi)$"""),
+        Regex("""^speaking(?:\s+in)?\s+(?:english|spanish|french|german|italian|portuguese|russian|japanese|korean|chinese|arabic|hindi|vietnamese|thai|bengali|dutch|swedish|norwegian|danish|finnish|polish|ukrainian|greek|hebrew|persian|turkish|indonesian|malay|cantonese|filipino|tagalog|czech|romanian)$"""),
+        Regex("""^(?:an?\s+)?(?:car|engine|motor|machine|glass|window|door|bell|phone|alarm|dog|cat|bird|baby|crowd|water|waves?|wind|rain|thunder|fire|footsteps|keys?|keyboard|metal|wood)\s+(?:starts?(?:\s+up)?|stops?|breaks?|breaking|shatters?|shattering|crashes?|crashing|splashes?|splashing|approaches|approaching|recedes|receding|rings?|ringing|barks?|barking|meows?|meowing|chirps?|chirping|howls?|howling|falls?|falling|opens?|closes?|slams?|slamming|creaks?|creaking|blows?|blowing|flows?|flowing|rushes|rushing|continues|fades?(?:\s+(?:in|out))?)$"""),
+        Regex("""^(?:car|truck|motorcycle)\s+engine\s+(?:starts?|stops?)$"""),
     )
     private val chineseLabels = setOf(
         "音乐", "背景音乐", "轻音乐", "轻柔音乐", "舒缓音乐", "纯音乐", "音乐响起",
@@ -65,6 +72,27 @@ internal object SubtitleSoundDescriptionPolicy {
         "chinese" to "中文",
         "arabic" to "阿拉伯语",
         "hindi" to "印地语",
+        "vietnamese" to "越南语",
+        "thai" to "泰语",
+        "bengali" to "孟加拉语",
+        "dutch" to "荷兰语",
+        "swedish" to "瑞典语",
+        "norwegian" to "挪威语",
+        "danish" to "丹麦语",
+        "finnish" to "芬兰语",
+        "polish" to "波兰语",
+        "ukrainian" to "乌克兰语",
+        "greek" to "希腊语",
+        "hebrew" to "希伯来语",
+        "persian" to "波斯语",
+        "turkish" to "土耳其语",
+        "indonesian" to "印度尼西亚语",
+        "malay" to "马来语",
+        "cantonese" to "粤语",
+        "filipino" to "菲律宾语",
+        "tagalog" to "他加禄语",
+        "czech" to "捷克语",
+        "romanian" to "罗马尼亚语",
     )
     private val speakingLanguagePattern = Regex("""^speaking(?:\s+in)?\s+([a-z]+)$""")
     private val knownEnglishTranslations = mapOf(
@@ -155,8 +183,29 @@ internal object SubtitleSoundDescriptionPolicy {
         "muffled speech" to "说话声模糊",
         "speech is unclear" to "说话声不清",
         "speech is inaudible" to "听不清",
+        "engine starts" to "发动机启动声",
+        "engine start" to "发动机启动声",
+        "engine stops" to "发动机停止声",
+        "engine stop" to "发动机停止声",
+        "car engine starts" to "汽车发动机启动声",
+        "car engine stops" to "汽车发动机停止声",
+        "glass breaking" to "玻璃破碎声",
+        "glass shattering" to "玻璃碎裂声",
+        "footsteps approaching" to "脚步声靠近",
+        "footsteps receding" to "脚步声远去",
+        "water splashing" to "水花飞溅声",
+        "waves crashing" to "海浪拍打声",
+        "door creaking" to "门吱呀作响",
+        "dog barking" to "狗叫声",
+        "cat meowing" to "猫叫声",
+        "baby crying" to "婴儿哭声",
+        "metal clanging" to "金属碰撞声",
+        "wood cracking" to "木头开裂声",
+        "keys jingling" to "钥匙碰撞声",
+        "fire crackling" to "火焰噼啪声",
+        "wind blowing" to "风声",
     )
-    private val closingBracketAndSuffix = Regex("""(?:\]|】|）|\))([.!?。！？,，;；]*)$""")
+    private val closingBracketAndSuffix = Regex("""(?:\]|】|）|\)|\}|」|』|〉|》)([.!?。！？,，;；]*)$""")
 
     /**
      * Uses a small deterministic glossary for common sound captions so every translation engine,
@@ -174,12 +223,17 @@ internal object SubtitleSoundDescriptionPolicy {
                 ?.let(speakingLanguageTranslations::get)
                 ?.let { "说$it" }
             ?: return null
-        val opening = trimmed.firstOrNull { it in "[【（(" } ?: return null
+        val opening = trimmed.firstOrNull { it in "[【（({「『〈《" } ?: return null
         val closing = when (opening) {
             '[' -> ']'
             '【' -> '】'
             '（' -> '）'
             '(' -> ')'
+            '{' -> '}'
+            '「' -> '」'
+            '『' -> '』'
+            '〈' -> '〉'
+            '《' -> '》'
             else -> return null
         }
         val suffix = closingBracketAndSuffix.find(trimmed)?.groupValues?.get(1).orEmpty()

@@ -24,6 +24,10 @@ object SubtitleLanguageDetector {
         Regex("[ğĞışİı]"),
         Regex("[ąćęłńśźżĄĆĘŁŃŚŹŻ]"),
         Regex("[đĐơƠưƯăĂ]"),
+        Regex("[\\u0980-\\u09FF]"),
+        Regex("[\\u1780-\\u17FF]"),
+        Regex("[\\u0E80-\\u0EFF]"),
+        Regex("[\\u1000-\\u109F\\uA9E0-\\uA9FF\\uAA60-\\uAA7F]"),
     )
 
 
@@ -105,6 +109,9 @@ object SubtitleLanguageDetector {
             "romanian", "ron", "rum" -> "ro"
             "ukrainian", "ukr" -> "uk"
             "bengali", "ben" -> "bn"
+            "khmer", "khm" -> "km"
+            "lao", "lao language" -> "lo"
+            "burmese", "myanmar", "mya" -> "my"
             "malay", "msa", "may" -> "ms"
             else -> normalized.substringBefore('-').takeIf { it.length == 2 || it == "yue" } ?: "auto"
         }
@@ -190,6 +197,10 @@ object SubtitleLanguageDetector {
             has(12) -> "tr"
             has(13) -> "pl"
             has(14) -> "vi"
+            has(15) -> "bn"
+            has(16) -> "km"
+            has(17) -> "lo"
+            has(18) -> "my"
             // Han-only text is not enough to distinguish Chinese from Japanese written without
             // kana. Keep it ambiguous so ML Kit or an explicit source-language selection can decide.
             hanDominates -> "auto"
