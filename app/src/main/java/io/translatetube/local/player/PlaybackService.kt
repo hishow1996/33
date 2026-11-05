@@ -14242,7 +14242,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             positionMs = positionMs,
             activeDubbingIndex = activeDubbingIndex,
             cueStartMs = { index -> state.lines[index].startMs },
-            isPlayableCue = { index -> DubbingTimeline.isPlayableCue(state.lines[index]) },
+            isPlayableCue = { index ->
+                val cue = state.lines[index]
+                DubbingTimeline.isPlayableCue(cue) &&
+                    !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(cue.text) &&
+                    !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(cue.zh)
+            },
         )
 
         synchronized(dubbingCatchUpLock) {
@@ -14557,6 +14562,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     "catch-up dubbing playback",
                     dubbingCuePending = catchUpIndex != null || dubLine >= 0,
                 )
+            } else if (dubLine >= 0 && d.isNonSpokenAnnotation(dubLine)) {
+                if (d.currentLineIdx() >= 0) d.stop()
+                syncOriginalVolumeWithDubbing(
+                    d,
+                    st,
+                    "non-spoken sound-description caption",
+                    dubbingCuePending = false,
+                )
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 d.logSilentCueError(dubLine)
                 val hint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName)
@@ -14604,7 +14617,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     d,
                     st,
                     "dubbing cue playback",
-                    dubbingCuePending = dubLine >= 0,
+                    dubbingCuePending = d.shouldSpeakCue(dubLine),
                 )
             } else if (dubLine >= 0) {
                 // If generation is falling behind real time, continuously enlarge the look-ahead
