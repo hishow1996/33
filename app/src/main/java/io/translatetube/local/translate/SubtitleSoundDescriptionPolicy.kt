@@ -119,7 +119,7 @@ internal object SubtitleSoundDescriptionPolicy {
         "music plays" to "音乐播放中",
         "music playing" to "音乐播放中",
     )
-    private val closingBracketAndSuffix = Regex("""(?:\\]|】|）|\\))([.!?。！？,，;；]*)$""")
+    private val closingBracketAndSuffix = Regex("""(?:\]|】|）|\))([.!?。！？,，;；]*)$""")
 
     /**
      * Uses a small deterministic glossary for common sound captions so every translation engine,
@@ -130,7 +130,7 @@ internal object SubtitleSoundDescriptionPolicy {
         if (text.isNullOrBlank()) return null
         val trimmed = text.trim()
         val match = bracketedBody.matchEntire(trimmed) ?: return null
-        val body = match.groupValues[1].trim().replace(Regex("""\\s+"""), " ")
+        val body = match.groupValues[1].trim().replace(Regex("""\s+"""), " ")
         val translated = knownEnglishTranslations[body.lowercase(java.util.Locale.ROOT)] ?: return null
         val opening = trimmed.firstOrNull { it in "[【（(" } ?: return null
         val closing = when (opening) {
