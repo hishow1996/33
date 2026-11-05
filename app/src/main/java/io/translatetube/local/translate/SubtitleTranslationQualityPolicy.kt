@@ -276,7 +276,7 @@ internal object SubtitleTranslationQualityPolicy {
         val cleaned = rawTokens.map { rawToken ->
             rawToken.trim { it in shortTokenBoundaryPunctuation }
         }
-        val letters = cleaned.flatMap { token -> token.filter { it.isLetter() } }
+        val letters = cleaned.flatMap { token -> token.filter { it.isLetter() }.toList() }
         if (letters.isEmpty()) return null
         val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
         if (scripts.size != 1 || scripts.single() !in setOf("CYRILLIC", "GREEK")) return null
