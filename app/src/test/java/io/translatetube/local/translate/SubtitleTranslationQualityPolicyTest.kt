@@ -343,6 +343,82 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun retainsExpandedProperNamesAcrossLongerPhrasesAndCasedScripts() {
+        val retainedNames = listOf(
+            Triple("New York", "New York", "en"),
+            Triple("New York Times", "New York Times", "en"),
+            Triple("The Hobbit", "The Hobbit", "en"),
+            Triple("Martin Luther King Jr.", "Martin Luther King Jr.", "en"),
+            Triple("J. K. Rowling", "J. K. Rowling", "en"),
+            Triple("Александр Пушкин", "Александр Пушкин", "ru"),
+            Triple("Владимир Путин", "Владимир Путин", "ru"),
+            Triple("Αλέξανδρος Ωνάσης", "Αλέξανδρος Ωνάσης", "el"),
+        )
+        retainedNames.forEach { (source, translated, language) ->
+            assertFalse(
+                "'$source' should be eligible as a retained proper name",
+                SubtitleTranslationQualityPolicy.isSourceEcho(source, translated, language),
+            )
+            assertFalse(
+                "'$source' should not fail Chinese target-language validation",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                    source, translated, language, "zh-CN",
+                ),
+            )
+        }
+
+        listOf("Hello World", "Good Morning", "My Friend John").forEach { ordinaryPhrase ->
+            assertTrue(
+                "'$ordinaryPhrase' must still be translated",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                    ordinaryPhrase, ordinaryPhrase, "en", "zh-CN",
+                ),
+            )
+        }
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Elon Musk", "David Beckham", "en", "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun singleWordCyrillicAndGreekNamesRequireRetryAndCommonGreetingsStayRejected() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                "Иван", "Иван", "ru", "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                "Αλέξανδρος", "Αλέξανδρος", "el", "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                "Привет", "Привет", "ru", "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
+                "Γεια", "Γεια", "el", "zh-CN",
+            ),
+        )
+
+        val firstAttempt = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "Иван", "Иван", "ru", "zh-CN",
+        )
+        assertFalse(firstAttempt.accepted)
+        assertEquals("SHORT_NAME_RETRY_REQUIRED", firstAttempt.reasonCode)
+
+        val confirmedRetry = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "Иван", "Иван", "ru", "zh-CN", acceptShortUnchanged = true,
+        )
+        assertTrue(confirmedRetry.accepted)
+        assertTrue(confirmedRetry.shortUntranslatedAccepted)
+    }
+
+    @Test
     fun diagnosticEvidenceExplainsHanScriptEchoAndSpeakabilityChecks() {
         val evidence = SubtitleTranslationQualityPolicy.diagnosticEvidence(
             sourceText = "Hello world",
