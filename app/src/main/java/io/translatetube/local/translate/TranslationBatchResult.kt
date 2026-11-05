@@ -126,10 +126,13 @@ internal data class TranslationBatchResult(
                     else -> {
                         // Keep the first accepted translation for duplicate indices; a later
                         // rejected or blank output must never erase it.
+                        val acceptedValue = requireNotNull(value) {
+                            "Accepted subtitle translation must not be null"
+                        }
                         if (translated[sourceIndex].isNullOrEmpty()) {
-                            translated[sourceIndex] = value
+                            translated[sourceIndex] = acceptedValue
                         } else {
-                            translated.putIfAbsent(sourceIndex, value)
+                            translated.putIfAbsent(sourceIndex, acceptedValue)
                         }
                         missing.remove(sourceIndex)
                         rejectionByIndex.remove(sourceIndex)

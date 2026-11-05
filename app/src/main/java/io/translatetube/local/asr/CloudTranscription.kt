@@ -522,7 +522,7 @@ object CloudTranscription {
                 io.translatetube.local.util.AppLogStore.error(
                     context.applicationContext,
                     "CloudTranscription",
-                    "$providerName 云端转写$stage失败",
+                    "$providerName 云端转写${stage}失败",
                     failure,
                     diagnosticContext = audioDiagnostics + mapOf(
                         "失败子阶段" to stage,

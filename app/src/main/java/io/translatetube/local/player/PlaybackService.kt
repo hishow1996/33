@@ -9349,7 +9349,7 @@ updateUiForSession(key, pipelineGeneration) {
                                         org.json.JSONObject(storedPartialAsr.linesJson).optInt("version", -1).toString()
                                     }.getOrDefault("JSON 无法解析"),
                                     "检查点 JSON 字符数" to storedPartialAsr.linesJson.length.toString(),
-                                    "检查点源语言" to storedPartialAsr.sourceLang.ifBlank { "未记录" },
+                                    "检查点源语言" to storedPartialAsr.srcLang.ifBlank { "未记录" },
                                     "检查点更新时间 ms" to storedPartialAsr.updatedAt.toString(),
                                     "当前 VAD 总分段数" to segs.size.toString(),
                                     "当前音频签名与检查点是否兼容" to "校验未通过或恢复过程发生异常",
@@ -11553,7 +11553,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 },
                                 "当前重试次数（0表示首次请求）" to attempt.toString(),
                                 "处理结果" to "请求异常，按当前实现立即停止此翻译任务（此异常路径未执行行级重试）",
-                                "异常类型链" to generateSequence(e) { it.cause }
+                                "异常类型链" to generateSequence<Throwable>(e) { it.cause }
                                     .take(8)
                                     .joinToString(" -> ") { it.javaClass.simpleName },
                                 "异常原因链" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.causeChain(e),

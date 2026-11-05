@@ -255,7 +255,7 @@ internal object SubtitleTranslationQualityPolicy {
         value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { token ->
             val letters = token.filter { it.isLetter() }
             letters.isNotEmpty() && letters.first().isUpperCase() &&
-                (letters.size == 1 || letters.drop(1).all { it.isLowerCase() })
+                (letters.length == 1 || letters.drop(1).all { it.isLowerCase() })
         }
 
     /** Same spelling, or one insertion/deletion/substitution on a sufficiently long name token. */

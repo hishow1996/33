@@ -1187,12 +1187,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         indeterminate = true,
                         stageMessage = "正在检查语音检测模型…",
                     )
+                    val vadUrls = listOf(
+                        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+                        "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+                    )
+                    var vadLastFailure: Exception? = null
                     if (!ModelFiles.isValidVadModel(vad)) {
-                        val vadUrls = listOf(
-                            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
-                            "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
-                        )
-                        var vadLastFailure: Exception? = null
                         for ((index, url) in ResumableModelArchiveDownloader.orderSourcesByResumeProgress(vad, vadUrls)) {
                             state.value = ModelState(
                                 status = ModelStatus.DOWNLOADING,
