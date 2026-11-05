@@ -2000,7 +2000,7 @@ internal object SubtitleTranslationQualityPolicy {
         "ಬೆಂಗಳೂರು", "ಮೈಸೂರು",
         "തിരുവനന്തപുരം", "കൊച്ചി",
         "කොළඹ", "මහනුවර",
-        "თბილისი", "ბათумი", "Երևան", "Գյումրի",
+        "თბილისი", "ბათუმი", "Երևան", "Գյումրի",
         "አዲስአበባ", "ድሬዳዋ",
     )
     private val commonNonLatinNameWords = setOf(

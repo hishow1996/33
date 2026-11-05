@@ -94,6 +94,7 @@ class SubtitleTranslationRelaxationPolicyTest {
             Triple("കൊച്ചി", "ml", "കൊച്ചി"),
             Triple("කොළඹ", "si", "කොළඹ"),
             Triple("თბილისი", "ka", "თბილისი"),
+            Triple("ბათუმი", "ka", "ბათუმი"),
             Triple("Երևան", "hy", "Երևան"),
             Triple("ድሬዳዋ", "am", "ድሬዳዋ"),
         ).forEach { (source, language, unchanged) ->
