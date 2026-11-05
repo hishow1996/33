@@ -317,9 +317,7 @@ internal object AppLogAiReport {
             append("设备：").append(clipped(AppLogStore.redactForExport(device), 64))
                 .append("；Android ").append(clipped(AppLogStore.redactForExport(androidVersion), 32)).append('\n')
             append("主故障：").append(primary.level).append(" / ")
-                .append(clipped(AppLogStore.redactForExport(primary.tag), 48)).append(" / ")
-                .append(clipped(AppLogStore.redactForExport(primary.message), 180)).append('\n')
-            append("主事件 ID：").append(primary.eventId.ifBlank { "旧版日志/无 ID" }).append('\n')
+                .append(clipped(AppLogStore.redactForExport(primary.tag), 48)).append('\n')
             append("会话：").append(primary.sessionId.ifBlank { "旧版日志/未知" })
             if (primary.operationId.isNotBlank()) {
                 append("；操作：").append(clipped(AppLogStore.redactForExport(primary.operationId), 64))
@@ -471,7 +469,7 @@ internal object AppLogAiReport {
             .put("processingProgress", clipped(AppLogStore.redactForExport(event.diagnosticContext["当前处理步骤"].orEmpty()), 160))
             .put("processingFlow", clipped(event.diagnosticContext["处理流程"].orEmpty(), 64))
             .put("thread", clipped(AppLogStore.redactForExport(event.thread), 80))
-            .put("diagnosticContext", incidentContextJson(event.diagnosticContext, maxFields = 14, maxValueChars = 160))
+            .put("diagnosticContext", incidentContextJson(event.diagnosticContext, maxFields = 12, maxValueChars = 140))
             .put("diagnosticContextBudget", diagnosticContextBudgetJson(event))
             .put("diagnosticCoverage", compactIncidentCoverageJson(event))
             .put("details", clippedDetails)
@@ -563,25 +561,25 @@ internal object AppLogAiReport {
     private fun compactIncidentExceptionJson(
         snapshot: AppLogExceptionSnapshot,
         depth: Int = 0,
-        nodeBudget: IntArray = intArrayOf(12),
+        nodeBudget: IntArray = intArrayOf(6),
     ): JSONObject {
         if (depth >= 8 || nodeBudget[0] <= 0) {
             return JSONObject().put("truncated", true)
         }
         nodeBudget[0]--
         val frames = JSONArray()
-        snapshot.stackFrames.take(3).forEach { frame ->
+        snapshot.stackFrames.take(2).forEach { frame ->
             frames.put(
                 JSONObject()
-                    .put("class", clipped(AppLogStore.redactForExport(frame.className), 120))
-                    .put("method", clipped(AppLogStore.redactForExport(frame.methodName), 96))
-                    .put("file", clipped(AppLogStore.redactForExport(frame.fileName.orEmpty()), 72))
+                    .put("class", clipped(AppLogStore.redactForExport(frame.className), 100))
+                    .put("method", clipped(AppLogStore.redactForExport(frame.methodName), 80))
+                    .put("file", clipped(AppLogStore.redactForExport(frame.fileName.orEmpty()), 64))
                     .put("line", frame.lineNumber),
             )
         }
         val result = JSONObject()
             .put("type", clipped(AppLogStore.redactForExport(snapshot.type), 140))
-            .put("message", clipped(AppLogStore.redactForExport(snapshot.message), 240))
+            .put("message", clipped(AppLogStore.redactForExport(snapshot.message), 190))
             .put("stackFrames", frames)
             .put("truncated", snapshot.truncated || snapshot.stackFrames.size > 3 || depth >= 7)
         snapshot.cause?.let {
