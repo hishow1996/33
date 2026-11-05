@@ -235,7 +235,8 @@ internal object SubtitleTranslationQualityPolicy {
         // Kanji-only cues are different: they may be Japanese, so an unchanged Han-only term must
         // not bypass source-echo validation merely because it appears in a proper-name allowlist.
         val ambiguousHan = SubtitleLanguageDetector.isHanDominantAmbiguous(sourceText)
-        if (isNonTranslatableCue(sourceText) && !ambiguousHan) return false
+        val knownUncasedProperName = normalize(sourceText) in knownUncasedScriptProperNames
+        if (isNonTranslatableCue(sourceText) && (!ambiguousHan || knownUncasedProperName)) return false
         val source = normalize(sourceText)
         val translated = normalize(translatedText)
         return source.isNotEmpty() && source == translated
