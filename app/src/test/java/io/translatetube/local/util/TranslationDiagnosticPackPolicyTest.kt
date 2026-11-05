@@ -55,4 +55,76 @@ class TranslationDiagnosticPackPolicyTest {
         val records = listOf(row(1, firstId, "event"))
         assertTrue(TranslationDiagnosticPackPolicy.relatedRecords(records, "bad-id").isEmpty())
     }
+
+    @Test
+    fun incidentRepairMergeIncludesEveryMatchingTranslationEventAndCorrelatedContext() {
+        val start = row(10, firstId, "任务开始")
+        val response = row(20, firstId, "模型响应")
+        val selected = row(30, firstId, "当前故障")
+        val unrelatedTranslation = row(25, secondId, "另一条翻译任务")
+        val context = AppLogRecord(
+            timestampMs = 22,
+            level = "INFO",
+            tag = "Translation",
+            message = "同操作上下文",
+            details = "当前请求上下文",
+            thread = "DefaultDispatcher-worker-1",
+        )
+
+        val merged = TranslationDiagnosticPackPolicy.mergeIncidentRecords(
+            allRecords = listOf(start, response, selected, unrelatedTranslation, context),
+            incidentContextRecords = listOf(selected, context),
+            selected = selected,
+        )
+
+        assertEquals(
+            listOf("任务开始", "模型响应", "同操作上下文", "当前故障"),
+            merged.map { it.message },
+        )
+        assertFalse(merged.any { it.message == "另一条翻译任务" })
+    }
+
+    @Test
+    fun incidentRepairMergeNeverDropsTranslationEventsBeyondOrdinaryContextLimit() {
+        val translationEvents = (0 until 90).map { index ->
+            row(index.toLong(), firstId, "translation-event-$index")
+        }
+        val selected = translationEvents.last()
+
+        val merged = TranslationDiagnosticPackPolicy.mergeIncidentRecords(
+            allRecords = translationEvents,
+            incidentContextRecords = listOf(selected),
+            selected = selected,
+            maxContextRecords = 80,
+        )
+
+        assertEquals(90, merged.size)
+        assertEquals("translation-event-0", merged.first().message)
+        assertEquals("translation-event-89", merged.last().message)
+    }
+
+    @Test
+    fun incidentRepairMergeKeepsExistingContextLimitWithoutTranslationDiagnosticId() {
+        val context = (0 until 90).map { index ->
+            AppLogRecord(
+                timestampMs = index.toLong(),
+                level = "INFO",
+                tag = "Playback",
+                message = "context-$index",
+                details = "context",
+                thread = "main",
+            )
+        }
+        val selected = context.last()
+
+        val merged = TranslationDiagnosticPackPolicy.mergeIncidentRecords(
+            allRecords = context,
+            incidentContextRecords = context,
+            selected = selected,
+            maxContextRecords = 80,
+        )
+
+        assertEquals(80, merged.size)
+        assertTrue(merged.any { it.message == selected.message })
+    }
 }
