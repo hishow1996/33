@@ -267,7 +267,7 @@ internal object AppLogAiReport {
             if (ordered.isEmpty()) append("（当前没有可导出的日志记录）\n")
 
             append("\n## 6. AI 修复要求\n")
-            append("1. 先按 sessionId + operationId 分组，再查看五阶段诊断摘要；operationFailureRole=FIRST_RECORDED_ANOMALY_CANDIDATE 仅代表最早已记录异常，不能直接认定为真实根因。\n")
+            append("1. 先按 sessionId + operationId 分组，不要把不同进程会话混为一次任务；再查看五阶段诊断摘要。operationFailureRole=FIRST_RECORDED_ANOMALY_CANDIDATE 仅代表最早已记录异常，不能直接认定为真实根因。\n")
             append("2. 对同一任务后续异常逐条比较异常树、根因消息、首个应用栈帧和阶段字段；明确区分连锁错误、重复记录、并行故障及证据不足。\n")
             append("3. 不得仅凭时间先后断言因果；区分日志已证实的事实、合理假设和缺失证据。\n")
             append("4. 优先读取 processingStage、processingProgress、processingFlow 和 diagnosticContext；核对该异常发生时的阶段、子步骤、引擎及字幕数量。空字段表示当时未采集，不得猜测。\n")

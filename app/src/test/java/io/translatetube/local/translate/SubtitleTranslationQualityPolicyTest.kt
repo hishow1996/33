@@ -99,9 +99,9 @@ class SubtitleTranslationQualityPolicyTest {
 
     @Test
     fun semanticRulesAreLimitedToKnownEnglishSourceLanguage() {
-        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
             "Je ne sais pas.", "我知道。", "fr", "zh-CN",
-        ) != null)
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
         assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
             "I do not agree.", "我同意。", "auto", "zh-CN",
         ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))

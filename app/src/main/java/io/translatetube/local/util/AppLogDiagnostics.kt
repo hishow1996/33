@@ -300,8 +300,13 @@ object AppLogDiagnostics {
                 ),
             )
         }
-        if (tag.contains("websourcedetection") || tag.contains("websourceverify") ||
-            tag.contains("hls") || tag.contains("webvideoparse") || tag.contains("pikpak")
+        val hasBusinessOutcomeEvidence = hasAny(
+            "没有确认可直接播放", "未发现可播放", "候选源总数", "已验证可访问的候选源数",
+            "请求完成，但没有", "未启动 yt-dlp", "no playable source", "empty result",
+        )
+        if ((tag.contains("websourcedetection") || tag.contains("websourceverify") ||
+                tag.contains("hls") || tag.contains("webvideoparse") || tag.contains("pikpak")) &&
+            !hasBusinessOutcomeEvidence
         ) {
             return result(
                 "网页媒体源检测/解析异常",
@@ -432,18 +437,17 @@ object AppLogDiagnostics {
     }
 
     private fun evidence(record: AppLogRecord, terms: List<String>): String {
-        record.diagnosticContext.toSortedMap().forEach { (key, value) ->
-            if (terms.any {
-                    key.contains(it, ignoreCase = true) || value.contains(it, ignoreCase = true)
-                }
-            ) {
-                return (key + "：" + value).trim().take(360)
+        // Honor caller priority; a generic exception-capture status must not mask a call site.
+        for (term in terms) {
+            val entry = record.diagnosticContext.entries.sortedBy { it.key }.firstOrNull { (key, value) ->
+                key.contains(term, ignoreCase = true) || value.contains(term, ignoreCase = true)
             }
+            if (entry != null) return (entry.key + "：" + entry.value).trim().take(360)
         }
-        for (line in focusedDetails(record.details).lineSequence()) {
-            if (terms.any { line.contains(it, ignoreCase = true) }) {
-                return line.trim().take(360)
-            }
+        val lines = focusedDetails(record.details).lineSequence().toList()
+        for (term in terms) {
+            val line = lines.firstOrNull { it.contains(term, ignoreCase = true) }
+            if (line != null) return line.trim().take(360)
         }
         return record.message.ifBlank { record.tag }.take(360)
     }

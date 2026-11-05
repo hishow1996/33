@@ -45,7 +45,7 @@ internal object AppLogDiagnosticCoveragePolicy {
         return when {
             containsAny(scope, "translation", "字幕翻译", "翻译阶段", "翻译请求", "译文校验") -> "字幕翻译"
             containsAny(scope, "texttospeech", "system tts", "tts", "dubbing", "配音合成", "语音合成", "朗读") -> "语音合成"
-            containsAny(scope, "transcrib", "speech recognition", "sensevoice", "whisper", "语音转写", "语音识别") -> "语音转写"
+            containsAny(scope, "transcrib", "speech recognition", "speechrecognition", "sensevoice", "whisper", "语音转写", "语音识别") -> "语音转写"
             containsAny(scope, "playback", "player", "audiotrack", "播放器", "播放同步", "音轨输出") -> "播放/音频输出"
             containsAny(scope, "youtube", "yt-dlp", "newpipe", "webview", "websource", "hls", "网页视频", "媒体解析", "视频解析", "媒体下载") -> "视频解析/媒体获取"
             containsAny(scope, "modeldownload", "model download", "storage", "cache", "install", "文件安装", "存储", "缓存", "模型下载") -> "下载/存储"
