@@ -433,6 +433,8 @@ internal object AppLogAiReport {
         val engines = incidentContextJson(event.diagnosticContext, maxFields = 3, maxValueChars = 72)
         if (engines.length() > 0) result.put("context", engines)
         if (isIssue) {
+            if (event.issueKey.isNotBlank()) result.put("issueKey", event.issueKey)
+            if (event.resolvesIssueKey.isNotBlank()) result.put("resolvesIssueKey", event.resolvesIssueKey)
             result.put("errorClass", clipped(AppLogStore.redactForExport(event.errorClass), 96))
             result.put("rootCause", clipped(AppLogStore.redactForExport(event.rootCauseMessage), 160))
             result.put("appFrame", clipped(AppLogStore.redactForExport(event.firstAppStackFrame), 160))
