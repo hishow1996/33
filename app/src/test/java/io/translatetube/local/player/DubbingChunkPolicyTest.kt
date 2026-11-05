@@ -68,6 +68,15 @@ class DubbingChunkPolicyTest {
     }
 
     @Test
+    fun symbolOnlySourceCueRemainsAnEmptyTimelineMarkerWithoutTranslation() {
+        val symbolOnly = cue(0, 0L, 1_000L, 1, "♪♪").copy(zh = null)
+        val chunks = DubbingChunkPolicy.buildChunks(listOf(symbolOnly))
+        assertEquals(1, chunks.size)
+        assertEquals(listOf(0), chunks.single().lineIndices)
+        assertEquals("", chunks.single().text)
+    }
+
+    @Test
     fun playableCueWithoutChineseTranslationIsRejectedInsteadOfUsingSourceText() {
         val sourceOnly = cue(0, 0L, 1_000L, 1).copy(zh = null)
 
