@@ -249,4 +249,45 @@ class AppLogAiReportTest {
         assertTrue(report.contains("diagnosticContextBudget"))
     }
 
+
+    @Test
+    fun incidentRepairReportIdentifiesMergedTranslationDiagnosticEvidence() {
+        val diagnosticId = "8caaf8ef-8d5b-437d-b292-5fc859a6e17d"
+        val target = AppLogRecord(
+            timestampMs = 20_000L,
+            level = "ERROR",
+            tag = "Translation",
+            message = "字幕翻译失败",
+            details = "故障上下文：\\n- 翻译诊断 ID：$diagnosticId",
+            thread = "DefaultDispatcher-worker-2",
+            eventId = "translation-failure",
+            sessionId = "session-a",
+            sequence = 2L,
+            operationId = "translation-operation",
+        )
+        val related = target.copy(
+            timestampMs = 19_000L,
+            level = "INFO",
+            message = "翻译任务开始",
+            details = "故障上下文：\\n- 翻译诊断 ID：$diagnosticId",
+            eventId = "translation-start",
+            sequence = 1L,
+        )
+
+        val report = AppLogAiReport.renderIncident(
+            records = listOf(related, target),
+            target = target,
+            exportedAt = "now",
+            appVersion = "1.0",
+            device = "Test Device",
+            androidVersion = "9 (API 28)",
+            writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
+        )
+
+        assertTrue(report.contains("翻译诊断 ID：$diagnosticId"))
+        assertTrue(report.contains("翻译关联事件数：2"))
+        assertTrue(report.contains("翻译专项要求"))
+        assertTrue(report.contains("translation-start"))
+        assertTrue(report.contains("translation-failure"))
+    }
 }
