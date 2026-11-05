@@ -184,7 +184,14 @@ internal object SubtitleTranslationQualityPolicy {
             } else {
                 """(?<![\\p{L}])"""
             }
-            leftBoundary + Regex.escape(alias) + "(?![\\p{L}])"
+            // Chinese numeric expressions can be consecutive ("两天三晚") or followed by
+            // particles ("三晚的旅行"). Permit those boundaries only for Han unit aliases.
+            val rightBoundary = if (chineseAlias) {
+                """(?:(?![\p{L}])|(?=[零〇一二两兩三四五六七八九十百千万萬亿億])|(?=的|后|後|前|内|內|左右|以上|以下|旅行|行程))"""
+            } else {
+                "(?![\\p{L}])"
+            }
+            leftBoundary + Regex.escape(alias) + rightBoundary
         }
         unit.id to Regex("(?:${aliasPatterns.joinToString("|")})", RegexOption.IGNORE_CASE)
     }
@@ -225,8 +232,10 @@ internal object SubtitleTranslationQualityPolicy {
         if (isPunctuationOnlyTranslation(sourceText, translatedText)) return true
 
         // Numbers, symbol-only cues, URLs and email addresses are valid even when unchanged.
-        // Treating them as failed translations can make a perfectly valid subtitle batch fail.
-        if (isNonTranslatableCue(sourceText)) return false
+        // Kanji-only cues are different: they may be Japanese, so an unchanged Han-only term must
+        // not bypass source-echo validation merely because it appears in a proper-name allowlist.
+        val ambiguousHan = SubtitleLanguageDetector.isHanDominantAmbiguous(sourceText)
+        if (isNonTranslatableCue(sourceText) && !ambiguousHan) return false
         val source = normalize(sourceText)
         val translated = normalize(translatedText)
         return source.isNotEmpty() && source == translated
