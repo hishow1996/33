@@ -16,8 +16,8 @@ class ProcessingErrorDisplayPolicyTest {
             error = "ReCaptchaException: HTTP 429 too many requests at www.youtube.com",
         )
 
-        assertTrue(message.startsWith("请求频率受限："))
-        assertTrue(message.contains("YouTube 视频解析失败："))
+        assertTrue(message.startsWith("YouTube 视频解析失败："))
+        assertFalse(message.startsWith("请求频率受限："))
         assertFalse(message.contains("错误分类"))
         assertFalse(message.contains("\n"))
         assertTrue(message.endsWith("。"))
@@ -35,8 +35,8 @@ class ProcessingErrorDisplayPolicyTest {
             progress = "网页视频解析",
             error = "blob URL MSE media source is not directly playable",
         )
-        assertTrue(message.startsWith("网页媒体源不可直接访问："))
-        assertTrue(message.contains("网页视频解析失败："))
+        assertTrue(message.startsWith("网页视频解析失败："))
+        assertFalse(message.startsWith("网页媒体源不可直接访问："))
         assertFalse(message.contains("\n"))
         assertTrue(message.endsWith("。"))
         assertTrue(message.contains("内嵌媒体流"))
@@ -50,8 +50,8 @@ class ProcessingErrorDisplayPolicyTest {
             progress = "读取本地视频",
             error = "java.io.FileNotFoundException: /private/path/video.mp4 (No such file)",
         )
-        assertTrue(message.startsWith("视频文件不存在："))
-        assertTrue(message.contains("本地视频解析失败："))
+        assertTrue(message.startsWith("本地视频解析失败："))
+        assertFalse(message.startsWith("视频文件不存在："))
         assertFalse(message.contains("\n"))
         assertTrue(message.endsWith("。"))
         assertTrue(message.contains("不存在或已移动"))
@@ -214,7 +214,15 @@ class ProcessingErrorDisplayPolicyTest {
             val display = ProcessingErrorDisplayPolicy.message(
                 "local:video", phase, progress, error,
             )
-            assertTrue(display.startsWith("$expectedCategory："))
+            assertFalse(display.startsWith("$expectedCategory："))
+            val expectedStage = when (phase) {
+                Phase.DOWNLOADING_AUDIO -> "音频提取失败："
+                Phase.TRANSCRIBING -> "语音转写失败："
+                Phase.TRANSLATING -> "字幕翻译失败："
+                Phase.SYNTHESIZING -> "配音合成失败："
+                else -> "视频解析失败："
+            }
+            assertTrue(display.startsWith(expectedStage))
             assertFalse(display.contains("错误分类"))
             assertFalse(display.contains("\n"))
             assertTrue(display.endsWith("。"))
@@ -229,7 +237,8 @@ class ProcessingErrorDisplayPolicyTest {
             progress = "第 35 条字幕翻译请求",
             error = "SocketTimeoutException: connection timed out to api.private.example",
         )
-        assertTrue(display.startsWith("网络连接异常："))
+        assertTrue(display.startsWith("字幕翻译失败："))
+        assertFalse(display.startsWith("网络连接异常："))
         assertFalse(display.contains("错误分类"))
         assertFalse(display.contains("\n"))
         assertTrue(display.endsWith("。"))
@@ -248,8 +257,7 @@ class ProcessingErrorDisplayPolicyTest {
         )
         assertFalse(message.contains("InternalParserException"))
         assertFalse(message.contains("private-host-token-123"))
-        assertTrue(message.startsWith("视频来源信息异常："))
-        assertTrue(message.contains("视频解析失败：未能获取视频信息"))
+        assertTrue(message.startsWith("YouTube 视频解析失败：未能获取视频信息"))
         assertFalse(message.contains("错误分类"))
         assertFalse(message.contains("\n"))
         assertTrue(message.endsWith("。"))

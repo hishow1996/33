@@ -91,20 +91,20 @@ internal object ProcessingErrorDisplayPolicy {
             else -> playbackMessage(raw)
         }
         val category = classifyErrorCategory(resolvedPhase, source, raw, status)
-        return formatSingleSentence(category, detail)
+        return formatSingleSentence(detail)
     }
 
     /**
      * Keep the category and its explanation in one natural sentence.
      * Never add a visible category heading or a line break to player error hints.
      */
-    private fun formatSingleSentence(category: String, detail: String): String {
+    private fun formatSingleSentence(detail: String): String {
         val cleanDetail = detail
             .replace(Regex("\\s*[\\r\\n]+\\s*"), " ")
             .replace(Regex("\\s{2,}"), " ")
             .trim()
             .trimEnd('。', '！', '？', '.', '!', '?')
-        return "$category：$cleanDetail。"
+        return "$cleanDetail。"
     }
 
     /** A short, stable category that can be scanned quickly on the player and processing cards. */
@@ -206,7 +206,7 @@ internal object ProcessingErrorDisplayPolicy {
         fun hasAny(vararg needles: String): Boolean = needles.any(raw::contains)
         return when {
             hasAny(
-                "视频解析", "解析视频", "解析网页", "解析器", "获取视频信息",
+                "正在解析", "解析 YouTube 视频", "视频解析", "解析视频", "解析网页", "解析器", "获取视频信息",
                 "视频源解析", "blob:", "mse", "网页内嵌流", "yt-dlp", "newpipe", "extractor", "parsing video",
             ) -> Phase.PARSING
             hasAny(
@@ -258,13 +258,13 @@ internal object ProcessingErrorDisplayPolicy {
                     "age-restricted" in raw || "confirm your age" in raw ||
                         "年龄限制" in raw || "年龄验证" in raw ->
                         "该视频需要年龄验证"
+                    status == 429 || "too many requests" in raw || "rate limit" in raw ||
+                        "请求过于频繁" in raw ->
+                        "平台请求过于频繁，请稍后重试"
                     "login_required" in raw || "sign in" in raw || "login required" in raw ||
                         "recaptcha" in raw || "captcha" in raw || "not a bot" in raw ||
                         "需要登录" in raw || "需要验证" in raw ->
                         "平台要求登录或完成验证"
-                    status == 429 || "too many requests" in raw || "rate limit" in raw ||
-                        "请求过于频繁" in raw ->
-                        "平台请求过于频繁，请稍后重试"
                     status == 404 || "contentnotavailable" in raw || "视频不可用" in raw ->
                         "视频不存在或已不可用"
                     status == 401 || status == 403 ->
