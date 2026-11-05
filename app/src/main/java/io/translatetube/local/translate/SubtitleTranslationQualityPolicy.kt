@@ -1710,6 +1710,9 @@ internal object SubtitleTranslationQualityPolicy {
         // Common English words remain translatable unless they are a particle in a recognized
         // proper-name span from the original cue (for example "The Hobbit" or "New York").
         if (normalized in commonShortWords && normalized !in sourceProperNameTokens) return false
+        if (normalized in sourceProperNameTokens && normalized in knownUncasedScriptProperNames) {
+            return true
+        }
         // A model must not invent an all-caps word or a model/brand name and have it exempted.
         if (token.any { it.isDigit() }) return normalized in sourceTokens
         if (letters.length >= 2 && letters.all { it.isUpperCase() }) {
