@@ -70,6 +70,44 @@ class SubtitleTermContinuityPolicyTest {
     }
 
     @Test
+    fun extractsCyrillicAndGreekProperNamesButFiltersSentenceOpenersAndGreetings() {
+        val russianTerms = SubtitleTermContinuityPolicy.extractStableTerms(
+            listOf("Сегодня Александр Пушкин встретил Владимира Путина."),
+            sourceLanguage = "ru",
+        )
+        assertTrue(russianTerms.contains("александр"))
+        assertTrue(russianTerms.contains("пушкин"))
+        assertTrue(russianTerms.contains("владимира"))
+        assertTrue(russianTerms.contains("путина"))
+        assertFalse(russianTerms.contains("сегодня"))
+        assertFalse(russianTerms.contains("привет"))
+
+        val greekTerms = SubtitleTermContinuityPolicy.extractStableTerms(
+            listOf("Αλέξανδρος Ωνάσης είπε καλημέρα."),
+            sourceLanguage = "el",
+        )
+        assertTrue(greekTerms.contains("αλέξανδρος"))
+        assertTrue(greekTerms.contains("ωνάσης"))
+        assertFalse(greekTerms.contains("καλημέρα"))
+    }
+
+    @Test
+    fun recognizesKnownNamesAndPlacesInScriptsWithoutLetterCase() {
+        val terms = SubtitleTermContinuityPolicy.extractStableTerms(
+            listOf("東京と大阪、서울とدبي、ירושלים。"),
+            sourceLanguage = "auto",
+        )
+        assertTrue(terms.contains("東京"))
+        assertTrue(terms.contains("大阪"))
+        assertTrue(terms.contains("서울"))
+        assertTrue(terms.contains("دبي"))
+        assertTrue(terms.contains("ירושלים"))
+
+        assertTrue(SubtitleTermContinuityPolicy.containsStableTerm("東京にも行きます。", terms, "ja"))
+        assertTrue(SubtitleTermContinuityPolicy.containsStableTerm("서울에 다시 왔습니다.", terms, "ko"))
+    }
+
+    @Test
     fun autoSourceLanguageRecognizesJapaneseAndKoreanTermScriptsConservatively() {
         assertEquals("ja", SubtitleTermContinuityPolicy.resolveLanguage(
             listOf("田中さんはオープンAIを使います。"),
