@@ -172,6 +172,27 @@ class SubtitleCacheValidationPolicyTest {
         assertEquals(listOf("John", null, "Sara", null, null, null, null), restored.map { it.zh })
     }
     @Test
+    fun restoresConfirmedCyrillicNamesButNotUntranslatedGreetings() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "Иван"),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "Привет"),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "Иван", "Иван"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "Привет", "Привет"),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source,
+            cached,
+            sourceLanguage = "ru",
+            targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected confirmed proper-name cache row to restore")
+
+        assertEquals(listOf("Иван", null), restored.map { it.zh })
+    }
+
+    @Test
     fun treatsCachedSourceLanguageParaphrasesAsMissingForChineseTarget() {
         val source = listOf(
             io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "I think so."),
