@@ -89,6 +89,12 @@ internal object DubbingTranslationPolicy {
             if (numericMismatchReason != null) {
                 return DubbingTranslationResolution(null, numericMismatchReason)
             }
+            val unitMismatchReason = SubtitleTranslationQualityPolicy.unitContentMismatchReason(
+                sourceText, cleaned, detectedSource, "zh",
+            )
+            if (unitMismatchReason != null) {
+                return DubbingTranslationResolution(null, unitMismatchReason)
+            }
             val mismatchReason = SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
                 sourceText, cleaned, detectedSource, "zh",
             )

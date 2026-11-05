@@ -612,4 +612,48 @@ class SubtitleTranslationQualityPolicyTest {
             ).orEmpty().contains("显式数字"),
         )
     }
+
+    @Test
+    fun rejectsExplicitUnitSubstitutionButAcceptsEquivalentUnitLabels() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.unitContentMismatchReason(
+                "The road is 5 km long.",
+                "这条路长5米。",
+                "en",
+                "zh-CN",
+            ).orEmpty().contains("单位类别不一致"),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.unitContentMismatchReason(
+                "The road is 5 km long.",
+                "这条路长5公里。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.unitContentMismatchReason(
+                "The package weighs 2 kilograms.",
+                "包裹重2千克。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.unitContentMismatchReason(
+                "The temperature is 20 °C.",
+                "温度是20华氏度。",
+                "en",
+                "zh-CN",
+            ).orEmpty().contains("单位类别不一致"),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.unitContentMismatchReason(
+                "The road is 5 km long.",
+                "这条路长五。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+    }
 }

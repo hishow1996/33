@@ -435,4 +435,19 @@ class TranslationBatchResultTest {
         assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("显式数字"))
         assertTrue(result.rejectedRows.single().qualityEvidence.orEmpty().contains("explicitNumericContentMismatch=true"))
     }
+
+    @Test
+    fun rejectsExplicitUnitChangesWithDedicatedDiagnosticCategory() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(3),
+            rawTranslations = listOf("这条路长5米。"),
+            sourceTexts = mapOf(3 to "The road is 5 km long."),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(result.translations.isEmpty())
+        assertEquals(listOf(3), result.missingIndices)
+        assertEquals(listOf("UNIT_CONTENT_MISMATCH"), result.rejectedRows.map { it.reasonCode })
+        assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("单位类别不一致"))
+    }
 }

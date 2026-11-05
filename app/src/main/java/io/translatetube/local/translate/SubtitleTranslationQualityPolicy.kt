@@ -22,6 +22,37 @@ internal object SubtitleTranslationQualityPolicy {
         "da", "fi", "cs", "sk", "hu", "ro", "bg", "el", "hr", "sr", "id",
     )
 
+    private data class ExplicitUnitAlias(val id: String, val aliases: List<String>)
+
+    // Only unambiguous, numeric-adjacent units are compared. Bare "m", "s", "g" and
+    // currency symbols are intentionally excluded because they are ambiguous in subtitles.
+    private val explicitUnitAliases = listOf(
+        ExplicitUnitAlias("km_per_hour", listOf("km/h", "kph", "公里/小时", "千米/小时")),
+        ExplicitUnitAlias("miles_per_hour", listOf("mph", "miles per hour", "英里/小时")),
+        ExplicitUnitAlias("kilometer", listOf("kilometers", "kilometer", "kilometres", "kilometre", "km", "公里", "千米")),
+        ExplicitUnitAlias("mile", listOf("miles", "mile", "英里")),
+        ExplicitUnitAlias("centimeter", listOf("centimeters", "centimeter", "centimetres", "centimetre", "cm", "厘米", "公分")),
+        ExplicitUnitAlias("millimeter", listOf("millimeters", "millimeter", "millimetres", "millimetre", "mm", "毫米")),
+        ExplicitUnitAlias("meter", listOf("meters", "meter", "metres", "metre", "米")),
+        ExplicitUnitAlias("kilogram", listOf("kilograms", "kilogram", "kg", "公斤", "千克")),
+        ExplicitUnitAlias("milligram", listOf("milligrams", "milligram", "mg", "毫克")),
+        ExplicitUnitAlias("gram", listOf("grams", "gram", "克")),
+        ExplicitUnitAlias("milliliter", listOf("milliliters", "milliliter", "millilitres", "millilitre", "ml", "毫升")),
+        ExplicitUnitAlias("liter", listOf("liters", "liter", "litres", "litre", "升", "公升")),
+        ExplicitUnitAlias("hour", listOf("hours", "hour", "hrs", "hr", "小时")),
+        ExplicitUnitAlias("minute", listOf("minutes", "minute", "mins", "min", "分钟")),
+        ExplicitUnitAlias("second", listOf("seconds", "second", "secs", "sec", "秒")),
+        ExplicitUnitAlias("celsius", listOf("°c", "celsius", "摄氏度")),
+        ExplicitUnitAlias("fahrenheit", listOf("°f", "fahrenheit", "华氏度")),
+        ExplicitUnitAlias("percent", listOf("percentages", "percentage", "percent", "%", "百分比", "百分之")),
+    )
+    private val explicitUnitMatches = explicitUnitAliases.map { unit ->
+        unit.id to Regex(
+            """(?<![\p{L}])(?:${unit.aliases.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) }})(?![\p{L}])""",
+            RegexOption.IGNORE_CASE,
+        )
+    }
+
     fun isSourceEcho(sourceText: String?, translatedText: String?, sourceLanguage: String): Boolean {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         val language = SourceLanguagePolicy.normalizeTag(sourceLanguage)
@@ -158,6 +189,10 @@ internal object SubtitleTranslationQualityPolicy {
                 sourceText, translatedText, sourceLanguage, targetLanguage,
             ) != null
         ) return false
+        if (unitContentMismatchReason(
+                sourceText, translatedText, sourceLanguage, targetLanguage,
+            ) != null
+        ) return false
         val sourceEcho = isSourceEcho(sourceText, translatedText, sourceLanguage)
         val targetMismatch = isTargetLanguageMismatch(sourceText, translatedText, sourceLanguage, targetLanguage)
         if (!sourceEcho && !targetMismatch) return true
@@ -209,6 +244,51 @@ internal object SubtitleTranslationQualityPolicy {
                 .getOrElse { signed }
         }
         .toList()
+
+
+    private fun explicitNumericUnits(value: String): List<String> {
+        if (value.isBlank()) return emptyList()
+        val numberMatches = explicitNumberPattern.findAll(value).toList()
+        if (numberMatches.isEmpty()) return emptyList()
+        val matches = explicitUnitMatches.flatMap { (unitId, pattern) ->
+            pattern.findAll(value).mapNotNull { match ->
+                val adjacentToNumber = numberMatches.any { number ->
+                    number.range.last < match.range.first &&
+                        match.range.first - number.range.last - 1 <= 4
+                }
+                if (adjacentToNumber) Triple(match.range.first, match.range.last, unitId) else null
+            }.toList()
+        }.sortedWith(compareBy<Triple<Int, Int, String>> { it.first }.thenByDescending { it.second - it.first })
+        val accepted = mutableListOf<Triple<Int, Int, String>>()
+        matches.forEach { candidate ->
+            if (accepted.none { existing ->
+                    candidate.first <= existing.second && existing.first <= candidate.second
+                }
+            ) accepted += candidate
+        }
+        return accepted.sortedBy { it.first }.map { it.third }
+    }
+
+    /**
+     * Reject an explicit unit substitution only when both sides expose a numeric-adjacent unit.
+     * Missing/word-rendered units are left to the translation model and broader semantic context.
+     */
+    fun unitContentMismatchReason(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String? {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
+        if (!SourceLanguagePolicy.isChinese(targetLanguage) ||
+            SourceLanguagePolicy.isChinese(sourceLanguage)
+        ) return null
+        val sourceUnits = explicitNumericUnits(sourceText)
+        val translatedUnits = explicitNumericUnits(translatedText)
+        if (sourceUnits.isEmpty() || translatedUnits.isEmpty()) return null
+        if (sourceUnits == translatedUnits) return null
+        return "原文和译文均出现明确数字单位，但单位类别不一致；原文单位数=${sourceUnits.size}，译文单位数=${translatedUnits.size}"
+    }
 
     /**
      * Conservative explicit-number guard. If the target has fewer numeric tokens, it may have
@@ -342,6 +422,9 @@ internal object SubtitleTranslationQualityPolicy {
         val numericMismatch = numericContentMismatchReason(
             sourceText, output, sourceLanguage, targetLanguage,
         )
+        val unitMismatch = unitContentMismatchReason(
+            sourceText, output, sourceLanguage, targetLanguage,
+        )
         val nonTranslatable = isNonTranslatableCue(sourceText)
         val sourceEcho = isSourceEcho(sourceText, output, sourceLanguage)
         val punctuationOnly = isPunctuationOnlyTranslation(sourceText, output)
@@ -367,6 +450,8 @@ internal object SubtitleTranslationQualityPolicy {
             append("; targetLanguageMismatch=").append(mismatch != null)
             append("; explicitNumericContentMismatch=").append(numericMismatch != null)
             append("; numericMismatchReason=").append(numericMismatch?.take(180) ?: "无")
+            append("; explicitUnitContentMismatch=").append(unitMismatch != null)
+            append("; unitMismatchReason=").append(unitMismatch?.take(180) ?: "无")
             append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
         }
     }

@@ -380,4 +380,24 @@ class SubtitleCacheValidationPolicyTest {
             ).zh,
         )
     }
+
+    @Test
+    fun explicitUnitMismatchIsNotRestoredOrWrittenBackToCache() {
+        val source = listOf(
+            SubLine(0, 0L, 1_000L, "The road is 5 km long."),
+            SubLine(1, 1_000L, 2_000L, "Goodbye."),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                0L, 1_000L, "The road is 5 km long.", "这条路长5米。",
+            ),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                1_000L, 2_000L, "Goodbye.", "再见。",
+            ),
+        )
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected the valid cache row to survive")
+        assertEquals(listOf(null, "再见。"), restored.map { it.zh })
+    }
 }

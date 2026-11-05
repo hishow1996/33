@@ -212,4 +212,15 @@ class DubbingTranslationPolicyTest {
         assertNull(result.text)
         assertTrue(result.reason.orEmpty().contains("显式数字"))
     }
+
+    @Test
+    fun rejectsExplicitUnitSubstitutionBeforeDubbing() {
+        val result = DubbingTranslationPolicy.resolveText(
+            "The road is 5 km long.",
+            "这条路长5米。",
+            "en",
+        )
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().contains("单位类别不一致"))
+    }
 }
