@@ -45,6 +45,9 @@ internal object SubtitleCacheValidationPolicy {
      * reopening the video retries only those rows.
      */
     fun sanitizeTranslationForStorage(line: SubLine, sourceLanguage: String): SubLine {
+        if (line.text.isNotBlank() && SubtitleTranslationQualityPolicy.hasNothingToSpeak(line.text)) {
+            return line.copy(zh = null)
+        }
         val cleaned = if (line.text.isBlank()) null else SubtitleParsers.cleanTranslatedText(line.zh)
         val accepted = cleaned?.takeIf {
             SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
