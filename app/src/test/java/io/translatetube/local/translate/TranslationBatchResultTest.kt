@@ -75,8 +75,19 @@ class TranslationBatchResultTest {
             targetLanguage = "zh-CN",
         )
 
-        assertEquals(mapOf(1 to "你好", 2 to "J. K. Rowling"), result.translations)
-        assertEquals(listOf(0), result.missingIndices)
+        assertEquals(mapOf(1 to "你好"), result.translations)
+        assertEquals(listOf(0, 2), result.missingIndices)
+
+        val afterRetry = TranslationBatchResult.from(
+            indices = listOf(2),
+            rawTranslations = listOf("J. K. Rowling"),
+            sourceTexts = mapOf(2 to "J. K. Rowling"),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+            acceptShortUnchanged = true,
+        )
+        assertEquals(mapOf(2 to "J. K. Rowling"), afterRetry.translations)
+        assertTrue(afterRetry.missingIndices.isEmpty())
     }
 
     @Test
