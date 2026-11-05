@@ -199,8 +199,12 @@ internal object SubtitleTermContinuityPolicy {
                     if (key.length >= 2 && key !in stopWords) result += key
                 }
             }
+            val normalizedText = normalize(text)
             knownUncasedScriptTerms.forEach { knownTerm ->
-                if (text.contains(knownTerm)) result += normalize(knownTerm)
+                val normalizedTerm = normalize(knownTerm)
+                if (normalizedTerm.isNotBlank() && normalizedText.contains(normalizedTerm)) {
+                    result += normalizedTerm
+                }
             }
             if (language == "ja") {
                 katakanaToken.findAll(text).forEach { match ->

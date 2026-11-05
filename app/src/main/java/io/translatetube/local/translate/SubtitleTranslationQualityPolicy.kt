@@ -261,7 +261,7 @@ internal object SubtitleTranslationQualityPolicy {
         // Kanji-only cues are different: they may be Japanese, so an unchanged Han-only term must
         // not bypass source-echo validation merely because it appears in a proper-name allowlist.
         val ambiguousHan = SubtitleLanguageDetector.isHanDominantAmbiguous(sourceText)
-        val knownUncasedProperName = normalize(sourceText) in knownUncasedScriptProperNames
+        val knownUncasedProperName = isKnownUncasedScriptProperName(sourceText)
         if (isNonTranslatableCue(sourceText) && (!ambiguousHan || knownUncasedProperName)) return false
         val source = normalize(sourceText)
         val translated = normalize(translatedText)
@@ -466,9 +466,13 @@ internal object SubtitleTranslationQualityPolicy {
         val numericUnitMismatch = numericUnitAssociationMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val unitMismatch = unitContentMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val semanticMismatch = semanticConsistencyMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
-        val shortNameCue = isAcceptableShortUntranslatedCue(
-            sourceText, translatedText, sourceLanguage, targetLanguage,
-        )
+        // Already-recognized entity cues (for example J. K. Rowling or a comma-separated
+        // entity list) have their own validation path and must not be forced through the
+        // narrower retry-only short-person-name rule.
+        val shortNameCue = !isNonTranslatableCue(sourceText) &&
+            isAcceptableShortUntranslatedCue(
+                sourceText, translatedText, sourceLanguage, targetLanguage,
+            )
         // A plain, exact, one-word person name can be retained on the first pass. Punctuation-
         // wrapped or multi-word names still use the targeted retry path; ordinary words are
         // excluded by the short-name recognizer above.
@@ -1479,7 +1483,7 @@ internal object SubtitleTranslationQualityPolicy {
         "me", "more", "most", "much", "must", "my", "name", "near", "need", "never", "new",
         "next", "nice", "no", "not", "now", "of", "off", "on", "one", "only", "or", "other",
         "our", "out", "over", "own", "please", "problem", "really", "right", "run", "same", "say",
-        "see", "she", "should", "so", "some", "something", "sorry", "still", "stop", "sure",
+        "see", "she", "should", "so", "some", "something", "sorry", "still", "stop", "sure", "oh",
         "take", "taxi", "than", "thank", "thanks", "that", "the", "their", "them", "then",
         "there", "these", "they", "thing", "think", "this", "time", "to", "too", "try", "two",
         "up", "us", "very", "wait", "want", "was", "we", "well", "were", "what", "when",
@@ -1942,7 +1946,9 @@ internal object SubtitleTranslationQualityPolicy {
         val retained = mutableSetOf<String>()
         tokens.forEach { raw ->
             val normalized = normalize(raw.trim { it in shortTokenBoundaryPunctuation })
-            if (normalized in knownUncasedScriptProperNames) retained += normalized
+            if (isKnownUncasedScriptProperName(raw.trim { it in shortTokenBoundaryPunctuation })) {
+                retained += normalized
+            }
         }
         SubtitleTermContinuityPolicy.extractHighConfidenceUncasedEntityTokens(
             sourceText, sourceLanguage,
@@ -2024,6 +2030,11 @@ internal object SubtitleTranslationQualityPolicy {
         "თბილისი", "ბათუმი", "Երևան", "Գյումրի",
         "አዲስአበባ", "ድሬዳዋ",
     )
+    private fun isKnownUncasedScriptProperName(value: String): Boolean {
+        val normalized = normalize(value)
+        return normalized.isNotEmpty() && knownUncasedScriptProperNames.any { normalize(it) == normalized }
+    }
+
     private val commonNonLatinNameWords = setOf(
         // Common Russian words/greetings are never accepted as names merely because they
         // appear alone or are title-cased by a subtitle provider.
@@ -2064,7 +2075,7 @@ internal object SubtitleTranslationQualityPolicy {
         val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
         if (scripts.size != 1) return false
 
-        if (normalized in knownUncasedScriptProperNames) return true
+        if (isKnownUncasedScriptProperName(item)) return true
         if (normalized in knownProperNamePhrases && isKnownTitlePhrase(tokens)) return true
 
         if (tokens.size == 1) {
@@ -2117,7 +2128,7 @@ internal object SubtitleTranslationQualityPolicy {
         if (normalizedValue in knownProperNamePhrases &&
             isKnownTitlePhrase(tokens)
         ) return true
-        if (normalizedValue in knownUncasedScriptProperNames) return true
+        if (isKnownUncasedScriptProperName(value)) return true
         if (tokens.isEmpty() || tokens.size > 5) return false
         // A sentence with an explicit question, exclamation or semicolon is never a name cue.
         if (value.any { it in "!?;:" }) return false
@@ -2194,6 +2205,7 @@ internal object SubtitleTranslationQualityPolicy {
             if (!isTitleCasedNameToken(token, allowInitials = true)) return false
             if (script == "LATIN" && word in commonShortWords) return false
             if (script != "LATIN" && word in commonNonLatinNameWords) return false
+            if (script == "LATIN" && word in properNameListStopWords) return false
             meaningfulTokens++
         }
         return meaningfulTokens > 0
