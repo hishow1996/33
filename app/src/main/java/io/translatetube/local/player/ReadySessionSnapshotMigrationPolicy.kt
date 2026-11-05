@@ -1,11 +1,16 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.translate.SubtitleTranslationQualityPolicy
 import org.json.JSONObject
 
 /** Structural validation for ready-session snapshots before a legacy copy can be discarded. */
 internal object ReadySessionSnapshotMigrationPolicy {
     private val keyHashPattern = Regex("^[0-9a-f]{32}$")
     private val fingerprintPattern = Regex("^[0-9a-f]{24}$")
+
+    /** Spoken source cues need a translation; symbol-only cues may legitimately stay silent. */
+    internal fun hasRequiredTranslationForCue(sourceText: String, translatedText: String?): Boolean =
+        SubtitleTranslationQualityPolicy.hasNothingToSpeak(sourceText) || !translatedText.isNullOrBlank()
 
     fun isUsableSnapshot(
         fileName: String,
@@ -45,14 +50,17 @@ internal object ReadySessionSnapshotMigrationPolicy {
                 val startMs = row.optLong("s", Long.MIN_VALUE)
                 val endMs = row.optLong("e", Long.MIN_VALUE)
                 val text = row.optString("t")
-                val translation = row.opt("zh")
+                val rawTranslation = row.opt("zh")
+                val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) {
+                    null
+                } else {
+                    rawTranslation.toString()
+                }
                 if (
                     startMs < 0L ||
                     endMs <= startMs ||
                     text.isBlank() ||
-                    translation == null ||
-                    translation == JSONObject.NULL ||
-                    translation.toString().isBlank() ||
+                    !hasRequiredTranslationForCue(text, translation) ||
                     row.optBoolean("oa", false)
                 ) {
                     return@runCatching false
@@ -100,12 +108,15 @@ internal object ReadySessionSnapshotMigrationPolicy {
                 val endMs = row.optLong("e", Long.MIN_VALUE)
                 val text = row.optString("t")
                 if (startMs < 0L || endMs <= startMs || text.isBlank()) return@runCatching false
-                val translation = row.opt("zh")
+                val rawTranslation = row.opt("zh")
+                val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) {
+                    null
+                } else {
+                    rawTranslation.toString()
+                }
                 if (
                     row.optBoolean("oa", false) ||
-                    translation == null ||
-                    translation == JSONObject.NULL ||
-                    translation.toString().isBlank()
+                    !hasRequiredTranslationForCue(text, translation)
                 ) obsolete = true
             }
             obsolete

@@ -194,7 +194,9 @@ internal object ReadySessionSnapshotStore {
             !fingerprintPattern.matches(fingerprint) ||
             state.lines.isEmpty() ||
             state.lines.size > MAX_SNAPSHOT_LINES ||
-            state.lines.any { it.zh.isNullOrBlank() } ||
+            state.lines.any {
+                !ReadySessionSnapshotMigrationPolicy.hasRequiredTranslationForCue(it.text, it.zh)
+            } ||
             state.phase != Phase.READY ||
             !state.dubbingOn ||
             state.dubbingHasErrors ||
@@ -368,7 +370,9 @@ internal object ReadySessionSnapshotStore {
                 val rawTranslation = row.opt("zh")
                 val translation = if (rawTranslation == null || rawTranslation == JSONObject.NULL) null
                     else rawTranslation.toString().takeIf { it.isNotBlank() }
-                if (translation.isNullOrBlank()) return@runCatching null
+                if (!ReadySessionSnapshotMigrationPolicy.hasRequiredTranslationForCue(text, translation)) {
+                    return@runCatching null
+                }
                 lines += SubLine(index, startMs, endMs, text, translation, row.optInt("sp", -1))
             }
 

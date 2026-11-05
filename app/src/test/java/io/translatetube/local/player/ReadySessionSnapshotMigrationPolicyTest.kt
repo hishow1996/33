@@ -78,6 +78,41 @@ class ReadySessionSnapshotMigrationPolicyTest {
     }
 
     @Test
+    fun acceptsSymbolOnlyCueWithoutChineseTranslationAndDoesNotTreatItAsLegacyFallback() {
+        val (fileName, bytes) = snapshot(
+            hasChineseTranslation = false,
+            text = "♪♪",
+        )
+
+        assertTrue(
+            ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
+                fileName, bytes, 1, 1024L, 10,
+            ),
+        )
+        assertFalse(
+            ReadySessionSnapshotMigrationPolicy.isKnownLegacyFallbackSnapshot(
+                fileName, bytes, 1, 1024L, 10,
+            ),
+        )
+    }
+
+    @Test
+    fun stillRejectsMissingTranslationForSpokenCueAsLegacyFallback() {
+        val (fileName, bytes) = snapshot(hasChineseTranslation = false)
+
+        assertFalse(
+            ReadySessionSnapshotMigrationPolicy.isUsableSnapshot(
+                fileName, bytes, 1, 1024L, 10,
+            ),
+        )
+        assertTrue(
+            ReadySessionSnapshotMigrationPolicy.isKnownLegacyFallbackSnapshot(
+                fileName, bytes, 1, 1024L, 10,
+            ),
+        )
+    }
+
+    @Test
     fun rejectsLegacyOriginalAudioFallbackRowsWithoutChineseTranslation() {
         val (fileName, bytes) = snapshot(
             hasChineseTranslation = false,
@@ -119,6 +154,7 @@ class ReadySessionSnapshotMigrationPolicyTest {
         lineCount: Int = 1,
         hasChineseTranslation: Boolean = true,
         legacyOriginalAudioFallback: Boolean = false,
+        text: String = "hello",
     ): Pair<String, ByteArray> {
         val identityPart = if (identity == null || identity == keyHash) "" else "${identity}_"
         val fileName = "ready_${keyHash}_${identityPart}${fingerprint}_include_asr.json"
@@ -128,7 +164,7 @@ class ReadySessionSnapshotMigrationPolicyTest {
             val row = JSONObject()
                 .put("s", lineStartMs)
                 .put("e", endMs + index * 100L)
-                .put("t", "hello")
+                .put("t", text)
                 .put("zh", if (hasChineseTranslation) "你好" else JSONObject.NULL)
             if (legacyOriginalAudioFallback) row.put("oa", true)
             lines.put(row)

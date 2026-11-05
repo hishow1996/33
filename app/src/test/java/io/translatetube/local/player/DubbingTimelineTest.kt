@@ -136,6 +136,22 @@ class DubbingTimelineTest {
         assertFalse(DubbingTimeline.isPlayableCue(SubLine(2, 1_000, 1_000, "zero length")))
         assertFalse(DubbingTimeline.isPlayableCue(SubLine(3, 2_000, 1_000, "reversed window")))
         assertFalse(DubbingTimeline.isPlayableCue(SubLine(4, 1_000, 2_000, "   ")))
+        assertFalse(DubbingTimeline.isPlayableCue(SubLine(5, 2_000, 3_000, "♪♪")))
+        assertFalse(DubbingTimeline.isPlayableCue(SubLine(6, 3_000, 4_000, "…")))
+    }
+
+    @Test
+    fun symbolOnlyCuesDoNotInterruptNearbySpokenCues() {
+        val timeline = DubbingTimeline(
+            listOf(
+                SubLine(0, 0L, 1_000L, "♪♪"),
+                SubLine(1, 1_000L, 2_000L, "spoken line"),
+            ),
+        )
+
+        assertEquals(-1, timeline.lineAt(500L))
+        assertEquals(1, timeline.lineAt(1_500L))
+        assertEquals(-1, timeline.lineAt(2_000L))
     }
 
 

@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubLine
+import io.translatetube.local.translate.SubtitleTranslationQualityPolicy
 
 /**
  * Fast media-timeline lookup for subtitle cues, including overlapping captions.
@@ -19,7 +20,10 @@ internal class DubbingTimeline(lines: List<SubLine>) {
 
         /** The playback index and synthesis queue must agree on whether a caption can ever play. */
         fun isPlayableCue(line: SubLine): Boolean =
-            line.startMs >= 0L && line.endMs > line.startMs && line.text.isNotBlank()
+            line.startMs >= 0L &&
+                line.endMs > line.startMs &&
+                line.text.isNotBlank() &&
+                !SubtitleTranslationQualityPolicy.hasNothingToSpeak(line.text)
     }
 
     private val cueStartTimes: LongArray
