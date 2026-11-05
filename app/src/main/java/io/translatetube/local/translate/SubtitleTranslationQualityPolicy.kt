@@ -271,6 +271,61 @@ internal object SubtitleTranslationQualityPolicy {
         }
     }
 
+    /**
+     * Detect common assistant-style meta replies that look like subtitles because they
+     * contain Chinese characters. Equivalent source dialogue is explicitly preserved.
+     */
+    fun translationMetaResponseReason(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String? {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
+        if (!SourceLanguagePolicy.isChinese(targetLanguage) ||
+            SourceLanguagePolicy.isChinese(sourceLanguage)
+        ) return null
+
+        val source = sourceText.lowercase(Locale.ROOT)
+        val output = normalize(translatedText)
+
+        val sourceMentionsAi = source.contains("ai") && source.contains("language model")
+        val aiIdentityReply = listOf(
+            "作为ai语言模型", "作为人工智能语言模型", "作为一个ai", "作为ai助手", "我是ai语言模型",
+        ).any(output::contains)
+        if (aiIdentityReply && !sourceMentionsAi) {
+            return "译文包含 AI 身份说明，疑似模型说明而非字幕内容"
+        }
+
+        val sourceRequestsText = listOf("provide", "send", "give").any(source::contains) &&
+            listOf("text", "subtitle", "sentence", "content", "original").any(source::contains)
+        val asksForInput = listOf("请提供", "请发送", "请给出", "请粘贴").any(output::startsWith) &&
+            listOf("需要翻译", "待翻译", "要翻译", "原文", "文本", "字幕").any(output::contains)
+        if (asksForInput && !sourceRequestsText) {
+            return "译文要求补充原文或待翻译文本，疑似模型提示而非字幕译文"
+        }
+
+        val sourceExpressesTranslationFailure =
+            source.contains("translate") && (source.contains("cannot") || source.contains("unable"))
+        val refusal = listOf(
+            "无法翻译", "不能翻译", "无法提供翻译", "不能提供翻译",
+            "无法帮助你翻译", "不能帮助你翻译", "无法协助翻译", "不能协助翻译",
+            "无法帮助完成这个请求", "无法协助完成这个请求",
+        ).any(output::contains)
+        val apology = output.startsWith("抱歉") || output.startsWith("很抱歉") || output.startsWith("对不起")
+        if (((apology && refusal) || output.startsWith("无法提供翻译") ||
+                output.startsWith("不能提供翻译")) && !sourceExpressesTranslationFailure
+        ) return "译文疑似模型拒绝回复，不是当前字幕的翻译内容"
+
+        val explanatoryReply = listOf(
+            "这句话的意思是", "这段话的意思是", "这段文本的意思是", "它的意思是", "其意思是",
+        ).any(output::startsWith)
+        if (explanatoryReply && listOf("means", "meaning", "signifies").none(source::contains)) {
+            return "译文在解释句意而不是翻译字幕原句，疑似模型说明内容"
+        }
+        return null
+    }
+
     /** Content-free explanation for a rejected Chinese-target response; subtitle text is not logged. */
     fun targetLanguageMismatchReason(
         sourceText: String?,
@@ -286,6 +341,9 @@ internal object SubtitleTranslationQualityPolicy {
         if (isPunctuationOnlyTranslation(sourceText, translatedText)) {
             return "模型只返回标点/符号，未返回可翻译文字"
         }
+        translationMetaResponseReason(
+            sourceText, translatedText, sourceLanguage, targetLanguage,
+        )?.let { return it }
 
         var han = 0
         var kana = 0

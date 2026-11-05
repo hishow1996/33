@@ -362,4 +362,34 @@ class TranslationBatchResultTest {
         assertEquals(mapOf(2 to "哈哈"), result.translations)
         assertEquals(listOf(0, 1), result.missingIndices)
     }
+
+    @Test
+    fun rejectsModelMetaRepliesAndReportsTheirSpecificFailureCategory() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(0, 1, 2),
+            rawTranslations = listOf(
+                "请提供需要翻译的原文。",
+                "抱歉，我无法帮助你翻译这段内容。",
+                "作为一个 AI 语言模型，我无法完成这个请求。",
+            ),
+            sourceTexts = mapOf(
+                0 to "Hello, how are you?",
+                1 to "What are you doing?",
+                2 to "Nice to meet you.",
+            ),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+
+        assertTrue(result.translations.isEmpty())
+        assertEquals(listOf(0, 1, 2), result.missingIndices)
+        assertEquals(
+            listOf("MODEL_META_RESPONSE", "MODEL_META_RESPONSE", "MODEL_META_RESPONSE"),
+            result.rejectedRows.map { it.reasonCode },
+        )
+        assertTrue(result.rejectedRows.all {
+            it.diagnosticReason.orEmpty().contains("疑似模型") ||
+                it.diagnosticReason.orEmpty().contains("要求补充")
+        })
+    }
 }

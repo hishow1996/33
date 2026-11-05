@@ -179,4 +179,15 @@ class DubbingTranslationPolicyTest {
         assertNull(prepared.single().zh)
     }
 
+
+    @Test
+    fun rejectsModelMetaRepliesBeforeTheyBecomeSpokenAudio() {
+        val result = DubbingTranslationPolicy.resolveText(
+            "Hello, how are you?",
+            "请提供需要翻译的原文。",
+            "en",
+        )
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().contains("补充原文"))
+    }
 }

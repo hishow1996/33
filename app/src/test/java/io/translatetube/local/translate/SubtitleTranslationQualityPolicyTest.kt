@@ -348,4 +348,60 @@ class SubtitleTranslationQualityPolicyTest {
         assertTrue(SubtitleInterjectionPolicy.chineseFor("Brrr", "en", "zh") == "嘶")
         assertTrue(SubtitleInterjectionPolicy.chineseFor("Hmmmm", "en", "zh") == "嗯")
     }
+
+    @Test
+    fun rejectsAssistantMetaRepliesButPreservesGenuineDialogueWithTheSameMeaning() {
+        val source = "Hello, how are you?"
+        val metaReplies = listOf(
+            "请提供需要翻译的原文。",
+            "抱歉，我无法帮助你翻译这段内容。",
+            "作为一个 AI 语言模型，我无法完成这个请求。",
+            "这句话的意思是你好。",
+        )
+        metaReplies.forEach { output ->
+            assertTrue(
+                "'$output' should be rejected as model meta text",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(source, output, "en", "zh-CN"),
+            )
+            assertFalse(
+                "'$output' must not enter subtitle caches or dubbing",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    source, output, "en", "zh-CN", acceptShortUnchanged = true,
+                ),
+            )
+        }
+
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Please provide the original text to be translated.",
+                "请提供需要翻译的原文。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The speaker says they are unable to translate this.",
+                "我无法翻译这段文本。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "This dialogue discusses an AI language model.",
+                "作为一个 AI 语言模型，我可以回答。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "This sentence means something important.",
+                "这句话的意思是很重要的事情。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
 }

@@ -75,6 +75,11 @@ internal data class TranslationBatchResult(
                     )
                 }
                 val targetMismatch = targetMismatchDetail != null
+                val modelMetaReason = value?.let {
+                    SubtitleTranslationQualityPolicy.translationMetaResponseReason(
+                        sourceText, it, sourceLanguage, targetLanguage,
+                    )
+                }
                 val unspeakable = !value.isNullOrBlank() && !TtsTextPolicy.hasSpeakableContent(value)
                 // 纯语气词（Mm-hmm / Hmm / Oh）机器翻译常原样返回或只给标点；译文失败时用固定中文语气词，
                 // 确保这一句也有中文字幕和配音。
@@ -97,6 +102,7 @@ internal data class TranslationBatchResult(
                 val rejectionReason = when {
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
                     unspeakable -> "UNSPEAKABLE_TRANSLATION"
+                    modelMetaReason != null -> "MODEL_META_RESPONSE"
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"
                     targetMismatch -> "TARGET_LANGUAGE_MISMATCH"
                     sourceEcho -> "SOURCE_ECHO"
@@ -130,6 +136,7 @@ internal data class TranslationBatchResult(
                                         diagnosticReason = when {
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
                                             unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
+                                            modelMetaReason != null -> modelMetaReason
                                             sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
                                             sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
                                             targetMismatch -> targetMismatchDetail
@@ -163,6 +170,7 @@ internal data class TranslationBatchResult(
                                         diagnosticReason = when {
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
                                             unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
+                                            modelMetaReason != null -> modelMetaReason
                                             sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
                                             sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
                                             targetMismatch -> targetMismatchDetail

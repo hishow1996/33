@@ -83,8 +83,11 @@ internal object DubbingTranslationPolicy {
                     },
                 )
             }
-            if (SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(sourceText, cleaned, detectedSource, "zh")) {
-                return DubbingTranslationResolution(null, "译文未达到中文目标语言")
+            val mismatchReason = SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                sourceText, cleaned, detectedSource, "zh",
+            )
+            if (mismatchReason != null) {
+                return DubbingTranslationResolution(null, mismatchReason)
             }
             return DubbingTranslationResolution(null, "译文未通过中文字幕质量校验")
         }
