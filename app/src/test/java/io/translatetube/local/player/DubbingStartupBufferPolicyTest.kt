@@ -126,6 +126,17 @@ class DubbingStartupBufferPolicyTest {
     }
 
     @Test
+    fun bracketedSoundCaptionsDoNotCountTowardTheSpokenStartupBuffer() {
+        val input = listOf(
+            SubLine(0, 0L, 900L, "[music]", "[音乐]"),
+            SubLine(1, 1_000L, 2_000L, "Hello.", "你好。"),
+            SubLine(2, 2_100L, 3_000L, "[applause]", "[掌声]"),
+            SubLine(3, 3_100L, 4_000L, "Goodbye.", "再见。"),
+        )
+        assertEquals(listOf(1, 3), DubbingStartupBufferPolicy.spokenCueIndices(input))
+    }
+
+    @Test
     fun emptyOrNonPlayableInputProducesEmptyPlan() {
         val empty = DubbingStartupBufferPolicy.plan(emptyList(), immediateMode = false)
         assertTrue(empty.lineIndices.isEmpty())
