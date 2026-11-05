@@ -203,6 +203,17 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
+    fun rejectsSemanticContradictionsBeforeDubbingWithSpecificReason() {
+        val result = DubbingTranslationPolicy.resolveText(
+            "I don't agree with him.",
+            "我同意他。",
+            "en",
+        )
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().contains("否定"))
+    }
+
+    @Test
     fun rejectsChangedExplicitNumbersBeforeDubbingWithSpecificReason() {
         val result = DubbingTranslationPolicy.resolveText(
             "I have 3 cats and 2 dogs.",

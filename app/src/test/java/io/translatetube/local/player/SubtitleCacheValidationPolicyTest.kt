@@ -126,6 +126,27 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun rejectsSemanticallyContradictoryCachedRowsAndPreservesValidRows() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "I don't know the answer."),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "She will call you."),
+            io.translatetube.local.subs.SubLine(2, 2_000L, 3_000L, "I like this movie."),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "I don't know the answer.", "我知道答案。"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "She will call you.", "他会给你打电话。"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "I like this movie.", "我喜欢这部电影。"),
+        )
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source,
+            cached,
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected valid remaining cache rows to restore")
+        assertEquals(listOf(null, null, "我喜欢这部电影。"), restored.map { it.zh })
+    }
+
+    @Test
     fun restoresConfirmedShortNamesButRejectsWordEchoesAndWrongNameSubstitutions() {
         val source = listOf(
             io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "John"),

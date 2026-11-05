@@ -429,6 +429,63 @@ class TranslationBatchResultTest {
     }
 
     @Test
+    fun rejectsPolarityModalityEntityAndRelationContradictionsWithSpecificCodes() {
+        val sources = listOf(
+            "I don't agree with him.",
+            "You must leave now.",
+            "She will call you.",
+            "The train arrives before noon.",
+        )
+        val outputs = listOf(
+            "我同意他。",
+            "你可能现在离开。",
+            "他会给你打电话。",
+            "火车中午之后到达。",
+        )
+        val result = TranslationBatchResult.from(
+            indices = sources.indices.toList(),
+            rawTranslations = outputs,
+            sourceTexts = sources.indices.associateWith { sources[it] },
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(result.translations.isEmpty())
+        assertEquals(sources.indices.toList(), result.missingIndices)
+        assertEquals(
+            listOf(
+                "SEMANTIC_POLARITY_MISMATCH",
+                "SEMANTIC_MODALITY_MISMATCH",
+                "SEMANTIC_ENTITY_MISMATCH",
+                "SEMANTIC_RELATION_MISMATCH",
+            ),
+            result.rejectedRows.map { it.reasonCode },
+        )
+        assertTrue(result.rejectedRows.all {
+            it.qualityEvidence.orEmpty().contains("semanticConsistencyMismatch=true")
+        })
+    }
+
+    @Test
+    fun acceptsSemanticallyConsistentTranslationRows() {
+        val sources = listOf(
+            "I don't know the answer.",
+            "You must leave now.",
+            "She arrives before noon.",
+        )
+        val outputs = listOf("我不知道答案。", "你必须现在离开。", "她在中午之前到达。")
+        val result = TranslationBatchResult.from(
+            indices = sources.indices.toList(),
+            rawTranslations = outputs,
+            sourceTexts = sources.indices.associateWith { sources[it] },
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertEquals(3, result.translations.size)
+        assertTrue(result.missingIndices.isEmpty())
+        assertTrue(result.rejectedRows.isEmpty())
+    }
+
+    @Test
     fun rejectsChangedExplicitNumbersWithDedicatedDiagnosticCategory() {
         val result = TranslationBatchResult.from(
             indices = listOf(8),

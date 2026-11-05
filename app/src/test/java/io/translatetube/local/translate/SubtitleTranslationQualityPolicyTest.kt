@@ -6,11 +6,115 @@ import org.junit.Test
 
 class SubtitleTranslationQualityPolicyTest {
     @Test
-    fun rejectsClearNegationModalityAndConditionLoss() {
+    fun detectsPolarityChangesAndPreservesAffirmativeIdioms() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I don't know the answer.", "我知道答案。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I know the answer.", "我不知道答案。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "No problem.", "没问题。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "That's not uncommon.", "这并不少见。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "You're welcome.", "不客气。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "You should try it.", "不妨试一试。", "en", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun detectsExplicitModalityReversalsButNotEpistemicMustBe() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "You must leave now.", "你可能现在离开。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_MODALITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "She might come tomorrow.", "她明天必须来。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_MODALITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "You should leave now.", "你禁止现在离开。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_MODALITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "She may join us tomorrow.", "她明天必须加入我们。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_MODALITY_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "It must be John.", "他可能是约翰。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "You must leave now.", "你必须现在离开。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "You may leave now.", "你可以现在离开。", "en", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun detectsOnlyUnambiguousGenderedPronounReversals() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "She said she was ready.", "他说他准备好了。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_ENTITY_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "He said he was ready.", "他说他准备好了。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "They said they were ready.", "他们说他们准备好了。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "She said she was ready.", "对方说已经准备好了。", "en", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun detectsExplicitTimeConditionAndCausalRelationReversals() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "The train arrives before noon.", "火车中午之后到达。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I stayed because it was raining.", "我留下来，尽管当时正在下雨。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Unless you hurry, you will miss it.", "如果你快点，就会错过。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "She has not yet arrived.", "她已经到了。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "She has not yet arrived.", "她尚未到达。", "en", "zh-CN",
+        ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I waited until noon.", "我在中午之前就离开了。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "He still works here.", "他已经不在这里工作了。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I stayed because it was raining.", "因为下雨，我留了下来。", "en", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun semanticRulesAreLimitedToKnownEnglishSourceLanguage() {
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Je ne sais pas.", "我知道。", "fr", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I do not agree.", "我同意。", "auto", "zh-CN",
+        ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I do not agree.", "我同意。", "eng", "zh-CN",
+        )!!.startsWith("SEMANTIC_POLARITY_MISMATCH"))
+    }
+
+    @Test
+    fun rejectsClearNegationButDoesNotGuessFromOmittedMarkersAlone() {
         assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("I do not agree.", "我同意。", "en", "zh-CN")!!.startsWith("SEMANTIC_POLARITY_MISMATCH"))
-        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("You must leave now.", "你现在离开。", "en", "zh-CN")!!.startsWith("SEMANTIC_MODALITY_MISMATCH"))
-        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("If it rains, we will stay.", "下雨了，我们会留下。", "en", "zh-CN")!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
         assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("I do not agree.", "我不同意。", "en", "zh-CN") != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("You must leave now.", "你现在离开。", "en", "zh-CN") != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("If it rains, we will stay.", "下雨了，我们会留下。", "en", "zh-CN") != null)
         assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("Maybe we should wait.", "也许我们应该等一等。", "en", "zh-CN") != null)
         assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("I like this movie.", "我喜欢这部电影。", "en", "zh-CN") != null)
     }

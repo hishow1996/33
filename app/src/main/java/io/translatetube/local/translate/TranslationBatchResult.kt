@@ -109,7 +109,7 @@ internal data class TranslationBatchResult(
                 }
                 val shortUntranslatedAccepted = acceptShortUnchanged &&
                     !value.isNullOrBlank() && !unspeakable && numericMismatchDetail == null &&
-                    unitMismatchDetail == null && (sourceEcho || targetMismatch) &&
+                    unitMismatchDetail == null && semanticMismatchDetail == null && (sourceEcho || targetMismatch) &&
                     SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
                         sourceText, value, sourceLanguage, targetLanguage,
                     )
@@ -122,6 +122,7 @@ internal data class TranslationBatchResult(
                     semanticMismatchDetail != null -> when {
                         semanticMismatchDetail.startsWith("SEMANTIC_POLARITY_MISMATCH") -> "SEMANTIC_POLARITY_MISMATCH"
                         semanticMismatchDetail.startsWith("SEMANTIC_MODALITY_MISMATCH") -> "SEMANTIC_MODALITY_MISMATCH"
+                        semanticMismatchDetail.startsWith("SEMANTIC_ENTITY_MISMATCH") -> "SEMANTIC_ENTITY_MISMATCH"
                         else -> "SEMANTIC_RELATION_MISMATCH"
                     }
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"

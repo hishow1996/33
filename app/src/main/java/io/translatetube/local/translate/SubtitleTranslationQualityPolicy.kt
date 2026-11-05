@@ -24,6 +24,39 @@ internal object SubtitleTranslationQualityPolicy {
 
     private data class ExplicitUnitAlias(val id: String, val aliases: List<String>)
 
+    private val englishNegation = Regex(
+        """\b(?:not|no|never|none|nobody|nothing|neither|nor|nowhere|without|cannot|can't|couldn't|wouldn't|shouldn't|mustn't|won't|don't|doesn't|didn't|isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't|dont|doesnt|didnt|isnt|arent|wasnt|werent|hasnt|havent|hadnt)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val neutralEnglishNegation = Regex(
+        """\b(?:not\s+(?:only|just|merely|simply|bad|too\s+bad|wrong|uncommon|unusual|impossible|necessarily)|no\s+(?:wonder|problem|worries?))\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val affirmativeChineseSurface = Regex(
+        """没关系|沒關係|没问题|沒問題|没事|沒事|没错|沒錯|不错|不錯|不客气|不客氣|不妨|不久|不愧|不失|不时|不時|不坏|不壞|不差|没有错|沒有錯|不一定|未必|无疑|無疑|毫无疑问|毫無疑問|无论|無論|不少见|不少見|不罕见|不罕見|并非不可能|並非不可能|不是不可能|不是没有|不是沒有"""
+    )
+    private val chineseNegation = Regex(
+        """从来没有|從來沒有|从未|從未|绝不|絕不|并非|並非|不是|不曾|未曾|不再|没有|沒有|没能|沒能|没法|沒法|无法|無法|未能|未完成|未收到|尚未|仍未|还没|还未|还没有|還沒|還未|還沒有|不允许|不允許|不可能|不应该|不應該|不需要|不必|不能|不会|不會|不可|不行|不想|不愿|不願|不肯|禁止|严禁|嚴禁|不得(?!不)|不(?!仅|僅|但|止|只|光|单|單|错|錯|客气|客氣|妨|久|愧|失|时|時|一定|凡|俗|朽|如|了)|没(?!错|錯|关系|關係|问题|問題|事)|沒(?!錯|關係|問題|事)|无|無"""
+    )
+    private val englishMalePronoun = Regex("""\b(?:he|him|his|himself)\b""", RegexOption.IGNORE_CASE)
+    private val englishFemalePronoun = Regex("""\b(?:she|her|hers|herself)\b""", RegexOption.IGNORE_CASE)
+    private val chineseMalePronoun = Regex("""(?<!其)他(?!们)""")
+    private val chineseFemalePronoun = Regex("""她(?!们)""")
+    private val englishProhibition = Regex(
+        """\b(?:must\s+not|mustn't|not\s+allowed\s+to|forbidden|prohibited)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val englishObligation = Regex(
+        """\b(?:must(?!\s+(?:be|have\b))|have\s+to|has\s+to|had\s+to|need\s+to|needs\s+to|required\s+to)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val englishRecommendation = Regex("""\b(?:should|ought\s+to)\b(?!\s+not\b)""", RegexOption.IGNORE_CASE)
+    private val englishPossibility = Regex("""\b(?:may|might|possibly|perhaps|maybe)\b""", RegexOption.IGNORE_CASE)
+    private val chineseProhibition = Regex("""禁止|严禁|嚴禁|不准|不允许|不允許|不得|不许|不許|不要|不能|不可以|絕不能|绝不能""")
+    private val chineseObligation = Regex("""必须|必須|务必|務必|需要|有必要|一定要""")
+    private val chineseRecommendation = Regex("""应该|應該|应当|應當|最好|理应|理應""")
+    private val chinesePossibility = Regex("""可能|也许|也許|或许|或許|说不定|說不定""")
+
     // Only unambiguous, numeric-adjacent units are compared. Bare "m", "s", "g" and
     // currency symbols are intentionally excluded because they are ambiguous in subtitles.
     private val explicitUnitAliases = listOf(
@@ -291,34 +324,133 @@ internal object SubtitleTranslationQualityPolicy {
         return "原文和译文均出现明确数字单位，但单位类别不一致；原文单位数=${sourceUnits.size}，译文单位数=${translatedUnits.size}"
     }
 
+    /** Conservative checks for explicit English-to-Chinese semantic contradictions. */
+    fun semanticConsistencyMismatchReason(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String? {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
+        if (!SourceLanguagePolicy.isChinese(targetLanguage)) return null
+        if (SourceLanguagePolicy.canonicalPrimaryCode(sourceLanguage) != "en") return null
+        val source = sourceText.trim()
+        val target = translatedText.trim()
+        if (source.isEmpty() || target.isEmpty() || isNonTranslatableCue(source)) return null
+
+        val sourceAlready = Regex("""\balready\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceNotYet = Regex("""\bnot\s+yet\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetAlready = Regex("""已经|早已|早就|已經""").containsMatchIn(target)
+        val targetNotYet = Regex("""还没|还未|尚未|仍未|还没有|還沒|還未|還沒有""").containsMatchIn(target)
+        if ((sourceAlready && targetNotYet && !targetAlready) ||
+            (sourceNotYet && targetAlready && !targetNotYet)
+        ) return "SEMANTIC_RELATION_MISMATCH：原文 already/not yet 的完成状态与译文明确表达的时间状态相反"
+
+        val sourceStill = Regex("""\bstill\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceNoLonger = Regex("""\b(?:no\s+longer|not\s+anymore)\b""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(source)
+        val targetStill = Regex("""仍然|依然|仍旧|还是""").containsMatchIn(target)
+        val targetNoLonger = Regex("""不再|再也不|已不再""").containsMatchIn(target)
+        if ((sourceStill && targetNoLonger && !targetStill) ||
+            (sourceNoLonger && targetStill && !targetNoLonger)
+        ) return "SEMANTIC_RELATION_MISMATCH：原文 still/no longer 的持续状态与译文明确表达的状态相反"
+
+        val sourceNegated = hasClearEnglishNegation(source)
+        val targetNegated = hasClearChineseNegation(target)
+        if (sourceNegated != targetNegated) {
+            return if (sourceNegated) {
+                "SEMANTIC_POLARITY_MISMATCH：原文包含明确否定表达，但译文没有保留对应的否定含义"
+            } else {
+                "SEMANTIC_POLARITY_MISMATCH：译文新增了原文没有的明确否定表达，可能改变肯定/否定含义"
+            }
+        }
+
+        val sourceMale = englishMalePronoun.containsMatchIn(source)
+        val sourceFemale = englishFemalePronoun.containsMatchIn(source)
+        val targetMale = chineseMalePronoun.containsMatchIn(target)
+        val targetFemale = chineseFemalePronoun.containsMatchIn(target)
+        if (sourceMale.xor(sourceFemale) && targetMale.xor(targetFemale) &&
+            ((sourceMale && targetFemale) || (sourceFemale && targetMale))
+        ) {
+            return "SEMANTIC_ENTITY_MISMATCH：原文明确的人称代词与译文使用的性别代词不一致"
+        }
+
+        val sourceProhibition = englishProhibition.containsMatchIn(source)
+        val sourceObligation = !sourceProhibition && englishObligation.containsMatchIn(source)
+        val sourceRecommendation = englishRecommendation.containsMatchIn(source)
+        val mayIsPermission = Regex("""\b(?:may\s+(?:i|we|you)\b|(?:i|we|you)\s+may\b)""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(source)
+        val sourcePossibility = !mayIsPermission && englishPossibility.containsMatchIn(source)
+        val targetProhibition = chineseProhibition.containsMatchIn(target)
+        val targetObligation = chineseObligation.containsMatchIn(target)
+        val targetRecommendation = chineseRecommendation.containsMatchIn(target)
+        val targetPossibility = chinesePossibility.containsMatchIn(target)
+        val modalityReversed = when {
+            sourceProhibition ->
+                !targetProhibition && (targetObligation || targetRecommendation || targetPossibility)
+            sourceObligation ->
+                !targetObligation && !targetProhibition && (targetRecommendation || targetPossibility)
+            sourceRecommendation ->
+                !targetRecommendation && (targetProhibition || targetObligation || targetPossibility)
+            sourcePossibility ->
+                !targetPossibility && (targetProhibition || targetObligation || targetRecommendation)
+            else -> false
+        }
+        if (modalityReversed) {
+            return "SEMANTIC_MODALITY_MISMATCH：原文的禁止、必须、应该或可能性语气，与译文明确表达的语气等级相反"
+        }
+
+        val sourceBefore = Regex("""\bbefore\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceAfter = Regex("""\bafter\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetBefore = Regex("""之前|以前|此前|先前|在.{0,8}之前""").containsMatchIn(target)
+        val targetAfter = Regex("""之后|以后|过后|随后|之後|以後|過後|隨後|在.{0,8}之后|在.{0,8}之後""")
+            .containsMatchIn(target)
+        if (sourceBefore.xor(sourceAfter) &&
+            ((sourceBefore && targetAfter && !targetBefore) ||
+                (sourceAfter && targetBefore && !targetAfter))
+        ) return "SEMANTIC_RELATION_MISMATCH：原文 before/after 的时间先后方向与译文明确表达的方向相反"
+
+        val sourceUntil = Regex("""\buntil\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetUntil = Regex("""直到|直至|为止|為止|等到""").containsMatchIn(target)
+        if (sourceUntil && targetBefore && !targetUntil) {
+            return "SEMANTIC_RELATION_MISMATCH：原文 until 的截止时间被译文明确表达成截止点之前"
+        }
+
+        val sourceBecause = Regex("""\bbecause\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceAlthough = Regex("""\b(?:although|though|even though)\b""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(source)
+        val targetCause = Regex("""因为|由于|所以|因此|因為|由於""").containsMatchIn(target)
+        val targetConcession = Regex("""虽然|尽管|即使|可是|然而|雖然|儘管""").containsMatchIn(target)
+        if ((sourceBecause && targetConcession && !targetCause) ||
+            (sourceAlthough && targetCause && !targetConcession)
+        ) return "SEMANTIC_RELATION_MISMATCH：原文的因果/让步关系与译文明确使用的关系词不一致"
+
+        val sourceUnless = Regex("""\bunless\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetIf = Regex("""如果|若|假如|要是""").containsMatchIn(target)
+        val targetHasConditionNegation = Regex("""不|没|未|無|否则|否則|除非""").containsMatchIn(target)
+        if (sourceUnless && targetIf && !targetHasConditionNegation) {
+            return "SEMANTIC_RELATION_MISMATCH：原文 unless 被译成没有否定限定的普通 if 条件，条件逻辑可能反转"
+        }
+        return null
+    }
+
+    private fun hasClearEnglishNegation(value: String): Boolean {
+        val neutralRanges = neutralEnglishNegation.findAll(value).map { it.range }.toList()
+        return englishNegation.findAll(value).any { match ->
+            neutralRanges.none { it.contains(match.range.first) }
+        }
+    }
+
+    private fun hasClearChineseNegation(value: String): Boolean {
+        val cleaned = affirmativeChineseSurface.replace(value, " ")
+        return chineseNegation.containsMatchIn(cleaned)
+    }
+
     /**
      * Conservative explicit-number guard. If the target has fewer numeric tokens, it may have
      * rendered a value in Chinese words or a clock as 点/半; this heuristic declines to reject.
      * It never adds a second model/API request.
      */
-    /** Conservative checks for explicit polarity, modality and condition cues. */
-    fun semanticConsistencyMismatchReason(
-        sourceText: String?, translatedText: String?, sourceLanguage: String, targetLanguage: String,
-    ): String? {
-        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
-        if (!SourceLanguagePolicy.isChinese(targetLanguage) || SourceLanguagePolicy.isChinese(sourceLanguage)) return null
-        val source = sourceText.lowercase(Locale.ROOT)
-        val target = translatedText
-        val negated = Regex("""\b(?:not|never|no|neither|nor|without|cannot|can't|dont|don't|doesnt|doesn't|didnt|didn't|isnt|isn't|wasnt|wasn't|wont|won't|wouldnt|wouldn't|shouldnt|shouldn't|mustnt|mustn't)\b""").containsMatchIn(source)
-        val targetNegated = listOf("不", "没", "没有", "未", "从不", "并非", "不是", "无", "禁止", "不能", "不会").any(target::contains)
-        if (negated && !targetNegated) return "SEMANTIC_POLARITY_MISMATCH：原文含明确否定表达，译文未保留可识别的否定标记"
-        val obligation = Regex("""\b(?:must|have to|has to|required to|need to|should|ought to)\b""").containsMatchIn(source)
-        val targetObligation = listOf("必须", "务必", "需要", "应该", "应当", "得").any(target::contains)
-        if (obligation && !targetObligation) return "SEMANTIC_MODALITY_MISMATCH：原文含义务/必要性表达，译文未保留对应语气"
-        val possibility = Regex("""\b(?:may|might|could|possibly|perhaps|maybe)\b""").containsMatchIn(source)
-        val targetPossibility = listOf("可能", "也许", "或许", "有可能").any(target::contains)
-        if (possibility && !targetPossibility) return "SEMANTIC_MODALITY_MISMATCH：原文含可能性表达，译文未保留不确定语气"
-        val conditional = Regex("""\b(?:if|unless|provided that|as long as)\b""").containsMatchIn(source)
-        val targetConditional = listOf("如果", "若", "除非", "只要", "假如", "条件是").any(target::contains)
-        if (conditional && !targetConditional) return "SEMANTIC_RELATION_MISMATCH：原文含条件关系，译文未保留可识别的条件标记"
-        return null
-    }
-
     fun numericContentMismatchReason(
         sourceText: String?,
         translatedText: String?,
