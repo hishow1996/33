@@ -171,7 +171,7 @@ class SubtitleCacheValidationPolicyTest {
             sourceLanguage = "en",
         ) ?: throw AssertionError("Expected valid translations and confirmed short names to restore")
 
-        assertEquals(listOf("John", null, "Sara", "Taxi", null, null, null), restored.map { it.zh })
+        assertEquals(listOf("John", null, "Sara", null, null, null, null), restored.map { it.zh })
     }
     @Test
     fun treatsCachedSourceLanguageParaphrasesAsMissingForChineseTarget() {

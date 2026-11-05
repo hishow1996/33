@@ -110,7 +110,7 @@ class UntranslatableCueRecoveryTest {
             SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(source, out, src, tgt)
 
         assertTrue(ok("Sarah?", "Sarah?"))
-        assertTrue(ok("Taxi", "Taxi"))
+        assertFalse(ok("Taxi", "Taxi")) // Common English nouns are not exempt from translation.
         assertTrue(ok("Tom Hanks?", "Tom Hanks?"))
         assertTrue(ok("Sarah", "Sara"))
         // Multi-word lowercase-led cues are sentences, not names.

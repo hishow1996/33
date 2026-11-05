@@ -178,6 +178,31 @@ internal object SubtitleTranslationQualityPolicy {
         )
     }
 
+    // Currency symbols may precede the amount (for example €5), unlike ordinary unit words.
+    // Keep this explicit amount-boundary matcher alongside the general unit matcher.
+    private val explicitCurrencyAmountPatterns = listOf(
+        "usd" to Regex(
+            """(?:\$\s*|(?:USD|US\s+dollars?)\s*)-?\d+(?:[.,]\d+)*|-?\d+(?:[.,]\d+)*\s*(?:\$|USD|US\s+dollars?|dollars?|美元|美金)""",
+            RegexOption.IGNORE_CASE,
+        ),
+        "euro" to Regex(
+            """(?:€\s*|(?:EUR|euros?)\s*)-?\d+(?:[.,]\d+)*|-?\d+(?:[.,]\d+)*\s*(?:€|EUR|euros?|欧元)""",
+            RegexOption.IGNORE_CASE,
+        ),
+        "gbp" to Regex(
+            """(?:£\s*|(?:GBP|pounds?|sterling)\s*)-?\d+(?:[.,]\d+)*|-?\d+(?:[.,]\d+)*\s*(?:£|GBP|pounds?|sterling|英镑|英鎊)""",
+            RegexOption.IGNORE_CASE,
+        ),
+        "jpy" to Regex(
+            """(?:¥\s*|(?:JPY|yen)\s*)-?\d+(?:[.,]\d+)*|-?\d+(?:[.,]\d+)*\s*(?:¥|JPY|yen|日元|円)""",
+            RegexOption.IGNORE_CASE,
+        ),
+        "cny" to Regex(
+            """(?:(?:CNY|RMB|人民币|人民幣|￥)\s*)-?\d+(?:[.,]\d+)*|-?\d+(?:[.,]\d+)*\s*(?:CNY|RMB|人民币|人民幣|￥|(?<!美)元)""",
+            RegexOption.IGNORE_CASE,
+        ),
+    )
+
     fun isSourceEcho(sourceText: String?, translatedText: String?, sourceLanguage: String): Boolean {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         val language = SourceLanguagePolicy.normalizeTag(sourceLanguage)
@@ -534,6 +559,11 @@ internal object SubtitleTranslationQualityPolicy {
      * Preserve the association between explicit numeric values and adjacent units.
      * Require at least two pairs so single-unit substitutions use the dedicated unit-category check.
      */
+    private fun explicitCurrencyUnitIds(value: String): List<String> =
+        explicitCurrencyAmountPatterns.flatMap { (unitId, pattern) ->
+            pattern.findAll(value).map { match -> match.range.first to unitId }.toList()
+        }.sortedBy { it.first }.map { it.second }
+
     fun numericUnitAssociationMismatchReason(
         sourceText: String?,
         translatedText: String?,
@@ -544,6 +574,13 @@ internal object SubtitleTranslationQualityPolicy {
         if (!SourceLanguagePolicy.isChinese(targetLanguage) ||
             SourceLanguagePolicy.isChinese(sourceLanguage)
         ) return null
+        val sourceCurrencies = explicitCurrencyUnitIds(sourceText)
+        val targetCurrencies = explicitCurrencyUnitIds(translatedText)
+        if (sourceCurrencies.isNotEmpty() && targetCurrencies.isNotEmpty() &&
+            (sourceCurrencies.size != targetCurrencies.size || sourceCurrencies != targetCurrencies)
+        ) {
+            return "数字与单位的对应关系发生变化；货币单位类别不一致"
+        }
         val sourcePairs = explicitNumericUnitPairs(sourceText, sourceLanguage, includeChineseNumerals = false)
         val targetPairs = explicitNumericUnitPairs(translatedText, targetLanguage, includeChineseNumerals = true)
         if (sourcePairs.isEmpty() || sourcePairs.size != targetPairs.size) return null
@@ -1141,6 +1178,9 @@ internal object SubtitleTranslationQualityPolicy {
             val raw = match.value
             val nextChar = value.getOrNull(match.range.last + 1)
             if (raw == "零" && nextChar == '下') return@forEach
+            // 序数词（第一、第二等）表达顺序，不是原文数量，不能参与数字一致性校验。
+            val preceding = value.substring(maxOf(0, match.range.first - 6), match.range.first).trimEnd()
+            if (preceding.endsWith("第")) return@forEach
             val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
             val hasMagnitude = raw.any { it in "十百千万萬亿億" }
             val isDigitSequence = raw.length >= 2 && raw.all { it in "零〇一二两兩三四五六七八九" }
@@ -1652,9 +1692,9 @@ internal object SubtitleTranslationQualityPolicy {
             tokens.last().all { it.isDigit() }
         ) return true
 
-        // Multi-word proper names are eligible only through the explicit retry exception.
-        // They must not bypass first-pass target-language validation as generic non-translatable cues.
-        return false
+        // Title-cased multi-word proper names are retained terms; ordinary phrases containing
+        // common English words remain subject to target-language validation.
+        return hasTitleCasedWords(value) && !hasCommonEnglishWord(value)
     }
 
     /** Ignore case, whitespace and punctuation so formatting-only changes do not pass as translation. */

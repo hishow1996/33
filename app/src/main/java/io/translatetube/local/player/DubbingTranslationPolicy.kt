@@ -65,11 +65,6 @@ internal object DubbingTranslationPolicy {
                 "译文只有标点、符号或表情，没有可朗读内容",
             )
         }
-        if (sourceText.trim().equals("Taxi", ignoreCase = true) &&
-            cleaned.trim().equals(sourceText.trim(), ignoreCase = true)
-        ) {
-            return DubbingTranslationResolution(cleaned)
-        }
         val qualityDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
             sourceText = sourceText,
             translatedText = cleaned,

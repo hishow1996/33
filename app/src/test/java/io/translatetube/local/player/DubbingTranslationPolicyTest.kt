@@ -156,9 +156,10 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
-    fun shortNameOrLoanwordKeptUnchangedIsAValidTranslation() {
+    fun confirmedShortNamesStayUnchangedButCommonWordsNeedTranslation() {
         assertEquals("Sarah.", DubbingTranslationPolicy.usableText("Sarah.", "Sarah.", "en"))
-        assertEquals("Taxi", DubbingTranslationPolicy.usableText("Taxi", "Taxi", "en"))
+        assertNull(DubbingTranslationPolicy.usableText("Taxi", "Taxi", "en"))
+        assertEquals("出租车", DubbingTranslationPolicy.usableText("Taxi", "出租车", "en"))
         // A known interjection must use its Chinese equivalent, not the short-name exception.
         assertNull(DubbingTranslationPolicy.usableText("Hello", "Hello", "en"))
         assertNull(DubbingTranslationPolicy.usableText("Goodbye", "Goodbye", "en"))
