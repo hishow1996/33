@@ -324,6 +324,30 @@ class TranslationBatchResultTest {
     }
 
     @Test
+    fun retriesSingleWordCyrillicNamesOnceBeforeAcceptingThem() {
+        val firstAttempt = TranslationBatchResult.from(
+            indices = listOf(0),
+            rawTranslations = listOf("Иван"),
+            sourceTexts = mapOf(0 to "Иван"),
+            sourceLanguage = "ru",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(firstAttempt.translations.isEmpty())
+        assertEquals(listOf(0), firstAttempt.missingIndices)
+
+        val retry = TranslationBatchResult.from(
+            indices = listOf(0),
+            rawTranslations = listOf("Иван"),
+            sourceTexts = mapOf(0 to "Иван"),
+            sourceLanguage = "ru",
+            targetLanguage = "zh-CN",
+            acceptShortUnchanged = true,
+        )
+        assertEquals(mapOf(0 to "Иван"), retry.translations)
+        assertTrue(retry.missingIndices.isEmpty())
+    }
+
+    @Test
     fun ordinarySentenceEchoIsStillRejectedAndNonEnglishSourceIsNotSubstituted() {
         val sentence = TranslationBatchResult.from(
             listOf(1),
