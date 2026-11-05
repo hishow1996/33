@@ -6,13 +6,29 @@ import org.junit.Test
 
 class TranslationBatchResultTest {
     @Test
-    fun rejectsRowsThatLoseExplicitSemanticPolarity() {
-        val result = TranslationBatchResult.from(listOf(0), listOf("我同意。"), mapOf(0 to "I do not agree."), "en", "zh-CN")
-        assertTrue(result.translations.isEmpty())
-        assertTrue(result.missingIndices.contains(0))
-        assertTrue(result.rejectedRows.any { it.reasonCode == "SEMANTIC_POLARITY_MISMATCH" })
+    fun keepsReadableRowsWhenMeaningHeuristicsReportPossibleMismatches() {
+        val result = TranslationBatchResult.from(
+            listOf(0), listOf("我同意。"), mapOf(0 to "I do not agree."), "en", "zh-CN",
+        )
+        assertEquals(mapOf(0 to "我同意。"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+        assertTrue(result.rejectedRows.isEmpty())
     }
 
+
+    @Test
+    fun sourceSymbolRowsArePreservedWithoutCallingThemTranslationFailures() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(4, 5),
+            rawTranslations = listOf("", "[音乐]"),
+            sourceTexts = mapOf(4 to "♪♪", 5 to "[music ]"),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertEquals("♪♪", result.translations[4])
+        assertEquals("[音乐]", result.translations[5])
+        assertTrue(result.missingIndices.isEmpty())
+    }
 
     @Test
     fun preservesRowIndicesAndOrderWhenEveryTranslationIsValid() {
@@ -470,20 +486,16 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertTrue(result.translations.isEmpty())
-        assertEquals(sources.indices.toList(), result.missingIndices)
-        assertEquals(
-            listOf(
-                "SEMANTIC_POLARITY_MISMATCH",
-                "SEMANTIC_MODALITY_MISMATCH",
-                "SEMANTIC_ENTITY_MISMATCH",
-                "SEMANTIC_RELATION_MISMATCH",
-            ),
-            result.rejectedRows.map { it.reasonCode },
-        )
-        assertTrue(result.rejectedRows.all {
-            it.qualityEvidence.orEmpty().contains("semanticConsistencyMismatch=true")
-        })
+        assertEquals(outputs.indices.associateWith { outputs[it] }, result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+        assertTrue(result.rejectedRows.isEmpty())
+        sources.indices.forEach { index ->
+            assertTrue(
+                SubtitleTranslationQualityPolicy.evaluateTranslation(
+                    sources[index], outputs[index], "en", "zh-CN",
+                ).semanticMismatchReason != null,
+            )
+        }
     }
 
     @Test
@@ -516,11 +528,11 @@ class TranslationBatchResultTest {
             targetLanguage = "zh-CN",
         )
 
-        assertTrue(result.translations.isEmpty())
-        assertEquals(listOf(8), result.missingIndices)
-        assertEquals(listOf("NUMERIC_CONTENT_MISMATCH"), result.rejectedRows.map { it.reasonCode })
-        assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("显式数字"))
-        assertTrue(result.rejectedRows.single().qualityEvidence.orEmpty().contains("explicitNumericContentMismatch=true"))
+        assertEquals(mapOf(8 to "我有4只猫和2只狗。"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+        assertTrue(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 3 cats and 2 dogs.", "我有4只猫和2只狗。", "en", "zh-CN",
+        ) != null)
     }
 
     @Test
@@ -532,10 +544,11 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertTrue(result.translations.isEmpty())
-        assertEquals(listOf(3), result.missingIndices)
-        assertEquals(listOf("UNIT_CONTENT_MISMATCH"), result.rejectedRows.map { it.reasonCode })
-        assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("单位类别不一致"))
+        assertEquals(mapOf(3 to "这条路长5米。"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+        assertTrue(SubtitleTranslationQualityPolicy.unitContentMismatchReason(
+            "The road is 5 km long.", "这条路长5米。", "en", "zh-CN",
+        ) != null)
     }
     @Test
     fun rejectsExtraNumbersAndWrongChineseScriptWithSpecificReasonCodes() {
@@ -546,8 +559,8 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertTrue(extraNumber.translations.isEmpty())
-        assertTrue(extraNumber.rejectedRows.any { it.reasonCode == "NUMERIC_CONTENT_MISMATCH" })
+        assertEquals(mapOf(0 to "我有3只猫和5只狗。"), extraNumber.translations)
+        assertTrue(extraNumber.missingIndices.isEmpty())
 
         val wrongScript = TranslationBatchResult.from(
             indices = listOf(1),
@@ -556,9 +569,8 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertTrue(wrongScript.translations.isEmpty())
-        assertTrue(wrongScript.rejectedRows.any { it.reasonCode == "TARGET_SCRIPT_MISMATCH" })
-        assertTrue(wrongScript.rejectedRows.single().diagnosticReason.orEmpty().contains("目标语言要求简体中文"))
+        assertEquals(mapOf(1 to "這個軟體後續會持續更新。"), wrongScript.translations)
+        assertTrue(wrongScript.missingIndices.isEmpty())
     }
 
     @Test
@@ -570,9 +582,8 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertTrue(result.translations.isEmpty())
-        assertTrue(result.rejectedRows.single().reasonCode == "NUMERIC_UNIT_ASSOCIATION_MISMATCH")
-        assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("数字与单位的对应关系"))
+        assertEquals(mapOf(0 to "第一条路线是5公里，第二条路线是3米。"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
     }
 
     @Test
@@ -584,8 +595,8 @@ class TranslationBatchResultTest {
             sourceLanguage = "fr",
             targetLanguage = "zh-CN",
         )
-        assertTrue(negative.translations.isEmpty())
-        assertTrue(negative.rejectedRows.single().reasonCode == "SEMANTIC_POLARITY_MISMATCH")
+        assertEquals(mapOf(0 to "我知道。"), negative.translations)
+        assertTrue(negative.missingIndices.isEmpty())
 
         val question = TranslationBatchResult.from(
             indices = listOf(1),
@@ -594,12 +605,12 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertTrue(question.translations.isEmpty())
-        assertTrue(question.rejectedRows.single().reasonCode == "SEMANTIC_INTENT_MISMATCH")
+        assertEquals(mapOf(1 to "我在这里。"), question.translations)
+        assertTrue(question.missingIndices.isEmpty())
     }
 
     @Test
-    fun batchAcceptsChineseNumberWordsButRejectsMissingExplicitQuantities() {
+    fun batchKeepsReadableChineseNumberRowsWithoutStaticQuantityVetoes() {
         val valid = TranslationBatchResult.from(
             indices = listOf(0),
             rawTranslations = listOf("我有三只猫和两只狗。"),
@@ -617,8 +628,8 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertTrue(missing.translations.isEmpty())
-        assertEquals("NUMERIC_CONTENT_MISMATCH", missing.rejectedRows.single().reasonCode)
+        assertEquals("我有三只猫。", missing.translations[1])
+        assertTrue(missing.missingIndices.isEmpty())
     }
 
 }
