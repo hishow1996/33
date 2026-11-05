@@ -1745,7 +1745,8 @@ internal object SubtitleTranslationQualityPolicy {
                 val letters = candidate.joinToString("").filter { it.isLetter() }
                 val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
                 if (scripts.size == 1 &&
-                    (normalize(candidate.joinToString(" ")) in knownProperNamePhrases ||
+                    ((normalize(candidate.joinToString(" ")) in knownProperNamePhrases &&
+                        isKnownTitlePhrase(candidate)) ||
                         isTitleCasedProperNamePhrase(candidate, scripts.single()))
                 ) {
                     candidate.forEach { raw ->
@@ -1813,10 +1814,11 @@ internal object SubtitleTranslationQualityPolicy {
         if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
         val normalizedValue = normalize(value)
         if (normalizedValue in commonShortPhrases) return false
-        if (normalizedValue in knownProperNamePhrases ||
-            normalizedValue in knownUncasedScriptProperNames
-        ) return true
         val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (normalizedValue in knownProperNamePhrases &&
+            isKnownTitlePhrase(tokens)
+        ) return true
+        if (normalizedValue in knownUncasedScriptProperNames) return true
         if (tokens.isEmpty() || tokens.size > 5) return false
         // A sentence with an explicit question, exclamation or semicolon is never a name cue.
         if (value.any { it in "!?;:" }) return false
@@ -1850,6 +1852,20 @@ internal object SubtitleTranslationQualityPolicy {
      * The Latin word list deliberately blocks ordinary title-cased phrases such as "Good Morning"
      * and "Hello World", while allowing name particles and the common place-name prefix "New".
      */
+    private fun isKnownTitlePhrase(tokens: List<String>): Boolean {
+        if (tokens.size !in 2..5) return false
+        return tokens.all { raw ->
+            val token = raw.trim { it in shortTokenBoundaryPunctuation }
+            val word = normalize(token)
+            if (word in properNameParticles) {
+                token.all { !it.isLetter() || it.isLowerCase() } ||
+                    isTitleCasedNameToken(token, allowInitials = false)
+            } else {
+                isTitleCasedNameToken(token, allowInitials = true)
+            }
+        }
+    }
+
     private fun isTitleCasedProperNamePhrase(tokens: List<String>, script: String): Boolean {
         var meaningfulTokens = 0
         val cleanedTokens = tokens.map { raw ->
@@ -1885,8 +1901,10 @@ internal object SubtitleTranslationQualityPolicy {
         val letters = token.filter { it.isLetter() }
         if (letters.isEmpty() || !letters.first().isUpperCase()) return false
         if (letters.drop(1).all { it.isLowerCase() }) return true
-        return allowInitials && letters.length <= 3 && letters.all { it.isUpperCase() } &&
-            token.endsWith(".")
+        return allowInitials && (
+            (letters.length <= 3 && letters.all { it.isUpperCase() } && token.endsWith(".")) ||
+                (letters.length in 2..10 && letters.all { it.isUpperCase() })
+            )
     }
 
     /** Ignore case, whitespace and punctuation so formatting-only changes do not pass as translation. */
