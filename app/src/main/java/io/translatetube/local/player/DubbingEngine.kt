@@ -177,6 +177,7 @@ class DubbingEngine(
     private val firstPlaybackReported = AtomicBoolean(false)
     private val firstPlaybackCompletedReported = AtomicBoolean(false)
     private val firstQueuedDelayReported = AtomicBoolean(false)
+    private val latenessStats = DubbingLatenessStats()
     private val audioOutputPathReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     /** Raw input is kept only for local diagnostics so rejected/empty translations remain explainable. */
@@ -3412,6 +3413,8 @@ class DubbingEngine(
             expectedGeneration = busGeneration,
             isStillCurrent = isStillCurrent,
         )
+        latenessStats.record(desiredUs, playheadUs, startedAtUs, catchUpRatio)
+            ?.let(::logLatenessSummary)
         val queuedDelayUs = startedAtUs - desiredUs
         if (startedAtUs >= 0L && queuedDelayUs > 150_000L &&
             firstQueuedDelayReported.compareAndSet(false, true)
@@ -3432,6 +3435,28 @@ class DubbingEngine(
             )
         }
         return startedAtUs
+    }
+
+    /**
+     * 每批配音句子的"落后多少"汇总，只写日志，用来判断追赶阈值该不该调、该往哪个方向调：
+     * "准备太慢"多说明合成/预读跟不上，"被前一句顶后"多说明合并或压缩不够。
+     */
+    private fun logLatenessSummary(summary: DubbingLatenessStats.Summary) {
+        logDubbingInfo(
+            "配音落后统计",
+            mapOf(
+                "统计句数" to summary.cues.toString(),
+                "落后超过 150ms 的句数" to summary.delayedCues.toString(),
+                "平均落后 ms" to summary.avgDelayMs.toString(),
+                "最大落后 ms" to summary.maxDelayMs.toString(),
+                "其中准备太慢的句数" to summary.preparedLateCues.toString(),
+                "其中被前一句顶后的句数" to summary.queuedBehindCues.toString(),
+                "做了追赶压缩的句数" to summary.compressedCues.toString(),
+                "最强追赶压缩比例" to summary.minCatchUpRatio.toString(),
+                "最长连续落后句数" to summary.longestDelayedStreak.toString(),
+                "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+            ),
+        )
     }
 
     /**
@@ -4281,6 +4306,7 @@ class DubbingEngine(
         // 共享总线属于播放器：旧引擎挂上去的句子必须随引擎一起撤掉，
         // 否则新引擎的配音会和旧引擎残留的音频叠在一起播出。
         purgeMountedCues()
+        latenessStats.drain()?.let(::logLatenessSummary)
         paceEngineKey?.let { key ->
             if (paceUpdateCount.get() % 8 != 0) {
                 DubbingSpeechPaceStore.save(appContext, key, speechPaceScale)
