@@ -15,8 +15,8 @@ internal object SubtitleTranslationPromptPolicy {
             "and keep it consistent. Preserve numbers, dates, times, quantities, units, currencies, percentages, " +
             "model names and technical values exactly. Translate idioms, slang, humor and sarcasm by their intended " +
             "meaning and tone rather than word-for-word, without inventing explanations. " +
-            "For Chinese targets, use the requested script consistently: Simplified Chinese for zh/zh-CN/zh-Hans, " +
-            "and Traditional Chinese only for zh-Hant/zh-TW/zh-HK. Prefer natural target-language punctuation. " +
+            "For Chinese targets, use the requested script consistently: Simplified Chinese for zh/zh-CN/zh-Hans/zh-SG, " +
+            "and Traditional Chinese only for zh-Hant/zh-TW/zh-HK/zh-MO. Prefer natural target-language punctuation. " +
             "Keep the result concise and natural for spoken subtitles. "
 
     fun targetLanguageLabel(code: String): String {

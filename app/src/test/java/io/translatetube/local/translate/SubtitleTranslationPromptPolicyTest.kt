@@ -55,6 +55,21 @@ class SubtitleTranslationPromptPolicyTest {
         assertTrue(traditionalPrompt.contains("全片统一使用繁体字"))
         assertFalse(traditionalPrompt.contains("全片统一使用简体字"))
 
+        listOf("zh-TW", "zh-HK", "zh-MO", "zh-Hant-HK").forEach { tag ->
+            val regionalTraditional = SubtitleTranslationPromptPolicy.guidelinesForTarget(tag)
+            assertTrue("$tag should receive Traditional Chinese rules",
+                regionalTraditional.contains("全片统一使用繁体字"))
+            assertFalse("$tag must not receive Simplified-only rules",
+                regionalTraditional.contains("全片统一使用简体字"))
+        }
+        listOf("zh", "zh-CN", "zh-Hans", "zh-SG").forEach { tag ->
+            val regionalSimplified = SubtitleTranslationPromptPolicy.guidelinesForTarget(tag)
+            assertTrue("$tag should receive Simplified Chinese rules",
+                regionalSimplified.contains("全片统一使用简体字"))
+            assertFalse("$tag must not receive Traditional-only rules",
+                regionalSimplified.contains("全片统一使用繁体字"))
+        }
+
         val englishPrompt = SubtitleTranslationPromptPolicy.guidelinesForTarget("en")
         assertTrue(englishPrompt.contains(SubtitleTranslationPromptPolicy.SOURCE_ALIGNMENT_GUIDELINES))
         assertFalse(englishPrompt.contains(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES))
