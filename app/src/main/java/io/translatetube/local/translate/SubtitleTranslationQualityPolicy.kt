@@ -172,10 +172,20 @@ internal object SubtitleTranslationQualityPolicy {
         ExplicitUnitAlias("cny", listOf("CNY", "RMB", "renminbi", "人民币", "人民幣", "元")),
     )
     private val explicitUnitMatches = explicitUnitAliases.map { unit ->
-        unit.id to Regex(
-            """(?<![\p{L}])(?:${unit.aliases.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) }})(?![\p{L}])""",
-            RegexOption.IGNORE_CASE,
-        )
+        val aliasPatterns = unit.aliases.sortedByDescending { it.length }.map { alias ->
+            val chineseAlias = alias.any {
+                Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN
+            }
+            // Chinese unit words may directly follow Chinese numerals (五公里、三米).
+            // Permit only numeral characters at that boundary, not arbitrary adjacent Han words.
+            val leftBoundary = if (chineseAlias) {
+                """(?:(?<![\\p{L}])|(?<=[零〇一二两兩三四五六七八九十百千万萬亿億点點半负負正]))"""
+            } else {
+                """(?<![\\p{L}])"""
+            }
+            leftBoundary + Regex.escape(alias) + "(?![\\p{L}])"
+        }
+        unit.id to Regex("(?:${aliasPatterns.joinToString("|")})", RegexOption.IGNORE_CASE)
     }
 
     // Currency symbols may precede the amount (for example €5), unlike ordinary unit words.
@@ -353,10 +363,16 @@ internal object SubtitleTranslationQualityPolicy {
         val numericUnitMismatch = numericUnitAssociationMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val unitMismatch = unitContentMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val semanticMismatch = semanticConsistencyMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
-        val shortAccepted = acceptShortUnchanged &&
-            isAcceptableShortUntranslatedCue(sourceText, translatedText, sourceLanguage, targetLanguage) &&
+        val shortNameCue = isAcceptableShortUntranslatedCue(
+            sourceText, translatedText, sourceLanguage, targetLanguage,
+        )
+        val shortAccepted = acceptShortUnchanged && shortNameCue &&
             modelMeta == null && scriptMismatch == null && numericMismatch == null &&
             numericUnitMismatch == null && unitMismatch == null && semanticMismatch == null
+        // A genuine short name may remain unchanged after a failed translation attempt, but the
+        // first pass must still retry it once. This prevents unchanged names from being silently
+        // counted as completed rows while keeping the final cache/dubbing exception narrow.
+        val shortNameNeedsRetry = !acceptShortUnchanged && shortNameCue
 
         val rejection = if (shortAccepted) null else when {
             isPunctuationOnlyTranslation(sourceText, translatedText) ->
@@ -367,6 +383,7 @@ internal object SubtitleTranslationQualityPolicy {
             numericUnitMismatch != null -> "NUMERIC_UNIT_ASSOCIATION_MISMATCH" to numericUnitMismatch
             unitMismatch != null -> "UNIT_CONTENT_MISMATCH" to unitMismatch
             semanticMismatch != null -> semanticMismatchCode(semanticMismatch) to semanticMismatch
+            shortNameNeedsRetry -> "SHORT_NAME_RETRY_REQUIRED" to "检测到可保留的短人名或专名；首次原样返回仍需重试确认"
             sourceEcho && targetMismatch != null ->
                 "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" to ("译文与原文相同，且没有达到目标语言要求；" + targetMismatch)
             targetMismatch != null -> "TARGET_LANGUAGE_MISMATCH" to targetMismatch
