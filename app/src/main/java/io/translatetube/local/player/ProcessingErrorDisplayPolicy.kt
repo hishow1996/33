@@ -82,14 +82,100 @@ internal object ProcessingErrorDisplayPolicy {
             ?.firstOrNull { it.isNotBlank() }
             ?.toIntOrNull()
         val resolvedPhase = resolvePhase(phase, progress, error)
-
-        return when (resolvedPhase) {
+        val detail = when (resolvedPhase) {
             Phase.PARSING -> parsingMessage(source, raw, status)
             Phase.DOWNLOADING_AUDIO -> audioMessage(raw, status)
             Phase.TRANSCRIBING -> transcriptionMessage(raw, status)
             Phase.TRANSLATING -> translationMessage(raw, status, subtitleIndex)
             Phase.SYNTHESIZING -> synthesisMessage(raw, status, subtitleIndex)
             else -> playbackMessage(raw)
+        }
+        val category = classifyErrorCategory(resolvedPhase, source, raw, status)
+        return "错误分类：$category\n$detail"
+    }
+
+    /** A short, stable category that can be scanned quickly on the player and processing cards. */
+    fun errorCategory(
+        sessionKey: String,
+        phase: Phase?,
+        progress: String?,
+        error: String?,
+    ): String {
+        val raw = listOfNotNull(progress, error)
+            .joinToString(" ")
+            .trim()
+            .lowercase(Locale.ROOT)
+        val source = when {
+            sessionKey.startsWith("youtube:", ignoreCase = true) -> VideoSourceKind.YOUTUBE
+            sessionKey.startsWith("remote:", ignoreCase = true) ||
+                sessionKey.startsWith("webpage:", ignoreCase = true) -> VideoSourceKind.WEB
+            sessionKey.startsWith("local:", ignoreCase = true) -> VideoSourceKind.LOCAL
+            else -> VideoSourceKind.UNKNOWN
+        }
+        val status = httpStatusPattern.find(raw)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return classifyErrorCategory(resolvePhase(phase, progress, error), source, raw, status)
+    }
+
+    private fun classifyErrorCategory(
+        phase: Phase?,
+        source: VideoSourceKind,
+        raw: String,
+        status: Int?,
+    ): String {
+        return when {
+            isQuotaFailure(raw) || status == 402 -> "额度或配额不足"
+            status == 401 || status == 403 || "unauthorized" in raw ||
+                "api key" in raw || "鉴权" in raw || "授权失败" in raw ->
+                "授权失败"
+            status == 408 -> "请求超时"
+            status == 425 -> "服务暂不可用"
+            status == 429 || "too many requests" in raw || "rate limit" in raw ->
+                "请求频率受限"
+            status != null && status in 500..599 -> "服务端异常"
+            isNetworkFailure(raw) -> "网络连接异常"
+            isModelFailure(raw) -> "模型不可用"
+            else -> when (phase) {
+                Phase.PARSING -> when {
+                    "blob:" in raw || "mse" in raw || "drm" in raw ->
+                        "网页媒体源不可直接访问"
+                    source == VideoSourceKind.YOUTUBE &&
+                        ("login_required" in raw || "sign in" in raw || "recaptcha" in raw ||
+                            "captcha" in raw || "not a bot" in raw || "年龄验证" in raw ||
+                            "年龄限制" in raw) -> "平台访问受限"
+                    "permission" in raw || "denied" in raw || "权限" in raw -> "文件权限不足"
+                    "no such file" in raw || "enoent" in raw || "文件不存在" in raw ||
+                        "已移动" in raw -> "视频文件不存在"
+                    "unsupported" in raw || "不支持" in raw || "格式无效" in raw ->
+                        "视频格式不支持"
+                    else -> "视频解析失败"
+                }
+                Phase.DOWNLOADING_AUDIO -> when {
+                    status == 404 || status == 410 || "expired" in raw ||
+                        "签名" in raw || "地址已失效" in raw -> "音轨地址失效或不存在"
+                    "unsupported" in raw || "不支持" in raw -> "音轨格式不支持"
+                    else -> "音轨提取失败"
+                }
+                Phase.TRANSCRIBING -> when {
+                    "outofmemory" in raw || "out of memory" in raw || "内存不足" in raw ->
+                        "设备内存不足"
+                    "no speech" in raw || "empty transcript" in raw || "未识别到语音" in raw ->
+                        "未检测到有效语音"
+                    else -> "语音识别失败"
+                }
+                Phase.TRANSLATING -> when {
+                    "empty response" in raw || "invalid response" in raw ||
+                        "无效译文" in raw || "未生成译文" in raw -> "译文无效"
+                    else -> "翻译结果异常"
+                }
+                Phase.SYNTHESIZING -> when {
+                    "outofmemory" in raw || "out of memory" in raw || "内存不足" in raw ->
+                        "设备内存不足"
+                    "empty audio" in raw || "invalid audio" in raw || "音频数据为空" in raw ->
+                        "音频数据无效"
+                    else -> "配音合成或输出失败"
+                }
+                else -> "播放器异常"
+            }
         }
     }
 

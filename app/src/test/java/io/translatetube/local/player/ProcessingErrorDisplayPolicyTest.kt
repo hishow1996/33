@@ -16,7 +16,8 @@ class ProcessingErrorDisplayPolicyTest {
             error = "ReCaptchaException: HTTP 429 too many requests at www.youtube.com",
         )
 
-        assertTrue(message.startsWith("YouTube 视频解析失败："))
+        assertTrue(message.startsWith("错误分类：请求频率受限"))
+        assertTrue(message.contains("YouTube 视频解析失败："))
         assertTrue(message.contains("请求过于频繁"))
         assertFalse(message.contains("ReCaptchaException"))
         assertFalse(message.contains("www.youtube.com"))
@@ -31,7 +32,8 @@ class ProcessingErrorDisplayPolicyTest {
             progress = "网页视频解析",
             error = "blob URL MSE media source is not directly playable",
         )
-        assertTrue(message.startsWith("网页视频解析失败："))
+        assertTrue(message.startsWith("错误分类：网页媒体源不可直接访问"))
+        assertTrue(message.contains("网页视频解析失败："))
         assertTrue(message.contains("内嵌媒体流"))
     }
 
@@ -43,7 +45,8 @@ class ProcessingErrorDisplayPolicyTest {
             progress = "读取本地视频",
             error = "java.io.FileNotFoundException: /private/path/video.mp4 (No such file)",
         )
-        assertTrue(message.startsWith("本地视频解析失败："))
+        assertTrue(message.startsWith("错误分类：视频文件不存在"))
+        assertTrue(message.contains("本地视频解析失败："))
         assertTrue(message.contains("不存在或已移动"))
         assertFalse(message.contains("/private/path"))
     }
@@ -177,6 +180,49 @@ class ProcessingErrorDisplayPolicyTest {
         }
     }
 
+
+    @Test
+    fun explicitErrorCategoryIsShownForCommonFailureTypes() {
+        val cases = listOf(
+            Triple(Phase.TRANSLATING, "字幕翻译", "SocketTimeoutException: timed out") to "网络连接异常",
+            Triple(Phase.TRANSLATING, "字幕翻译", "HTTP 429 Too Many Requests") to "请求频率受限",
+            Triple(Phase.TRANSCRIBING, "语音转写", "HTTP 503 Service Unavailable") to "服务端异常",
+            Triple(Phase.TRANSLATING, "字幕翻译", "HTTP 401 unauthorized") to "授权失败",
+            Triple(Phase.TRANSLATING, "字幕翻译", "insufficient quota") to "额度或配额不足",
+            Triple(Phase.TRANSCRIBING, "语音转写", "model_unavailable") to "模型不可用",
+            Triple(Phase.TRANSLATING, "字幕翻译", "invalid response: empty response") to "译文无效",
+            Triple(Phase.SYNTHESIZING, "配音合成", "invalid audio data") to "音频数据无效",
+        )
+
+        for ((input, expectedCategory) in cases) {
+            val (phase, progress, error) = input
+            val actual = ProcessingErrorDisplayPolicy.errorCategory(
+                sessionKey = "local:video",
+                phase = phase,
+                progress = progress,
+                error = error,
+            )
+            assertEquals(expectedCategory, actual)
+            val display = ProcessingErrorDisplayPolicy.message(
+                "local:video", phase, progress, error,
+            )
+            assertTrue(display.startsWith("错误分类：$expectedCategory\n"))
+        }
+    }
+
+    @Test
+    fun displayedCategoryDoesNotExposeTechnicalExceptionOrHost() {
+        val display = ProcessingErrorDisplayPolicy.message(
+            sessionKey = "local:video",
+            phase = Phase.TRANSLATING,
+            progress = "第 35 条字幕翻译请求",
+            error = "SocketTimeoutException: connection timed out to api.private.example",
+        )
+        assertTrue(display.startsWith("错误分类：网络连接异常"))
+        assertFalse(display.contains("SocketTimeoutException"))
+        assertFalse(display.contains("api.private.example"))
+    }
+
     @Test
     fun unknownFailureDoesNotExposeRawExceptionText() {
         val raw = "InternalParserException: private-host-token-123"
@@ -188,6 +234,8 @@ class ProcessingErrorDisplayPolicyTest {
         )
         assertFalse(message.contains("InternalParserException"))
         assertFalse(message.contains("private-host-token-123"))
+        assertTrue(message.startsWith("错误分类：视频解析失败\n"))
+        assertTrue(message.contains("视频解析失败：未能获取视频信息"))
         assertEquals("视频加载失败", ProcessingErrorDisplayPolicy.title(Phase.ERROR))
     }
 
