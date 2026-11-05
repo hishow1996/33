@@ -1730,6 +1730,10 @@ internal object SubtitleTranslationQualityPolicy {
         val tokens = sourceText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
         if (tokens.size < 2) return emptySet()
         val retained = mutableSetOf<String>()
+        tokens.forEach { raw ->
+            val normalized = normalize(raw.trim { it in shortTokenBoundaryPunctuation })
+            if (normalized in knownUncasedScriptProperNames) retained += normalized
+        }
         for (start in tokens.indices) {
             for (length in 2..5) {
                 val end = start + length
@@ -1737,7 +1741,10 @@ internal object SubtitleTranslationQualityPolicy {
                 val candidate = tokens.subList(start, end)
                 val letters = candidate.joinToString("").filter { it.isLetter() }
                 val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
-                if (scripts.size == 1 && isTitleCasedProperNamePhrase(candidate, scripts.single())) {
+                if (scripts.size == 1 &&
+                    (normalize(candidate.joinToString(" ")) in knownProperNamePhrases ||
+                        isTitleCasedProperNamePhrase(candidate, scripts.single()))
+                ) {
                     candidate.forEach { raw ->
                         val normalized = normalize(raw.trim { it in shortTokenBoundaryPunctuation })
                         if (normalized.isNotEmpty()) retained += normalized
@@ -1771,6 +1778,18 @@ internal object SubtitleTranslationQualityPolicy {
         "la", "le", "of", "st", "saint", "the", "van", "von",
     )
     private val geographicNamePrefixes = setOf("new")
+    // Titles whose ordinary words would otherwise be rejected by the common-word guard.
+    private val knownProperNamePhrases = setOf(
+        "onedirection", "onepiece", "thelastofus", "thefastandthefurious",
+        "goodwillhunting", "astarisborn", "thegoodthebadandtheugly",
+    )
+    // A small high-confidence list for scripts without uppercase/lowercase distinctions.
+    private val knownUncasedScriptProperNames = setOf(
+        "東京", "大阪", "京都", "名古屋", "北海道", "沖縄", "富士山", "新宿", "渋谷",
+        "서울", "부산", "인천", "제주도", "김민수", "김연아",
+        "دبي", "القاهرة", "أبوظبي", "الرياض",
+        "ירושלים", "תלאביב", "חיפה",
+    )
     private val commonNonLatinNameWords = setOf(
         // Common Russian words/greetings are never accepted as names merely because they
         // appear alone or are title-cased by a subtitle provider.
@@ -1789,7 +1808,11 @@ internal object SubtitleTranslationQualityPolicy {
         // Compatibility forms (for example full-width Latin letters/digits) must reach the
         // NFKC-based source-echo comparison instead of being mistaken for unchanged acronyms.
         if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
-        if (normalize(value) in commonShortPhrases) return false
+        val normalizedValue = normalize(value)
+        if (normalizedValue in commonShortPhrases) return false
+        if (normalizedValue in knownProperNamePhrases ||
+            normalizedValue in knownUncasedScriptProperNames
+        ) return true
         val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (tokens.isEmpty() || tokens.size > 5) return false
         // A sentence with an explicit question, exclamation or semicolon is never a name cue.
