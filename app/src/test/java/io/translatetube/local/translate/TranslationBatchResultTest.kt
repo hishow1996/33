@@ -418,4 +418,21 @@ class TranslationBatchResultTest {
             result.rejectedRows.map { it.reasonCode },
         )
     }
+
+    @Test
+    fun rejectsChangedExplicitNumbersWithDedicatedDiagnosticCategory() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(8),
+            rawTranslations = listOf("我有4只猫和2只狗。"),
+            sourceTexts = mapOf(8 to "I have 3 cats and 2 dogs."),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+
+        assertTrue(result.translations.isEmpty())
+        assertEquals(listOf(8), result.missingIndices)
+        assertEquals(listOf("NUMERIC_CONTENT_MISMATCH"), result.rejectedRows.map { it.reasonCode })
+        assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("显式数字"))
+        assertTrue(result.rejectedRows.single().qualityEvidence.orEmpty().contains("explicitNumericContentMismatch=true"))
+    }
 }

@@ -1,5 +1,6 @@
 package io.translatetube.local.translate
 
+import java.math.BigDecimal
 import java.text.Normalizer
 import java.util.Locale
 import io.translatetube.local.tts.TtsTextPolicy
@@ -11,6 +12,14 @@ internal object SubtitleTranslationQualityPolicy {
     private val emailPattern = Regex(
         """^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$""",
         RegexOption.IGNORE_CASE,
+    )
+    private val explicitNumberPattern = Regex(
+        """(?<![\p{L}\p{N}])-?\d+(?:[.,]\d+)*|(?<!\d)\d+(?:[.,]\d+)*"""
+    )
+    private val clockTimePattern = Regex("""(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)""")
+    private val commaDecimalLanguages = setOf(
+        "de", "fr", "es", "it", "pt", "nl", "ru", "pl", "tr", "uk", "sv", "no",
+        "da", "fi", "cs", "sk", "hu", "ro", "bg", "el", "hr", "sr", "id",
     )
 
     fun isSourceEcho(sourceText: String?, translatedText: String?, sourceLanguage: String): Boolean {
@@ -145,12 +154,98 @@ internal object SubtitleTranslationQualityPolicy {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         if (!TtsTextPolicy.hasSpeakableContent(translatedText)) return false
         if (isPunctuationOnlyTranslation(sourceText, translatedText)) return false
+        if (numericContentMismatchReason(
+                sourceText, translatedText, sourceLanguage, targetLanguage,
+            ) != null
+        ) return false
         val sourceEcho = isSourceEcho(sourceText, translatedText, sourceLanguage)
         val targetMismatch = isTargetLanguageMismatch(sourceText, translatedText, sourceLanguage, targetLanguage)
         if (!sourceEcho && !targetMismatch) return true
         return acceptShortUnchanged && isAcceptableShortUntranslatedCue(
             sourceText, translatedText, sourceLanguage, targetLanguage,
         )
+    }
+
+
+    /**
+     * Normalize explicit Arabic-number tokens without logging their values.
+     * Parse source and Chinese output using their own number-format conventions.
+     */
+    private fun normalizedExplicitNumbers(
+        value: String,
+        numberFormatLanguage: String,
+        skipClockRanges: List<IntRange> = emptyList(),
+    ): List<String> = explicitNumberPattern.findAll(value)
+        .filterNot { match ->
+            skipClockRanges.any { range ->
+                match.range.first >= range.first && match.range.last <= range.last
+            }
+        }
+        .map { match ->
+            val raw = match.value
+            val negative = raw.startsWith("-")
+            var number = raw.removePrefix("-")
+            val primaryLanguage = SourceLanguagePolicy.normalizeTag(numberFormatLanguage)
+                .lowercase(Locale.ROOT)
+                .substringBefore("-")
+            val commaDecimal = primaryLanguage in commaDecimalLanguages
+            val groupedComma = Regex("""^\\d{1,3}(?:,\\d{3})+$""").matches(number)
+            val groupedDot = Regex("""^\\d{1,3}(?:\\.\\d{3})+$""").matches(number)
+            number = when {
+                number.contains(",") && number.contains(".") && commaDecimal ->
+                    number.replace(".", "").replace(',', '.')
+                number.contains(",") && number.contains(".") ->
+                    number.replace(",", "")
+                number.contains(",") && groupedComma && !commaDecimal ->
+                    number.replace(",", "")
+                number.contains(",") ->
+                    number.replace(',', '.')
+                number.contains(".") && groupedDot && commaDecimal ->
+                    number.replace(".", "")
+                else -> number
+            }
+            val signed = if (negative) "-$number" else number
+            runCatching { BigDecimal(signed).stripTrailingZeros().toPlainString() }
+                .getOrElse { signed }
+        }
+        .toList()
+
+    /**
+     * Conservative explicit-number guard. If the target has fewer numeric tokens, it may have
+     * rendered a value in Chinese words or a clock as 点/半; this heuristic declines to reject.
+     * It never adds a second model/API request.
+     */
+    fun numericContentMismatchReason(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String? {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
+        if (!SourceLanguagePolicy.isChinese(targetLanguage) ||
+            SourceLanguagePolicy.isChinese(sourceLanguage)
+        ) return null
+
+        val localizedClock = listOf("点", "时", "時", "半", "上午", "下午", "凌晨", "中午")
+            .any(translatedText::contains)
+        val ignoredClockRanges = if (localizedClock) {
+            clockTimePattern.findAll(sourceText).map { it.range }.toList()
+        } else {
+            emptyList()
+        }
+        val sourceNumbers = normalizedExplicitNumbers(sourceText, sourceLanguage, ignoredClockRanges)
+        val translatedNumbers = normalizedExplicitNumbers(translatedText, targetLanguage)
+        if (sourceNumbers.isEmpty() || translatedNumbers.size < sourceNumbers.size) return null
+
+        val available = translatedNumbers.groupingBy { it }.eachCount().toMutableMap()
+        var missing = 0
+        sourceNumbers.forEach { number ->
+            val count = available[number] ?: 0
+            if (count > 0) available[number] = count - 1 else missing++
+        }
+        return if (missing == 0) null else {
+            "原文有 ${sourceNumbers.size} 个显式数字项，译文有 ${translatedNumbers.size} 个数字项；其中 $missing 项未保留或数值不一致"
+        }
     }
 
     // High-frequency English words must never be treated as untranslated names merely
@@ -244,6 +339,9 @@ internal object SubtitleTranslationQualityPolicy {
             sourceLanguage = sourceLanguage,
             targetLanguage = targetLanguage,
         )
+        val numericMismatch = numericContentMismatchReason(
+            sourceText, output, sourceLanguage, targetLanguage,
+        )
         val nonTranslatable = isNonTranslatableCue(sourceText)
         val sourceEcho = isSourceEcho(sourceText, output, sourceLanguage)
         val punctuationOnly = isPunctuationOnlyTranslation(sourceText, output)
@@ -267,6 +365,8 @@ internal object SubtitleTranslationQualityPolicy {
             append("; shortTokenSpellingCompatible=").append(shortSpellingMatch)
             append("; shortUntranslatedCueAccepted=").append(shortCueAccepted)
             append("; targetLanguageMismatch=").append(mismatch != null)
+            append("; explicitNumericContentMismatch=").append(numericMismatch != null)
+            append("; numericMismatchReason=").append(numericMismatch?.take(180) ?: "无")
             append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
         }
     }

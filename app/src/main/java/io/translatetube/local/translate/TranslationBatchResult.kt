@@ -75,6 +75,11 @@ internal data class TranslationBatchResult(
                     )
                 }
                 val targetMismatch = targetMismatchDetail != null
+                val numericMismatchDetail = value?.let {
+                    SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                        sourceText, it, sourceLanguage, targetLanguage,
+                    )
+                }
                 val modelMetaReason = value?.let {
                     SubtitleTranslationQualityPolicy.translationMetaResponseReason(
                         sourceText, it, sourceLanguage, targetLanguage,
@@ -95,7 +100,8 @@ internal data class TranslationBatchResult(
                     return@forEachIndexed
                 }
                 val shortUntranslatedAccepted = acceptShortUnchanged &&
-                    !value.isNullOrBlank() && !unspeakable && (sourceEcho || targetMismatch) &&
+                    !value.isNullOrBlank() && !unspeakable && numericMismatchDetail == null &&
+                    (sourceEcho || targetMismatch) &&
                     SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
                         sourceText, value, sourceLanguage, targetLanguage,
                     )
@@ -103,6 +109,7 @@ internal data class TranslationBatchResult(
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
                     unspeakable -> "UNSPEAKABLE_TRANSLATION"
                     modelMetaReason != null -> "MODEL_META_RESPONSE"
+                    numericMismatchDetail != null -> "NUMERIC_CONTENT_MISMATCH"
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"
                     targetMismatch -> "TARGET_LANGUAGE_MISMATCH"
                     sourceEcho -> "SOURCE_ECHO"
@@ -114,7 +121,7 @@ internal data class TranslationBatchResult(
                         missing.remove(sourceIndex)
                         rejectionByIndex.remove(sourceIndex)
                     }
-                    value.isNullOrBlank() || targetMismatch || unspeakable -> {
+                    value.isNullOrBlank() || targetMismatch || unspeakable || numericMismatchDetail != null -> {
                         // Empty output and status text still need another attempt.
                         if (sourceIndex !in translated) {
                             missing += sourceIndex
@@ -137,6 +144,7 @@ internal data class TranslationBatchResult(
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
                                             unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
                                             modelMetaReason != null -> modelMetaReason
+                                            numericMismatchDetail != null -> numericMismatchDetail
                                             sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
                                             sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
                                             targetMismatch -> targetMismatchDetail
@@ -171,6 +179,7 @@ internal data class TranslationBatchResult(
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
                                             unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
                                             modelMetaReason != null -> modelMetaReason
+                                            numericMismatchDetail != null -> numericMismatchDetail
                                             sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
                                             sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
                                             targetMismatch -> targetMismatchDetail

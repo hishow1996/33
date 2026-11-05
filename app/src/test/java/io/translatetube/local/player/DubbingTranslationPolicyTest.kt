@@ -201,4 +201,15 @@ class DubbingTranslationPolicyTest {
         assertNull(result.text)
         assertTrue(result.reason.orEmpty().contains("服务/网络/鉴权错误"))
     }
+
+    @Test
+    fun rejectsChangedExplicitNumbersBeforeDubbingWithSpecificReason() {
+        val result = DubbingTranslationPolicy.resolveText(
+            "I have 3 cats and 2 dogs.",
+            "我有4只猫和2只狗。",
+            "en",
+        )
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().contains("显式数字"))
+    }
 }

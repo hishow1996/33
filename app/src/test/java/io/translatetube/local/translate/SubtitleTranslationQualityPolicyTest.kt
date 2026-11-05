@@ -504,4 +504,56 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun rejectsChangedExplicitNumbersButAllowsLocaleFormattingAndNaturalChineseTime() {
+        val changed = SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 3 cats and 2 dogs.",
+            "我有4只猫和2只狗。",
+            "en",
+            "zh-CN",
+        )
+        assertTrue(changed.orEmpty().contains("显式数字"))
+
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "I have 3 cats and 2 dogs.",
+                "我有3只猫和2只狗。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "La valeur est 1,5.",
+                "数值是1.5。",
+                "fr",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "May 5, 2024",
+                "2024年5月5日",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "Meet me at 10:30.",
+                "十点半见面。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "There are 3 cats.",
+                "有三只猫。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+    }
 }
