@@ -21,6 +21,9 @@ internal object DubbingTranslationPolicy {
         if (sourceText.isBlank()) {
             return DubbingTranslationResolution(null, "原文字幕为空")
         }
+        if (SubtitleTranslationQualityPolicy.hasNothingToSpeak(sourceText)) {
+            return DubbingTranslationResolution(null)
+        }
         val hint = io.translatetube.local.translate.SourceLanguagePolicy.normalizeTag(sourceLanguage)
         val hasLanguageHint = !io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(hint)
         // A video-level language is more reliable than guessing from one short cue. In particular,
