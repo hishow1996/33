@@ -24,8 +24,7 @@ internal object DubbingStartupBufferPolicy {
         lines.indices.filter { index ->
             val line = lines[index]
             line.startMs >= 0L && line.endMs > line.startMs && !line.zh.isNullOrBlank() &&
-                !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text) &&
-                !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.zh)
+                !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text)
         }
 
     fun plan(
