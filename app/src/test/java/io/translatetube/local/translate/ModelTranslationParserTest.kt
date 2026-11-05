@@ -90,6 +90,16 @@ class ModelTranslationParserTest {
     }
 
     @Test
+    fun rejectsCompletelyUnparseableMultiRowOutputSoAdaptiveRecoveryCanSplitIt() {
+        val error = runCatching {
+            parseModelTranslations("The service is temporarily unavailable.", 3)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("无法解析为字幕行"))
+    }
+
+    @Test
     fun normalizesCaseAndUnderscoreLanguageTags() {
         assertEquals("en", LangMap.mlkit("EN-us"))
         assertEquals("zh", LangMap.mlkit("zh_CN"))

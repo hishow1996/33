@@ -122,7 +122,8 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
         message.contains("超出本批范围的字幕编号") ||
         message.contains("混入未编号内容") ||
         message.contains("编号不完整") ||
-        message.contains("格式不完整")
+        message.contains("格式不完整") ||
+        message.contains("无法解析为字幕行")
     if (malformedTranslation) return true
 
     // A batch that exceeds context/request limits may succeed when split. Do not include generic
@@ -193,6 +194,8 @@ private class TranslationRecoveryBudget {
  * Retry malformed or truncated model output with smaller cue groups. Successfully translated
  * halves feed their last few cues into the next half so splitting does not discard continuity.
  * All recursive calls share a fixed attempt budget for this original batch.
+ * When [deferInvalidRowsToCaller] is true, correctly aligned but rejected rows are returned
+ * to the caller's existing row-only retry loop; malformed responses still split safely.
  */
 internal suspend fun translateBatchWithAdaptiveRecovery(
     lines: List<String>,
@@ -202,14 +205,16 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     },
     retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)? = null,
     acceptAfterRecovery: ((source: String, translation: String) -> Boolean)? = null,
+    deferInvalidRowsToCaller: Boolean = false,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
     val budget = TranslationRecoveryBudget()
     val result = translateBatchWithAdaptiveRecoveryInternal(
-        lines, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery, translate, budget,
+        lines, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
+        deferInvalidRowsToCaller, translate, budget,
     )
-    if (budget.hadUnalignedResponse && lines.indices.any { index ->
+    if (!deferInvalidRowsToCaller && budget.hadUnalignedResponse && lines.indices.any { index ->
             val candidate = result.getOrNull(index).orEmpty()
             lines[index].isNotBlank() &&
                 !isAcceptableTranslation(lines[index], candidate) &&
@@ -229,6 +234,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     isAcceptableTranslation: (source: String, translation: String) -> Boolean,
     retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)?,
     acceptAfterRecovery: ((source: String, translation: String) -> Boolean)?,
+    deferInvalidRowsToCaller: Boolean,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
     budget: TranslationRecoveryBudget,
 ): List<String> {
@@ -260,6 +266,13 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
             lines[index].isBlank() || output[index].isNotBlank()
         }
         if (complete) return output
+        // Return the original rejected text, not an empty placeholder, so the caller can
+        // preserve the exact row-level quality reason in diagnostics and retry only that row.
+        if (deferInvalidRowsToCaller) {
+            return response.mapIndexed { index, value ->
+                if (lines[index].isBlank()) "" else value.trim()
+            }
+        }
 
         val hasUsableResult = lines.indices.any { index ->
             lines[index].isNotBlank() && output[index].isNotBlank()
@@ -302,6 +315,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                     isAcceptableTranslation,
                     retrySingle,
                     acceptAfterRecovery,
+                    deferInvalidRowsToCaller,
                     translate,
                     budget,
                 )
@@ -316,6 +330,8 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     // A malformed or wholly missing batch cannot be mapped safely to individual input rows.
     // Split it in half so every retry makes progress and never shifts one cue onto another.
     if (lines.size == 1) {
+        // A malformed single-row response has no safe value to pass back. Let the caller retry it.
+        if (deferInvalidRowsToCaller) return listOf("")
         // Even an isolated cue gets one retry: source-echo validation happens inside this helper,
         // so otherwise a single echoed cue would fail before the caller can recover it.
         val retryCandidate = try {
@@ -358,13 +374,15 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     val leftSource = lines.subList(0, midpoint)
     val rightSource = lines.subList(midpoint, lines.size)
     val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        leftSource, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery, translate, budget,
+        leftSource, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
+        deferInvalidRowsToCaller, translate, budget,
     )
     val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
     val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
     val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
     val rightTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        rightSource, rightContext, isAcceptableTranslation, retrySingle, acceptAfterRecovery, translate, budget,
+        rightSource, rightContext, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
+        deferInvalidRowsToCaller, translate, budget,
     )
     return leftTranslation + rightTranslation
 }
@@ -548,12 +566,13 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         }
     }
 
-    // Keep alignment deterministic; the caller turns an entirely unparseable batch into an error.
+    // Do not disguise an unparseable multi-row response as an aligned list of blanks.
+    // Adaptive recovery recognizes this format error and safely lowers the request size.
     recordParser(
         "UNPARSEABLE_CONTENT",
         "expectedRows=$size; rawChars=${content.length}; normalizedChars=${normalized.length}; lineCount=${normalized.lines().size}; indexedRows=${indexed.size}; unnumberedRows=${unexpectedLines.size}",
     )
-    return List(size) { "" }
+    throw IllegalStateException("翻译服务返回内容无法解析为字幕行，已拒绝可能错位的译文")
 }
 
 
@@ -1591,17 +1610,7 @@ class OpenAiCompatEngine(
                 context = context,
                 isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                 acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
-                retrySingle = { source, cueContext ->
-                    translateBatch(
-                        listOf(source),
-                        srcLang,
-                        tgtLang,
-                        cueContext,
-                        forceTranslate = true,
-                        lookaheadSource = lookaheadSource,
-                        videoTitle = videoTitle,
-                    ).singleOrNull()
-                },
+                deferInvalidRowsToCaller = true,
             ) { rows, cueContext ->
                 translateBatch(
                     rows, srcLang, tgtLang, cueContext,
@@ -1760,17 +1769,7 @@ class GeminiEngine(
                 context = context,
                 isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                 acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
-                retrySingle = { source, cueContext ->
-                    translateBatch(
-                        listOf(source),
-                        srcLang,
-                        tgtLang,
-                        cueContext,
-                        forceTranslate = true,
-                        lookaheadSource = lookaheadSource,
-                        videoTitle = videoTitle,
-                    ).singleOrNull()
-                },
+                deferInvalidRowsToCaller = true,
             ) { rows, cueContext ->
                 translateBatch(
                     rows, srcLang, tgtLang, cueContext,

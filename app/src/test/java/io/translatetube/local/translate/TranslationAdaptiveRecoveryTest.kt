@@ -133,6 +133,50 @@ class TranslationAdaptiveRecoveryTest {
     }
 
     @Test
+    fun defersAlignedRejectedRowsToTheCallerWithoutAnExtraHiddenRequest() = runBlocking {
+        val calls = mutableListOf<String>()
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = listOf("Hello", "Thanks"),
+            isAcceptableTranslation = { source, candidate -> source != candidate },
+            retrySingle = { source, _ ->
+                calls += "hidden:$source"
+                "should-not-run"
+            },
+            deferInvalidRowsToCaller = true,
+            translate = { rows, _ ->
+                calls += rows.joinToString(",")
+                if (rows.size == 2) listOf("你好", "Thanks") else rows.map { it }
+            },
+        )
+
+        assertEquals(listOf("你好", "Thanks"), result)
+        assertEquals(listOf("Hello,Thanks"), calls)
+    }
+
+    @Test
+    fun returnsUnresolvedRowsAfterSafeAlignmentRecoveryWhenCallerOwnsRetry() = runBlocking {
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = listOf("first", "unresolved", "last"),
+            isAcceptableTranslation = { _, candidate -> candidate.startsWith("中文:") },
+            deferInvalidRowsToCaller = true,
+            translate = { rows, _ ->
+                if (rows.size > 1) {
+                    listOf("截断响应")
+                } else {
+                    when (rows.single()) {
+                        "first" -> listOf("中文:first")
+                        "unresolved" -> listOf("")
+                        "last" -> listOf("中文:last")
+                        else -> listOf("")
+                    }
+                }
+            },
+        )
+
+        assertEquals(listOf("中文:first", "", "中文:last"), result)
+    }
+
+    @Test
     fun sourceEchoThatPersistsInSingleRowIsHandedBackAfterOneRetry() = runBlocking {
         var calls = 0
         val result = translateBatchWithAdaptiveRecovery(

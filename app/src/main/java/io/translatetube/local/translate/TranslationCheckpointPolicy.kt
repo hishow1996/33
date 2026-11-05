@@ -1,15 +1,18 @@
 package io.translatetube.local.translate
 
 /**
- * Persists each successful translation batch by default so an interrupted background task
- * resumes from the latest completed batch. Callers may opt into a wider interval when the
- * serialization cost is more important than minimizing repeat work.
+ * Controls the less-frequent Room snapshot of the full subtitle timeline.
+ * The first completed batch and final batch are always saved; intermediate Room snapshots
+ * are saved every [DEFAULT_INTERVAL] batches. The separate in-progress recovery checkpoint
+ * remains responsible for per-batch process-death recovery.
  */
 internal object TranslationCheckpointPolicy {
+    const val DEFAULT_INTERVAL = 5
+
     fun shouldPersistCheckpoint(
         completedBatchCount: Int,
         totalBatches: Int,
-        interval: Int = 1,
+        interval: Int = DEFAULT_INTERVAL,
     ): Boolean {
         if (completedBatchCount <= 0 || totalBatches <= 0 || interval <= 0) return false
         if (completedBatchCount > totalBatches) return false

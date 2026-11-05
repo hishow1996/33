@@ -11624,20 +11624,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.summarizeIndices(parsedBatch.missingIndices)
                     if (batchTranslations.size != attemptedIndices.size) hadResponseCountMismatch = true
 
-                    // Publish only validated Chinese output. Invalid, blank and source-echo rows
-                    // remain unresolved for retry and are never marked as completed.
-                    val checkedAcceptedRows = parsedBatch.translations.mapNotNull { (sourceIndex, translation) ->
-                        if (translation.isBlank()) return@mapNotNull null
-                        val sourceLine = updatedLines.getOrNull(sourceIndex) ?: return@mapNotNull null
-                        val checkedLine = DubbingTranslationPolicy.prepareLinesForDubbing(
-                            lines = listOf(sourceLine.copy(zh = translation)),
-                            sourceLanguage = src,
-                        ).first()
-                        sourceIndex to checkedLine
-                    }
-                    if (checkedAcceptedRows.isNotEmpty()) {
-                        val acceptedByIndex = checkedAcceptedRows.toMap()
-                        updatedLines = updatedLines.mapIndexed { index, line -> acceptedByIndex[index] ?: line }
+                    // TranslationBatchResult has already applied the shared language, semantic,
+                    // numeric and speechability checks. Publish only those accepted rows here;
+                    // the final full-timeline dubbing guard runs once after all batches complete.
+                    val acceptedByIndex = parsedBatch.translations.filterValues { it.isNotBlank() }
+                    if (acceptedByIndex.isNotEmpty()) {
+                        updatedLines = updatedLines.mapIndexed { index, line ->
+                            acceptedByIndex[index]?.let { line.copy(zh = it) } ?: line
+                        }
                         val processedRows = (completed + resolvedBatch.size).coerceAtMost(updatedLines.size)
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
@@ -11765,24 +11759,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                 }
 
-                val nextRows = ArrayList<SubLine>(updatedLines.size)
-                for ((rowIndex, line) in updatedLines.withIndex()) {
-                    checkTranslationActive(rowIndex)
-                    nextRows += resolvedBatch[rowIndex]?.let { translation ->
-                        val translatedLine = line.copy(
-                            zh = translation.takeIf { it.isNotBlank() },
-                        )
-                        // Run the same final speech-eligibility guard now, per completed cue.
-                        // This catches non-empty echoes, non-Chinese text and non-speakable output
-                        // before the translation stage finishes, so the live card/log stay current.
-                        DubbingTranslationPolicy.prepareLinesForDubbing(
-                            lines = listOf(translatedLine),
-                            sourceLanguage = src,
-                        ).first()
-                    } ?: line
-                }
+                // Every accepted row has already been published to updatedLines above.
+                // Keep the final dubbing validation at the end of the stage instead of
+                // rebuilding and revalidating the complete subtitle list a second time.
                 translationJob?.ensureActive()
-                updatedLines = nextRows
                 completed += batchIndices.size
                 val completedBatchPreview = batchIndices.mapNotNull { rowIndex ->
                     val line = updatedLines.getOrNull(rowIndex) ?: return@mapNotNull null
