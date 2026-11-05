@@ -614,6 +614,19 @@ object AppLogStore {
         )
     }
 
+    /** Compact clipboard version; file export continues to use the complete exportText report. */
+    fun exportCompactText(context: Context): String {
+        val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        return AppLogAiReport.renderCompact(
+            records = readRecent(context, MAX_READ_RECORDS),
+            exportedAt = exportedAt,
+            appVersion = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"),
+            device = Build.MANUFACTURER + " " + Build.MODEL,
+            androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+            writerHealth = writerHealth(),
+        )
+    }
+
     /**
      * Create a small, self-contained AI repair package for one selected failure.
      * Prefer exact operation correlation; otherwise include only nearby events from the same
