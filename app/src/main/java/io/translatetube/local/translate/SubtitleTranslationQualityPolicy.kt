@@ -59,7 +59,7 @@ internal object SubtitleTranslationQualityPolicy {
         """没关系|沒關係|没问题|沒問題|没事|沒事|没错|沒錯|不错|不錯|不客气|不客氣|不妨|不久|不愧|不失|不时|不時|不坏|不壞|不差|没有错|沒有錯|不一定|未必|无疑|無疑|毫无疑问|毫無疑問|无论|無論|不少见|不少見|不罕见|不罕見|并非不可能|並非不可能|不是不可能|不是没有|不是沒有"""
     )
     private val chineseNegation = Regex(
-        """从来没有|從來沒有|从未|從未|绝不|絕不|并非|並非|不是|不曾|未曾|不再|没有|沒有|没能|沒能|没法|沒法|无法|無法|未能|未完成|未收到|尚未|仍未|还没|还未|还没有|還沒|還未|還沒有|不允许|不允許|不可能|不应该|不應該|不需要|不必|不能|不会|不會|不可|不行|不想|不愿|不願|不肯|禁止|严禁|嚴禁|不得(?!不)|不(?!仅|僅|但|止|只|光|单|單|错|錯|客气|客氣|妨|久|愧|失|时|時|一定|凡|俗|朽|如|了)|没(?!错|錯|关系|關係|问题|問題|事)|沒(?!錯|關係|問題|事)|无|無"""
+        """从来没有|從來沒有|从未|從未|绝不|絕不|并非|並非|不是|不曾|未曾|不再|没有|沒有|没能|沒能|没法|沒法|无法|無法|未能|未完成|未收到|尚未|仍未|还没|还未|还没有|還沒|還未|還沒有|不允许|不允許|不可能|不应该|不應該|不需要|不必|不能|不会|不會|不可|不行|不想|不愿|不願|不肯|禁止|严禁|嚴禁|不得(?!不)|不(?!仅|僅|但|止|只|光|单|單|错|錯|客气|客氣|妨|久|愧|失|时|時|断|斷|一定|凡|俗|朽|如|了)|没(?!错|錯|关系|關係|问题|問題|事)|沒(?!錯|關係|問題|事)|无|無"""
     )
     private val englishMalePronoun = Regex("""\b(?:he|him|his|himself)\b""", RegexOption.IGNORE_CASE)
     private val englishFemalePronoun = Regex("""\b(?:she|her|hers|herself)\b""", RegexOption.IGNORE_CASE)
@@ -156,6 +156,7 @@ internal object SubtitleTranslationQualityPolicy {
         ExplicitUnitAlias("milliliter", listOf("milliliters", "milliliter", "millilitres", "millilitre", "ml", "毫升")),
         ExplicitUnitAlias("liter", listOf("liters", "liter", "litres", "litre", "升", "公升")),
         ExplicitUnitAlias("hour", listOf("hours", "hour", "hrs", "hr", "小时")),
+        ExplicitUnitAlias("night", listOf("nights", "night", "晚", "夜")),
         ExplicitUnitAlias("minute", listOf("minutes", "minute", "mins", "min", "分钟")),
         ExplicitUnitAlias("second", listOf("seconds", "second", "secs", "sec", "秒")),
         ExplicitUnitAlias("celsius", listOf("°c", "celsius", "摄氏度")),
@@ -664,7 +665,7 @@ internal object SubtitleTranslationQualityPolicy {
                 val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
                 val hasMagnitude = match.value.any { it in "十百千万萬亿億" }
                 val hasClassifier = listOf(
-                    "个", "個", "只", "条", "條", "本", "件", "位", "张", "張", "岁", "歲", "人",
+                    "个", "個", "只", "条", "條", "本", "件", "位", "张", "張", "岁", "歲", "人", "晚", "夜",
                     "年", "月", "日", "天", "周", "小时", "小時", "分钟", "分鐘", "秒", "公里",
                     "千米", "米", "厘米", "毫米", "公斤", "千克", "克", "毫升", "升", "度", "元", "美元",
                     "欧元", "英镑", "百分之", "百分比",
@@ -1124,8 +1125,13 @@ internal object SubtitleTranslationQualityPolicy {
         } else {
             emptyList()
         }
+        val sourceHasIndefiniteArticle = Regex("""\b(?:a|an)\b""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(sourceText)
         val translatedNumbers = normalizedTranslationNumbers(
-            translatedText, targetLanguage, ignoredTargetClockRanges + ignoredTargetDateRanges,
+            translatedText,
+            targetLanguage,
+            ignoredTargetClockRanges + ignoredTargetDateRanges,
+            ignoreIndefiniteArticleClassifierOne = sourceHasIndefiniteArticle,
         )
         if (sourceNumbers.isEmpty()) return null
         // Only compare extra quantities when the source actually states an explicit number.
@@ -1151,6 +1157,7 @@ internal object SubtitleTranslationQualityPolicy {
         value: String,
         numberFormatLanguage: String,
         skipRanges: List<IntRange> = emptyList(),
+        ignoreIndefiniteArticleClassifierOne: Boolean = false,
     ): List<String> {
         val tokens = mutableListOf<Pair<Int, String>>()
         val fractions = explicitFractionPattern.findAll(value)
@@ -1203,11 +1210,17 @@ internal object SubtitleTranslationQualityPolicy {
             // 序数词（第一、第二等）表达顺序，不是原文数量，不能参与数字一致性校验。
             if (hasChineseOrdinalPrefix(value, match.range.first)) return@forEach
             val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
+            val indefiniteArticleClassifier = ignoreIndefiniteArticleClassifierOne && raw == "一" &&
+                listOf(
+                    "个", "個", "只", "位", "条", "條", "本", "件", "张", "張", "杯", "块", "塊",
+                    "名", "次", "层", "層", "份", "辆", "輛", "座", "家", "种", "種", "倍", "人", "号", "號",
+                ).any(suffix::startsWith)
+            if (indefiniteArticleClassifier) return@forEach
             val hasMagnitude = raw.any { it in "十百千万萬亿億" }
             val isDigitSequence = raw.length >= 2 && raw.all { it in "零〇一二两兩三四五六七八九" }
             val hasClassifier = listOf(
                 "个", "個", "只", "条", "條", "本", "件", "位", "张", "張", "杯", "块", "塊",
-                "岁", "歲", "名", "次", "层", "層", "份", "辆", "輛", "座", "家", "种", "種",
+                "岁", "歲", "名", "次", "层", "層", "份", "辆", "輛", "座", "家", "种", "種", "晚", "夜",
                 "倍", "人", "号", "號", "年", "月", "日", "天", "周", "星期", "小时", "小時",
                 "分钟", "分鐘", "秒", "公里", "千米", "米", "厘米", "毫米", "公斤", "千克", "克",
                 "毫升", "升", "元", "美元", "欧元", "英镑", "度", "百分之", "百分比", "点", "點", "分",
