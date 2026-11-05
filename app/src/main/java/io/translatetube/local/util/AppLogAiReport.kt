@@ -304,6 +304,10 @@ internal object AppLogAiReport {
             else it.timestampMs == target.timestampMs && it.tag == target.tag && it.message == target.message
         } ?: target
         val diagnosis = AppLogDiagnostics.analyze(primary)
+        val translationDiagnosticId = TranslationDiagnosticPackPolicy.idFromRecord(primary)
+        val translationDiagnosticEventCount = translationDiagnosticId?.let { diagnosticId ->
+            ordered.count { TranslationDiagnosticPackPolicy.idFromRecord(it) == diagnosticId }
+        } ?: 0
         val incidentRelations = AppLogEventRelationPolicy.againstSelected(ordered, primary)
         fun eventJson(event: AppLogRecord, index: Int): JSONObject {
             val relation = incidentRelations[AppLogEventRelationPolicy.eventKey(event)]
@@ -385,6 +389,11 @@ internal object AppLogAiReport {
             append("设备：").append(AppLogStore.redactForExport(device)).append('\n')
             append("Android：").append(AppLogStore.redactForExport(androidVersion)).append('\n')
             append("关联事件数：").append(ordered.size).append('\n')
+            if (translationDiagnosticId != null) {
+                append("翻译诊断 ID：").append(translationDiagnosticId).append('\n')
+                append("翻译关联事件数：").append(translationDiagnosticEventCount)
+                    .append("（同 ID 的全部留存事件均已合并到下方关联时间线）\n")
+            }
             append("日志写入器状态：").append(if (writerHealth.isHealthy) "正常" else "异常")
                 .append("；累计写入失败：").append(writerHealth.failedWriteCount).append('\n')
             if (!writerHealth.isHealthy) {
@@ -440,6 +449,9 @@ internal object AppLogAiReport {
             }
 
             append("\n## 5. AI 修复要求\n")
+            if (translationDiagnosticId != null) {
+                append("翻译专项要求：按同一翻译诊断 ID 的事件顺序还原批次、字幕行、请求与响应；区分网络/HTTP、响应格式解析、字幕行对齐、译文质量校验和应用异常；不要把原文回显、空白、标点、符号、音乐标签、人名或专有名词等情况一概视为同一种错误。\n")
+            }
             append("1. 先按 relationToSelectedEvent/relationEvidence 解释关联强度；再使用 processingStage/processingProgress 还原失败时的阶段和子步骤；不得将仅有时间先后的事件断言为因果。\n")
             append("2. 先还原主故障前后的事件顺序，区分触发操作、失败步骤、重试和恢复结果。\n")
             append("3. 优先查看 exceptionSnapshot.cause 链最深层异常及每层 stackFrames；单独检查 suppressed，勿把清理异常误判为主故障。若 truncated=true，说明当前包只包含上限内证据。\n")
