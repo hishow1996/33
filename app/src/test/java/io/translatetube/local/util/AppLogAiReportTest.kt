@@ -161,6 +161,51 @@ class AppLogAiReportTest {
         assertFalse(report.contains("undefined"))
     }
     @Test
+    fun compactClipboardReportStaysWithinChatLimitAndRetainsPriorityErrors() {
+        val records = (1..80).map { index ->
+            AppLogRecord(
+                timestampMs = index * 1_000L,
+                level = if (index % 5 == 0) "FATAL" else "ERROR",
+                tag = "Translation",
+                message = "翻译批次故障-$index",
+                details = "长异常上下文 ".repeat(260),
+                thread = "worker-$index",
+                eventId = "compact-error-$index",
+                sessionId = "compact-session",
+                sequence = index.toLong(),
+                operationId = "compact-operation",
+                errorClass = "java.io.IOException",
+                rootCauseMessage = "response-$index timed out",
+                firstAppStackFrame = "io.translatetube.local.translate.TranslationEngine.run(TranslationEngine.kt:120)",
+            )
+        }
+
+        val compact = AppLogAiReport.renderCompact(
+            records = records,
+            exportedAt = "now",
+            appVersion = "1.0",
+            device = "Test Device",
+            androidVersion = "9 (API 28)",
+            writerHealth = AppLogWriterHealth(0L, 0L, "", 80_000L, true),
+        )
+        val full = AppLogAiReport.render(
+            records = records,
+            exportedAt = "now",
+            appVersion = "1.0",
+            device = "Test Device",
+            androidVersion = "9 (API 28)",
+            writerHealth = AppLogWriterHealth(0L, 0L, "", 80_000L, true),
+        )
+
+        assertTrue(compact.length <= 12_000)
+        assertTrue(compact.contains("elephant-app-log/chat-v1"))
+        assertTrue(compact.contains("compact-error-80"))
+        assertTrue(compact.contains("省略"))
+        assertTrue(full.contains("elephant-app-log/v9"))
+        assertTrue(full.contains("compact-error-1"))
+    }
+
+    @Test
     fun incidentReportIncludesPrimaryFailureAndOnlyItsCorrelatedEvents() {
         val target = AppLogRecord(
             timestampMs = 20_000L,
