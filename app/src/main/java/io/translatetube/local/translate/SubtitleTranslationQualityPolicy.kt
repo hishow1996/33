@@ -801,31 +801,6 @@ internal object SubtitleTranslationQualityPolicy {
             return "SEMANTIC_ENTITY_MISMATCH：原文明确的人称代词与译文使用的性别代词不一致"
         }
 
-        val sourceProhibition = englishProhibition.containsMatchIn(source)
-        val sourceObligation = !sourceProhibition && englishObligation.containsMatchIn(source)
-        val sourceRecommendation = englishRecommendation.containsMatchIn(source)
-        val mayIsPermission = Regex("""\b(?:may\s+(?:i|we|you)\b|(?:i|we|you)\s+may\b)""", RegexOption.IGNORE_CASE)
-            .containsMatchIn(source)
-        val sourcePossibility = !mayIsPermission && englishPossibility.containsMatchIn(source)
-        val targetProhibition = chineseProhibition.containsMatchIn(target)
-        val targetObligation = chineseObligation.containsMatchIn(target)
-        val targetRecommendation = chineseRecommendation.containsMatchIn(target)
-        val targetPossibility = chinesePossibility.containsMatchIn(target)
-        val modalityReversed = when {
-            sourceProhibition ->
-                !targetProhibition && (targetObligation || targetRecommendation || targetPossibility)
-            sourceObligation ->
-                !targetObligation && !targetProhibition && (targetRecommendation || targetPossibility)
-            sourceRecommendation ->
-                !targetRecommendation && (targetProhibition || targetObligation || targetPossibility)
-            sourcePossibility ->
-                !targetPossibility && (targetProhibition || targetObligation || targetRecommendation)
-            else -> false
-        }
-        if (modalityReversed) {
-            return "SEMANTIC_MODALITY_MISMATCH：原文的禁止、必须、应该或可能性语气，与译文明确表达的语气等级相反"
-        }
-
         val sourceBefore = Regex("""\bbefore\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
         val sourceAfter = Regex("""\bafter\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
         val targetBefore = Regex("""之前|以前|此前|先前|在.{0,8}之前""").containsMatchIn(target)
