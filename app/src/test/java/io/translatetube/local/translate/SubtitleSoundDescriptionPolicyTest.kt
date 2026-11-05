@@ -1,6 +1,8 @@
 package io.translatetube.local.translate
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,6 +36,16 @@ class SubtitleSoundDescriptionPolicyTest {
         ).forEach { caption ->
             assertFalse(caption, SubtitleSoundDescriptionPolicy.isSoundDescription(caption))
         }
+    }
+
+    @Test
+    fun knownSoundCaptionsTranslateDeterministicallyAndPreserveBracketStyle() {
+        assertEquals("[音乐]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[music ]"))
+        assertEquals("[音乐]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[MUSIC]"))
+        assertEquals("(观众欢呼声)", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("(crowd cheering)"))
+        assertEquals("【开门声】", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("【door opens】"))
+        assertEquals("[音乐渐弱]！", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[music fades out]！"))
+        assertNull(SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[music theory]"))
     }
 
     @Test
