@@ -2518,7 +2518,8 @@ class PlaybackService : MediaSessionService() {
                 val sessionKey = ui.value.key
                 val engine = dubbing
                 val activeIndex = engine?.currentLineIdx() ?: -1
-                val activeSentenceCanFinish = engine != null && activeIndex >= 0 && (
+                val activeSentenceCanFinish = engine != null && activeIndex >= 0 &&
+                    !engine.isNonSpokenAnnotation(activeIndex) && (
                     engine.shouldContinueCurrentCue(-1) ||
                         (!engine.hasStartedPlaybackFor(activeIndex) &&
                             engine.isPrepared(activeIndex) && !engine.isSilent(activeIndex))
@@ -14125,7 +14126,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (hasDubbingCatchUpCues(sessionKey)) return true
         val engine = dubbing ?: return false
         val index = engine.currentLineIdx()
-        return index >= 0 && (
+        return index >= 0 && !engine.isNonSpokenAnnotation(index) && (
             engine.shouldContinueCurrentCue(-1) ||
                 (!engine.hasStartedPlaybackFor(index) &&
                     engine.isPrepared(index) && !engine.isSilent(index))
@@ -14150,6 +14151,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         index: Int,
         prioritizeFirst: Boolean = false,
     ) {
+        if (dubbing?.isNonSpokenAnnotation(index) == true) return
         synchronized(dubbingCatchUpLock) {
             if (dubbingCatchUpSessionKey == sessionKey) {
                 DubbingCatchUpQueuePolicy.enqueue(
@@ -14317,7 +14319,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
 
                 val index = engine.currentLineIdx()
-                val activeSpeechRemains = index >= 0 && (
+                val activeSpeechRemains = index >= 0 &&
+                    !engine.isNonSpokenAnnotation(index) && (
                     engine.shouldContinueCurrentCue(-1) ||
                         (!engine.hasStartedPlaybackFor(index) &&
                             engine.isPrepared(index) && !engine.isSilent(index))
