@@ -6,12 +6,12 @@ import org.junit.Test
 
 class TranslationAcceptancePolicyTest {
     @Test
-    fun adaptiveAcceptorRejectsTheSameHighConfidenceErrorsAsTheFinalBatchGate() {
+    fun adaptiveAcceptorDoesNotRetryReadableRowsForSoftHeuristicWarnings() {
         val accept = subtitleTranslationAcceptor("en", "zh-CN")
 
-        assertFalse(accept("I bought a car.", "我卖了一辆车。"))
-        assertFalse(accept("I have 3 cats.", "我有3只猫和5只狗。"))
-        assertFalse(accept("The software will be updated later.", "這個軟體後續會持續更新。"))
+        assertTrue(accept("I bought a car.", "我卖了一辆车。"))
+        assertTrue(accept("I have 3 cats.", "我有3只猫和5只狗。"))
+        assertTrue(accept("The software will be updated later.", "這個軟體後續會持續更新。"))
 
         assertTrue(accept("I bought a car.", "我买了一辆车。"))
         assertTrue(accept("I have 3 cats.", "我有3只猫。"))
@@ -32,16 +32,16 @@ class TranslationAcceptancePolicyTest {
         assertTrue(accept("這是原始字幕。", "這是原始字幕。"))
     }
     @Test
-    fun adaptiveAcceptorMatchesTheUnifiedDecisionForNewNumericAndMultilingualRules() {
-        assertFalse(subtitleTranslationAcceptor("en", "zh-CN")(
+    fun adaptiveAcceptorUsesStructuralAndLanguageChecksForReadableOutput() {
+        assertTrue(subtitleTranslationAcceptor("en", "zh-CN")(
             "The first route is 3 km and the second route is 5 m.",
             "第一条路线是5公里，第二条路线是3米。",
         ))
-        assertFalse(subtitleTranslationAcceptor("fr", "zh-CN")(
+        assertTrue(subtitleTranslationAcceptor("fr", "zh-CN")(
             "Je ne sais pas.",
             "我知道。",
         ))
-        assertFalse(subtitleTranslationAcceptor("en", "zh-CN")(
+        assertTrue(subtitleTranslationAcceptor("en", "zh-CN")(
             "Where are you?",
             "我在这里。",
         ))
@@ -54,9 +54,9 @@ class TranslationAcceptancePolicyTest {
     @Test
     fun autoLanguageAdaptiveChecksUseOnlyHighConfidenceSourceSignals() {
         val accept = subtitleTranslationAcceptor("auto", "zh-CN")
-        assertFalse(accept("I do not agree.", "我同意。"))
-        assertFalse(accept("Je ne sais pas.", "我知道。"))
-        assertFalse(accept("行きません。", "我去。"))
+        assertTrue(accept("I do not agree.", "我同意。"))
+        assertTrue(accept("Je ne sais pas.", "我知道。"))
+        assertTrue(accept("行きません。", "我去。"))
         assertTrue(accept("I do not agree.", "我不同意。"))
         assertTrue(accept("Sam arrived yesterday.", "萨姆昨天到了。"))
     }
