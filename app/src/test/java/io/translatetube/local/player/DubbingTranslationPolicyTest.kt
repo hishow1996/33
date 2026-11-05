@@ -172,6 +172,12 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
+    fun finalDubbingGuardAcceptsConfirmedCyrillicNamesButRejectsGreetings() {
+        assertEquals("Иван", DubbingTranslationPolicy.usableText("Иван", "Иван", "ru"))
+        assertNull(DubbingTranslationPolicy.usableText("Привет", "Привет", "ru"))
+    }
+
+    @Test
     fun symbolOnlySourceCuesDoNotFailDubbingPreflight() {
         val symbolOnly = io.translatetube.local.subs.SubLine(0, 0L, 900L, "♪♪", null)
         val prepared = DubbingTranslationPolicy.prepareLinesForDubbing(listOf(symbolOnly), "en")
