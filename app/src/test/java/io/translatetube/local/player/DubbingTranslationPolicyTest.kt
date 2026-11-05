@@ -178,6 +178,11 @@ class DubbingTranslationPolicyTest {
 
         assertEquals(1, prepared.size)
         assertNull(prepared.single().zh)
+        val ignoredStaleText = DubbingTranslationPolicy.resolveText(
+            "♪♪", "服务暂时不可用", "en",
+        )
+        assertNull(ignoredStaleText.text)
+        assertNull(ignoredStaleText.reason)
     }
 
 
