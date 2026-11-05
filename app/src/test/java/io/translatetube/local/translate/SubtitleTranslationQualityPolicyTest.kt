@@ -327,6 +327,55 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun autoSourcePreservesChineseCuesWithChineseSpecificCharactersButStillRejectsForeignEchoes() {
+        val chinese = "我们这次没有使用旧版本。"
+        assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho(chinese, chinese, "auto"))
+        assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+            chinese, chinese, "auto", "zh-CN",
+        ))
+        assertTrue(SubtitleTranslationQualityPolicy.evaluateTranslation(
+            chinese, chinese, "auto", "zh-CN",
+        ).accepted)
+
+        val foreign = "We are going home now."
+        assertTrue(SubtitleTranslationQualityPolicy.isSourceEcho(foreign, foreign, "auto"))
+        assertTrue(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+            foreign, foreign, "auto", "zh-CN",
+        ))
+
+        val japanese = "今日は学校へ行きます。"
+        assertTrue(SubtitleTranslationQualityPolicy.isSourceEcho(japanese, japanese, "auto"))
+        assertTrue(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+            japanese, japanese, "auto", "zh-CN",
+        ))
+    }
+
+    @Test
+    fun preservesSourceGroundedEntitiesWhenNamesTouchOtherWritingSystems() {
+        val source = "I use ChatGPT with Google Gemini every day."
+        val translated = "我每天都用ChatGPT和Google Gemini。"
+        assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+            source, translated, "en", "zh-CN",
+        ))
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            source, translated, "en", "zh-CN",
+        ))
+
+        val attachedSource = "I use ChatGPT和Google Gemini every day."
+        assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+            attachedSource, translated, "en", "zh-CN",
+        ))
+
+        val mixedSource = "我们正在使用ChatGPT和Google Gemini。"
+        assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho(
+            mixedSource, mixedSource, "auto",
+        ))
+        assertTrue(SubtitleTranslationQualityPolicy.evaluateTranslation(
+            mixedSource, mixedSource, "auto", "zh-CN",
+        ).accepted)
+    }
+
+    @Test
     fun doesNotMarkChineseSourceCaptionsAsMissingTranslations() {
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("正在翻译", "正在翻译", "zh-Hans"))
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("你好", "你好", "cmn"))

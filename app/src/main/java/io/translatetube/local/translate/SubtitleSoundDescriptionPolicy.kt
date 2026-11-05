@@ -22,6 +22,9 @@ internal object SubtitleSoundDescriptionPolicy {
         "ambient noise", "background noise", "cheers", "gasps", "laughs", "sobs",
         "music fades", "music fades out", "music fades in", "music continues",
         "music starts", "music stops", "music plays", "music playing",
+        "inaudible", "inaudible speech", "unintelligible", "unintelligible speech",
+        "indistinct", "indistinct speech", "unclear", "unclear speech",
+        "muffled speech", "speech is unclear", "speech is inaudible",
     )
     private val englishPatterns = listOf(
         Regex("""^(?:(?:background|soft|instrumental|upbeat|dramatic|sad|happy|theme|gentle|quiet|loud)\s+)?music(?:\s+(?:plays?|playing|continues|fades?(?:\s+(?:in|out))?|starts?|stops?|begins?|ends?))?$"""),
@@ -40,7 +43,8 @@ internal object SubtitleSoundDescriptionPolicy {
         "咳嗽声", "呼吸声", "打鼾声", "呻吟声", "尖叫声", "喊叫声",
         "低语声", "耳语声", "键盘声", "打字声", "汽车引擎声", "汽车鸣笛声",
         "警笛声", "警报声", "蜂鸣声", "静电杂音", "背景噪音", "环境音",
-        "音效", "静音", "沉默",
+        "音效", "静音", "沉默", "听不清", "听不清楚", "无法辨认",
+        "语音不清", "说话声不清", "消音",
     )
     private val chinesePatterns = listOf(
         Regex("""^(?:背景|轻柔|舒缓|轻|纯)?音乐(?:响起|继续|渐弱|渐强|停止|结束|播放)?$"""),
@@ -118,6 +122,17 @@ internal object SubtitleSoundDescriptionPolicy {
         "music stops" to "音乐停止",
         "music plays" to "音乐播放中",
         "music playing" to "音乐播放中",
+        "inaudible" to "听不清",
+        "inaudible speech" to "听不清",
+        "unintelligible" to "听不清",
+        "unintelligible speech" to "听不清",
+        "indistinct" to "听不清",
+        "indistinct speech" to "说话声不清",
+        "unclear" to "听不清",
+        "unclear speech" to "说话声不清",
+        "muffled speech" to "说话声模糊",
+        "speech is unclear" to "说话声不清",
+        "speech is inaudible" to "听不清",
     )
     private val closingBracketAndSuffix = Regex("""(?:\]|】|）|\))([.!?。！？,，;；]*)$""")
 

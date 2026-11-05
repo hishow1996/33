@@ -16,6 +16,9 @@ class SubtitleSoundDescriptionPolicyTest {
             "[applause]",
             "[laughter]",
             "[door opens]",
+            "[inaudible]",
+            "[unintelligible speech]",
+            "[speech is unclear]",
             "(crowd cheering)",
             "【音乐】",
             "[背景音乐]",
@@ -45,6 +48,9 @@ class SubtitleSoundDescriptionPolicyTest {
         assertEquals("(观众欢呼声)", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("(crowd cheering)"))
         assertEquals("【开门声】", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("【door opens】"))
         assertEquals("[音乐渐弱]！", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[music fades out]！"))
+        assertEquals("[听不清]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[inaudible]"))
+        assertEquals("[听不清]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[unintelligible speech]"))
+        assertEquals("[说话声不清]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[indistinct speech]"))
         assertNull(SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[music theory]"))
     }
 
@@ -52,5 +58,7 @@ class SubtitleSoundDescriptionPolicyTest {
     fun translatedSoundCaptionStillIdentifiesTheCueAsNonSpoken() {
         assertTrue(SubtitleSoundDescriptionPolicy.isSoundDescription("[音乐继续]"))
         assertTrue(SubtitleSoundDescriptionPolicy.isSoundDescription("[观众欢呼声]"))
+        assertTrue(SubtitleSoundDescriptionPolicy.isSoundDescription("[听不清]"))
+        assertTrue(SubtitleSoundDescriptionPolicy.isSoundDescription("[说话声不清]"))
     }
 }

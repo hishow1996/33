@@ -221,10 +221,32 @@ internal object SubtitleTranslationQualityPolicy {
         ),
     )
 
+    private val distinctiveChineseSourceCharacters = setOf(
+        '们', '这', '说', '没', '还', '发', '让', '听', '吗',
+        '們', '這', '說', '沒', '還', '發', '讓', '聽', '嗎',
+    )
+
+    /**
+     * Auto-detection deliberately leaves Han-only text ambiguous between Chinese and Japanese.
+     * When the source contains Chinese-specific characters that are not used in ordinary Japanese
+     * writing, do not reject an unchanged Chinese subtitle as an untranslated foreign-language row.
+     */
+    private fun isLikelyChineseSourceWhenUndetermined(
+        sourceText: String,
+        sourceLanguage: String,
+    ): Boolean {
+        if (!SourceLanguagePolicy.isUndetermined(sourceLanguage)) return false
+        val detectedScriptLanguage = SubtitleLanguageDetector.detect(sourceText)
+        if (detectedScriptLanguage != "auto") return detectedScriptLanguage == "zh"
+        return sourceText.any { it in distinctiveChineseSourceCharacters }
+    }
+
     fun isSourceEcho(sourceText: String?, translatedText: String?, sourceLanguage: String): Boolean {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         val language = SourceLanguagePolicy.normalizeTag(sourceLanguage)
-        if (SourceLanguagePolicy.isChinese(language)) return false
+        if (SourceLanguagePolicy.isChinese(language) ||
+            isLikelyChineseSourceWhenUndetermined(sourceText, language)
+        ) return false
 
         // A cue with real words "translated" into only punctuation (for example "。") is a failed
         // translation. Treat it like an echoed source row so it is retried or left untranslated
@@ -1612,7 +1634,9 @@ internal object SubtitleTranslationQualityPolicy {
     ): String? {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
         if (!SourceLanguagePolicy.isChinese(targetLanguage)) return null
-        if (SourceLanguagePolicy.isChinese(sourceLanguage)) return null
+        if (SourceLanguagePolicy.isChinese(sourceLanguage) ||
+            isLikelyChineseSourceWhenUndetermined(sourceText, sourceLanguage)
+        ) return null
         // Names, abbreviations and numbers may remain Latin only when the model kept the same term.
         if (isNonTranslatableCue(sourceText) && normalize(sourceText) == normalize(translatedText)) return null
         if (isPunctuationOnlyTranslation(sourceText, translatedText)) {
@@ -1703,9 +1727,9 @@ internal object SubtitleTranslationQualityPolicy {
         translatedText: String,
         hanCount: Int,
     ): Boolean {
-        val sourceTokens = sourceText.split(wordSeparatorRegex)
-            .filter { it.isNotBlank() }
+        val sourceTokens = splitMixedScriptTokens(sourceText)
             .map(::normalize)
+            .filter { it.isNotEmpty() }
             .toSet()
         val sourceProperNameTokens = sourceProperNameTokens(sourceText)
         var foreignLetters = 0
@@ -1775,7 +1799,15 @@ internal object SubtitleTranslationQualityPolicy {
      * sentences without exempting ordinary capitalized words such as "Good Morning".
      */
     private fun sourceProperNameTokens(sourceText: String): Set<String> {
-        val tokens = sourceText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        // Split script runs inside each whitespace-delimited token too. This lets names such as
+        // "我去了New York" or "このアプリはTikTokで" be found without treating the whole
+        // mixed-script fragment as one unmatchable token.
+        val tokens = sourceText.trim().split(Regex("\\s+"))
+            .flatMap { rawToken ->
+                val split = splitMixedScriptTokens(rawToken)
+                if (split.size > 1) split else listOf(rawToken)
+            }
+            .filter { it.isNotBlank() }
         val retained = mutableSetOf<String>()
         tokens.forEach { raw ->
             val normalized = normalize(raw.trim { it in shortTokenBoundaryPunctuation })

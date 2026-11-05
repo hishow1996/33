@@ -35,8 +35,8 @@ internal data class TranslationBatchResult(
             sourceLanguage: String = "auto",
             targetLanguage: String = "zh",
             /**
-             * 重试之后才打开：1~3 个词的人名/品牌/外来词，引擎反复原样返回时当作有效结果，
-             * 避免一个本来就不用翻译的短行让整段字幕翻译失败。首次返回仍按失败处理，让引擎有机会真的翻成中文。
+             * 重试后可放宽接受拼写近似的短专名；原文与译文完全一致且已通过专名校验的名称，
+             * 首次返回即可保留。普通词语和短语不使用此例外。
              */
             acceptShortUnchanged: Boolean = false,
         ): TranslationBatchResult {

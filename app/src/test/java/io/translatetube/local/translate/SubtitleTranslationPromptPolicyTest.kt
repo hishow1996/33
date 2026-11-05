@@ -135,6 +135,15 @@ class SubtitleTranslationPromptPolicyTest {
     }
 
     @Test
+    fun promptIncludesUnintelligibleSpeechLabelsAndAutoSourceGuidance() {
+        val prompt = SubtitleTranslationPromptPolicy.guidelinesForTarget("zh-CN")
+        assertTrue(prompt.contains("[inaudible] -> [听不清]"))
+        assertTrue(prompt.contains("[unintelligible] -> [听不清]"))
+        assertTrue(prompt.contains("When the source language is auto"))
+        assertTrue(prompt.contains("source-grounded names and abbreviations"))
+    }
+
+    @Test
     fun promptRetainsQuestionAndRequestIntentForChineseTargets() {
         assertTrue(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES.contains("疑问句不得翻成回答"))
         assertTrue(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES.contains("请求不得强化成命令"))

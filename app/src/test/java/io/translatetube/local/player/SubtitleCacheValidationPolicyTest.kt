@@ -216,6 +216,27 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun autoDetectedChineseSourceRowsRestoreWithoutBeingRetriedButEnglishEchoesDoNot() {
+        val source = listOf(
+            SubLine(0, 0L, 1_000L, "我们这次没有使用旧版本。"),
+            SubLine(1, 1_000L, 2_000L, "We are going home now."),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                0L, 1_000L, "我们这次没有使用旧版本。", "我们这次没有使用旧版本。",
+            ),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                1_000L, 2_000L, "We are going home now.", "We are going home now.",
+            ),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source, cached, sourceLanguage = "auto", targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected partially valid mixed cache to restore")
+        assertEquals(listOf("我们这次没有使用旧版本。", null), restored.map { it.zh })
+    }
+
+    @Test
     fun cancellationIsCheckedWhileRestoringLargeImportedCaches() {
         val source = (0 until 700).map { index ->
             io.translatetube.local.subs.SubLine(index, index * 1_000L, (index + 1) * 1_000L, "row $index")
