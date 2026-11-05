@@ -92,6 +92,14 @@ class SubtitleTranslationPromptPolicyTest {
     }
 
     @Test
+    fun explicitlyTranslatesBracketedSoundCaptionsAndPreservesBrackets() {
+        val instructions = SubtitleTranslationPromptPolicy.guidelinesForTarget("zh-CN")
+        assertTrue(instructions.contains("[music] -> [音乐]"))
+        assertTrue(instructions.contains("[applause] -> [掌声]"))
+        assertTrue(instructions.contains("preserving their original brackets"))
+    }
+
+    @Test
     fun promptRetainsQuestionAndRequestIntentForChineseTargets() {
         assertTrue(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES.contains("疑问句不得翻成回答"))
         assertTrue(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES.contains("请求不得强化成命令"))
