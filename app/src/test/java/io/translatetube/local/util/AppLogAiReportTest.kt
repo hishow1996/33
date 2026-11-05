@@ -293,7 +293,6 @@ class AppLogAiReportTest {
         assertTrue(report.contains("diagnosticCoverage"))
         assertTrue(report.contains("证据覆盖"))
         assertTrue(report.contains("diagnosticContextBudget"))
-        assertTrue(report.contains("diagnosticContextBudget"))
         assertEquals(1, report.split("failure-2").size - 1)
     }
 
