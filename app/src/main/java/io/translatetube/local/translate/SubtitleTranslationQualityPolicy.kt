@@ -14,7 +14,7 @@ internal object SubtitleTranslationQualityPolicy {
         RegexOption.IGNORE_CASE,
     )
     private val explicitNumberPattern = Regex(
-        """(?<![\p{L}\p{N}])-?\d+(?:[.,]\d+)*|(?<!\d)\d+(?:[.,]\d+)*"""
+        """(?<!\d)-?\d+(?:[.,]\d+)*"""
     )
     private val clockTimePattern = Regex("""(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)""")
     private val commaDecimalLanguages = setOf(

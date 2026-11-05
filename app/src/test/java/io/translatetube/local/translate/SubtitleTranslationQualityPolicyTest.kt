@@ -576,4 +576,40 @@ class SubtitleTranslationQualityPolicyTest {
             ) == null,
         )
     }
+
+    @Test
+    fun preservesNegativeNumbersAndPercentagesWithoutFalsePositives() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "The temperature is -5 degrees.",
+                "温度是-5度。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "The temperature is -5 degrees.",
+                "温度是5度。",
+                "en",
+                "zh-CN",
+            ).orEmpty().contains("显式数字"),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "The rate is 50%.",
+                "比例是50%。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "The rate is 50%.",
+                "比例是60%。",
+                "en",
+                "zh-CN",
+            ).orEmpty().contains("显式数字"),
+        )
+    }
 }
