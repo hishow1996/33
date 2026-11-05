@@ -126,7 +126,7 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
-    fun rejectsSemanticallyContradictoryCachedRowsAndPreservesValidRows() {
+    fun restoresReadableCachedRowsEvenWhenSemanticHeuristicsReportWarnings() {
         val source = listOf(
             io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "I don't know the answer."),
             io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "She will call you."),
@@ -138,12 +138,9 @@ class SubtitleCacheValidationPolicyTest {
             SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "I like this movie.", "我喜欢这部电影。"),
         )
         val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
-            source,
-            cached,
-            sourceLanguage = "en",
-            targetLanguage = "zh-CN",
-        ) ?: throw AssertionError("Expected valid remaining cache rows to restore")
-        assertEquals(listOf(null, null, "我喜欢这部电影。"), restored.map { it.zh })
+            source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected readable cache rows to restore")
+        assertEquals(listOf("我知道答案。", "他会给你打电话。", "我喜欢这部电影。"), restored.map { it.zh })
     }
 
     @Test
@@ -309,6 +306,24 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun symbolOnlySourceRowsMakeACompleteNoSpeechCacheRecoverable() {
+        val source = listOf(
+            SubLine(0, 0L, 1_000L, "♪♪", null),
+            SubLine(1, 1_000L, 2_000L, "...", null),
+        )
+        val rows = source.map {
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                it.startMs, it.endMs, it.text, it.zh,
+            )
+        }
+        assertTrue(SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(rows, "en"))
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source, rows, sourceLanguage = "en", targetLanguage = "zh-CN",
+        )
+        assertEquals(listOf(null, null), restored?.map { it.zh })
+    }
+
+    @Test
     fun cacheIsRecoverableOnlyWhenAtLeastOneRowHasAValidTranslation() {
         val invalidOnly = listOf(
             SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "John", "David"),
@@ -371,7 +386,7 @@ class SubtitleCacheValidationPolicyTest {
 
 
     @Test
-    fun numericMismatchIsNotRestoredOrWrittenBackIntoSubtitleCache() {
+    fun readableNumericCacheRowsSurviveAndNumericWarningsRemainDiagnostic() {
         val source = listOf(
             SubLine(0, 0L, 1_000L, "I have 3 cats."),
             SubLine(1, 1_000L, 2_000L, "Goodbye."),
@@ -384,26 +399,20 @@ class SubtitleCacheValidationPolicyTest {
                 1_000L, 2_000L, "Goodbye.", "再见。",
             ),
         )
-
         val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
-            source,
-            cached,
-            sourceLanguage = "en",
-            targetLanguage = "zh-CN",
-        ) ?: throw AssertionError("Expected the valid cache row to survive")
-
-        assertEquals(listOf(null, "再见。"), restored.map { it.zh })
+            source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected readable cache rows to survive")
+        assertEquals(listOf("我有4只猫。", "再见。"), restored.map { it.zh })
         assertEquals(
-            null,
+            "我有4只猫。",
             SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(
-                source.first().copy(zh = "我有4只猫。"),
-                "en",
+                source.first().copy(zh = "我有4只猫。"), "en",
             ).zh,
         )
     }
 
     @Test
-    fun explicitUnitMismatchIsNotRestoredOrWrittenBackToCache() {
+    fun readableUnitTranslationsAreNotDiscardedFromCache() {
         val source = listOf(
             SubLine(0, 0L, 1_000L, "The road is 5 km long."),
             SubLine(1, 1_000L, 2_000L, "Goodbye."),
@@ -418,11 +427,11 @@ class SubtitleCacheValidationPolicyTest {
         )
         val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
             source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
-        ) ?: throw AssertionError("Expected the valid cache row to survive")
-        assertEquals(listOf(null, "再见。"), restored.map { it.zh })
+        ) ?: throw AssertionError("Expected readable cache rows to survive")
+        assertEquals(listOf("这条路长5米。", "再见。"), restored.map { it.zh })
     }
     @Test
-    fun clearTargetScriptMismatchIsNotRestoredFromPartialTranslationCache() {
+    fun readableChineseCacheRowsSurviveScriptStyleDifferences() {
         val source = listOf(
             SubLine(0, 0L, 1_000L, "Hello world."),
             SubLine(1, 1_000L, 2_000L, "The software will be updated later."),
@@ -435,16 +444,14 @@ class SubtitleCacheValidationPolicyTest {
                 1_000L, 2_000L, "The software will be updated later.", "這個軟體後續會持續更新。",
             ),
         )
-
         val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
             source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
-        ) ?: throw AssertionError("Expected the valid cache row to survive")
-
-        assertEquals(listOf("你好世界。", null), restored.map { it.zh })
+        ) ?: throw AssertionError("Expected readable cache rows to survive")
+        assertEquals(listOf("你好世界。", "這個軟體後續會持續更新。"), restored.map { it.zh })
     }
 
     @Test
-    fun swappedNumberUnitPairInOldCacheIsDiscardedWhileValidRowsSurvive() {
+    fun swappedNumberUnitRowsRemainAvailableFromCacheForPlayback() {
         val source = listOf(
             SubLine(0, 0L, 1_000L, "The first route is 3 km and the second route is 5 m."),
             SubLine(1, 1_000L, 2_000L, "Goodbye."),
@@ -461,9 +468,8 @@ class SubtitleCacheValidationPolicyTest {
         )
         val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
             source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
-        ) ?: throw AssertionError("Expected the valid cached row to survive")
-
-        assertEquals(listOf(null, "再见。"), restored.map { it.zh })
+        ) ?: throw AssertionError("Expected readable cached rows to survive")
+        assertEquals(listOf("第一条路线是5公里，第二条路线是3米。", "再见。"), restored.map { it.zh })
     }
 
     @Test
@@ -483,7 +489,7 @@ class SubtitleCacheValidationPolicyTest {
         val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
             source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
         ) ?: throw AssertionError("Expected partial cache recovery")
-        assertEquals(listOf(null, "再见。"), restored.map { it.zh })
+        assertEquals(listOf("我有三只猫。", "再见。"), restored.map { it.zh })
 
         val completeCache = cached.toMutableList()
         completeCache[0] = completeCache[0].copy(translatedText = "我有三只猫和两只狗。")
