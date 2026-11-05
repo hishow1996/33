@@ -72,7 +72,10 @@ internal object DubbingTiming {
         }
         java.util.Arrays.sort(starts, 0, count)
         return lines.map { line ->
-            if (!DubbingTimeline.isPlayableCue(line) || line.zh.isNullOrBlank()) return@map line
+            if (!DubbingTimeline.isPlayableCue(line) || line.zh.isNullOrBlank() ||
+                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text) ||
+                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.zh)
+            ) return@map line
             var low = 0
             var high = count
             while (low < high) {
