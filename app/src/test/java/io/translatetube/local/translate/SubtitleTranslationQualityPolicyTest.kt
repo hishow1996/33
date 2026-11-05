@@ -833,14 +833,19 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
-    fun sharedUsabilityGateRejectsTargetScriptMismatch() {
-        assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+    fun sharedUsabilityGateKeepsReadableChineseEvenWhenScriptStyleDiffers() {
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
             "The software is useful.",
             "這個軟體後續會持續更新。",
             "en",
             "zh-CN",
             acceptShortUnchanged = true,
         ))
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+                "這個軟體後續會持續更新。", "zh-CN",
+            ) != null,
+        )
     }
 
     @Test
@@ -872,8 +877,9 @@ class SubtitleTranslationQualityPolicyTest {
         val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
             source, swapped, "en", "zh-CN",
         )
-        assertFalse(decision.accepted)
-        assertEquals("NUMERIC_UNIT_ASSOCIATION_MISMATCH", decision.reasonCode)
+        assertTrue(decision.accepted)
+        assertEquals(null, decision.reasonCode)
+        assertTrue(decision.numericUnitAssociationMismatchReason != null)
         assertTrue(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
             "The ticket costs 5 EUR.",
             "这张票售价5美元。",
@@ -979,6 +985,24 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun sourceSymbolsAreValidNoTranslationRowsAndSoundDescriptionsMustBeTranslated() {
+        assertTrue(SubtitleTranslationQualityPolicy.hasNothingToSpeak("♪♪"))
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "♪♪", null, "en", "zh-CN",
+        ))
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "…", "", "en", "zh-CN",
+        ))
+        assertFalse(SubtitleTranslationQualityPolicy.hasNothingToSpeak("[music ]"))
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "[music ]", "[音乐]", "en", "zh-CN",
+        ))
+        assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "[music ]", "[music ]", "en", "zh-CN",
+        ))
+    }
+
+    @Test
     fun sharedDecisionReturnsTheSameReasonForAllQualityCallers() {
         val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
             "I have 3 cats and 2 dogs.",
@@ -986,9 +1010,10 @@ class SubtitleTranslationQualityPolicyTest {
             "en",
             "zh-CN",
         )
-        assertFalse(decision.accepted)
-        assertEquals("NUMERIC_CONTENT_MISMATCH", decision.reasonCode)
-        assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+        assertTrue(decision.accepted)
+        assertEquals(null, decision.reasonCode)
+        assertTrue(decision.numericMismatchReason != null)
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
             "I have 3 cats and 2 dogs.",
             "我有4只猫和2只狗。",
             "en",
