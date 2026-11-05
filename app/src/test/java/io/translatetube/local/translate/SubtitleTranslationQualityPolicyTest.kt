@@ -536,6 +536,53 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun acceptsExactVerifiedShortNamesOnFirstPassButStillRejectsCommonEnglishWords() {
+        val latinName = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "John", "John", "en", "zh-CN",
+        )
+        assertTrue(latinName.accepted)
+        assertTrue(latinName.shortUntranslatedAccepted)
+
+        val cyrillicName = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "Иван", "Иван", "ru", "zh-CN",
+        )
+        assertTrue(cyrillicName.accepted)
+        assertTrue(cyrillicName.shortUntranslatedAccepted)
+
+        val ordinaryWord = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "Hello", "Hello", "en", "zh-CN",
+        )
+        assertFalse(ordinaryWord.accepted)
+        assertFalse(ordinaryWord.shortUntranslatedAccepted)
+    }
+
+    @Test
+    fun acceptsMultiWordEntityListsWithCommaOrSemicolonSeparatorsOnlyWhenEveryItemLooksLikeAName() {
+        listOf(
+            "Google Gemini, New York",
+            "Spotify; YouTube Music",
+            "John Smith, Mary Jane",
+            "iPhone 15; Google Pixel 9",
+        ).forEach { cue ->
+            assertFalse("'$cue' should be recognized as an entity-only list",
+                SubtitleTranslationQualityPolicy.isSourceEcho(cue, cue, "en"))
+            assertTrue("'$cue' should be usable when retained unchanged",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    cue, cue, "en", "zh-CN",
+                ))
+        }
+
+        listOf("Good Morning; Hello World", "Right, Now", "I Think So; Good Night").forEach { cue ->
+            assertTrue("'$cue' must remain a source echo",
+                SubtitleTranslationQualityPolicy.isSourceEcho(cue, cue, "en"))
+            assertFalse("'$cue' must not be accepted as an entity list",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    cue, cue, "en", "zh-CN", acceptShortUnchanged = true,
+                ))
+        }
+    }
+
+    @Test
     fun ordinaryWordsAndPhrasesReturnedUnchangedAreStillFailedTranslations() {
         listOf("Hello", "Thank you very much", "I think so.", "Good morning everyone", "Good Morning", "THANK YOU").forEach {
             assertTrue("'$it'", SubtitleTranslationQualityPolicy.isSourceEcho(it, it, "en"))

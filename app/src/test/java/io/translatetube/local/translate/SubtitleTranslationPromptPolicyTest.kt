@@ -112,6 +112,21 @@ class SubtitleTranslationPromptPolicyTest {
     }
 
     @Test
+    fun promptAllowsClearlyIdentifiedSingleNamesAndMultiWordEntityListsButNotCommonPhrases() {
+        val english = SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES
+        assertTrue(english.contains("standalone person, place, brand"))
+        assertTrue(english.contains("commas or semicolons"))
+        assertTrue(english.contains("multi-word names"))
+        assertTrue(english.contains("common words, conversational phrases"))
+
+        val simplified = SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES
+        assertTrue(simplified.contains("只有一个明确的人名"))
+        assertTrue(simplified.contains("逗号或分号"))
+        assertTrue(simplified.contains("多词名称"))
+        assertTrue(simplified.contains("日常短语"))
+    }
+
+    @Test
     fun explicitlyTranslatesBracketedSoundCaptionsAndPreservesBrackets() {
         val instructions = SubtitleTranslationPromptPolicy.guidelinesForTarget("zh-CN")
         assertTrue(instructions.contains("[music] -> [音乐]"))

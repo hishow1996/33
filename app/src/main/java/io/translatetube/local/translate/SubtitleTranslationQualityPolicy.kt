@@ -405,11 +405,14 @@ internal object SubtitleTranslationQualityPolicy {
         val shortNameCue = isAcceptableShortUntranslatedCue(
             sourceText, translatedText, sourceLanguage, targetLanguage,
         )
-        val shortAccepted = acceptShortUnchanged && shortNameCue && modelMeta == null
-        // A genuine short name may remain unchanged after a failed translation attempt, but the
-        // first pass must still retry it once. This prevents unchanged names from being silently
-        // counted as completed rows while keeping the final cache/dubbing exception narrow.
-        val shortNameNeedsRetry = !acceptShortUnchanged && shortNameCue
+        val exactShortNameEcho = shortNameCue &&
+            normalize(sourceText.orEmpty()) == normalize(translatedText)
+        val shortAccepted = modelMeta == null &&
+            ((acceptShortUnchanged && shortNameCue) || exactShortNameEcho)
+        // Exact spellings of names already verified by the strict short-entity recognizer do not
+        // need a pointless retry. A near-spelling variant (for example Sarah -> Sara) still uses
+        // the retry-only path, and ordinary common words never enter this exception.
+        val shortNameNeedsRetry = !shortAccepted && !acceptShortUnchanged && shortNameCue
 
         val rejection = if (shortAccepted) null else when {
             isPunctuationOnlyTranslation(sourceText, translatedText) ->
@@ -1855,41 +1858,68 @@ internal object SubtitleTranslationQualityPolicy {
     )
 
     /**
-     * A comma-separated cue may consist entirely of standalone entity names (for example,
-     * "Instagram, YouTube, KakaoTalk"). Accept only when every item has a name-like form;
-     * ordinary capitalized words, dates and sentence fragments remain translatable.
+     * A cue may consist entirely of standalone entity names separated by commas or semicolons.
+     * Multi-word names (for example "Google Gemini" and "New York") are valid list items too.
+     * Every item must independently look like a name, acronym, or model identifier; common
+     * conversational words and phrases are never promoted to entities by capitalization alone.
      */
     private fun isProperNameListCue(value: String): Boolean {
         val trimmed = value.trim()
-        if (trimmed.isEmpty() || trimmed.any { it in "!?;:" }) return false
-        val listText = trimmed.trimEnd(',', '，', '、', ';', '；').trim()
+        if (trimmed.isEmpty() || trimmed.any { it in "!?:" }) return false
+        val listText = trimmed.trimEnd(',', '，', '、', ';', '；', '.', '。').trim()
         val items = listText.split(Regex("[,，、;；]")).map { it.trim() }
-        if (items.size !in 2..8 || items.any { it.isEmpty() || it.any { char -> char.isWhitespace() } }) return false
+        if (items.size !in 2..8 || items.any { it.isEmpty() }) return false
+        return items.all(::isProperNameListItem)
+    }
 
-        var strongEntityCount = 0
-        for (rawItem in items) {
-            val token = rawItem.trim { it in shortTokenBoundaryPunctuation }
-            if (token.isEmpty()) return false
-            val normalized = normalize(token)
-            if (normalized.isEmpty() || normalized in commonShortWords ||
-                normalized in commonShortPhrases || normalized in properNameListStopWords
-            ) return false
+    private fun isProperNameListItem(rawItem: String): Boolean {
+        val item = rawItem.trim { it in shortTokenBoundaryPunctuation }
+        if (item.isEmpty()) return false
+        val normalized = normalize(item)
+        if (normalized.isEmpty() || normalized in commonShortWords ||
+            normalized in commonShortPhrases || normalized in properNameListStopWords
+        ) return false
 
-            val letters = token.filter { it.isLetter() }
-            if (letters.length < 3) return false
-            val scripts = letters.map { Character.UnicodeScript.of(it.code) }.toSet()
-            if (scripts.size != 1 || scripts.single() != Character.UnicodeScript.LATIN) return false
+        val tokens = item.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty() || tokens.size > 5) return false
+        val letters = item.filter { it.isLetter() }
+        if (letters.length < 2) return false
+        val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
+        if (scripts.size != 1) return false
+        val script = scripts.single()
 
+        if (normalized in knownUncasedScriptProperNames) return true
+        if (normalized in knownProperNamePhrases && isKnownTitlePhrase(tokens)) return true
+
+        if (tokens.size == 1) {
             val allCapsAcronym = letters.length in 2..10 && letters.all { it.isUpperCase() }
             val internalCapital = letters.drop(1).any { it.isUpperCase() }
-            val titleCased = isTitleCasedNameToken(token, allowInitials = false)
-            val identifier = token.any { it.isDigit() }
-            if (!allCapsAcronym && !internalCapital && !titleCased && !identifier) return false
-            if (allCapsAcronym || internalCapital || identifier) strongEntityCount++
+            val titleCased = isTitleCasedNameToken(item, allowInitials = false)
+            val identifier = item.any { it.isDigit() }
+            return allCapsAcronym || internalCapital || titleCased || identifier
         }
-        // Two strong brand/model shapes are sufficient for a shorter list; three or more
-        // consistently name-cased items can also be a genuine list of people or entities.
-        return strongEntityCount >= 1 || items.size >= 3
+
+        // Product/model labels such as "iPhone 15" and "Google Pixel 9".
+        val trailingNumber = tokens.last().all { it.isDigit() }
+        val nameTokens = if (trailingNumber) tokens.dropLast(1) else tokens
+        val nameLooksValid = nameTokens.isNotEmpty() &&
+            nameTokens.all { token ->
+                val word = normalize(token)
+                word in properNameParticles ||
+                    word in geographicNamePrefixes ||
+                    (word !in commonShortWords && word !in commonShortPhrases &&
+                        (isTitleCasedNameToken(token, allowInitials = true) ||
+                            token.filter { it.isLetter() }.drop(1).any { it.isUpperCase() } ||
+                            token.filter { it.isLetter() }.let { letters ->
+                                letters.length in 2..10 && letters.all { it.isUpperCase() }
+                            }))
+            }
+        if (trailingNumber && nameLooksValid) return true
+
+        // A known place-name prefix (New York), established name particles (The Hobbit),
+        // internal-capital brands (YouTube Music), and model names remain valid list items.
+        // Common conversational words still fail the per-token checks above.
+        return nameLooksValid
     }
 
     /**

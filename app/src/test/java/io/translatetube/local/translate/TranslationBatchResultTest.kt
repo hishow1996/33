@@ -155,29 +155,36 @@ class TranslationBatchResultTest {
     @Test
     fun acceptsEntityOnlyListsAndMixedChineseBrandRowsWithoutRetry() {
         val result = TranslationBatchResult.from(
-            indices = listOf(251, 252, 253),
+            indices = listOf(251, 252, 253, 254),
             rawTranslations = listOf(
                 "Instagram, YouTube, KakaoTalk,",
                 "和Netflix。",
                 "你好世界。",
+                "Google Gemini; New York",
             ),
             sourceTexts = mapOf(
                 251 to "Instagram, YouTube, KakaoTalk,",
                 252 to "and Netflix.",
                 253 to "Hello world.",
+                254 to "Google Gemini; New York",
             ),
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
         assertEquals(
-            mapOf(251 to "Instagram, YouTube, KakaoTalk,", 252 to "和Netflix。", 253 to "你好世界。"),
+            mapOf(
+                251 to "Instagram, YouTube, KakaoTalk,",
+                252 to "和Netflix。",
+                253 to "你好世界。",
+                254 to "Google Gemini; New York",
+            ),
             result.translations,
         )
         assertTrue(result.missingIndices.isEmpty())
     }
 
     @Test
-    fun sourceEchoesAreAlwaysRejectedForRetryInsteadOfAcceptedAsBlankRows() {
+    fun verifiedNameEchoesAreAcceptedImmediatelyWhileOrdinaryEchoesStillRetry() {
         val result = TranslationBatchResult.from(
             indices = listOf(1, 4, 7),
             rawTranslations = listOf("你好世界", "J. K. Rowling", "正在翻译"),
@@ -189,8 +196,8 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
         )
 
-        assertEquals(mapOf(1 to "你好世界"), result.translations)
-        assertEquals(listOf(4, 7), result.missingIndices)
+        assertEquals(mapOf(1 to "你好世界", 4 to "J. K. Rowling"), result.translations)
+        assertEquals(listOf(7), result.missingIndices)
 
         val afterRetry = TranslationBatchResult.from(
             indices = listOf(4),
@@ -309,7 +316,7 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun confirmsShortNameOnlyAfterRetryAndUsesChineseInterjectionSubstitutionForHello() {
+    fun acceptsVerifiedShortNameOnFirstPassAndStillLocalizesHello() {
         val firstAttempt = TranslationBatchResult.from(
             indices = listOf(0, 1),
             rawTranslations = listOf("John", "Hello"),
@@ -317,10 +324,10 @@ class TranslationBatchResultTest {
             sourceLanguage = "en",
             targetLanguage = "zh-CN",
         )
-        assertEquals(mapOf(1 to "你好"), firstAttempt.translations)
-        assertEquals(listOf(0), firstAttempt.missingIndices)
+        assertEquals(mapOf(0 to "John", 1 to "你好"), firstAttempt.translations)
+        assertTrue(firstAttempt.missingIndices.isEmpty())
 
-        val retry = TranslationBatchResult.from(
+        val restored = TranslationBatchResult.from(
             indices = listOf(0),
             rawTranslations = listOf("John"),
             sourceTexts = mapOf(0 to "John"),
@@ -328,8 +335,8 @@ class TranslationBatchResultTest {
             targetLanguage = "zh-CN",
             acceptShortUnchanged = true,
         )
-        assertEquals(mapOf(0 to "John"), retry.translations)
-        assertTrue(retry.missingIndices.isEmpty())
+        assertEquals(mapOf(0 to "John"), restored.translations)
+        assertTrue(restored.missingIndices.isEmpty())
     }
 
     @Test
@@ -348,27 +355,16 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun retriesSingleWordCyrillicNamesOnceBeforeAcceptingThem() {
-        val firstAttempt = TranslationBatchResult.from(
+    fun acceptsVerifiedSingleWordCyrillicNamesOnFirstPass() {
+        val result = TranslationBatchResult.from(
             indices = listOf(0),
             rawTranslations = listOf("Иван"),
             sourceTexts = mapOf(0 to "Иван"),
             sourceLanguage = "ru",
             targetLanguage = "zh-CN",
         )
-        assertTrue(firstAttempt.translations.isEmpty())
-        assertEquals(listOf(0), firstAttempt.missingIndices)
-
-        val retry = TranslationBatchResult.from(
-            indices = listOf(0),
-            rawTranslations = listOf("Иван"),
-            sourceTexts = mapOf(0 to "Иван"),
-            sourceLanguage = "ru",
-            targetLanguage = "zh-CN",
-            acceptShortUnchanged = true,
-        )
-        assertEquals(mapOf(0 to "Иван"), retry.translations)
-        assertTrue(retry.missingIndices.isEmpty())
+        assertEquals(mapOf(0 to "Иван"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
     }
 
     @Test
