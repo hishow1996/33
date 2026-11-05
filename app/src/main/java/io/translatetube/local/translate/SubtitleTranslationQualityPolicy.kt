@@ -1731,12 +1731,12 @@ internal object SubtitleTranslationQualityPolicy {
      */
     private fun sourceProperNameTokens(sourceText: String): Set<String> {
         val tokens = sourceText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (tokens.size < 2) return emptySet()
         val retained = mutableSetOf<String>()
         tokens.forEach { raw ->
             val normalized = normalize(raw.trim { it in shortTokenBoundaryPunctuation })
             if (normalized in knownUncasedScriptProperNames) retained += normalized
         }
+        if (tokens.size < 2) return retained
         for (start in tokens.indices) {
             for (length in 2..5) {
                 val end = start + length
