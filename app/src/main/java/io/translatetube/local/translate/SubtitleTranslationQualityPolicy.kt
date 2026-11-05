@@ -1201,6 +1201,7 @@ internal object SubtitleTranslationQualityPolicy {
         val protectedRanges = fractions.map { it.range } +
             chineseFractions.map { it.range } +
             ranges.map { it.range }
+        var ignoredIndefiniteArticleOne = false
         chineseNumeralPattern.findAll(value).forEach { match ->
             if (protectedRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
             if (skipRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
@@ -1210,12 +1211,15 @@ internal object SubtitleTranslationQualityPolicy {
             // 序数词（第一、第二等）表达顺序，不是原文数量，不能参与数字一致性校验。
             if (hasChineseOrdinalPrefix(value, match.range.first)) return@forEach
             val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
-            val indefiniteArticleClassifier = ignoreIndefiniteArticleClassifierOne && raw == "一" &&
-                listOf(
+            val indefiniteArticleClassifier = ignoreIndefiniteArticleClassifierOne &&
+                !ignoredIndefiniteArticleOne && raw == "一" && listOf(
                     "个", "個", "只", "位", "条", "條", "本", "件", "张", "張", "杯", "块", "塊",
                     "名", "次", "层", "層", "份", "辆", "輛", "座", "家", "种", "種", "倍", "人", "号", "號",
                 ).any(suffix::startsWith)
-            if (indefiniteArticleClassifier) return@forEach
+            if (indefiniteArticleClassifier) {
+                ignoredIndefiniteArticleOne = true
+                return@forEach
+            }
             val hasMagnitude = raw.any { it in "十百千万萬亿億" }
             val isDigitSequence = raw.length >= 2 && raw.all { it in "零〇一二两兩三四五六七八九" }
             val hasClassifier = listOf(
