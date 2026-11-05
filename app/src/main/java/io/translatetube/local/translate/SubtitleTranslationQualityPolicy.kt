@@ -1692,7 +1692,7 @@ internal object SubtitleTranslationQualityPolicy {
         return trimmed.none { it.isLetter() } ||
             urlPattern.matches(trimmed) ||
             emailPattern.matches(trimmed) ||
-            isTermLikeCue(trimmed)
+            (!SubtitleSoundDescriptionPolicy.isSoundDescription(trimmed) && isTermLikeCue(trimmed))
     }
 
     /**
