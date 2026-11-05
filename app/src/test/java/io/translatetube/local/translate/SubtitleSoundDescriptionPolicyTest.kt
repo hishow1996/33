@@ -9,6 +9,7 @@ class SubtitleSoundDescriptionPolicyTest {
     fun recognizesCommonBracketedEnglishAndChineseSoundCaptions() {
         listOf(
             "[music ]",
+            "[MUSIC]",
             "[background music]",
             "[applause]",
             "[laughter]",
