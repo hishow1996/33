@@ -14562,7 +14562,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     d,
                     st,
                     "catch-up dubbing playback",
-                    dubbingCuePending = catchUpIndex != null || dubLine >= 0,
+                    dubbingCuePending = catchUpIndex != null ||
+                        (dubLine >= 0 && d.shouldSpeakCue(dubLine)),
                 )
             } else if (dubLine >= 0 && d.isNonSpokenAnnotation(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
