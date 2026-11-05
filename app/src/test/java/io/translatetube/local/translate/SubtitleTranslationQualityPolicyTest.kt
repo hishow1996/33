@@ -380,6 +380,31 @@ class SubtitleTranslationQualityPolicyTest {
                 "Elon Musk", "David Beckham", "en", "zh-CN",
             ),
         )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Elon Musk arrived yesterday.",
+                "埃隆·马斯克昨天到了。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I watched The Hobbit in New York.",
+                "我在纽约看了 The Hobbit。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Elon Musk arrived yesterday and spoke at the conference.",
+                "David Beckham 昨天到达，并在会议上发表讲话。",
+                "en",
+                "zh-CN",
+            ),
+            "A substituted English name must not be hidden by a longer Chinese sentence",
+        )
     }
 
     @Test
