@@ -75,6 +75,11 @@ internal data class TranslationBatchResult(
                     )
                 }
                 val targetMismatch = targetMismatchDetail != null
+                val scriptMismatchDetail = value?.takeUnless {
+                    SourceLanguagePolicy.isChinese(sourceLanguage)
+                }?.let {
+                    SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(it, targetLanguage)
+                }
                 val numericMismatchDetail = value?.let {
                     SubtitleTranslationQualityPolicy.numericContentMismatchReason(
                         sourceText, it, sourceLanguage, targetLanguage,
@@ -117,6 +122,7 @@ internal data class TranslationBatchResult(
                     value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
                     unspeakable -> "UNSPEAKABLE_TRANSLATION"
                     modelMetaReason != null -> "MODEL_META_RESPONSE"
+                    scriptMismatchDetail != null -> "TARGET_SCRIPT_MISMATCH"
                     numericMismatchDetail != null -> "NUMERIC_CONTENT_MISMATCH"
                     unitMismatchDetail != null -> "UNIT_CONTENT_MISMATCH"
                     semanticMismatchDetail != null -> when {
@@ -136,7 +142,7 @@ internal data class TranslationBatchResult(
                         missing.remove(sourceIndex)
                         rejectionByIndex.remove(sourceIndex)
                     }
-                    value.isNullOrBlank() || targetMismatch || unspeakable || numericMismatchDetail != null || unitMismatchDetail != null || semanticMismatchDetail != null -> {
+                    value.isNullOrBlank() || targetMismatch || unspeakable || scriptMismatchDetail != null || numericMismatchDetail != null || unitMismatchDetail != null || semanticMismatchDetail != null -> {
                         // Empty output and status text still need another attempt.
                         if (sourceIndex !in translated) {
                             missing += sourceIndex
@@ -159,6 +165,7 @@ internal data class TranslationBatchResult(
                                             value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
                                             unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
                                             modelMetaReason != null -> modelMetaReason
+                                            scriptMismatchDetail != null -> scriptMismatchDetail
                                             numericMismatchDetail != null -> numericMismatchDetail
                                             unitMismatchDetail != null -> unitMismatchDetail
                                             semanticMismatchDetail != null -> semanticMismatchDetail

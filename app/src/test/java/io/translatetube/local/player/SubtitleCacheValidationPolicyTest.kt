@@ -421,4 +421,26 @@ class SubtitleCacheValidationPolicyTest {
         ) ?: throw AssertionError("Expected the valid cache row to survive")
         assertEquals(listOf(null, "再见。"), restored.map { it.zh })
     }
+    @Test
+    fun clearTargetScriptMismatchIsNotRestoredFromPartialTranslationCache() {
+        val source = listOf(
+            SubLine(0, 0L, 1_000L, "Hello world."),
+            SubLine(1, 1_000L, 2_000L, "The software will be updated later."),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                0L, 1_000L, "Hello world.", "你好世界。",
+            ),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                1_000L, 2_000L, "The software will be updated later.", "這個軟體後續會持續更新。",
+            ),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected the valid cache row to survive")
+
+        assertEquals(listOf("你好世界。", null), restored.map { it.zh })
+    }
+
 }

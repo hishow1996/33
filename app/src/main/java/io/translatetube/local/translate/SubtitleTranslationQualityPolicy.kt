@@ -56,6 +56,67 @@ internal object SubtitleTranslationQualityPolicy {
     private val chineseObligation = Regex("""必须|必須|务必|務必|需要|有必要|一定要""")
     private val chineseRecommendation = Regex("""应该|應該|应当|應當|最好|理应|理應""")
     private val chinesePossibility = Regex("""可能|也许|也許|或许|或許|说不定|說不定""")
+    private data class SemanticOpposition(
+        val sourcePositive: Regex,
+        val sourceNegative: Regex,
+        val targetPositive: Regex,
+        val targetNegative: Regex,
+        val label: String,
+    )
+
+    // Only high-signal opposite action/direction pairs are checked. Ambiguous verbs and
+    // contextual roles are deliberately left to the translation model.
+    private val semanticOppositions = listOf(
+        SemanticOpposition(
+            Regex("""\b(?:come|comes|came|coming)\b""", RegexOption.IGNORE_CASE),
+            Regex("""\b(?:go|goes|went|going)\b""", RegexOption.IGNORE_CASE),
+            Regex("""来|來|过来|過來|来到|來到"""),
+            Regex("""去|前往|过去|過去|离开|離開"""),
+            "来/去方向",
+        ),
+        SemanticOpposition(
+            Regex("""\benter(?:s|ed|ing)?\b""", RegexOption.IGNORE_CASE),
+            Regex("""\b(?:leave|leaves|left|leaving|exit|exits|exited|exiting)\b""", RegexOption.IGNORE_CASE),
+            Regex("""进入|進入|入内|入內"""),
+            Regex("""离开|離開|离去|離去|退出|出去"""),
+            "进入/离开动作",
+        ),
+        SemanticOpposition(
+            Regex("""\b(?:increase|increases|increased|increasing|rise|rises|rose|risen|rising|grow|grows|grew|grown|growing)\b""", RegexOption.IGNORE_CASE),
+            Regex("""\b(?:decrease|decreases|decreased|decreasing|fall|falls|fell|fallen|falling|drop|drops|dropped|dropping)\b""", RegexOption.IGNORE_CASE),
+            Regex("""增加|上升|增长|增長|提高|提升|扩大|擴大"""),
+            Regex("""减少|減少|下降|降低|缩小|縮小|下跌"""),
+            "增加/减少关系",
+        ),
+        SemanticOpposition(
+            Regex("""\b(?:buy|buys|bought|buying|purchase|purchases|purchased|purchasing)\b""", RegexOption.IGNORE_CASE),
+            Regex("""\b(?:sell|sells|sold|selling)\b""", RegexOption.IGNORE_CASE),
+            Regex("""买|買|购买|購買|买入|買入"""),
+            Regex("""卖|賣|出售|售出"""),
+            "买入/卖出动作",
+        ),
+        SemanticOpposition(
+            Regex("""\b(?:win|wins|won|winning)\b""", RegexOption.IGNORE_CASE),
+            Regex("""\b(?:lose|loses|lost|losing)\b""", RegexOption.IGNORE_CASE),
+            Regex("""赢|贏|获胜|獲勝|胜利|勝利"""),
+            Regex("""输|輸|失败|失敗|落败|落敗"""),
+            "获胜/失败结果",
+        ),
+        SemanticOpposition(
+            Regex("""\bopen(?:s|ed|ing)?\b""", RegexOption.IGNORE_CASE),
+            Regex("""\bclose(?:s|d|ing)?\b""", RegexOption.IGNORE_CASE),
+            Regex("""打开|打開|开启|開啟|开放|開放|开着|開著"""),
+            Regex("""关闭|關閉|关上|關上|闭合|閉合"""),
+            "打开/关闭状态",
+        ),
+        SemanticOpposition(
+            Regex("""\b(?:more|greater|higher)\b""", RegexOption.IGNORE_CASE),
+            Regex("""\b(?:less|fewer|lower)\b""", RegexOption.IGNORE_CASE),
+            Regex("""更多|较多|較多|更大|更高"""),
+            Regex("""更少|较少|較少|更小|更低"""),
+            "比较数量或程度",
+        ),
+    )
 
     // Only unambiguous, numeric-adjacent units are compared. Bare "m", "s", "g" and
     // currency symbols are intentionally excluded because they are ambiguous in subtitles.
@@ -226,6 +287,9 @@ internal object SubtitleTranslationQualityPolicy {
                 sourceText, translatedText, sourceLanguage, targetLanguage,
             ) != null
         ) return false
+        if (!SourceLanguagePolicy.isChinese(sourceLanguage) &&
+            targetChineseScriptMismatchReason(translatedText, targetLanguage) != null
+        ) return false
         if (semanticConsistencyMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage) != null) return false
         val sourceEcho = isSourceEcho(sourceText, translatedText, sourceLanguage)
         val targetMismatch = isTargetLanguageMismatch(sourceText, translatedText, sourceLanguage, targetLanguage)
@@ -235,6 +299,37 @@ internal object SubtitleTranslationQualityPolicy {
         )
     }
 
+
+    /**
+     * Reject output dominated by the opposite Chinese script. Short cues and a few retained
+     * proper-name characters are not enough evidence; the mismatch must be repeated and clear.
+     */
+    fun targetChineseScriptMismatchReason(
+        translatedText: String?,
+        targetLanguage: String,
+    ): String? {
+        if (translatedText.isNullOrBlank() || !SourceLanguagePolicy.isChinese(targetLanguage)) return null
+        val tag = SourceLanguagePolicy.normalizeTag(targetLanguage).lowercase(Locale.ROOT)
+        val traditionalTarget = tag.startsWith("zh-hant") || tag.startsWith("cmn-hant") ||
+            tag.startsWith("yue-hant") || tag in setOf("zh-tw", "zh-hk", "zh-mo")
+        val simplifiedTarget = tag == "zh" || tag.startsWith("zh-cn") || tag.startsWith("zh-hans") ||
+            tag == "zh-sg" || tag.startsWith("cmn-hans") || tag.startsWith("yue-hans") ||
+            tag.startsWith("cmn-") && !tag.startsWith("cmn-hant")
+
+        val simplifiedOnly = "这为发后国门东车书云电汉广场龙风饭头还没与从让说时间开关长万亿爱见听写话语远边个们吗软体续会"
+        val traditionalOnly = "這為發後國門東車書雲電漢廣場龍風飯頭還沒與從讓說時間開關長萬億愛見聽寫話語遠邊個們嗎軟體續會"
+        val wrongScript = if (traditionalTarget) simplifiedOnly else traditionalOnly
+        val expectedScript = if (traditionalTarget) traditionalOnly else simplifiedOnly
+        val wrongCount = translatedText.count { it in wrongScript }
+        val expectedCount = translatedText.count { it in expectedScript }
+        val distinctWrong = translatedText.filter { it in wrongScript }.toSet().size
+        if (distinctWrong >= 3 && wrongCount >= 4 && wrongCount > expectedCount * 2 + 1) {
+            val actualName = if (traditionalTarget) "简体" else "繁体"
+            val expectedName = if (traditionalTarget) "繁体" else "简体"
+            return "TARGET_SCRIPT_MISMATCH：" + "译文中" + actualName + "字形占主导，但目标语言要求" + expectedName + "中文；冲突字形数=" + wrongCount
+        }
+        return null
+    }
 
     /**
      * Normalize explicit Arabic-number tokens without logging their values.
@@ -431,6 +526,20 @@ internal object SubtitleTranslationQualityPolicy {
         if (sourceUnless && targetIf && !targetHasConditionNegation) {
             return "SEMANTIC_RELATION_MISMATCH：原文 unless 被译成没有否定限定的普通 if 条件，条件逻辑可能反转"
         }
+
+        semanticOppositions.forEach { opposition ->
+            val sourcePositive = opposition.sourcePositive.containsMatchIn(source)
+            val sourceNegative = opposition.sourceNegative.containsMatchIn(source)
+            if (sourcePositive.xor(sourceNegative)) {
+                val targetPositive = opposition.targetPositive.containsMatchIn(target)
+                val targetNegative = opposition.targetNegative.containsMatchIn(target)
+                if ((sourcePositive && targetNegative && !targetPositive) ||
+                    (sourceNegative && targetPositive && !targetNegative)
+                ) {
+                    return "SEMANTIC_RELATION_MISMATCH：原文的${opposition.label}与译文明示的相反关系不一致"
+                }
+            }
+        }
         return null
     }
 
@@ -479,8 +588,11 @@ internal object SubtitleTranslationQualityPolicy {
             val count = available[number] ?: 0
             if (count > 0) available[number] = count - 1 else missing++
         }
-        return if (missing == 0) null else {
-            "原文有 ${sourceNumbers.size} 个显式数字项，译文有 ${translatedNumbers.size} 个数字项；其中 $missing 项未保留或数值不一致"
+        val extra = available.values.sum()
+        return when {
+            missing > 0 -> "原文有 ${sourceNumbers.size} 个显式数字项，译文有 ${translatedNumbers.size} 个数字项；其中 $missing 项未保留或数值不一致"
+            extra > 0 -> "译文比原文多出 $extra 个无法对应的显式数字项，可能擅自增加了数值"
+            else -> null
         }
     }
 
@@ -582,6 +694,8 @@ internal object SubtitleTranslationQualityPolicy {
             sourceText, output, sourceLanguage, targetLanguage,
         )
         val semanticMismatch = semanticConsistencyMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
+        val scriptMismatch = if (SourceLanguagePolicy.isChinese(sourceLanguage)) null
+            else targetChineseScriptMismatchReason(output, targetLanguage)
         val nonTranslatable = isNonTranslatableCue(sourceText)
         val sourceEcho = isSourceEcho(sourceText, output, sourceLanguage)
         val punctuationOnly = isPunctuationOnlyTranslation(sourceText, output)
@@ -611,6 +725,8 @@ internal object SubtitleTranslationQualityPolicy {
             append("; unitMismatchReason=").append(unitMismatch?.take(180) ?: "无")
             append("; semanticConsistencyMismatch=").append(semanticMismatch != null)
             append("; semanticMismatchReason=").append(semanticMismatch?.take(180) ?: "无")
+            append("; targetChineseScriptMismatch=").append(scriptMismatch != null)
+            append("; scriptMismatchReason=").append(scriptMismatch?.take(180) ?: "无")
             append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
         }
     }

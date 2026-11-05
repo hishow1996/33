@@ -374,6 +374,11 @@ internal fun subtitleTranslationAcceptor(
         candidate.isBlank() -> false
         SubtitleInterjectionPolicy.chineseFor(original, srcLang, tgtLang) != null -> true
         !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(candidate) -> false
+        !SourceLanguagePolicy.isChinese(srcLang) &&
+            SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(candidate, tgtLang) != null -> false
+        SubtitleTranslationQualityPolicy.numericContentMismatchReason(original, candidate, srcLang, tgtLang) != null -> false
+        SubtitleTranslationQualityPolicy.unitContentMismatchReason(original, candidate, srcLang, tgtLang) != null -> false
+        SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(original, candidate, srcLang, tgtLang) != null -> false
         else ->
             !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang) &&
                 !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(original, candidate, srcLang, tgtLang)
@@ -385,7 +390,12 @@ internal fun subtitleShortUntranslatedAcceptor(
     srcLang: String,
     tgtLang: String,
 ): (source: String, translation: String) -> Boolean = { original, candidate ->
-    SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(original, candidate, srcLang, tgtLang)
+    (SourceLanguagePolicy.isChinese(srcLang) ||
+        SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(candidate, tgtLang) == null) &&
+        SubtitleTranslationQualityPolicy.numericContentMismatchReason(original, candidate, srcLang, tgtLang) == null &&
+        SubtitleTranslationQualityPolicy.unitContentMismatchReason(original, candidate, srcLang, tgtLang) == null &&
+        SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(original, candidate, srcLang, tgtLang) == null &&
+        SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(original, candidate, srcLang, tgtLang)
 }
 
 private val JSON = "application/json; charset=utf-8".toMediaType()

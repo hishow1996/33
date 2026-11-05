@@ -75,4 +75,20 @@ class SubtitleTranslationPromptPolicyTest {
         assertFalse(englishPrompt.contains(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES))
         assertFalse(englishPrompt.contains(SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES))
     }
+    @Test
+    fun explicitlyProtectsActionParticipantsDirectionAndUnintroducedFacts() {
+        val english = SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES.lowercase(Locale.ROOT)
+        assertTrue(english.contains("who performs an action"))
+        assertTrue(english.contains("direction, location, comparisons"))
+        assertTrue(english.contains("never add facts, quantities, dates"))
+
+        val simplified = SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES
+        assertTrue(simplified.contains("动作执行者、动作对象"))
+        assertTrue(simplified.contains("不得增加原文没有的事实"))
+
+        val context = SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES
+        assertTrue(context.contains("同一人物、地名、品牌或技术术语"))
+        assertTrue(context.contains("不要机械继承错误"))
+    }
+
 }

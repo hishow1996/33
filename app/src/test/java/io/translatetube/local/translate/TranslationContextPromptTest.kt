@@ -19,6 +19,10 @@ class TranslationContextPromptTest {
         assertTrue(prompt.contains("\"source\":\"We will meet Sam tomorrow.\""))
         assertTrue(prompt.contains("\"translation\":\"我们明天和萨姆见面。\""))
         assertTrue(prompt.contains("current source text is authoritative"))
+        assertTrue(prompt.contains("Reuse a confirmed Chinese rendering for the same named entity or technical term consistently"))
+        assertTrue(prompt.contains("prefer the current source and clearly supported context"))
+        assertTrue(prompt.contains("Reuse a confirmed Chinese rendering for the same named entity or technical term consistently"))
+        assertTrue(prompt.contains("prefer the current source and clearly supported context"))
         assertTrue(prompt.contains("Do not infer a speaker's identity"))
         assertTrue(prompt.contains("Translate only the current numbered subtitle cues below."))
         assertTrue(prompt.contains("0|Please continue."))
@@ -117,6 +121,22 @@ class TranslationContextPromptTest {
         assertTrue(prompt.contains(expectedPrevious))
         assertTrue(prompt.contains(expectedFollowing))
         assertTrue(prompt.contains("0|He answered."))
+    }
+
+    @Test
+    fun keepsEightRecentAlignedRowsAvailableForLongerTermNameAndTermContinuity() {
+        val sources = (0 until 10).map { "Source cue $it" }
+        val translations = (0 until 10).map { "译文 $it" }
+        val prompt = buildContextUserPrompt(
+            sources to translations,
+            "0|Current cue",
+        ) ?: throw AssertionError("Expected a prompt with recent context")
+
+        assertTrue(prompt.contains("Source cue 2"))
+        assertTrue(prompt.contains("译文 2"))
+        assertTrue(prompt.contains("Source cue 9"))
+        assertFalse(prompt.contains("Source cue 1"))
+        assertFalse(prompt.contains("译文 1"))
     }
 
 }

@@ -516,4 +516,28 @@ class TranslationBatchResultTest {
         assertEquals(listOf("UNIT_CONTENT_MISMATCH"), result.rejectedRows.map { it.reasonCode })
         assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("单位类别不一致"))
     }
+    @Test
+    fun rejectsExtraNumbersAndWrongChineseScriptWithSpecificReasonCodes() {
+        val extraNumber = TranslationBatchResult.from(
+            indices = listOf(0),
+            rawTranslations = listOf("我有3只猫和5只狗。"),
+            sourceTexts = mapOf(0 to "I have 3 cats."),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(extraNumber.translations.isEmpty())
+        assertTrue(extraNumber.rejectedRows.any { it.reasonCode == "NUMERIC_CONTENT_MISMATCH" })
+
+        val wrongScript = TranslationBatchResult.from(
+            indices = listOf(1),
+            rawTranslations = listOf("這個軟體後續會持續更新。"),
+            sourceTexts = mapOf(1 to "The software will be updated later."),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(wrongScript.translations.isEmpty())
+        assertTrue(wrongScript.rejectedRows.any { it.reasonCode == "TARGET_SCRIPT_MISMATCH" })
+        assertTrue(wrongScript.rejectedRows.single().diagnosticReason.orEmpty().contains("目标语言要求简体中文"))
+    }
+
 }

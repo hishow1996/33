@@ -234,4 +234,15 @@ class DubbingTranslationPolicyTest {
         assertNull(result.text)
         assertTrue(result.reason.orEmpty().contains("单位类别不一致"))
     }
+    @Test
+    fun rejectsClearTraditionalChineseOutputWhenThePlaybackTargetIsSimplifiedChinese() {
+        val result = DubbingTranslationPolicy.resolveText(
+            "The software will be updated later.",
+            "這個軟體後續會持續更新。",
+            "en",
+        )
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().startsWith("TARGET_SCRIPT_MISMATCH"))
+    }
+
 }

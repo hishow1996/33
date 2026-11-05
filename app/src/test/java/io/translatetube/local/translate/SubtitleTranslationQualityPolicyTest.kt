@@ -771,4 +771,77 @@ class SubtitleTranslationQualityPolicyTest {
             ) == null,
         )
     }
+    @Test
+    fun detectsHighConfidenceActionAndDirectionReversalsWithoutRejectingCorrectMeaning() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I will come back tomorrow.", "我明天会去那里。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "The train entered the station.", "列车离开了车站。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Prices increased again.", "价格再次下降。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I bought a car.", "我卖了一辆车。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I will come back tomorrow.", "我明天会回来。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Prices increased again.", "价格再次上涨。", "en", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun detectsClearChineseScriptMismatchButLeavesShortOrAmbiguousTextAlone() {
+        assertTrue(SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+            "這個軟體後續會持續更新。", "zh-CN",
+        )!!.startsWith("TARGET_SCRIPT_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+            "这个软件后续会持续更新。", "zh-TW",
+        )!!.startsWith("TARGET_SCRIPT_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+            "这个软件后续会持续更新。", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+            "這個軟體後續會持續更新。", "zh-TW",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+            "你好。", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun detectsExtraExplicitNumbers() {
+        assertTrue(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 3 cats.", "我有3只猫和5只狗。", "en", "zh-CN",
+        )!!.contains("多出"))
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 3 cats.", "我有3只猫。", "en", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun sharedUsabilityGateRejectsTargetScriptMismatch() {
+        assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "The software is useful.",
+            "這個軟體後續會持續更新。",
+            "en",
+            "zh-CN",
+            acceptShortUnchanged = true,
+        ))
+    }
+
+    @Test
+    fun doesNotApplyChineseTargetScriptRulesToAlreadyChineseSourceCaptions() {
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "這是原始字幕。",
+            "這是原始字幕。",
+            "zh-Hant",
+            "zh-CN",
+        ))
+    }
+
 }
