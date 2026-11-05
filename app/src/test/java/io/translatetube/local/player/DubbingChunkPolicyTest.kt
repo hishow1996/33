@@ -59,8 +59,7 @@ class DubbingChunkPolicyTest {
             cue(2, 2_100L, 10_000L, 1, "这是第二句很长很长很长很长很长的台词"),
         )
         val chunks = DubbingChunkPolicy.buildChunks(cues) { _, line ->
-            !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text) &&
-                !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.zh)
+            !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text)
         }
         assertEquals(listOf(listOf(0), listOf(1), listOf(2)), chunks.map { it.lineIndices })
         assertEquals("", chunks[1].text)
