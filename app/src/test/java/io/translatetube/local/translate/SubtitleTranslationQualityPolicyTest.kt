@@ -349,6 +349,8 @@ class SubtitleTranslationQualityPolicyTest {
             Triple("New York Times", "New York Times", "en"),
             Triple("The Hobbit", "The Hobbit", "en"),
             Triple("Martin Luther King Jr.", "Martin Luther King Jr.", "en"),
+            Triple("Mary-Jane Watson", "Mary-Jane Watson", "en"),
+            Triple("O'Connor", "O'Connor", "en"),
             Triple("J. K. Rowling", "J. K. Rowling", "en"),
             Triple("One Direction", "One Direction", "en"),
             Triple("One Piece", "One Piece", "en"),
@@ -481,6 +483,8 @@ class SubtitleTranslationQualityPolicyTest {
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah", "Sara", "en", "zh-CN"))
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Sarah Smith", "Sara Smith", "en", "zh-CN"))
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("J. K. Rowling", "J. K. Rowling", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Mary-Jane", "Mary-Jane", "en", "zh-CN"))
+        assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("O'Connor", "O'Connor", "en", "zh-CN"))
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("(John):", "“John”", "en", "zh-CN"))
         assertTrue(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("[Sarah]", "(Sara)", "en", "zh-CN"))
         assertFalse(SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue("Good Morning", "Good Morning", "en", "zh-CN"))
