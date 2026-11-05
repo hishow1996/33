@@ -193,6 +193,7 @@ internal object SubtitleTranslationQualityPolicy {
                 sourceText, translatedText, sourceLanguage, targetLanguage,
             ) != null
         ) return false
+        if (semanticConsistencyMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage) != null) return false
         val sourceEcho = isSourceEcho(sourceText, translatedText, sourceLanguage)
         val targetMismatch = isTargetLanguageMismatch(sourceText, translatedText, sourceLanguage, targetLanguage)
         if (!sourceEcho && !targetMismatch) return true
@@ -295,6 +296,29 @@ internal object SubtitleTranslationQualityPolicy {
      * rendered a value in Chinese words or a clock as 点/半; this heuristic declines to reject.
      * It never adds a second model/API request.
      */
+    /** Conservative checks for explicit polarity, modality and condition cues. */
+    fun semanticConsistencyMismatchReason(
+        sourceText: String?, translatedText: String?, sourceLanguage: String, targetLanguage: String,
+    ): String? {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
+        if (!SourceLanguagePolicy.isChinese(targetLanguage) || SourceLanguagePolicy.isChinese(sourceLanguage)) return null
+        val source = sourceText.lowercase(Locale.ROOT)
+        val target = translatedText
+        val negated = Regex("""\b(?:not|never|no|neither|nor|without|cannot|can't|dont|don't|doesnt|doesn't|didnt|didn't|isnt|isn't|wasnt|wasn't|wont|won't|wouldnt|wouldn't|shouldnt|shouldn't|mustnt|mustn't)\b""").containsMatchIn(source)
+        val targetNegated = listOf("不", "没", "没有", "未", "从不", "并非", "不是", "无", "禁止", "不能", "不会").any(target::contains)
+        if (negated && !targetNegated) return "SEMANTIC_POLARITY_MISMATCH：原文含明确否定表达，译文未保留可识别的否定标记"
+        val obligation = Regex("""\b(?:must|have to|has to|required to|need to|should|ought to)\b""").containsMatchIn(source)
+        val targetObligation = listOf("必须", "务必", "需要", "应该", "应当", "得").any(target::contains)
+        if (obligation && !targetObligation) return "SEMANTIC_MODALITY_MISMATCH：原文含义务/必要性表达，译文未保留对应语气"
+        val possibility = Regex("""\b(?:may|might|could|possibly|perhaps|maybe)\b""").containsMatchIn(source)
+        val targetPossibility = listOf("可能", "也许", "或许", "有可能").any(target::contains)
+        if (possibility && !targetPossibility) return "SEMANTIC_MODALITY_MISMATCH：原文含可能性表达，译文未保留不确定语气"
+        val conditional = Regex("""\b(?:if|unless|provided that|as long as)\b""").containsMatchIn(source)
+        val targetConditional = listOf("如果", "若", "除非", "只要", "假如", "条件是").any(target::contains)
+        if (conditional && !targetConditional) return "SEMANTIC_RELATION_MISMATCH：原文含条件关系，译文未保留可识别的条件标记"
+        return null
+    }
+
     fun numericContentMismatchReason(
         sourceText: String?,
         translatedText: String?,
@@ -425,6 +449,7 @@ internal object SubtitleTranslationQualityPolicy {
         val unitMismatch = unitContentMismatchReason(
             sourceText, output, sourceLanguage, targetLanguage,
         )
+        val semanticMismatch = semanticConsistencyMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
         val nonTranslatable = isNonTranslatableCue(sourceText)
         val sourceEcho = isSourceEcho(sourceText, output, sourceLanguage)
         val punctuationOnly = isPunctuationOnlyTranslation(sourceText, output)
@@ -452,6 +477,8 @@ internal object SubtitleTranslationQualityPolicy {
             append("; numericMismatchReason=").append(numericMismatch?.take(180) ?: "无")
             append("; explicitUnitContentMismatch=").append(unitMismatch != null)
             append("; unitMismatchReason=").append(unitMismatch?.take(180) ?: "无")
+            append("; semanticConsistencyMismatch=").append(semanticMismatch != null)
+            append("; semanticMismatchReason=").append(semanticMismatch?.take(180) ?: "无")
             append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
         }
     }

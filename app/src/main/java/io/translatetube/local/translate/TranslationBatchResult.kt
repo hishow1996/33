@@ -85,6 +85,9 @@ internal data class TranslationBatchResult(
                         sourceText, it, sourceLanguage, targetLanguage,
                     )
                 }
+                val semanticMismatchDetail = value?.let {
+                    SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(sourceText, it, sourceLanguage, targetLanguage)
+                }
                 val modelMetaReason = value?.let {
                     SubtitleTranslationQualityPolicy.translationMetaResponseReason(
                         sourceText, it, sourceLanguage, targetLanguage,
@@ -116,6 +119,11 @@ internal data class TranslationBatchResult(
                     modelMetaReason != null -> "MODEL_META_RESPONSE"
                     numericMismatchDetail != null -> "NUMERIC_CONTENT_MISMATCH"
                     unitMismatchDetail != null -> "UNIT_CONTENT_MISMATCH"
+                    semanticMismatchDetail != null -> when {
+                        semanticMismatchDetail.startsWith("SEMANTIC_POLARITY_MISMATCH") -> "SEMANTIC_POLARITY_MISMATCH"
+                        semanticMismatchDetail.startsWith("SEMANTIC_MODALITY_MISMATCH") -> "SEMANTIC_MODALITY_MISMATCH"
+                        else -> "SEMANTIC_RELATION_MISMATCH"
+                    }
                     sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"
                     targetMismatch -> "TARGET_LANGUAGE_MISMATCH"
                     sourceEcho -> "SOURCE_ECHO"
@@ -127,7 +135,7 @@ internal data class TranslationBatchResult(
                         missing.remove(sourceIndex)
                         rejectionByIndex.remove(sourceIndex)
                     }
-                    value.isNullOrBlank() || targetMismatch || unspeakable || numericMismatchDetail != null || unitMismatchDetail != null -> {
+                    value.isNullOrBlank() || targetMismatch || unspeakable || numericMismatchDetail != null || unitMismatchDetail != null || semanticMismatchDetail != null -> {
                         // Empty output and status text still need another attempt.
                         if (sourceIndex !in translated) {
                             missing += sourceIndex
@@ -152,6 +160,7 @@ internal data class TranslationBatchResult(
                                             modelMetaReason != null -> modelMetaReason
                                             numericMismatchDetail != null -> numericMismatchDetail
                                             unitMismatchDetail != null -> unitMismatchDetail
+                                            semanticMismatchDetail != null -> semanticMismatchDetail
                                             sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
                                             sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
                                             targetMismatch -> targetMismatchDetail

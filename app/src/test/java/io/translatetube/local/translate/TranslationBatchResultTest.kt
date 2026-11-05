@@ -4,7 +4,15 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class TranslationBatchResultTest {
+class TranslationBatchResultTest {\n    @Test
+    fun rejectsRowsThatLoseExplicitSemanticPolarity() {
+        val result = TranslationBatchResult.from(listOf(0), listOf("我同意。"), mapOf(0 to "I do not agree."), "en", "zh-CN")
+        assertTrue(result.translations.isEmpty())
+        assertTrue(result.missingIndices.contains(0))
+        assertTrue(result.rejectedRows.any { it.reasonCode == "SEMANTIC_POLARITY_MISMATCH" })
+    }
+
+
     @Test
     fun preservesRowIndicesAndOrderWhenEveryTranslationIsValid() {
         val result = TranslationBatchResult.from(

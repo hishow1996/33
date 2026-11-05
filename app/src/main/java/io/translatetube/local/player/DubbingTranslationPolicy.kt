@@ -83,6 +83,8 @@ internal object DubbingTranslationPolicy {
                     },
                 )
             }
+            val semanticMismatchReason = SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(sourceText, cleaned, detectedSource, "zh")
+            if (semanticMismatchReason != null) return DubbingTranslationResolution(null, semanticMismatchReason)
             val numericMismatchReason = SubtitleTranslationQualityPolicy.numericContentMismatchReason(
                 sourceText, cleaned, detectedSource, "zh",
             )
