@@ -4,7 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class TranslationBatchResultTest {\n    @Test
+class TranslationBatchResultTest {
+    @Test
     fun rejectsRowsThatLoseExplicitSemanticPolarity() {
         val result = TranslationBatchResult.from(listOf(0), listOf("我同意。"), mapOf(0 to "I do not agree."), "en", "zh-CN")
         assertTrue(result.translations.isEmpty())

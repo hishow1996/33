@@ -4,7 +4,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class SubtitleTranslationQualityPolicyTest {\n    @Test
+class SubtitleTranslationQualityPolicyTest {
+    @Test
     fun rejectsClearNegationModalityAndConditionLoss() {
         assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("I do not agree.", "我同意。", "en", "zh-CN")!!.startsWith("SEMANTIC_POLARITY_MISMATCH"))
         assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason("You must leave now.", "你现在离开。", "en", "zh-CN")!!.startsWith("SEMANTIC_MODALITY_MISMATCH"))
