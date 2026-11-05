@@ -4380,15 +4380,41 @@ class PlaybackService : MediaSessionService() {
                 } else {
                     val updated = transform(current)
                     when {
-                        updated.phase == Phase.ERROR && current.phase != Phase.ERROR ->
-                            updated.copy(failedPhase = current.phase, failedProgress = current.progress)
-                        updated.phase != Phase.ERROR ->
+                        updated.phase == Phase.ERROR -> {
+                            val failureProgress = updated.failedProgress.ifBlank {
+                                if (current.phase == Phase.ERROR) {
+                                    current.failedProgress.ifBlank { current.progress }
+                                } else {
+                                    current.progress
+                                }
+                            }
+                            val activePhase = current.phase.takeIf {
+                                it in setOf(
+                                    Phase.PARSING,
+                                    Phase.DOWNLOADING_AUDIO,
+                                    Phase.TRANSCRIBING,
+                                    Phase.TRANSLATING,
+                                    Phase.SYNTHESIZING,
+                                )
+                            }
+                            val previousFailedPhase = current.failedPhase.takeIf {
+                                current.phase == Phase.ERROR
+                            }
+                            val phaseHint = updated.failedPhase ?: previousFailedPhase ?: activePhase
                             updated.copy(
-                                failedPhase = null,
-                                failedProgress = "",
-                                cloudAsrSubmissionUncertain = false,
+                                failedPhase = ProcessingErrorDisplayPolicy.resolvePhase(
+                                    phaseHint,
+                                    failureProgress,
+                                    updated.error ?: current.error,
+                                ),
+                                failedProgress = failureProgress,
                             )
-                        else -> updated
+                        }
+                        else -> updated.copy(
+                            failedPhase = null,
+                            failedProgress = "",
+                            cloudAsrSubmissionUncertain = false,
+                        )
                     }
                 }
             }
@@ -5270,6 +5296,8 @@ class PlaybackService : MediaSessionService() {
                 it.copy(
                     phase = Phase.ERROR,
                     progress = "",
+                    failedPhase = Phase.PARSING,
+                    failedProgress = "正在解析网页视频媒体地址",
                     error = "该视频使用网页内嵌流（blob/MSE）播放，无法直接播放或提取音频。请回到「网页视频」页等待检测到可访问的视频地址，或点击「用 yt-dlp 解析本页视频」重试。"
                 )
             }
@@ -10994,8 +11022,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val traceContext = io.translatetube.local.translate.TranslationDiagnosticContext(
             diagnosticId = java.util.UUID.randomUUID().toString(),
         )
+        val translationIssueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+            "Translation",
+            key,
+        )
         try {
-            return translateLinesInternal(
+            val translatedLines = translateLinesInternal(
                 key = key,
                 lines = lines,
                 srcLang = srcLang,
@@ -11004,6 +11036,29 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 pipelineGeneration = pipelineGeneration,
                 traceContext = traceContext,
             )
+            // Log recovery is best-effort and must never turn a successful translation into a pipeline failure.
+            try {
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.resolveIssue(
+                        context = this@PlaybackService,
+                        issueKey = translationIssueKey,
+                        message = "当前视频会话字幕翻译已成功完成",
+                        diagnosticContext = mapOf(
+                            "恢复阶段" to Phase.TRANSLATING.name,
+                            "恢复证据" to "翻译处理函数成功返回完整结果",
+                            "输入字幕行数" to lines.size.toString(),
+                            "有效译文行数" to translatedLines.count { !it.zh.isNullOrBlank() }.toString(),
+                            "翻译诊断 ID" to traceContext.diagnosticId,
+                            "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                        ),
+                    )
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (logFailure: Exception) {
+                android.util.Log.w("PlaybackService", "Could not close recovered translation issue", logFailure)
+            }
+            return translatedLines
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
@@ -11039,6 +11094,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "Translation",
                             "翻译阶段在引擎初始化、语言预检或结果校验环节异常终止",
                             failure,
+                            issueKey = translationIssueKey,
                             diagnosticContext = mapOf(
                                 "诊断事件类型" to "TRANSLATION_STAGE_UNHANDLED_FAILURE",
                                 "翻译诊断 ID" to traceContext.diagnosticId,
@@ -11441,6 +11497,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "Translation",
                             "字幕翻译请求失败",
                             e,
+                            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("Translation", key),
                             diagnosticContext = mapOf(
                                 "诊断事件类型" to "TRANSLATION_REQUEST_FAILURE",
                                 "翻译诊断 ID" to diagnosticId,
@@ -13745,6 +13802,30 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                     if (::pm.isInitialized && canApply) {
                         syncOriginalVolumeWithDubbing(engine, ui.value, "中文配音开始播放")
+                        val confirmedEngineName = engine.currentTtsName.ifBlank { tts.name }
+                        val confirmedIssueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                            "TTSOutput",
+                            sessionKey + "|" + confirmedEngineName + "|" + (index + 1),
+                        )
+                        scope.launch(Dispatchers.IO) {
+                            if (
+                                isCurrentDubbingEngine(engine, sessionKey) &&
+                                engine.hasStartedPlaybackFor(index, playbackGeneration)
+                            ) {
+                                io.translatetube.local.util.AppLogStore.resolveIssue(
+                                    context = this@PlaybackService,
+                                    issueKey = confirmedIssueKey,
+                                    message = "同一视频会话第 ${index + 1} 条字幕配音已实际开始播放",
+                                    diagnosticContext = mapOf(
+                                        "恢复阶段" to Phase.SYNTHESIZING.name,
+                                        "恢复证据" to "当前配音引擎的 onPlaybackStarted 回调已确认该字幕开始输出",
+                                        "配音引擎" to confirmedEngineName,
+                                        "字幕序号" to (index + 1).toString(),
+                                        "播放代次" to playbackGeneration.toString(),
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -13766,11 +13847,16 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
             }
         }
-        engine.onSynthesisError = { detail ->
+        engine.onSynthesisError = { synthesisFailure ->
             val activeName = engine.currentTtsName.ifBlank { tts.name }
             val systemTtsSelected = activeName.contains("系统TTS")
-            val failedLineNumber = ui.value.activeDubbingLine.takeIf { it >= 0 }?.plus(1)
+            val failedLineNumber = synthesisFailure.lineIndex?.takeIf { it >= 0 }?.plus(1)
+                ?: ui.value.activeDubbingLine.takeIf { it >= 0 }?.plus(1)
             val failedLineLabel = failedLineNumber?.let { "第 ${it} 条字幕" } ?: "当前配音任务"
+            val detail = synthesisFailure.message.take(1_000)
+            val originalFailure = synthesisFailure.failure
+            val persistedFailure = originalFailure
+                ?: IllegalStateException("${synthesisFailure.stage}: $detail")
             val message = if (systemTtsSelected) {
                 "系统 TTS 合成或音频输出失败：$failedLineLabel。请检查手机文字转语音服务、中文语音数据和可用音色。视频已暂停。"
             } else {
@@ -13780,14 +13866,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 this@PlaybackService,
                 "TTS",
                 "配音引擎合成或音频输出回调失败",
-                IllegalStateException(detail.take(1_000)),
+                persistedFailure,
                 diagnosticContext = mapOf(
                     "配音引擎" to activeName,
                     "是否为系统 TTS" to systemTtsSelected.toString(),
+                    "故障阶段" to synthesisFailure.stage,
                     "失败字幕序号" to (failedLineNumber?.toString() ?: "回调时未能确定"),
+                    "失败字幕索引（0-based）" to (synthesisFailure.lineIndex?.toString() ?: "未知"),
+                    "原始异常类型" to originalFailure?.javaClass?.name.orEmpty().ifBlank { "回调未提供 Throwable" },
                     "用户界面提示摘要" to message,
-                    "TTS 回调错误详情" to detail.take(1_000),
-                    "详情来源" to "TTS 引擎错误回调；回调未提供原始 Throwable 对象",
+                    "TTS 回调错误详情" to detail,
+                    "详情来源" to if (originalFailure != null) {
+                        "配音引擎传递原始 Throwable，保留 cause/stack"
+                    } else {
+                        "TTS 回调只提供文本详情，使用带故障阶段的异常包装"
+                    },
                     "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
                 ),
                 issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
@@ -13811,7 +13904,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
             pausePlaybackAfterDubbingFailure(engine, sessionKey, "$activeName 合成/输出失败：${detail.take(180)}")
-            if (detail.contains("设备内存不足")) {
+            if (detail.contains("设备内存不足") || originalFailure is OutOfMemoryError) {
                 // Retire even if attach() reported the OOM just before publishing the engine.
                 // retireDubbing only clears the service field when this exact engine owns it.
                 scope.launch(Dispatchers.IO) {

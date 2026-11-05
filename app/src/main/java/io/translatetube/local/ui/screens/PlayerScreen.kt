@@ -499,9 +499,13 @@ fun PlayerScreen(
         }
         val canResumeExistingWork = current.key == key &&
             current.phase == Phase.ERROR &&
-            // A parser failure must reacquire the source; do not resume any stale subtitle snapshot.
-            current.failedPhase != Phase.PARSING &&
-            current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
+            ProcessingErrorDisplayPolicy.canResumeExistingWork(
+                phase = current.failedPhase,
+                progress = current.failedProgress.ifBlank { current.progress },
+                error = current.error,
+                hasLines = current.lines.isNotEmpty(),
+                sourceLanguage = current.sourceLang,
+            )
         if (canResumeExistingWork && service?.isReady == true) {
             service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, selectedWebMediaMetadata = selectedWebMediaMetadata, requestToken = requestToken)
         } else {
@@ -551,6 +555,8 @@ fun PlayerScreen(
                     PlaybackService.ui.update {
                         it.copy(
                             phase = Phase.ERROR,
+                            failedPhase = ProcessingErrorDisplayPolicy.resolvePhase(it.phase, it.progress, "播放器服务启动失败或超时"),
+                            failedProgress = it.progress,
                             progress = "",
                             error = "播放器服务启动失败或超时，请检查系统状态后点击重试"
                         )
@@ -558,10 +564,16 @@ fun PlayerScreen(
                 } else {
                     val failedState = PlaybackService.ui.value
                     val resumeExistingWork = if (
-                        retryRequested && failedState.key == key &&
+                        retryRequested &&
+                        failedState.key == key &&
                         failedState.phase == Phase.ERROR &&
-                        failedState.failedPhase != Phase.PARSING &&
-                        failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
+                        ProcessingErrorDisplayPolicy.canResumeExistingWork(
+                            phase = failedState.failedPhase,
+                            progress = failedState.failedProgress.ifBlank { failedState.progress },
+                            error = failedState.error,
+                            hasLines = failedState.lines.isNotEmpty(),
+                            sourceLanguage = failedState.sourceLang,
+                        )
                     ) failedState else null
                     s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, selectedWebMediaMetadata = selectedWebMediaMetadata, requestToken = requestToken)
                 }
@@ -594,6 +606,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 PlaybackService.ui.update {
                     it.copy(
                         phase = Phase.ERROR,
+                        failedPhase = ProcessingErrorDisplayPolicy.resolvePhase(it.phase, it.progress, e.message),
+                        failedProgress = it.progress,
                         progress = "",
                         error = "无法启动播放器（${e.javaClass.simpleName}）：${e.message ?: "未知错误"}"
                     )
@@ -1499,7 +1513,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                             if (phase == Phase.ERROR) {
                                 Text(
-                                    ProcessingErrorDisplayPolicy.title(state.failedPhase),
+                                    ProcessingErrorDisplayPolicy.title(state.failedPhase, state.failedProgress.ifBlank { state.progress }, state.error),
                                     color = OnBg,
                                     style = MaterialTheme.typography.titleMedium,
                                 )
@@ -1508,7 +1522,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                     ProcessingErrorDisplayPolicy.message(
                                         state.key,
                                         state.failedPhase,
-                                        state.failedProgress,
+                                        state.failedProgress.ifBlank { state.progress },
                                         state.error,
                                     ),
                                     color = SubText,
@@ -1516,7 +1530,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 TextButton(onClick = { retryCurrentTask() }) {
-                                    Text(ProcessingErrorDisplayPolicy.retryLabel(state.failedPhase), color = BrandBright)
+                                    Text(ProcessingErrorDisplayPolicy.retryLabel(state.failedPhase, state.failedProgress.ifBlank { state.progress }, state.error), color = BrandBright)
                                 }
                             } else {
                                 ProcessingProgressCard(state = state)
@@ -2991,7 +3005,7 @@ private fun VideoParsingPage(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        if (isCancelled) "处理已取消" else ProcessingErrorDisplayPolicy.title(state.failedPhase),
+                        if (isCancelled) "处理已取消" else ProcessingErrorDisplayPolicy.title(state.failedPhase, state.failedProgress.ifBlank { state.progress }, state.error),
                         color = if (isCancelled) Color(0xFFA86B13) else Color(0xFFCB3E4D),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     )
@@ -2999,7 +3013,7 @@ private fun VideoParsingPage(
                         if (isCancelled) "已停止" else ProcessingErrorDisplayPolicy.message(
                             state.key,
                             state.failedPhase,
-                            state.failedProgress,
+                            state.failedProgress.ifBlank { state.progress },
                             state.error,
                         ),
                         color = if (isCancelled) Color(0xFF8C6C3F) else Color(0xFF9F4D56),
@@ -3020,7 +3034,7 @@ private fun VideoParsingPage(
                             when {
                                 isCancelled -> "重新开始处理"
                                 state.cloudAsrSubmissionUncertain -> "确认重新提交"
-                                else -> ProcessingErrorDisplayPolicy.retryLabel(state.failedPhase)
+                                else -> ProcessingErrorDisplayPolicy.retryLabel(state.failedPhase, state.failedProgress.ifBlank { state.progress }, state.error)
                             },
                             fontWeight = FontWeight.Bold,
                         )
@@ -7790,7 +7804,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     val displayPhase = if (waitingForDubbingEngine && state.phase == Phase.READY) Phase.SYNTHESIZING else state.phase
     val title = when {
         isCancelled -> "处理已取消"
-        state.phase == Phase.ERROR -> ProcessingErrorDisplayPolicy.title(state.failedPhase)
+        state.phase == Phase.ERROR -> ProcessingErrorDisplayPolicy.title(state.failedPhase, state.failedProgress.ifBlank { state.progress }, state.error)
         state.dubbingHasErrors -> "配音合成失败，视频已暂停"
         waitingForDubbingEngine -> "等待配音引擎就绪"
         else -> VideoProcessingFlowPolicy.mainTitle(
@@ -7806,7 +7820,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         state.phase == Phase.ERROR -> ProcessingErrorDisplayPolicy.message(
             state.key,
             state.failedPhase,
-            state.failedProgress,
+            state.failedProgress.ifBlank { state.progress },
             state.error,
         )
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()

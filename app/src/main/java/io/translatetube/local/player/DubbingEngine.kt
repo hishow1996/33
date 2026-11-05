@@ -54,6 +54,15 @@ private object DubbingLogDispatcher {
 private class DubbingPcmLimitException(message: String) : IllegalStateException(message)
 private class DubbingChunkBoundaryTimeoutException(message: String = "等待配音分段结束超时") : IllegalStateException(message)
 
+/** Structured failure delivered to the playback service without discarding the original cause. */
+data class DubbingSynthesisFailure(
+    val message: String,
+    /** Zero-based subtitle index, or null when this callback cannot identify one safely. */
+    val lineIndex: Int?,
+    val stage: String,
+    val failure: Throwable? = null,
+)
+
 private data class DubbingCacheInspection(
     val hasAudio: Boolean?,
     val stamp: DubbingCacheFileStamp?,
@@ -136,7 +145,7 @@ class DubbingEngine(
     @Volatile private var backgroundTtsInitializationJob: Job? = null
     private val backgroundTtsInitLock = Any()
     private val ttsInstances = java.util.concurrent.CopyOnWriteArrayList<TtsEngine>()
-    @Volatile var onSynthesisError: ((String) -> Unit)? = null
+    @Volatile var onSynthesisError: ((DubbingSynthesisFailure) -> Unit)? = null
     val currentTtsName: String get() = tts?.name.orEmpty()
     /** True when the selected system TTS mode speaks directly instead of preparing PCM. */
     val usesImmediateTimelinePlayback: Boolean
@@ -1418,7 +1427,12 @@ class DubbingEngine(
                         silentCueReasonsByIndex[idx] =
                             "音频已合成，但磁盘缓存写入失败且内存缓存无法容纳该句：${cacheFailure.message.orEmpty()}"
                         recordDubbingFailure(idx, "音频缓存", cacheFailure)
-                        reportSynthesisError(cacheFailure.message ?: "配音音频缓存失败")
+                        reportSynthesisError(
+                            cacheFailure.message ?: "配音音频缓存失败",
+                            lineIndex = idx,
+                            stage = "音频缓存",
+                            failure = cacheFailure,
+                        )
                         markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                         bumpPrepared()
                         continue
@@ -1518,7 +1532,7 @@ class DubbingEngine(
                         // Make this actionable provider-quota failure replace any earlier generic
                         // one-shot synthesis warning from the same attached session.
                         synthesisErrorReported.set(false)
-                        reportSynthesisError(pauseMessage)
+                        reportSynthesisError(pauseMessage, lineIndex = idx, stage = "服务商限流", failure = e)
                         break
                     }
 
@@ -1598,7 +1612,12 @@ class DubbingEngine(
                         continue
                     }
                     recordDubbingFailure(idx, "合成", e)
-                    reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：$detail")
+                    reportSynthesisError(
+                        "第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：$detail",
+                        lineIndex = idx,
+                        stage = "合成",
+                        failure = e,
+                    )
                     // Do not persist a zero-sample marker for a failed synthesis. A transient
                     // service/voice failure should be retried in a future session, not cached as silence.
                     markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
@@ -1702,7 +1721,10 @@ class DubbingEngine(
                     synthesisErrorReported.set(false)
                     runCatching {
                         reportSynthesisError(
-                            "设备内存不足，已停止继续生成中文配音；视频已暂停，请重新打开视频或选择占用更低的配音引擎后重试。"
+                            "设备内存不足，已停止继续生成中文配音；视频已暂停，请重新打开视频或选择占用更低的配音引擎后重试。",
+                            lineIndex = activeSynthesisIndex.takeIf { it in lines.indices },
+                            stage = "内存",
+                            failure = memoryError,
                         )
                     }.onFailure {
                         android.util.Log.w("DubbingEngine", "Unable to publish out-of-memory recovery status", it)
@@ -1781,14 +1803,25 @@ class DubbingEngine(
         }
     }
 
-    private fun reportSynthesisError(message: String) {
+    private fun reportSynthesisError(
+        message: String,
+        lineIndex: Int? = null,
+        stage: String = "未分类",
+        failure: Throwable? = null,
+    ) {
         if (!released && synthesisErrorReported.compareAndSet(false, true)) {
+            val eventLineIndex = lineIndex?.takeIf { it in lines.indices }
+                ?: activeSynthesisIndex.takeIf { it in lines.indices }
+                ?: _currentLine.value.takeIf { it in lines.indices }
             logDubbingError(
                 "配音功能上报终止性故障：$message",
+                failure = failure,
                 diagnosticContext = withOperationContext(mapOf(
                     "配音引擎名称" to (tts?.name ?: "未知引擎"),
                     "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
-                    "故障时字幕行号" to if (_currentLine.value >= 0) "${_currentLine.value + 1}/${lines.size}" else "当前没有活动字幕行",
+                    "故障阶段" to stage,
+                    "故障字幕序号" to (eventLineIndex?.let { (it + 1).toString() } ?: "未知"),
+                    "故障时字幕行号" to if (eventLineIndex != null) "${eventLineIndex + 1}/${lines.size}" else "当前没有活动字幕行",
                     "字幕总行数" to lines.size.toString(),
                     "已准备行数" to _preparedCount.value.toString(),
                     "连续就绪前缀行数" to _preparedUntil.value.toString(),
@@ -1800,10 +1833,11 @@ class DubbingEngine(
                 ) + io.translatetube.local.util.AudioOutputDiagnostics.snapshot(appContext)),
             )
             // A UI/notification callback must never terminate the synthesis worker itself.
-            runCatching { onSynthesisError?.invoke(message) }
-                .onFailure {
-                    android.util.Log.w("DubbingEngine", "Synthesis-error callback failed", it)
-                }
+            runCatching {
+                onSynthesisError?.invoke(DubbingSynthesisFailure(message, eventLineIndex, stage, failure))
+            }.onFailure {
+                android.util.Log.w("DubbingEngine", "Synthesis-error callback failed", it)
+            }
         }
     }
 
@@ -2855,7 +2889,12 @@ class DubbingEngine(
                                 )
                                 val detail = error.message ?: error.javaClass.simpleName
                                 markCuePrepared(lineIndex, hasAudio = false)
-                                reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：$detail")
+                                reportSynthesisError(
+                                    "第 ${lineIndex + 1} 句长音频分段播放失败：$detail",
+                                    lineIndex = lineIndex,
+                                    stage = "分段播放输出",
+                                    failure = error,
+                                )
                             }
                         }
                     } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -3674,7 +3713,11 @@ class DubbingEngine(
                                             _currentLine.value = -1
                                         }
                                     }
-                                    reportSynthesisError("第 ${idx + 1} 行系统 TTS 朗读失败：$error")
+                                    reportSynthesisError(
+                                        "第 ${idx + 1} 行系统 TTS 朗读失败：$error",
+                                        lineIndex = idx,
+                                        stage = "系统 TTS 朗读",
+                                    )
                                 }
                             }
                         },
@@ -3855,7 +3898,10 @@ class DubbingEngine(
                     }
                     if (failureStillOwnsCue) {
                         reportSynthesisError(
-                            "第 ${idx + 1} 句中文配音 PCM 挂载混流总线失败：${error.message ?: error.javaClass.simpleName}"
+                            "第 ${idx + 1} 句中文配音 PCM 挂载混流总线失败：${error.message ?: error.javaClass.simpleName}",
+                            lineIndex = idx,
+                            stage = "混流总线挂载",
+                            failure = error,
                         )
                     }
                 }
