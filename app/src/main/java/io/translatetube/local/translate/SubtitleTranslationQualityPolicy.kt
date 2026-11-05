@@ -1778,7 +1778,7 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     private val properNameParticles = setOf(
-        "al", "bin", "da", "de", "del", "den", "der", "di", "du", "ibn",
+        "al", "and", "bin", "da", "de", "del", "den", "der", "di", "du", "ibn",
         "la", "le", "of", "st", "saint", "the", "van", "von",
     )
     private val geographicNamePrefixes = setOf("new")
