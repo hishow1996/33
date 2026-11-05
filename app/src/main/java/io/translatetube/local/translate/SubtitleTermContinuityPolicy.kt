@@ -13,7 +13,7 @@ import io.translatetube.local.subs.SubtitleLanguageDetector
  */
 internal object SubtitleTermContinuityPolicy {
     private val candidateLatinToken = Regex(
-        """(?<![\p{L}\p{N}])(?:[A-Z][A-Za-z0-9]*(?:['’–-][A-Za-z0-9]+)*|[A-Z]{2,8}|[a-z][A-Z][A-Za-z0-9]*)"""
+        """(?<![\p{L}\p{N}])(?:\p{Lu}[\p{L}\p{M}\p{N}]*(?:['’–-][\p{L}\p{M}\p{N}]+)*|[a-z][A-Z][A-Za-z0-9]*)"""
     )
     private val katakanaToken = Regex("""[\u30A1-\u30FA\u30FC]{2,}""")
     private val casedScriptNameToken = Regex(
@@ -87,8 +87,10 @@ internal object SubtitleTermContinuityPolicy {
         val result = LinkedHashSet<String>()
         texts.forEach { text ->
             candidateLatinToken.findAll(text).forEach { match ->
-                val key = normalize(match.value)
-                if (key.length >= 2 && key !in stopWords) result += key
+                if (Character.UnicodeScript.of(match.value.first().code) == Character.UnicodeScript.LATIN) {
+                    val key = normalize(match.value)
+                    if (key.length >= 2 && key !in stopWords) result += key
+                }
             }
             casedScriptNameToken.findAll(text).forEach { match ->
                 val script = Character.UnicodeScript.of(match.value.first().code)
