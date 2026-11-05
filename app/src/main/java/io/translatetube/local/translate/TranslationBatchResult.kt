@@ -66,6 +66,14 @@ internal data class TranslationBatchResult(
                 val rawValue = rawTranslations.getOrNull(position)
                 val value = SubtitleParsers.cleanTranslatedText(rawValue)
                 val sourceText = sourceTexts[sourceIndex]
+                if (!sourceText.isNullOrBlank() &&
+                    SubtitleTranslationQualityPolicy.hasNothingToSpeak(sourceText)
+                ) {
+                    translated.putIfAbsent(sourceIndex, sourceText)
+                    missing.remove(sourceIndex)
+                    rejectionByIndex.remove(sourceIndex)
+                    return@forEachIndexed
+                }
                 val qualityDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
                     sourceText = sourceText,
                     translatedText = value,
