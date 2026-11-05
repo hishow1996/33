@@ -112,7 +112,6 @@ class TranslationConfigPreferencePolicyTest {
     }
 
     @Test
-    @Test
     fun historyFingerprintClassificationIncludesEveryLocalTranslatorNamespace() {
         listOf(
             "free_gemini_model",
@@ -129,6 +128,7 @@ class TranslationConfigPreferencePolicyTest {
         assertFalse(TranslationConfigPreferencePolicy.isTranslationPreferenceKey("piper_model"))
     }
 
+    @Test
     fun unknownTranslationPreferencesRemainRelevantForCompatibility() {
         assertTrue(
             TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
