@@ -246,9 +246,10 @@ class AppLogAiReportTest {
         assertTrue(report.contains("仅是上游候选"))
         assertTrue(report.contains("诊断证据覆盖率"))
         assertTrue(report.contains("diagnosticCoverage"))
-        assertTrue(report.contains("aiDiagnosis"))
-        assertTrue(report.contains("recentEventTrailScope"))
+        assertTrue(report.contains("证据覆盖"))
         assertTrue(report.contains("diagnosticContextBudget"))
+        assertTrue(report.contains("diagnosticContextBudget"))
+        assertEquals(1, report.split("failure-2").size - 1)
     }
 
 
