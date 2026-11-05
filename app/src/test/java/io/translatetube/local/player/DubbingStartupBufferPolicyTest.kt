@@ -132,6 +132,7 @@ class DubbingStartupBufferPolicyTest {
             SubLine(1, 1_000L, 2_000L, "Hello.", "你好。"),
             SubLine(2, 2_100L, 3_000L, "[applause]", "[掌声]"),
             SubLine(3, 3_100L, 4_000L, "Goodbye.", "再见。"),
+            SubLine(4, 4_100L, 5_000L, "♪♪", "♪♪"),
         )
         assertEquals(listOf(1, 3), DubbingStartupBufferPolicy.spokenCueIndices(input))
     }
