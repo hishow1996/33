@@ -10524,18 +10524,17 @@ updateUiForSession(key, pipelineGeneration) {
                                 ),
                             )
     android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
-                            val reason = e.message ?: e.javaClass.simpleName
                             updateUiForSession(key, pipelineGeneration) {
                                 it.copy(
                                     ttsEngineName = selectedTtsName,
                                     dubbingStatus = "${selectedTtsName} 初始化失败",
                                     noModelHint = when (selectedTts) {
-                                        "system" -> "系统 TTS 初始化失败：$reason。当前严格使用手机系统 TTS，未切换本地模型。请检查手机的文字转语音服务、中文语音数据和可用音色，然后重试。"
-                                        "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
-                                        "edge" -> "微软 Edge TTS 初始化失败：$reason。请检查网络连接后重试。"
-                                        "google" -> "谷歌在线语音初始化失败：$reason。请检查网络连接后重试。"
-                                        "gemini" -> "Gemini TTS 初始化失败：$reason。请检查设置中的 Gemini API Key 和网络连接后重试。"
-                                        else -> "所选配音引擎「$selectedTtsName」初始化失败：$reason。请检查对应引擎配置后重试。"
+                                        "system" -> "系统 TTS 初始化失败，请检查手机的文字转语音服务、中文语音数据和可用音色后重试。"
+                                        "piper" -> "Piper 中文配音初始化失败，请检查是否已选择并下载中文 Piper 模型。"
+                                        "edge" -> "微软 Edge TTS 初始化失败，请检查网络连接后重试。"
+                                        "google" -> "谷歌在线语音初始化失败，请检查网络连接后重试。"
+                                        "gemini" -> "Gemini TTS 初始化失败，请检查 API 配置和网络连接后重试。"
+                                        else -> "所选配音引擎「$selectedTtsName」初始化失败，请检查对应引擎配置后重试。"
                                     },
                                     waitingForTranscriptionEngine = false,
                                     waitingForDubbingEngine = true,
@@ -10787,12 +10786,19 @@ updateUiForSession(key, pipelineGeneration) {
             val failureState = ui.value
             val cloudAsrSubmissionUncertain =
                 e is io.translatetube.local.asr.CloudAsrSubmissionUncertainException
+            val uiFailureSummary = ProcessingErrorDisplayPolicy.message(
+                key,
+                failureState.phase,
+                failureState.progress,
+                e.message,
+            )
             io.translatetube.local.util.AppLogStore.error(
                 this@PlaybackService,
                 "PlaybackPipeline",
-                "视频解析、转写、翻译或配音流程失败",
+                ProcessingErrorDisplayPolicy.title(failureState.phase),
                 e,
                 diagnosticContext = mapOf(
+                    "界面提示摘要" to uiFailureSummary,
                     "视频来源" to when {
                         key.startsWith("youtube:") -> "YouTube"
                         key.startsWith("remote:") -> "网页视频/远程媒体"

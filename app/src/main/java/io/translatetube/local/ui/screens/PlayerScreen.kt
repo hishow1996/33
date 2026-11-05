@@ -127,6 +127,7 @@ import io.translatetube.local.player.SpeakerRecognitionProgressPolicy
 import io.translatetube.local.player.SpeakerRecognitionUiState
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.player.Phase
+import io.translatetube.local.player.ProcessingErrorDisplayPolicy
 import io.translatetube.local.player.ProcessingFlow
 import io.translatetube.local.player.VideoSourceKind
 import io.translatetube.local.player.VideoProcessingFlowPolicy
@@ -498,6 +499,8 @@ fun PlayerScreen(
         }
         val canResumeExistingWork = current.key == key &&
             current.phase == Phase.ERROR &&
+            // A parser failure must reacquire the source; do not resume any stale subtitle snapshot.
+            current.failedPhase != Phase.PARSING &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
             service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, selectedWebMediaMetadata = selectedWebMediaMetadata, requestToken = requestToken)
@@ -557,6 +560,7 @@ fun PlayerScreen(
                     val resumeExistingWork = if (
                         retryRequested && failedState.key == key &&
                         failedState.phase == Phase.ERROR &&
+                        failedState.failedPhase != Phase.PARSING &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
                     s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, selectedWebMediaMetadata = selectedWebMediaMetadata, requestToken = requestToken)
@@ -930,10 +934,28 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     }
                 }.exceptionOrNull()
             }
+            if (error != null) {
+                io.translatetube.local.util.AppLogStore.error(
+                    ctx,
+                    "SubtitleExport",
+                    "字幕文件导出失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "视频来源" to when {
+                            videoId != null -> "YouTube"
+                            !mediaUrl.isNullOrBlank() -> "网页视频"
+                            localUri != null -> "本地视频"
+                            else -> "未知来源"
+                        },
+                        "导出文件 MIME 类型" to (ctx.contentResolver.getType(uri).orEmpty().ifBlank { "未提供" }),
+                        "导出内容字符数" to content.length.toString(),
+                    ),
+                )
+            }
             val message = if (error == null) {
                 "字幕已导出"
             } else {
-                "字幕导出失败：" + (error.message ?: error.javaClass.simpleName)
+                "字幕导出失败，请检查保存位置或文件权限。"
             }
             android.widget.Toast.makeText(ctx, message, android.widget.Toast.LENGTH_LONG).show()
         }
@@ -1476,12 +1498,25 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     Box(Modifier.fillMaxSize().background(Color(0xD9F4F8FF)), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                             if (phase == Phase.ERROR) {
-                                Text("加载失败", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    ProcessingErrorDisplayPolicy.title(state.failedPhase),
+                                    color = OnBg,
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
                                 Spacer(Modifier.height(3.dp))
-                                Text(state.error ?: "", color = SubText, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    ProcessingErrorDisplayPolicy.message(
+                                        state.key,
+                                        state.failedPhase,
+                                        state.failedProgress,
+                                        state.error,
+                                    ),
+                                    color = SubText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                                 Spacer(Modifier.height(8.dp))
                                 TextButton(onClick = { retryCurrentTask() }) {
-                                    Text("重试", color = BrandBright)
+                                    Text(ProcessingErrorDisplayPolicy.retryLabel(state.failedPhase), color = BrandBright)
                                 }
                             } else {
                                 ProcessingProgressCard(state = state)
@@ -2956,12 +2991,17 @@ private fun VideoParsingPage(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        if (isCancelled) "处理已取消" else "处理未能完成",
+                        if (isCancelled) "处理已取消" else ProcessingErrorDisplayPolicy.title(state.failedPhase),
                         color = if (isCancelled) Color(0xFFA86B13) else Color(0xFFCB3E4D),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     )
                     Text(
-                        state.error.orEmpty().ifBlank { detail },
+                        if (isCancelled) "已停止" else ProcessingErrorDisplayPolicy.message(
+                            state.key,
+                            state.failedPhase,
+                            state.failedProgress,
+                            state.error,
+                        ),
                         color = if (isCancelled) Color(0xFF8C6C3F) else Color(0xFF9F4D56),
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -2980,7 +3020,7 @@ private fun VideoParsingPage(
                             when {
                                 isCancelled -> "重新开始处理"
                                 state.cloudAsrSubmissionUncertain -> "确认重新提交"
-                                else -> "重试当前处理"
+                                else -> ProcessingErrorDisplayPolicy.retryLabel(state.failedPhase)
                             },
                             fontWeight = FontWeight.Bold,
                         )
@@ -3158,7 +3198,12 @@ private fun ProcessingStageCards(
                                     )?.let { add("字幕检测" to it) }
                                 }
                                 add("当前状态" to when {
-                                    failed -> progressText.ifBlank { "视频解析失败" }
+                                    failed -> ProcessingErrorDisplayPolicy.message(
+                                        state.key,
+                                        Phase.PARSING,
+                                        progressText,
+                                        state.error,
+                                    )
                                     done -> "视频信息解析完成"
                                     active -> compactProcessingProgress(progressText, Phase.PARSING)
                                         .ifBlank { "正在解析视频信息" }
@@ -3180,7 +3225,12 @@ private fun ProcessingStageCards(
                                     }
                                 }
                                 val audioTask = when {
-                                    failed -> progressText.ifBlank { "音频提取失败" }
+                                    failed -> ProcessingErrorDisplayPolicy.message(
+                                        state.key,
+                                        Phase.DOWNLOADING_AUDIO,
+                                        progressText,
+                                        state.error,
+                                    )
                                     done -> "音轨提取完成"
                                     progressText.contains("刷新") || progressText.contains("失效") -> "刷新音轨链接"
                                     progressText.contains("yt-dlp", ignoreCase = true) -> "yt-dlp 下载独立音轨"
@@ -7740,6 +7790,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     val displayPhase = if (waitingForDubbingEngine && state.phase == Phase.READY) Phase.SYNTHESIZING else state.phase
     val title = when {
         isCancelled -> "处理已取消"
+        state.phase == Phase.ERROR -> ProcessingErrorDisplayPolicy.title(state.failedPhase)
         state.dubbingHasErrors -> "配音合成失败，视频已暂停"
         waitingForDubbingEngine -> "等待配音引擎就绪"
         else -> VideoProcessingFlowPolicy.mainTitle(
@@ -7751,6 +7802,13 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         )
     }
     val detail = when {
+        isCancelled -> "已停止"
+        state.phase == Phase.ERROR -> ProcessingErrorDisplayPolicy.message(
+            state.key,
+            state.failedPhase,
+            state.failedProgress,
+            state.error,
+        )
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
         state.progress.isNotBlank() -> state.progress

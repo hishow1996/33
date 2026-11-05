@@ -79,6 +79,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.TranslateTubeApp
 import io.translatetube.local.player.SelectedWebMediaMetadata
+import io.translatetube.local.player.Phase
+import io.translatetube.local.player.ProcessingErrorDisplayPolicy
 import io.translatetube.local.player.SelectedWebMediaMetadataIdentityPolicy
 import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.web.PikpakShare.PikpakEntry
@@ -671,7 +673,6 @@ fun WebVideoScreen(
     var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
     var ytDlpHint by remember(initialUrl) { mutableStateOf<String?>(null) }
     var ytDlpUpdatingRules by remember(currentPage) { mutableStateOf(false) }
-    var ytDlpDetailsExpanded by remember(currentPage) { mutableStateOf(false) }
     var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
 
     fun hideFullScreenView() {
@@ -846,8 +847,13 @@ fun WebVideoScreen(
                     ) return@post
                     ytDlpBusy = false
                     ytDlpJob = null
-                    ytDlpHint = io.translatetube.local.yt.YtDlpRepo.failureHint(e)
-                    status = "yt-dlp 解析未成功；可稍后重试或改用其他链接。"
+                    ytDlpHint = ProcessingErrorDisplayPolicy.message(
+                        "remote:$target",
+                        Phase.PARSING,
+                        status,
+                        e.message ?: e.javaClass.simpleName,
+                    )
+                    status = "网页视频解析失败，可重新解析或更换视频链接。"
                     // 自救：检测到上游有新版解析规则时，先自动更新规则，再重试一次
                     // （网站改版导致旧规则失效是最常见的解析失败原因）
                     if (io.translatetube.local.yt.YtDlpRepo.updateState.value.hasUpdate && !rulesUpdatedForRetry) {
@@ -1266,7 +1272,7 @@ fun WebVideoScreen(
                 mainHandler.post {
                     if (!screenActive.get() || pageGeneration.get() != enumerationGeneration) return@post
                     pikpakBusy = false
-                    pikpakNotice = "读取分享清单失败：" + (error.message ?: error.javaClass.simpleName)
+                    pikpakNotice = "读取 PikPak 分享清单失败，请稍后重试。"
                 }
             }
         }
@@ -2190,7 +2196,7 @@ fun WebVideoScreen(
                                         if (screenActive.get() && failedUrl == currentPage) {
                                             pageLoading = false
                                             navigationInProgress.set(false)
-                                            status = "网页加载失败：" + error.description
+                                            status = "网页加载失败：请检查链接或网络连接。"
                                             io.translatetube.local.util.AppLogStore.warning(
                                                 context = appCtx,
                                                 tag = "WebPageLoad",
@@ -2653,15 +2659,26 @@ fun WebVideoScreen(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                if (ytDlpDetailsExpanded) ytDlpHint.orEmpty() else "yt-dlp 解析异常 · 点击查看原因",
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable { ytDlpDetailsExpanded = !ytDlpDetailsExpanded },
+                                ytDlpHint.orEmpty(),
+                                modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
-                                maxLines = if (ytDlpDetailsExpanded) 4 else 1,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
+                                TextButton(
+                                    modifier = Modifier.heightIn(min = 30.dp),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    enabled = !ytDlpUpdatingRules && !ytDlpBusy,
+                                    onClick = {
+                                        ytDlpHint = null
+                                        runYtDlp(currentPage)
+                                    },
+                                ) {
+                                    Text("重新解析", maxLines = 1)
+                                }
+                            }
                             if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
                                 TextButton(
                                     modifier = Modifier.heightIn(min = 30.dp),
@@ -2697,8 +2714,8 @@ fun WebVideoScreen(
                                                 )
                                                 mainHandler.post {
                                                     ytDlpUpdatingRules = false
-                                                    ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
-                                                    status = "规则更新失败，可稍后重试。"
+                                                    ytDlpHint = "解析规则更新失败，请查看应用日志。"
+                                                    status = "解析规则更新失败，可稍后重试。"
                                                 }
                                             }
                                         }

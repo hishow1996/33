@@ -43,6 +43,7 @@ import coil.compose.AsyncImage
 import io.translatetube.local.PlayRequest
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.Phase
+import io.translatetube.local.player.ProcessingErrorDisplayPolicy
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.VideoEntity
 import io.translatetube.local.subs.SubtitleParsers
@@ -166,7 +167,7 @@ fun HomeScreen(
             }
             val taskTitle = if (hasLiveTask) {
                 when (playback.phase) {
-                    Phase.ERROR -> "重试上次处理"
+                    Phase.ERROR -> if (playback.failedPhase == Phase.PARSING) "重新解析视频" else "重试上次处理"
                     Phase.READY -> "继续观看这个视频"
                     Phase.TRANSLATING -> "继续视频翻译"
                     Phase.SYNTHESIZING -> "继续生成中文配音"
@@ -193,7 +194,12 @@ fun HomeScreen(
             }
             val taskDetail = if (hasLiveTask) {
                 when (playback.phase) {
-                    Phase.ERROR -> playback.error?.takeIf { it.isNotBlank() } ?: "上次处理未完成，点击查看详情"
+                    Phase.ERROR -> ProcessingErrorDisplayPolicy.message(
+                        playback.key,
+                        playback.failedPhase,
+                        playback.failedProgress,
+                        playback.error,
+                    )
                     else -> playback.progress.takeIf { it.isNotBlank() } ?: when (playback.phase) {
                         Phase.READY -> "视频与字幕已准备好"
                         else -> "处理任务仍保存在播放服务中"
