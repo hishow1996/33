@@ -58,13 +58,16 @@ internal object DubbingChunkPolicy {
      *
      * @param lines 已做过 extendCueWindows（借好间隙）的字幕行
      */
-    fun buildChunks(lines: List<SubLine>): List<Chunk> {
+    fun buildChunks(
+        lines: List<SubLine>,
+        shouldSpeakCue: (index: Int, line: SubLine) -> Boolean = { _, _ -> true },
+    ): List<Chunk> {
         val chunks = ArrayList<Chunk>(lines.size)
         var i = 0
         while (i < lines.size) {
             val line = lines[i]
-            if (!DubbingTimeline.isPlayableCue(line)) {
-                // 不可播行只写入空时间轴标记，保持索引对齐，不生成音频
+            if (!DubbingTimeline.isPlayableCue(line) || !shouldSpeakCue(i, line)) {
+                // 不可播行或非朗读声音说明只写入空时间轴标记，保持索引对齐，不生成音频
                 chunks += Chunk(i, listOf(i), "", line.startMs, line.endMs)
                 i++
                 continue
@@ -80,6 +83,7 @@ internal object DubbingChunkPolicy {
             val next = lines.getOrNull(i + 1)
             val mergeCandidate = next != null &&
                 DubbingTimeline.isPlayableCue(next!!) &&
+                shouldSpeakCue(i + 1, next!!) &&
                 // A merged PCM block is synthesized with the first cue's voice only. Never merge
                 // across speaker assignments, otherwise the second cue silently loses its voice.
                 next.speakerId == line.speakerId &&
