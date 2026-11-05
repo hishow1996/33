@@ -91,7 +91,20 @@ internal object ProcessingErrorDisplayPolicy {
             else -> playbackMessage(raw)
         }
         val category = classifyErrorCategory(resolvedPhase, source, raw, status)
-        return "错误分类：$category\n$detail"
+        return formatSingleSentence(category, detail)
+    }
+
+    /**
+     * Keep the category and its explanation in one natural sentence.
+     * Never add a visible category heading or a line break to player error hints.
+     */
+    private fun formatSingleSentence(category: String, detail: String): String {
+        val cleanDetail = detail
+            .replace(Regex("\\s*[\\r\\n]+\\s*"), " ")
+            .replace(Regex("\\s{2,}"), " ")
+            .trim()
+            .trimEnd('。', '！', '？', '.', '!', '?')
+        return "$category：$cleanDetail。"
     }
 
     /** A short, stable category that can be scanned quickly on the player and processing cards. */
@@ -147,20 +160,20 @@ internal object ProcessingErrorDisplayPolicy {
                         "已移动" in raw -> "视频文件不存在"
                     "unsupported" in raw || "不支持" in raw || "格式无效" in raw ->
                         "视频格式不支持"
-                    else -> "视频解析失败"
+                    else -> "视频来源信息异常"
                 }
                 Phase.DOWNLOADING_AUDIO -> when {
                     status == 404 || status == 410 || "expired" in raw ||
                         "签名" in raw || "地址已失效" in raw -> "音轨地址失效或不存在"
                     "unsupported" in raw || "不支持" in raw -> "音轨格式不支持"
-                    else -> "音轨提取失败"
+                    else -> "音轨获取异常"
                 }
                 Phase.TRANSCRIBING -> when {
                     "outofmemory" in raw || "out of memory" in raw || "内存不足" in raw ->
                         "设备内存不足"
                     "no speech" in raw || "empty transcript" in raw || "未识别到语音" in raw ->
                         "未检测到有效语音"
-                    else -> "语音识别失败"
+                    else -> "语音识别异常"
                 }
                 Phase.TRANSLATING -> when {
                     "empty response" in raw || "invalid response" in raw ||
@@ -172,7 +185,7 @@ internal object ProcessingErrorDisplayPolicy {
                         "设备内存不足"
                     "empty audio" in raw || "invalid audio" in raw || "音频数据为空" in raw ->
                         "音频数据无效"
-                    else -> "配音合成或输出失败"
+                    else -> "音频合成或输出异常"
                 }
                 else -> "播放器异常"
             }
