@@ -69,9 +69,35 @@ internal data class TranslationBatchResult(
                 if (!sourceText.isNullOrBlank() &&
                     SubtitleTranslationQualityPolicy.hasNothingToSpeak(sourceText)
                 ) {
-                    translated.putIfAbsent(sourceIndex, sourceText)
-                    missing.remove(sourceIndex)
-                    rejectionByIndex.remove(sourceIndex)
+                    // A symbol-only source cue has no speech to produce. Do not cache a symbol-only
+                    // model echo as a completed translation; keep it visible as a rejected row.
+                    val hasSpeakableOutput = !value.isNullOrBlank() &&
+                        TtsTextPolicy.hasSpeakableContent(value)
+                    if (!hasSpeakableOutput) {
+                        missing += sourceIndex
+                        val reasonCode = if (value.isNullOrBlank()) {
+                            "EMPTY_OR_STATUS_PLACEHOLDER"
+                        } else {
+                            "UNSPEAKABLE_TRANSLATION"
+                        }
+                        rejectionByIndex.putIfAbsent(
+                            sourceIndex,
+                            TranslationRowRejection(
+                                sourceIndex = sourceIndex,
+                                reasonCode = reasonCode,
+                                sourceCharCount = sourceText.length,
+                                rawOutputCharCount = rawValue?.length ?: 0,
+                                rawOutputPreview = rawValue?.let {
+                                    TranslationFailureDiagnosticPolicy.safeSnippet(it, 120)
+                                },
+                                diagnosticReason = if (value.isNullOrBlank()) {
+                                    "模型未返回可用译文"
+                                } else {
+                                    "译文只有标点、符号或表情，没有可朗读内容"
+                                },
+                            ),
+                        )
+                    }
                     return@forEachIndexed
                 }
                 val qualityDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
