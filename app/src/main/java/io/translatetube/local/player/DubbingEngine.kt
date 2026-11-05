@@ -435,8 +435,7 @@ class DubbingEngine(
         val preparedLines = preparedState.first
         val nonSpokenIndexes = preparedLines.mapIndexedNotNull { index, line ->
             if (
-                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text) ||
-                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.zh)
+                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text)
             ) index else null
         }.toSet()
         val preparedTimeline = preparedState.second
