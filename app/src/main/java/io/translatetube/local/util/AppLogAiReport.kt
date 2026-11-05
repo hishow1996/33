@@ -155,7 +155,14 @@ internal object AppLogAiReport {
                         .append("；缺失证据=").append(coverage.missingEvidence.joinToString("、").ifBlank { "当前清单未发现缺项" })
                         .append("；补采建议=").append(coverage.collectionAdvice.joinToString(" | ").ifBlank { "结合源码继续验证" })
                         .append("；HTTP=").append(event.httpStatusCode.takeIf { it > 0 } ?: "未知")
-                        .append("；故障编号=").append(event.issueKey.ifBlank { "无" })
+                        .append("；故障编号=").append(
+                            event.issueKey.ifBlank {
+                                // Export-only fallback for older/in-memory records that predate
+                                // stable issue keys. The sequence is process-local and is not
+                                // written back to persisted records.
+                                if (event.sequence > 0L) "failure-${event.sequence}" else "无"
+                            },
+                        )
                         .append("；状态=")
                         .append(
                             when {

@@ -288,6 +288,9 @@ internal object SubtitleTranslationQualityPolicy {
         val source = sourceText.trim()
         val translated = translatedText.trim()
         if (source.length > 40 || translated.length > 48) return false
+        // A comma/semicolon-delimited entity list has its own strict recognizer; do not treat
+        // the entire list as one short name and force a needless retry.
+        if (isProperNameListCue(source)) return false
         // Common expressions and ordinary words must never use the post-retry name exception.
         if (normalize(source) in commonShortPhrases || hasCommonEnglishWord(source)) return false
         val sourceTokens = shortNameTokens(source) ?: return false
@@ -466,9 +469,14 @@ internal object SubtitleTranslationQualityPolicy {
         val shortNameCue = isAcceptableShortUntranslatedCue(
             sourceText, translatedText, sourceLanguage, targetLanguage,
         )
-        // Even an exact short-name echo must pass through one targeted retry before it is retained.
-        // This prevents ordinary one-word replies (for example "Oh") from bypassing target-language checks.
-        val shortAccepted = modelMeta == null && acceptShortUnchanged && shortNameCue
+        // A plain, exact, one-word person name can be retained on the first pass. Punctuation-
+        // wrapped or multi-word names still use the targeted retry path; ordinary words are
+        // excluded by the short-name recognizer above.
+        val exactUnadornedShortNameEcho = shortNameCue &&
+            sourceText.trim() == translatedText.trim() &&
+            sourceText.trim().none { !it.isLetter() }
+        val shortAccepted = modelMeta == null && shortNameCue &&
+            (acceptShortUnchanged || exactUnadornedShortNameEcho)
         val shortNameNeedsRetry = !shortAccepted && !acceptShortUnchanged && shortNameCue
 
         val rejection = if (shortAccepted) null else when {
@@ -2097,7 +2105,10 @@ internal object SubtitleTranslationQualityPolicy {
     private fun isTermLikeCue(value: String): Boolean {
         // Compatibility forms (for example full-width Latin letters/digits) must reach the
         // NFKC-based source-echo comparison instead of being mistaken for unchanged acronyms.
-        if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
+        val containsLatinText = value.any {
+            Character.UnicodeScript.of(it.code) == Character.UnicodeScript.LATIN
+        }
+        if (containsLatinText && Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
         val normalizedValue = normalize(value)
         if (normalizedValue in commonShortPhrases) return false
         if (socialIdentifierPattern.matches(value) || opaqueVersionIdentifierPattern.matches(value)) return true
@@ -2142,10 +2153,13 @@ internal object SubtitleTranslationQualityPolicy {
      */
     private fun isKnownTitlePhrase(tokens: List<String>): Boolean {
         if (tokens.size !in 2..8) return false
+        val isCuratedTitle = normalize(tokens.joinToString("")) in knownProperNamePhrases
         return tokens.all { raw ->
             val token = raw.trim { it in shortTokenBoundaryPunctuation }
             val word = normalize(token)
-            if (word in properNameParticles) {
+            if (word == "and" && isCuratedTitle) {
+                token.all { !it.isLetter() || it.isLowerCase() }
+            } else if (word in properNameParticles) {
                 token.all { !it.isLetter() || it.isLowerCase() } ||
                     isTitleCasedNameToken(token, allowInitials = false)
             } else {
