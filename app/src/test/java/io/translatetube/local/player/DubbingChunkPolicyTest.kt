@@ -52,6 +52,23 @@ class DubbingChunkPolicyTest {
     }
 
     @Test
+    fun bracketedSoundCaptionStaysInTimelineButIsNotPartOfSpeechChunks() {
+        val cues = listOf(
+            cue(0, 0L, 1_000L, 1, "这是第一句很长很长很长很长很长的台词"),
+            cue(1, 1_100L, 2_000L, 1, "[music]").copy(zh = "[音乐]"),
+            cue(2, 2_100L, 10_000L, 1, "这是第二句很长很长很长很长很长的台词"),
+        )
+        val chunks = DubbingChunkPolicy.buildChunks(cues) { _, line ->
+            !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text) &&
+                !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.zh)
+        }
+        assertEquals(listOf(listOf(0), listOf(1), listOf(2)), chunks.map { it.lineIndices })
+        assertEquals("", chunks[1].text)
+        assertTrue(chunks[0].text.isNotBlank())
+        assertTrue(chunks[2].text.isNotBlank())
+    }
+
+    @Test
     fun playableCueWithoutChineseTranslationIsRejectedInsteadOfUsingSourceText() {
         val sourceOnly = cue(0, 0L, 1_000L, 1).copy(zh = null)
 
