@@ -4081,11 +4081,13 @@ class DubbingEngine(
         purgeMountedCues()
         synchronized(mem) { mem.clear() }
         resetReadinessForCurrentConfiguration()
+        // 记住当前播放位置：语速变了只是缓存换了一套，不是换了个视频，重配时要从当前位置往后合成，
+        // 而不是回到第 0 句。priorityTarget 由播放器每次字幕切换时更新，这里直接沿用。
+        val resumeIndex = priorityTarget
+        val resumeLookAhead = priorityLookAhead.coerceIn(2, 12)
         synchronized(pending) {
             pending.clear()
-            priorityTarget = -1
             priorityQueueWindowStart = -1
-            priorityLookAhead = 2
         }
         synthesisRealtimeFactorValue = Float.NaN
         synthesisRealtimeSampleCountValue = 0
@@ -4117,9 +4119,11 @@ class DubbingEngine(
             }
             synchronized(pending) {
                 pending.clear()
-                lines.indices
-                    .filter { isSpeechCue(it) }
-                    .forEach { pending.offerLast(it) }
+                val queued = lines.indices.filter { isSpeechCue(it) }
+                // 播放位置及之后的句子先合成（前瞻窗口排最前），已经播过的排到最后补齐。
+                val ordered = DubbingQueueOrder.rebuildFromPlayhead(queued, resumeIndex, lines.size, resumeLookAhead)
+                ordered.forEach { pending.offerLast(it) }
+                if (resumeIndex in lines.indices) priorityQueueWindowStart = resumeIndex
             }
             bumpPrepared()
             startSynthLoop()

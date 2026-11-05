@@ -28,4 +28,19 @@ internal object DubbingQueueOrder {
         }
         return ordered
     }
+
+    /**
+     * 整张队列要重排时（改语速等）：播放位置及之后的句子先合成，已经播过的排到最后补齐。
+     * 播放位置未知（不在字幕范围内）时保持原顺序。
+     */
+    fun rebuildFromPlayhead(
+        queued: List<Int>,
+        playheadIndex: Int,
+        totalLines: Int,
+        lookAhead: Int = 2,
+    ): List<Int> {
+        if (playheadIndex !in 0 until totalLines) return queued
+        val fromPlayhead = queued.filter { it >= playheadIndex } + queued.filter { it < playheadIndex }
+        return prioritize(fromPlayhead, playheadIndex, totalLines, lookAhead)
+    }
 }

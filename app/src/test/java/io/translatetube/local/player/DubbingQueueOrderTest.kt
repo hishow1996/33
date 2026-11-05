@@ -71,4 +71,24 @@ class DubbingQueueOrderTest {
         assertEquals(original, DubbingQueueOrder.prioritize(original, -1, 5))
         assertEquals(original, DubbingQueueOrder.prioritize(original, 9, 5))
     }
+
+    @Test
+    fun rebuildAfterConfigChangeStartsAtPlayheadAndLeavesPlayedLinesLast() {
+        // 播放到第 5 句，前瞻 2：5、6、7 先做，然后是 8、9，最后才补 0..4。
+        assertEquals(
+            listOf(5, 6, 7, 8, 9, 0, 1, 2, 3, 4),
+            DubbingQueueOrder.rebuildFromPlayhead((0..9).toList(), playheadIndex = 5, totalLines = 10, lookAhead = 2),
+        )
+    }
+
+    @Test
+    fun rebuildSkipsNonSpeechLinesAndKeepsOrderWhenPlayheadUnknown() {
+        assertEquals(
+            listOf(4, 6, 1, 2),
+            DubbingQueueOrder.rebuildFromPlayhead(listOf(1, 2, 4, 6), playheadIndex = 3, totalLines = 8, lookAhead = 2),
+        )
+        val original = listOf(0, 1, 2)
+        assertEquals(original, DubbingQueueOrder.rebuildFromPlayhead(original, playheadIndex = -1, totalLines = 3))
+        assertEquals(original, DubbingQueueOrder.rebuildFromPlayhead(original, playheadIndex = 7, totalLines = 3))
+    }
 }
