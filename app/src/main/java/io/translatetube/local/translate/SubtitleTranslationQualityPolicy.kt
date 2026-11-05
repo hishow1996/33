@@ -189,8 +189,8 @@ internal object SubtitleTranslationQualityPolicy {
                 .lowercase(Locale.ROOT)
                 .substringBefore("-")
             val commaDecimal = primaryLanguage in commaDecimalLanguages
-            val groupedComma = Regex("""^\\d{1,3}(?:,\\d{3})+$""").matches(number)
-            val groupedDot = Regex("""^\\d{1,3}(?:\\.\\d{3})+$""").matches(number)
+            val groupedComma = Regex("""^\d{1,3}(?:,\d{3})+$""").matches(number)
+            val groupedDot = Regex("""^\d{1,3}(?:\.\d{3})+$""").matches(number)
             number = when {
                 number.contains(",") && number.contains(".") && commaDecimal ->
                     number.replace(".", "").replace(',', '.')

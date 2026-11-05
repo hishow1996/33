@@ -556,4 +556,24 @@ class SubtitleTranslationQualityPolicyTest {
             ) == null,
         )
     }
+
+    @Test
+    fun acceptsThousandsSeparatorsAcrossEnglishAndEuropeanNumberFormats() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "I ran 1,000 meters.",
+                "我跑了1000米。",
+                "en",
+                "zh-CN",
+            ) == null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "Die Entfernung beträgt 1.000 Meter.",
+                "距离是1000米。",
+                "de",
+                "zh-CN",
+            ) == null,
+        )
+    }
 }
