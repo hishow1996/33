@@ -1000,6 +1000,9 @@ class SubtitleTranslationQualityPolicyTest {
         assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
             "[music ]", "[music ]", "en", "zh-CN",
         ))
+        assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "[MUSIC]", "[MUSIC]", "en", "zh-CN",
+        ))
     }
 
     @Test
