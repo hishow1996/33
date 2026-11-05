@@ -661,11 +661,12 @@ object AppLogStore {
                         kotlin.math.abs(record.sequence - selected.sequence) <= 40L)
             }
         }
-        val bounded = (related + selected)
-            .distinctBy { it.eventId.ifBlank { it.timestampMs.toString() + ":" + it.tag + ":" + it.message } }
-            .sortedBy { kotlin.math.abs(it.timestampMs - selected.timestampMs) }
-            .take(80)
-            .sortedWith(compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence })
+        val bounded = TranslationDiagnosticPackPolicy.mergeIncidentRecords(
+            allRecords = all,
+            incidentContextRecords = related,
+            selected = selected,
+            maxContextRecords = 80,
+        )
 
         val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
         return AppLogAiReport.renderIncident(
