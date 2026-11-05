@@ -344,6 +344,7 @@ class DubbingEngine(
     // ---- Chunk 层（VideoLingo 式相邻句合并 + WSOLA 时长对齐，实时播放适配）----
     /** 块首行 → 合并后的合成文本（相邻两句一口气念，衔接自然）。 */
     private val chunkTextByFirst = HashMap<Int, String>()
+    @Volatile private var nonSpokenAnnotationIndexes: Set<Int> = emptySet()
     /** 块次行 → 块首行（合成与 PCM 取用都重定向到首行）。 */
     private val chunkRedirect = HashMap<Int, Int>()
     /** 块首行 → 借用间隙后的窗口截止毫秒（WSOLA 对齐目标）。 */
@@ -351,6 +352,19 @@ class DubbingEngine(
 
     /** PCM 取用统一入口：块次行重定向到首行（已对齐的整块 PCM）。 */
     private fun resolveChunkIndex(idx: Int): Int = chunkRedirect[idx] ?: idx
+
+    fun isNonSpokenAnnotation(index: Int): Boolean =
+        index >= 0 && index in nonSpokenAnnotationIndexes
+
+    fun shouldSpeakCue(index: Int): Boolean = isSpeechCue(index)
+
+    private fun isSpeechCue(index: Int): Boolean {
+        val cue = lines.getOrNull(index) ?: return false
+        return DubbingTimeline.isPlayableCue(cue) &&
+            !isNonSpokenAnnotation(index) &&
+            !cue.zh.isNullOrBlank() &&
+            io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(cue.zh.orEmpty())
+    }
 
     /** True only while this overlong line still owns live TTS/PCM output. */
     fun isSyncHoldActiveFor(index: Int): Boolean {
@@ -419,6 +433,12 @@ class DubbingEngine(
             throw error
         }
         val preparedLines = preparedState.first
+        val nonSpokenIndexes = preparedLines.mapIndexedNotNull { index, line ->
+            if (
+                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text) ||
+                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.zh)
+            ) index else null
+        }.toSet()
         val preparedTimeline = preparedState.second
         val preflightReasons = HashMap<Int, String>()
         val reasonCounts = linkedMapOf<String, Int>()
@@ -489,6 +509,7 @@ class DubbingEngine(
                 ttsPublished = true
                 providerRateLimitBlocked = false
                 this.lines = preparedLines
+                this.nonSpokenAnnotationIndexes = nonSpokenIndexes
                 this.inputLinesForDiagnostics = lines
                 this.sourceLanguageForDiagnostics = sourceLanguage
                 this.silentCueReasonsByIndex.clear()
@@ -500,7 +521,9 @@ class DubbingEngine(
                 chunkTextByFirst.clear()
                 chunkRedirect.clear()
                 chunkWindowEndByFirst.clear()
-                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines)) {
+                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines) { index, _ ->
+                    index !in nonSpokenIndexes
+                }) {
                     chunkTextByFirst[chunk.firstIndex] = chunk.text
                     chunkWindowEndByFirst[chunk.firstIndex] = chunk.windowEndMs
                     for (secondary in chunk.lineIndices.drop(1)) {
@@ -512,7 +535,7 @@ class DubbingEngine(
                 for (lineIndex in preparedLines.indices.reversed()) {
                     nextSpeechStarts[lineIndex] = nextSpeechStart
                     val line = preparedLines[lineIndex]
-                    if (DubbingTimeline.isPlayableCue(line) && !line.zh.isNullOrBlank()) {
+                    if (isSpeechCue(lineIndex)) {
                         nextSpeechStart = line.startMs
                     }
                 }
@@ -628,8 +651,7 @@ class DubbingEngine(
                         for (i in this@DubbingEngine.lines.indices) {
                             checkCacheInitActive()
                             val cue = this@DubbingEngine.lines[i]
-                            val hasSpeech = DubbingTimeline.isPlayableCue(cue) &&
-                                !cue.zh.isNullOrBlank()
+                            val hasSpeech = isSpeechCue(i)
                             // An explicit re-import must not leave old PCM available as a fallback
                             // if live TTS or optional background synthesis later fails.
                             if (forceRegeneratePcmForAttach) {
@@ -686,6 +708,15 @@ class DubbingEngine(
                             // Remove this engine's now-unusable cache and avoid PCM inspection/TTS.
                             val invalidCache = cacheFile(i)
                             deleteCacheIfUnchanged(invalidCache, DubbingCacheFileStamp.capture(invalidCache))
+                            markCuePrepared(i, hasAudio = false)
+                            continue
+                        }
+                        if (!isSpeechCue(i)) {
+                            val annotationCache = cacheFile(i)
+                            deleteCacheIfUnchanged(
+                                annotationCache,
+                                DubbingCacheFileStamp.capture(annotationCache),
+                            )
                             markCuePrepared(i, hasAudio = false)
                             continue
                         }
@@ -784,7 +815,7 @@ class DubbingEngine(
                         synchronized(pending) {
                             pending.clear()
                             this@DubbingEngine.lines.indices
-                                .filter { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
+                                .filter { isSpeechCue(it) }
                                 .filterNot { readiness.isReady(it) }
                                 .forEach { pending.offerLast(it) }
                             val target = priorityTarget
@@ -803,7 +834,7 @@ class DubbingEngine(
                             }
                         }
                         this@DubbingEngine.lines.indices
-                            .filterNot { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
+                            .filterNot { isSpeechCue(it) }
                             .forEach { markCuePrepared(it, hasAudio = false) }
                         bumpPrepared()
                         startSynthLoop()
@@ -837,7 +868,7 @@ class DubbingEngine(
      * shrinking it back to two rows.
      */
     fun prioritizeAround(index: Int, lookAhead: Int? = null) {
-        if (released || synthesisMemoryFailure || index !in lines.indices) return
+        if (released || synthesisMemoryFailure || index !in lines.indices || !isSpeechCue(index)) return
         val requestedAhead = (lookAhead ?: priorityLookAhead).coerceIn(2, 12)
 
         // The playhead moves on almost every subtitle boundary. Keep the worker's scheduling
@@ -1012,7 +1043,7 @@ class DubbingEngine(
                 var deterministicFailureInThisCue = false
                 try {
                 val line = lines.getOrNull(idx) ?: continue
-                if (!DubbingTimeline.isPlayableCue(line)) {
+                if (!isSpeechCue(idx)) {
                     markCuePreparedForGeneration(idx, hasAudio = false, expectedGeneration = workerCacheGeneration)
                     bumpPrepared()
                     continue
@@ -1627,9 +1658,7 @@ class DubbingEngine(
                     // If playAt() observed this cue before its PCM publication, defer the retry
                     // until the active synthesis finishes. Queue only one retry when it failed to
                     // produce a cache, instead of synthesizing the same cue concurrently.
-                    val translatedCue = lines.getOrNull(idx)?.let {
-                        DubbingTimeline.isPlayableCue(it) && !it.zh.isNullOrBlank()
-                    } == true
+                    val translatedCue = isSpeechCue(idx)
                     // File existence alone is not proof of reusable audio: a corrupt/replaced file
                     // can survive a stamp-guarded delete. Validate only when playback actually asked
                     // for an active-cue retry, and suppress requeue if this worker was cancelled.
@@ -3208,7 +3237,7 @@ class DubbingEngine(
             .distinct()
             .filter { index ->
                 val cue = lines.getOrNull(index) ?: return@filter false
-                DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank() &&
+                isSpeechCue(index) &&
                     cue.endMs > position && cue.startMs <= horizon
             }
             .sortedWith(compareBy<Int> { lines[it].startMs }.thenBy { it })
@@ -3286,7 +3315,7 @@ class DubbingEngine(
             .distinct()
             .filter { index ->
                 val cue = lines.getOrNull(index) ?: return@filter false
-                DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank() &&
+                isSpeechCue(index) &&
                     cue.endMs > position && cue.startMs <= horizon &&
                     isPrepared(index) && !isSilent(index)
             }
@@ -3484,7 +3513,7 @@ class DubbingEngine(
     ) {
         if (released) return
         val line = lines.getOrNull(idx) ?: return
-        if (!DubbingTimeline.isPlayableCue(line)) return
+        if (!isSpeechCue(idx)) return
         // PCM cues follow Media3's media clock; reject in-flight feed after a seek or mode change.
         val busGenerationAtRequest = outputBus.generationToken()
         val cacheGenerationAtRequest = synchronized(cacheConfigurationLock) {
@@ -4047,7 +4076,7 @@ class DubbingEngine(
                     val cue = lines[index]
                     markCuePrepared(
                         index,
-                        hasAudio = DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank(),
+                        hasAudio = isSpeechCue(index),
                     )
                 }
                 bumpPrepared()
@@ -4056,7 +4085,7 @@ class DubbingEngine(
             synchronized(pending) {
                 pending.clear()
                 lines.indices
-                    .filter { DubbingTimeline.isPlayableCue(lines[it]) }
+                    .filter { isSpeechCue(it) }
                     .forEach { pending.offerLast(it) }
             }
             bumpPrepared()
@@ -4071,7 +4100,7 @@ class DubbingEngine(
     private fun resetReadinessForCurrentConfiguration() {
         readinessProgress.clear(lines.size, ::publishReadinessProgress)
         lines.indices
-            .filterNot { DubbingTimeline.isPlayableCue(lines[it]) }
+            .filterNot { isSpeechCue(it) }
             .forEach { markCuePrepared(it, hasAudio = false) }
     }
 
@@ -4132,16 +4161,20 @@ class DubbingEngine(
     private fun canSpeakDirectly(idx: Int): Boolean {
         if (!usesImmediateTimelinePlayback) return false
         val cue = lines.getOrNull(idx) ?: return false
-        return DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank()
+        return isSpeechCue(idx)
     }
 
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
-    fun isPrepared(idx: Int): Boolean = canSpeakDirectly(idx) || readiness.isPrepared(idx)
-    fun isSilent(idx: Int): Boolean = !canSpeakDirectly(idx) && readiness.isSilent(idx)
+    fun isPrepared(idx: Int): Boolean =
+        isNonSpokenAnnotation(idx) || canSpeakDirectly(idx) || readiness.isPrepared(idx)
+    fun isSilent(idx: Int): Boolean =
+        !isNonSpokenAnnotation(idx) && !canSpeakDirectly(idx) && readiness.isSilent(idx)
 
     /** Record the exact cause when playback reaches a cue without playable Chinese audio. */
     fun logSilentCueError(index: Int) {
-        if (released || index !in lines.indices || !silentCueErrorReported.add(index)) return
+        if (released || index !in lines.indices || isNonSpokenAnnotation(index) ||
+            !silentCueErrorReported.add(index)
+        ) return
         val cue = lines[index]
         val rawCue = inputLinesForDiagnostics.getOrNull(index)
         val reason = silentCueReasonsByIndex[index] ?: when {
