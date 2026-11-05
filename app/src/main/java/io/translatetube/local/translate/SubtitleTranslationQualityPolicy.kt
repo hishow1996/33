@@ -440,6 +440,13 @@ internal object SubtitleTranslationQualityPolicy {
         return foreignLetters >= 2 && hanCount <= foreignLetters
     }
 
+    private val retainedAcronyms = setOf(
+        "ai", "api", "atm", "bbc", "ceo", "cpu", "dna", "diy", "dvd", "eu", "fbi",
+        "fda", "gps", "hiv", "hr", "id", "iq", "iso", "nba", "nfl", "npr", "pc",
+        "pdf", "phd", "ram", "rna", "sms", "tv", "uk", "un", "usa", "usb", "utc",
+        "vip", "wifi", "www",
+    )
+
     private fun isLikelyRetainedTerm(
         token: String,
         letters: String,
@@ -448,9 +455,14 @@ internal object SubtitleTranslationQualityPolicy {
         val normalized = normalize(token)
         // Common English words remain translatable even when sentence-initial or uppercased.
         if (normalized in commonShortWords) return false
-        if (token.any { it.isDigit() }) return true
-        if (letters.length >= 2 && letters.all { it.isUpperCase() }) return true
-        if (letters.drop(1).any { it.isUpperCase() }) return true
+        // A model must not invent an all-caps word or a model/brand name and have it exempted
+        // from target-language validation. Numbered identifiers and mixed-case brands must
+        // also be grounded in the source cue.
+        if (token.any { it.isDigit() }) return normalized in sourceTokens
+        if (letters.length >= 2 && letters.all { it.isUpperCase() }) {
+            return normalized in sourceTokens || normalized in retainedAcronyms
+        }
+        if (letters.drop(1).any { it.isUpperCase() }) return normalized in sourceTokens
         return letters.length >= 2 && letters.first().isUpperCase() && normalized in sourceTokens
     }
 

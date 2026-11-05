@@ -460,4 +460,48 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun doesNotTreatInventedUppercaseWordsAsRetainedNamesOrAcronyms() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I need some help.",
+                "你好 BOGUS",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "We should leave now.",
+                "当然，RANDOM WORDS",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The answer is clear.",
+                "你好 FooBar",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "NASA is a space agency.",
+                "NASA 是一家航天机构。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The new iPhone model is available.",
+                "新款 iPhone 已经上市。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
 }
