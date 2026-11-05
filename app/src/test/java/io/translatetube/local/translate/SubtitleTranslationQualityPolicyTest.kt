@@ -1070,6 +1070,9 @@ class SubtitleTranslationQualityPolicyTest {
         assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
             "a 1-night, 3-day trip", "一个一晚三天的旅行", "en", "zh-CN",
         ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "a 2-night trip for 1 person", "一个为期两晚的旅行，适合一位游客", "en", "zh-CN",
+        ) != null)
 
     @Test
     fun localizedHalfHourIsExcludedWithoutHidingOtherExplicitQuantities() {
