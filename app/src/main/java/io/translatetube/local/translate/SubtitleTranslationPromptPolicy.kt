@@ -36,4 +36,17 @@ internal object SubtitleTranslationPromptPolicy {
     const val CHINESE_CONTEXT_GUIDELINES =
         "上下文按时间顺序排列，每组原文与已确认译文一一对应。仅用它们统一已出现的人名、称呼、术语和明确指代；当前字幕原文优先，不要为了沿用旧译而改变当前原意。没有充分依据时不要猜测说话者身份、性别、人物关系或指代对象，优先采用自然且不过度具体的表达。字幕可能跨行组成一句话，应结合前后语法理解，但每行只翻译自己的内容，不重复前后行，不遗漏或挪动信息。"
 
+    const val SOURCE_ALIGNMENT_GUIDELINES =
+        "每一行都必须忠实翻译该行原文，而不是根据视频主题猜测或代替说话者回答。保留原句的核心事实、人物与动作关系、对象、方向、时间、数量、条件、因果和说话意图。不得把问题改成答案、把命令改成回应、把具体内容改成泛泛表述，也不得把相邻字幕的信息擅自补入本行。原文不完整或含糊时，只翻译有依据的部分并保留不确定性；禁止编造人名、事件、原因、结论或背景说明。只输出译文本身，不输出分析、解释、摘要、建议或服务状态。"
+
+    /** Complete prompt rules actually sent to a translation model for this target language. */
+    fun guidelinesForTarget(targetLanguage: String): String = buildString {
+        append(ENGLISH_FIDELITY_GUIDELINES)
+        append(SOURCE_ALIGNMENT_GUIDELINES)
+        if (SourceLanguagePolicy.isChinese(targetLanguage)) {
+            append(CHINESE_FIDELITY_GUIDELINES)
+            append(CHINESE_CONTEXT_GUIDELINES)
+        }
+    }
+
 }

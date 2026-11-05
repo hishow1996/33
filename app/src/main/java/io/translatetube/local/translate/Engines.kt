@@ -1631,7 +1631,7 @@ class OpenAiCompatEngine(
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
             }
-            append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
+            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
             append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
         }
         val user = buildContextUserPrompt(context, numbered, lookaheadSource)
@@ -1797,7 +1797,7 @@ class GeminiEngine(
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
             }
-            append(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES)
+            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
         }
         val user = buildContextUserPrompt(context, numbered, lookaheadSource)
