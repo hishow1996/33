@@ -26,4 +26,37 @@ internal object TranslationDiagnosticPackPolicy {
             .sortedBy { it.timestampMs }
             .toList()
     }
+
+    /**
+     * Merges translation-operation evidence into the selected incident repair package.
+     *
+     * Every retained event carrying the selected translation diagnostic ID is preserved,
+     * even when that set exceeds the ordinary incident context limit. Other contextual events
+     * continue to use the existing nearest-event limit.
+     */
+    fun mergeIncidentRecords(
+        allRecords: List<AppLogRecord>,
+        incidentContextRecords: List<AppLogRecord>,
+        selected: AppLogRecord,
+        maxContextRecords: Int = 80,
+    ): List<AppLogRecord> {
+        val translationEvents = idFromRecord(selected)
+            ?.let { diagnosticId -> relatedRecords(allRecords, diagnosticId) }
+            .orEmpty()
+        val translationEventKeys = translationEvents.map { eventKey(it) }.toSet()
+        val additionalContext = incidentContextRecords.asSequence()
+            .filterNot { eventKey(it) in translationEventKeys }
+            .sortedBy { kotlin.math.abs(it.timestampMs - selected.timestampMs) }
+            .take((maxContextRecords - translationEvents.size).coerceAtLeast(0))
+            .toList()
+
+        return (translationEvents + additionalContext + selected)
+            .distinctBy(::eventKey)
+            .sortedWith(compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence })
+    }
+
+    private fun eventKey(record: AppLogRecord): String =
+        record.eventId.ifBlank {
+            record.timestampMs.toString() + ":" + record.tag + ":" + record.message
+        }
 }
