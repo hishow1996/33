@@ -555,7 +555,6 @@ internal object AppLogAiReport {
                 event = event,
                 primary = primary,
                 relation = relations[AppLogEventRelationPolicy.eventKey(event)],
-                index = included.size + 1,
             ).toString()
             val lineCost = line.length + 1
             if (usedChars + lineCost <= timelineBudget) {
@@ -641,13 +640,12 @@ internal object AppLogAiReport {
         event: AppLogRecord,
         primary: AppLogRecord,
         relation: AppLogEventRelation?,
-        index: Int,
     ): JSONObject {
         val isIssue = event.level in setOf("FATAL", "ERROR", "WARN")
         val context = incidentContextJson(event.diagnosticContext, maxFields = if (isIssue) 5 else 3, maxValueChars = 100)
         val result = JSONObject()
-            .put("index", index)
-            .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs + "-" + index })
+            .put("sequence", event.sequence)
+            .put("eventId", event.eventId.ifBlank { "legacy-" + event.timestampMs })
             .put("time", AppLogStore.formatTime(event.timestampMs))
             .put("level", event.level)
             .put("module", clipped(AppLogStore.redactForExport(event.tag), 48))
