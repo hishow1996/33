@@ -11449,10 +11449,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     }
                     val retryContext = unresolvedIndices.firstOrNull()?.let { firstIndex ->
-                        io.translatetube.local.translate.TranslationContextPolicy.mostRecentPairsBefore(
+                        io.translatetube.local.translate.TranslationContextPolicy.mostRecentPairsWithTermContinuityBefore(
                             size = updatedLines.size,
                             beforeIndex = firstIndex,
-                            maxRows = 8,
+                            currentSourceCues = batch,
+                            maxRows = io.translatetube.local.translate.TranslationContextPolicy.MAX_CONTEXT_ROWS,
                             checkActive = { translationJob?.ensureActive() },
                             sourceAt = { index -> updatedLines[index].text },
                             translationAt = { index ->

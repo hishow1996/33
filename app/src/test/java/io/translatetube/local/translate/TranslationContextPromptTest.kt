@@ -21,8 +21,6 @@ class TranslationContextPromptTest {
         assertTrue(prompt.contains("current source text is authoritative"))
         assertTrue(prompt.contains("Reuse a confirmed Chinese rendering for the same named entity or technical term consistently"))
         assertTrue(prompt.contains("prefer the current source and clearly supported context"))
-        assertTrue(prompt.contains("Reuse a confirmed Chinese rendering for the same named entity or technical term consistently"))
-        assertTrue(prompt.contains("prefer the current source and clearly supported context"))
         assertTrue(prompt.contains("Do not infer a speaker's identity"))
         assertTrue(prompt.contains("Translate only the current numbered subtitle cues below."))
         assertTrue(prompt.contains("0|Please continue."))
@@ -137,6 +135,33 @@ class TranslationContextPromptTest {
         assertTrue(prompt.contains("Source cue 9"))
         assertFalse(prompt.contains("Source cue 1"))
         assertFalse(prompt.contains("译文 1"))
+    }
+
+    @Test
+    fun contextPromptCapsSerializedHistoryWithoutTruncatingTheNewestPair() {
+        val sources = (0 until 8).map { index -> "source-cue-$index " + "s".repeat(1_300) }
+        val translations = (0 until 8).map { index -> "译文-$index " + "译".repeat(1_300) }
+        val prompt = buildContextUserPrompt(
+            sources to translations,
+            "0|Current cue",
+        ) ?: throw AssertionError("Expected current bounded context")
+
+        assertTrue(prompt.length < 8_000)
+        assertTrue(prompt.contains("source-cue-7"))
+        assertTrue(prompt.contains("译文-7"))
+        assertFalse(prompt.contains("source-cue-0"))
+        assertFalse(prompt.contains("译文-0"))
+        assertTrue(prompt.contains("0|Current cue"))
+    }
+
+    @Test
+    fun dropsOversizedLookaheadPairsWholeInsteadOfClippingTheirText() {
+        val prompt = buildContextUserPrompt(
+            context = null,
+            numbered = "0|Current cue",
+            lookaheadSource = listOf("next-cue " + "n".repeat(2_000)),
+        )
+        assertNull(prompt)
     }
 
 }

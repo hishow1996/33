@@ -1,6 +1,7 @@
 package io.translatetube.local.translate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -143,6 +144,42 @@ class TranslationContextPolicyTest {
         }.exceptionOrNull()
         assertTrue(error is java.util.concurrent.CancellationException)
         assertEquals(2, checks)
+    }
+
+    @Test
+    fun preservesOlderMatchingEntityPairsAlongsideTheLatestContextRows() {
+        val sources = listOf(
+            "Sam arrived at the studio.",
+            "The weather is clear.",
+            "Alex sent the recording.",
+            "The lights are on.",
+            "The camera is ready.",
+            "The room is quiet.",
+            "The door is open.",
+            "The meeting starts soon.",
+            "The screen is bright.",
+            "The microphone is connected.",
+            "The audio is playing.",
+        )
+        val translations = sources.indices.map { "历史译文 $it" }
+        val context = TranslationContextPolicy.mostRecentPairsWithTermContinuityBefore(
+            size = sources.size,
+            beforeIndex = sources.size,
+            currentSourceCues = listOf("Sam is ready to speak."),
+            maxRows = 8,
+            maxTermRows = 2,
+            maxScanRows = 100,
+            sourceAt = { sources[it] },
+            translationAt = { translations[it] },
+            isUsable = { _, _ -> true },
+        ) ?: throw AssertionError("Expected term continuity context")
+
+        assertTrue(context.first.contains("Sam arrived at the studio."))
+        assertTrue(context.second.contains("历史译文 0"))
+        assertTrue(context.first.contains("The audio is playing."))
+        assertFalse(context.first.contains("The weather is clear."))
+        assertEquals(8, context.first.size)
+        assertEquals(context.first.size, context.second.size)
     }
 
 }

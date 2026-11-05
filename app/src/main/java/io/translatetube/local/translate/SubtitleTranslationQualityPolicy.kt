@@ -5,7 +5,16 @@ import java.text.Normalizer
 import java.util.Locale
 import io.translatetube.local.tts.TtsTextPolicy
 
-/** Shared validation for live translation batches and restored subtitle caches. */
+internal data class TranslationQualityDecision(
+    val accepted: Boolean,
+    val reasonCode: String? = null,
+    val reason: String? = null,
+    val sourceEcho: Boolean = false,
+    val targetLanguageMismatchReason: String? = null,
+    val shortUntranslatedAccepted: Boolean = false,
+)
+
+/** Shared validation for live translation batches and restored subtitle caches. *//** Shared validation for live translation batches and restored subtitle caches. */
 internal object SubtitleTranslationQualityPolicy {
     private val wordSeparatorRegex = Regex("""[^\p{L}\p{N}]+""")
     private val urlPattern = Regex("""^(?:https?://|www\.)\S+$""", RegexOption.IGNORE_CASE)
@@ -23,6 +32,7 @@ internal object SubtitleTranslationQualityPolicy {
     )
 
     private data class ExplicitUnitAlias(val id: String, val aliases: List<String>)
+    private data class NumericUnitPair(val number: String, val unitId: String)
 
     private val englishNegation = Regex(
         """\b(?:not|no|never|none|nobody|nothing|neither|nor|nowhere|without|cannot|can't|couldn't|wouldn't|shouldn't|mustn't|won't|don't|doesn't|didn't|isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't|dont|doesnt|didnt|isnt|arent|wasnt|werent|hasnt|havent|hadnt)\b""",
@@ -139,6 +149,15 @@ internal object SubtitleTranslationQualityPolicy {
         ExplicitUnitAlias("celsius", listOf("°c", "celsius", "摄氏度")),
         ExplicitUnitAlias("fahrenheit", listOf("°f", "fahrenheit", "华氏度")),
         ExplicitUnitAlias("percent", listOf("percentages", "percentage", "percent", "%", "百分比", "百分之")),
+        ExplicitUnitAlias("day", listOf("days", "day", "天", "日")),
+        ExplicitUnitAlias("week", listOf("weeks", "week", "周", "星期")),
+        ExplicitUnitAlias("month", listOf("months", "month", "个月", "個月", "月")),
+        ExplicitUnitAlias("year", listOf("years", "year", "年")),
+        ExplicitUnitAlias("usd", listOf("US dollars", "US dollar", "dollars", "dollar", "USD", "美元", "美金")),
+        ExplicitUnitAlias("euro", listOf("euros", "euro", "EUR", "欧元", "€")),
+        ExplicitUnitAlias("gbp", listOf("GBP", "英镑", "英鎊", "sterling", "£")),
+        ExplicitUnitAlias("jpy", listOf("yen", "JPY", "日元", "円")),
+        ExplicitUnitAlias("cny", listOf("CNY", "RMB", "renminbi", "人民币", "人民幣", "元")),
     )
     private val explicitUnitMatches = explicitUnitAliases.map { unit ->
         unit.id to Regex(
@@ -268,6 +287,85 @@ internal object SubtitleTranslationQualityPolicy {
         }
     }
 
+    /**
+     * One authoritative decision for first-pass output, adaptive retries, caches and dubbing.
+     * Detail methods remain available for diagnostics, but callers should not reassemble a
+     * different validation order in each pipeline stage.
+     */
+    fun evaluateTranslation(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String = "zh",
+        acceptShortUnchanged: Boolean = false,
+    ): TranslationQualityDecision {
+        if (translatedText.isNullOrBlank()) {
+            return TranslationQualityDecision(false, "EMPTY_OR_STATUS_PLACEHOLDER", "译文为空或只有空白字符")
+        }
+        if (!TtsTextPolicy.hasSpeakableContent(translatedText)) {
+            return TranslationQualityDecision(false, "UNSPEAKABLE_TRANSLATION", "译文只有标点、符号或表情，没有可朗读内容")
+        }
+        if (sourceText.isNullOrBlank()) return TranslationQualityDecision(true)
+
+        val sourceEcho = isSourceEcho(sourceText, translatedText, sourceLanguage)
+        val targetMismatch = targetLanguageMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
+        val modelMeta = translationMetaResponseReason(sourceText, translatedText, sourceLanguage, targetLanguage)
+        val scriptMismatch = if (SourceLanguagePolicy.isChinese(sourceLanguage)) null
+            else targetChineseScriptMismatchReason(translatedText, targetLanguage)
+        val numericMismatch = numericContentMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
+        val numericUnitMismatch = numericUnitAssociationMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
+        val unitMismatch = unitContentMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
+        val semanticMismatch = semanticConsistencyMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
+        val shortAccepted = acceptShortUnchanged &&
+            isAcceptableShortUntranslatedCue(sourceText, translatedText, sourceLanguage, targetLanguage) &&
+            modelMeta == null && scriptMismatch == null && numericMismatch == null &&
+            numericUnitMismatch == null && unitMismatch == null && semanticMismatch == null
+
+        if (shortAccepted) {
+            return TranslationQualityDecision(
+                accepted = true,
+                sourceEcho = sourceEcho,
+                targetLanguageMismatchReason = targetMismatch,
+                shortUntranslatedAccepted = true,
+            )
+        }
+
+        val rejection = when {
+            isPunctuationOnlyTranslation(sourceText, translatedText) ->
+                "UNSPEAKABLE_TRANSLATION" to "译文只有标点、符号或表情，没有可朗读内容"
+            modelMeta != null -> "MODEL_META_RESPONSE" to modelMeta
+            scriptMismatch != null -> "TARGET_SCRIPT_MISMATCH" to scriptMismatch
+            numericMismatch != null -> "NUMERIC_CONTENT_MISMATCH" to numericMismatch
+            numericUnitMismatch != null -> "NUMERIC_UNIT_ASSOCIATION_MISMATCH" to numericUnitMismatch
+            unitMismatch != null -> "UNIT_CONTENT_MISMATCH" to unitMismatch
+            semanticMismatch != null -> semanticMismatchCode(semanticMismatch) to semanticMismatch
+            sourceEcho && targetMismatch != null ->
+                "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" to ("译文与原文相同，且没有达到目标语言要求；" + targetMismatch)
+            targetMismatch != null -> "TARGET_LANGUAGE_MISMATCH" to targetMismatch
+            sourceEcho -> "SOURCE_ECHO" to "忽略大小写、空白和标点后，模型译文与原文相同"
+            else -> null
+        }
+        return if (rejection == null) {
+            TranslationQualityDecision(true)
+        } else {
+            TranslationQualityDecision(
+                accepted = false,
+                reasonCode = rejection.first,
+                reason = rejection.second,
+                sourceEcho = sourceEcho,
+                targetLanguageMismatchReason = targetMismatch,
+            )
+        }
+    }
+
+    private fun semanticMismatchCode(reason: String): String = when {
+        reason.startsWith("SEMANTIC_POLARITY_MISMATCH") -> "SEMANTIC_POLARITY_MISMATCH"
+        reason.startsWith("SEMANTIC_MODALITY_MISMATCH") -> "SEMANTIC_MODALITY_MISMATCH"
+        reason.startsWith("SEMANTIC_ENTITY_MISMATCH") -> "SEMANTIC_ENTITY_MISMATCH"
+        reason.startsWith("SEMANTIC_INTENT_MISMATCH") -> "SEMANTIC_INTENT_MISMATCH"
+        else -> "SEMANTIC_RELATION_MISMATCH"
+    }
+
     /** Shared acceptance check for cache recovery, retry context and the final dubbing guard. */
     fun isUsableChineseTranslation(
         sourceText: String?,
@@ -277,26 +375,9 @@ internal object SubtitleTranslationQualityPolicy {
         acceptShortUnchanged: Boolean = false,
     ): Boolean {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
-        if (!TtsTextPolicy.hasSpeakableContent(translatedText)) return false
-        if (isPunctuationOnlyTranslation(sourceText, translatedText)) return false
-        if (numericContentMismatchReason(
-                sourceText, translatedText, sourceLanguage, targetLanguage,
-            ) != null
-        ) return false
-        if (unitContentMismatchReason(
-                sourceText, translatedText, sourceLanguage, targetLanguage,
-            ) != null
-        ) return false
-        if (!SourceLanguagePolicy.isChinese(sourceLanguage) &&
-            targetChineseScriptMismatchReason(translatedText, targetLanguage) != null
-        ) return false
-        if (semanticConsistencyMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage) != null) return false
-        val sourceEcho = isSourceEcho(sourceText, translatedText, sourceLanguage)
-        val targetMismatch = isTargetLanguageMismatch(sourceText, translatedText, sourceLanguage, targetLanguage)
-        if (!sourceEcho && !targetMismatch) return true
-        return acceptShortUnchanged && isAcceptableShortUntranslatedCue(
-            sourceText, translatedText, sourceLanguage, targetLanguage,
-        )
+        return evaluateTranslation(
+            sourceText, translatedText, sourceLanguage, targetLanguage, acceptShortUnchanged,
+        ).accepted
     }
 
 
@@ -315,6 +396,7 @@ internal object SubtitleTranslationQualityPolicy {
         val simplifiedTarget = tag == "zh" || tag.startsWith("zh-cn") || tag.startsWith("zh-hans") ||
             tag == "zh-sg" || tag.startsWith("cmn-hans") || tag.startsWith("yue-hans") ||
             tag.startsWith("cmn-") && !tag.startsWith("cmn-hant")
+        if (!traditionalTarget && !simplifiedTarget) return null
 
         val simplifiedOnly = "这为发后国门东车书云电汉广场龙风饭头还没与从让说时间开关长万亿爱见听写话语远边个们吗软体续会"
         val traditionalOnly = "這為發後國門東車書雲電漢廣場龍風飯頭還沒與從讓說時間開關長萬億愛見聽寫話語遠邊個們嗎軟體續會"
@@ -399,6 +481,65 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     /**
+     * Preserve the association between each explicit numeric value and its adjacent unit.
+     * This check only runs when both sides expose the same count of Arabic-number/unit pairs;
+     * word-rendered values are left to the translation model instead of being guessed.
+     */
+    fun numericUnitAssociationMismatchReason(
+        sourceText: String?,
+        translatedText: String?,
+        sourceLanguage: String,
+        targetLanguage: String,
+    ): String? {
+        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
+        if (!SourceLanguagePolicy.isChinese(targetLanguage) ||
+            SourceLanguagePolicy.isChinese(sourceLanguage)
+        ) return null
+        val sourcePairs = explicitNumericUnitPairs(sourceText, sourceLanguage)
+        val targetPairs = explicitNumericUnitPairs(translatedText, targetLanguage)
+        if (sourcePairs.isEmpty() || sourcePairs.size != targetPairs.size) return null
+        if (sourcePairs.groupingBy { it }.eachCount() == targetPairs.groupingBy { it }.eachCount()) return null
+        return "数字与单位的对应关系发生变化；原文可识别配对数=" + sourcePairs.size +
+            "，译文可识别配对数=" + targetPairs.size
+    }
+
+    private fun explicitNumericUnitPairs(value: String, numberFormatLanguage: String): List<NumericUnitPair> {
+        val numberMatches = explicitNumberPattern.findAll(value).toList()
+        if (numberMatches.isEmpty()) return emptyList()
+        val unitMatches = explicitUnitMatches.flatMap { (unitId, pattern) ->
+            pattern.findAll(value).map { match -> Triple(match.range.first, match.range.last, unitId) }.toList()
+        }.sortedWith(compareBy<Triple<Int, Int, String>> { it.first }.thenByDescending { it.second - it.first })
+        val acceptedUnits = mutableListOf<Triple<Int, Int, String>>()
+        unitMatches.forEach { candidate ->
+            if (acceptedUnits.none { existing ->
+                    candidate.first <= existing.second && existing.first <= candidate.second
+                }
+            ) acceptedUnits += candidate
+        }
+        val usedNumbers = HashSet<Int>()
+        val pairs = mutableListOf<NumericUnitPair>()
+        acceptedUnits.sortedBy { it.first }.forEach { unit ->
+            val nearestNumber = numberMatches.withIndex()
+                .mapNotNull { (index, number) ->
+                    if (index in usedNumbers) return@mapNotNull null
+                    val gap = when {
+                        number.range.last < unit.first -> unit.first - number.range.last - 1
+                        unit.second < number.range.first -> number.range.first - unit.second - 1
+                        else -> Int.MAX_VALUE
+                    }
+                    if (gap <= 4) Triple(index, number, gap) else null
+                }
+                .minByOrNull { it.third }
+                ?: return@forEach
+            val normalized = normalizedExplicitNumbers(nearestNumber.second.value, numberFormatLanguage)
+                .singleOrNull() ?: return@forEach
+            usedNumbers += nearestNumber.first
+            pairs += NumericUnitPair(normalized, unit.third)
+        }
+        return pairs
+    }
+
+    /**
      * Reject an explicit unit substitution only when both sides expose a numeric-adjacent unit.
      * Missing/word-rendered units are left to the translation model and broader semantic context.
      */
@@ -428,10 +569,19 @@ internal object SubtitleTranslationQualityPolicy {
     ): String? {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
         if (!SourceLanguagePolicy.isChinese(targetLanguage)) return null
-        if (SourceLanguagePolicy.canonicalPrimaryCode(sourceLanguage) != "en") return null
+        val language = SourceLanguagePolicy.canonicalPrimaryCode(sourceLanguage)
         val source = sourceText.trim()
         val target = translatedText.trim()
         if (source.isEmpty() || target.isEmpty() || isNonTranslatableCue(source)) return null
+        if (language != "en") {
+            val polarity = multilingualPolarityMismatchReason(source, target, language)
+            if (polarity != null) return polarity
+            val intent = speechIntentMismatchReason(source, target, language)
+            if (intent != null) return intent
+            return multilingualRelationMismatchReason(source, target, language)
+        }
+        val intent = speechIntentMismatchReason(source, target, language)
+        if (intent != null) return intent
 
         val sourceAlready = Regex("""\balready\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
         val sourceNotYet = Regex("""\bnot\s+yet\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
@@ -543,7 +693,138 @@ internal object SubtitleTranslationQualityPolicy {
         return null
     }
 
-    private fun hasClearEnglishNegation(value: String): Boolean {
+    private fun multilingualPolarityMismatchReason(
+        source: String,
+        target: String,
+        language: String,
+    ): String? {
+        val neutralNegativeSurface = when (language) {
+            "ja" -> Regex("""問題(?:は)?(?:ありません|ない(?:です)?|なかった)""").containsMatchIn(source)
+            "ko" -> Regex("""문제\s*없(?:다|어요|습니다|었어요)""").containsMatchIn(source)
+            "fr" -> Regex("""(?:pas\s+de\s+problème|aucun\s+problème|sans\s+problème|pas\s+mal)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "de" -> Regex("""(?:kein\s+Problem|nicht\s+schlecht)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "es" -> Regex("""(?:no\s+hay\s+problema|sin\s+problema|no\s+está\s+mal|no\s+esta\s+mal)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "pt" -> Regex("""(?:não\s+há\s+problema|nao\s+há\s+problema|sem\s+problema|não\s+é\s+ruim|nao\s+é\s+ruim)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            else -> false
+        }
+        if (neutralNegativeSurface) return null
+        val sourceNegated = when (language) {
+            "ja" -> Regex("""(?:ではない|じゃない|ではありません|じゃありません|ではなかった|じゃなかった|ません|なかった|ないでください|ずに|わけではない|行かない|来ない|食べない|見ない|聞かない|話さない|知らない|分からない|使わない|買わない|書かない|できない|出来ない|持たない|要らない|入らない)""").containsMatchIn(source)
+            "ko" -> Regex("""(?:안\s|(?:^|\s)안(?!녕|심|전)[가-힣]+|못\s|없(?:다|어요|습니다|었어요)|아니(?:다|에요|예요)|지\s*않|지\s*못|않(?:다|아요|습니다))""").containsMatchIn(source)
+            "fr" -> Regex("""\bne\b.{0,48}\b(?:pas|plus|jamais|rien|personne|aucun|aucune)\b|\bn['’]\w+.{0,48}\b(?:pas|plus|jamais|rien|personne)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) ||
+                Regex("""\b(?:aucun|aucune|sans|jamais|personne|rien)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "de" -> Regex("""\b(?:nicht|kein(?:e|en|er|em)?|nie|niemals|ohne|nichts)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !Regex("""\bnicht\s+nur\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "es" -> Regex("""\b(?:no|nunca|jamás|jamas|sin|ningún|ningun|ninguna|nadie|nada|tampoco)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !Regex("""\bno\s+sólo\b|\bno\s+solo\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "pt" -> Regex("""\b(?:não|nao|nunca|jamais|sem|ninguém|ninguem|nada|tampouco|nenhum|nenhuma)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !Regex("""\bnão\s+só\b|\bnao\s+so\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            else -> false
+        }
+        val targetNegated = hasClearChineseNegation(target)
+        if (sourceNegated != targetNegated) {
+            return if (sourceNegated) {
+                "SEMANTIC_POLARITY_MISMATCH：原文包含明确否定表达，但译文没有保留对应的否定含义"
+            } else {
+                "SEMANTIC_POLARITY_MISMATCH：译文新增了原文没有的明确否定表达，可能改变肯定/否定含义"
+            }
+        }
+        return null
+    }
+
+    private fun speechIntentMismatchReason(
+        source: String,
+        target: String,
+        language: String,
+    ): String? {
+        val sourceQuestionMark = Regex("""[?？][\"'”’）)]?\s*$""").containsMatchIn(source)
+        val sourceQuestionForm = when (language) {
+            "en" -> Regex("""^(?:who|what|where|when|why|how|which|whom|whose)\s+(?:is|are|am|was|were|do|does|did|can|could|would|will|should|have|has|had)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
+            "fr" -> Regex("""^est-ce\s+que\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
+            "de" -> Regex("""^(?:wer|was|wo|wann|warum|weshalb|wie|welche|welcher|welches)\s+(?:ist|sind|war|waren|bist|hast|hat|kann|können|kommt|kommen|geht|gehen)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
+            "es", "pt" -> source.trimStart().startsWith("¿")
+            "ja" -> Regex("""(?:か|のか)[。.!！?？]?\s*$""").containsMatchIn(source.trim())
+            "ko" -> Regex("""(?:습니까|ㅂ니까|나요|까요|니|냐)[。.!！?？]?\s*$""").containsMatchIn(source.trim())
+            else -> false
+        }
+        val targetQuestion = Regex("""[?？]\s*$""").containsMatchIn(target.trim()) ||
+            Regex("""(?:吗|嗎|呢|么|麼|什么|什麼|谁|誰|哪里|哪裡|为什么|為什麼|多少|如何|是否|几|幾)[。.!！?？]?$""")
+                .containsMatchIn(target.trim())
+        if ((sourceQuestionMark || sourceQuestionForm) && !targetQuestion) {
+            return "SEMANTIC_INTENT_MISMATCH：原文是疑问表达，但译文没有保留疑问意图"
+        }
+        return null
+    }
+
+    private fun multilingualRelationMismatchReason(
+        source: String,
+        target: String,
+        language: String,
+    ): String? {
+        val before = when (language) {
+            "fr" -> Regex("""\bavant\b""", RegexOption.IGNORE_CASE)
+            "de" -> Regex("""\bvor\b""", RegexOption.IGNORE_CASE)
+            "es", "pt" -> Regex("""\bantes\b""", RegexOption.IGNORE_CASE)
+            "ja" -> Regex("""前に|以前""")
+            "ko" -> Regex("""전에|이전에""")
+            else -> null
+        }?.containsMatchIn(source) == true
+        val after = when (language) {
+            "fr" -> Regex("""\b(?:après|apres)\b""", RegexOption.IGNORE_CASE)
+            "de" -> Regex("""\bnach\b""", RegexOption.IGNORE_CASE)
+            "es" -> Regex("""\b(?:después|despues)\b""", RegexOption.IGNORE_CASE)
+            "pt" -> Regex("""\bdepois\b""", RegexOption.IGNORE_CASE)
+            "ja" -> Regex("""後に|あとで|後で|以後""")
+            "ko" -> Regex("""후에|이후""")
+            else -> null
+        }?.containsMatchIn(source) == true
+        val targetBefore = Regex("""之前|以前|此前|先前|在.{0,8}之前""").containsMatchIn(target)
+        val targetAfter = Regex("""之后|以后|过后|随后|之後|以後|過後|隨後|在.{0,8}之后|在.{0,8}之後""").containsMatchIn(target)
+        if (before.xor(after) && ((before && targetAfter && !targetBefore) || (after && targetBefore && !targetAfter))) {
+            return "SEMANTIC_RELATION_MISMATCH：原文时间先后关系与译文明确表达的方向相反"
+        }
+
+        val unless = when (language) {
+            "fr" -> Regex("""à\s+moins\s+que""", RegexOption.IGNORE_CASE)
+            "de" -> Regex("""es\s+sei\s+denn""", RegexOption.IGNORE_CASE)
+            "es", "pt" -> Regex("""a\s+menos\s+que""", RegexOption.IGNORE_CASE)
+            "ja" -> Regex("""でない限り|ない限り""")
+            "ko" -> Regex("""하지\s*않으면""")
+            else -> null
+        }?.containsMatchIn(source) == true
+        val targetIf = Regex("""如果|若|假如|要是""").containsMatchIn(target)
+        val targetHasConditionNegation = Regex("""不|没|未|無|否则|否則|除非""").containsMatchIn(target)
+        if (unless && targetIf && !targetHasConditionNegation) {
+            return "SEMANTIC_RELATION_MISMATCH：原文的否定条件被译成没有否定限定的普通条件"
+        }
+
+        val sourceCause = when (language) {
+            "fr" -> Regex("""\b(?:parce\s+que|car|puisque)\b""", RegexOption.IGNORE_CASE)
+            "de" -> Regex("""\b(?:weil|da)\b""", RegexOption.IGNORE_CASE)
+            "es" -> Regex("""\b(?:porque|ya\s+que)\b""", RegexOption.IGNORE_CASE)
+            "pt" -> Regex("""\b(?:porque|já\s+que|ja\s+que|pois)\b""", RegexOption.IGNORE_CASE)
+            "ja" -> Regex("""から|ので|ため""")
+            "ko" -> Regex("""때문에|니까|므로""")
+            else -> null
+        }?.containsMatchIn(source) == true
+        val sourceConcession = when (language) {
+            "fr" -> Regex("""\b(?:bien\s+que|même\s+si|meme\s+si|quoique)\b""", RegexOption.IGNORE_CASE)
+            "de" -> Regex("""\b(?:obwohl|wenngleich)\b""", RegexOption.IGNORE_CASE)
+            "es" -> Regex("""\b(?:aunque|a\s+pesar\s+de)\b""", RegexOption.IGNORE_CASE)
+            "pt" -> Regex("""\b(?:embora|apesar\s+de)\b""", RegexOption.IGNORE_CASE)
+            "ja" -> Regex("""けど|けれど|のに|にもかかわらず""")
+            "ko" -> Regex("""지만|는데도|더라도|에도\s+불구하고""")
+            else -> null
+        }?.containsMatchIn(source) == true
+        val targetCause = Regex("""因为|由于|所以|因此|因為|由於""").containsMatchIn(target)
+        val targetConcession = Regex("""虽然|尽管|即使|可是|然而|雖然|儘管""").containsMatchIn(target)
+        if ((sourceCause && targetConcession && !targetCause) ||
+            (sourceConcession && targetCause && !targetConcession)
+        ) return "SEMANTIC_RELATION_MISMATCH：原文因果/让步关系与译文明确使用的关系词不一致"
+        return null
+    }
+
+    private fun hasClearEnglishNegation(value: String): Boolean {    private fun hasClearEnglishNegation(value: String): Boolean {
         val neutralRanges = neutralEnglishNegation.findAll(value).map { it.range }.toList()
         return englishNegation.findAll(value).any { match ->
             neutralRanges.none { it.contains(match.range.first) }
@@ -690,6 +971,9 @@ internal object SubtitleTranslationQualityPolicy {
         val numericMismatch = numericContentMismatchReason(
             sourceText, output, sourceLanguage, targetLanguage,
         )
+        val numericUnitMismatch = numericUnitAssociationMismatchReason(
+            sourceText, output, sourceLanguage, targetLanguage,
+        )
         val unitMismatch = unitContentMismatchReason(
             sourceText, output, sourceLanguage, targetLanguage,
         )
@@ -721,6 +1005,8 @@ internal object SubtitleTranslationQualityPolicy {
             append("; targetLanguageMismatch=").append(mismatch != null)
             append("; explicitNumericContentMismatch=").append(numericMismatch != null)
             append("; numericMismatchReason=").append(numericMismatch?.take(180) ?: "无")
+            append("; numericUnitAssociationMismatch=").append(numericUnitMismatch != null)
+            append("; numericUnitAssociationReason=").append(numericUnitMismatch?.take(180) ?: "无")
             append("; explicitUnitContentMismatch=").append(unitMismatch != null)
             append("; unitMismatchReason=").append(unitMismatch?.take(180) ?: "无")
             append("; semanticConsistencyMismatch=").append(semanticMismatch != null)

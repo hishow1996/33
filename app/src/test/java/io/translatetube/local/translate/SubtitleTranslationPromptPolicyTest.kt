@@ -91,4 +91,11 @@ class SubtitleTranslationPromptPolicyTest {
         assertTrue(context.contains("不要机械继承错误"))
     }
 
+    @Test
+    fun promptRetainsQuestionAndRequestIntentForChineseTargets() {
+        assertTrue(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES.contains("疑问句不得翻成回答"))
+        assertTrue(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES.contains("请求不得强化成命令"))
+        assertTrue(SubtitleTranslationPromptPolicy.TRADITIONAL_CHINESE_FIDELITY_GUIDELINES.contains("疑问句不得翻成回答"))
+    }
+
 }

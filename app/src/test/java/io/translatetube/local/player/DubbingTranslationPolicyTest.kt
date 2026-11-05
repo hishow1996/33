@@ -245,4 +245,34 @@ class DubbingTranslationPolicyTest {
         assertTrue(result.reason.orEmpty().startsWith("TARGET_SCRIPT_MISMATCH"))
     }
 
+    @Test
+    fun finalDubbingGuardRejectsSwappedNumberUnitPairsAndMultilingualNegation() {
+        val units = DubbingTranslationPolicy.resolveText(
+            "The first route is 3 km and the second route is 5 m.",
+            "第一条路线是5公里，第二条路线是3米。",
+            "en",
+        )
+        assertNull(units.text)
+        assertTrue(units.reason.orEmpty().contains("数字与单位的对应关系"))
+
+        val french = DubbingTranslationPolicy.resolveText(
+            "Je ne sais pas.",
+            "我知道。",
+            "fr",
+        )
+        assertNull(french.text)
+        assertTrue(french.reason.orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+    }
+
+    @Test
+    fun finalDubbingGuardRejectsQuestionChangedIntoAStatement() {
+        val result = DubbingTranslationPolicy.resolveText(
+            "Where are you?",
+            "我在这里。",
+            "en",
+        )
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().startsWith("SEMANTIC_INTENT_MISMATCH"))
+    }
+
 }

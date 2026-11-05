@@ -66,38 +66,16 @@ internal data class TranslationBatchResult(
                 val rawValue = rawTranslations.getOrNull(position)
                 val value = SubtitleParsers.cleanTranslatedText(rawValue)
                 val sourceText = sourceTexts[sourceIndex]
-                val sourceEcho = value?.let {
-                    SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, it, sourceLanguage)
-                } == true
-                val targetMismatchDetail = value?.let {
-                    SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
-                        sourceText, it, sourceLanguage, targetLanguage,
-                    )
-                }
+                val qualityDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+                    sourceText = sourceText,
+                    translatedText = value,
+                    sourceLanguage = sourceLanguage,
+                    targetLanguage = targetLanguage,
+                    acceptShortUnchanged = acceptShortUnchanged,
+                )
+                val sourceEcho = qualityDecision.sourceEcho
+                val targetMismatchDetail = qualityDecision.targetLanguageMismatchReason
                 val targetMismatch = targetMismatchDetail != null
-                val scriptMismatchDetail = value?.takeUnless {
-                    SourceLanguagePolicy.isChinese(sourceLanguage)
-                }?.let {
-                    SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(it, targetLanguage)
-                }
-                val numericMismatchDetail = value?.let {
-                    SubtitleTranslationQualityPolicy.numericContentMismatchReason(
-                        sourceText, it, sourceLanguage, targetLanguage,
-                    )
-                }
-                val unitMismatchDetail = value?.let {
-                    SubtitleTranslationQualityPolicy.unitContentMismatchReason(
-                        sourceText, it, sourceLanguage, targetLanguage,
-                    )
-                }
-                val semanticMismatchDetail = value?.let {
-                    SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(sourceText, it, sourceLanguage, targetLanguage)
-                }
-                val modelMetaReason = value?.let {
-                    SubtitleTranslationQualityPolicy.translationMetaResponseReason(
-                        sourceText, it, sourceLanguage, targetLanguage,
-                    )
-                }
                 val unspeakable = !value.isNullOrBlank() && !TtsTextPolicy.hasSpeakableContent(value)
                 // 纯语气词（Mm-hmm / Hmm / Oh）机器翻译常原样返回或只给标点；译文失败时用固定中文语气词，
                 // 确保这一句也有中文字幕和配音。
@@ -112,38 +90,15 @@ internal data class TranslationBatchResult(
                     rejectionByIndex.remove(sourceIndex)
                     return@forEachIndexed
                 }
-                val shortUntranslatedAccepted = acceptShortUnchanged &&
-                    !value.isNullOrBlank() && !unspeakable && numericMismatchDetail == null &&
-                    unitMismatchDetail == null && semanticMismatchDetail == null && (sourceEcho || targetMismatch) &&
-                    SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
-                        sourceText, value, sourceLanguage, targetLanguage,
-                    )
-                val rejectionReason = when {
-                    value.isNullOrBlank() -> "EMPTY_OR_STATUS_PLACEHOLDER"
-                    unspeakable -> "UNSPEAKABLE_TRANSLATION"
-                    modelMetaReason != null -> "MODEL_META_RESPONSE"
-                    scriptMismatchDetail != null -> "TARGET_SCRIPT_MISMATCH"
-                    numericMismatchDetail != null -> "NUMERIC_CONTENT_MISMATCH"
-                    unitMismatchDetail != null -> "UNIT_CONTENT_MISMATCH"
-                    semanticMismatchDetail != null -> when {
-                        semanticMismatchDetail.startsWith("SEMANTIC_POLARITY_MISMATCH") -> "SEMANTIC_POLARITY_MISMATCH"
-                        semanticMismatchDetail.startsWith("SEMANTIC_MODALITY_MISMATCH") -> "SEMANTIC_MODALITY_MISMATCH"
-                        semanticMismatchDetail.startsWith("SEMANTIC_ENTITY_MISMATCH") -> "SEMANTIC_ENTITY_MISMATCH"
-                        else -> "SEMANTIC_RELATION_MISMATCH"
-                    }
-                    sourceEcho && targetMismatch -> "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH"
-                    targetMismatch -> "TARGET_LANGUAGE_MISMATCH"
-                    sourceEcho -> "SOURCE_ECHO"
-                    else -> null
-                }
+                val shortUntranslatedAccepted = qualityDecision.shortUntranslatedAccepted
+                val rejectionReason = qualityDecision.reasonCode
                 when {
                     shortUntranslatedAccepted -> {
                         if (translated[sourceIndex].isNullOrEmpty()) translated[sourceIndex] = value!!
                         missing.remove(sourceIndex)
                         rejectionByIndex.remove(sourceIndex)
                     }
-                    value.isNullOrBlank() || targetMismatch || unspeakable || scriptMismatchDetail != null || numericMismatchDetail != null || unitMismatchDetail != null || semanticMismatchDetail != null -> {
-                        // Empty output and status text still need another attempt.
+                    !qualityDecision.accepted -> {
                         if (sourceIndex !in translated) {
                             missing += sourceIndex
                             rejectionReason?.let { reason ->
@@ -161,55 +116,7 @@ internal data class TranslationBatchResult(
                                             sourceLanguage = sourceLanguage,
                                             targetLanguage = targetLanguage,
                                         ),
-                                        diagnosticReason = when {
-                                            value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
-                                            unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
-                                            modelMetaReason != null -> modelMetaReason
-                                            scriptMismatchDetail != null -> scriptMismatchDetail
-                                            numericMismatchDetail != null -> numericMismatchDetail
-                                            unitMismatchDetail != null -> unitMismatchDetail
-                                            semanticMismatchDetail != null -> semanticMismatchDetail
-                                            sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
-                                            sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
-                                            targetMismatch -> targetMismatchDetail
-                                            else -> null
-                                        },
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                    sourceEcho -> {
-                        // Other engines must retry an echoed source row instead of presenting it
-                        // as Chinese.
-                        if (sourceIndex !in translated) {
-                            missing += sourceIndex
-                            rejectionReason?.let { reason ->
-                                rejectionByIndex.putIfAbsent(
-                                    sourceIndex,
-                                    TranslationRowRejection(
-                                        sourceIndex = sourceIndex,
-                                        reasonCode = reason,
-                                        sourceCharCount = sourceText?.length ?: 0,
-                                        rawOutputCharCount = rawValue?.length ?: 0,
-                                        rawOutputPreview = rawValue?.let { TranslationFailureDiagnosticPolicy.safeSnippet(it, 120) },
-                                        qualityEvidence = SubtitleTranslationQualityPolicy.diagnosticEvidence(
-                                            sourceText = sourceText,
-                                            translatedText = value,
-                                            sourceLanguage = sourceLanguage,
-                                            targetLanguage = targetLanguage,
-                                        ),
-                                        diagnosticReason = when {
-                                            value.isNullOrBlank() -> "译文清理后为空，或只包含正在翻译等状态占位内容"
-                                            unspeakable -> "译文只有标点、符号或表情，没有可朗读内容"
-                                            modelMetaReason != null -> modelMetaReason
-                                            numericMismatchDetail != null -> numericMismatchDetail
-                                            unitMismatchDetail != null -> unitMismatchDetail
-                                            sourceEcho && targetMismatch -> "译文归一化后与原文相同；同时，$targetMismatchDetail"
-                                            sourceEcho -> "忽略大小写、空白和标点后，模型译文与原文相同"
-                                            targetMismatch -> targetMismatchDetail
-                                            else -> null
-                                        },
+                                        diagnosticReason = qualityDecision.reason,
                                     ),
                                 )
                             }

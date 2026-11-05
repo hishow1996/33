@@ -31,4 +31,24 @@ class TranslationAcceptancePolicyTest {
         val accept = subtitleTranslationAcceptor("zh-Hant", "zh-CN")
         assertTrue(accept("這是原始字幕。", "這是原始字幕。"))
     }
+    @Test
+    fun adaptiveAcceptorMatchesTheUnifiedDecisionForNewNumericAndMultilingualRules() {
+        assertFalse(subtitleTranslationAcceptor("en", "zh-CN")(
+            "The first route is 3 km and the second route is 5 m.",
+            "第一条路线是5公里，第二条路线是3米。",
+        ))
+        assertFalse(subtitleTranslationAcceptor("fr", "zh-CN")(
+            "Je ne sais pas.",
+            "我知道。",
+        ))
+        assertFalse(subtitleTranslationAcceptor("en", "zh-CN")(
+            "Where are you?",
+            "我在这里。",
+        ))
+        assertTrue(subtitleTranslationAcceptor("fr", "zh-CN")(
+            "Je ne sais pas.",
+            "我不知道。",
+        ))
+    }
+
 }

@@ -540,4 +540,41 @@ class TranslationBatchResultTest {
         assertTrue(wrongScript.rejectedRows.single().diagnosticReason.orEmpty().contains("目标语言要求简体中文"))
     }
 
+    @Test
+    fun batchRejectsSwappedNumberUnitPairsWithOneUnifiedDiagnostic() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(0),
+            rawTranslations = listOf("第一条路线是5公里，第二条路线是3米。"),
+            sourceTexts = mapOf(0 to "The first route is 3 km and the second route is 5 m."),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(result.translations.isEmpty())
+        assertTrue(result.rejectedRows.single().reasonCode == "NUMERIC_UNIT_ASSOCIATION_MISMATCH")
+        assertTrue(result.rejectedRows.single().diagnosticReason.orEmpty().contains("数字与单位的对应关系"))
+    }
+
+    @Test
+    fun batchUsesTheSameMultilingualPolarityAndQuestionIntentDecision() {
+        val negative = TranslationBatchResult.from(
+            indices = listOf(0),
+            rawTranslations = listOf("我知道。"),
+            sourceTexts = mapOf(0 to "Je ne sais pas."),
+            sourceLanguage = "fr",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(negative.translations.isEmpty())
+        assertTrue(negative.rejectedRows.single().reasonCode == "SEMANTIC_POLARITY_MISMATCH")
+
+        val question = TranslationBatchResult.from(
+            indices = listOf(1),
+            rawTranslations = listOf("我在这里。"),
+            sourceTexts = mapOf(1 to "Where are you?"),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(question.translations.isEmpty())
+        assertTrue(question.rejectedRows.single().reasonCode == "SEMANTIC_INTENT_MISMATCH")
+    }
+
 }

@@ -38,7 +38,7 @@ private val http: OkHttpClient = OkHttpClient.Builder()
     .build()
 
 /** 批间衔接时携带的上批尾部行数（原文+译文对照）。 */
-private const val CONTEXT_LINES = 5
+private const val CONTEXT_LINES = TranslationContextPolicy.MAX_CONTEXT_ROWS
 private const val SLOW_TRANSLATION_REQUEST_WARNING_MS = 8_000L
 
 /**
@@ -54,21 +54,33 @@ internal fun buildContextUserPrompt(
         srcCtx.zip(tgtCtx)
             .filter { (source, translated) -> source.isNotBlank() && translated.isNotBlank() }
             .takeLast(CONTEXT_LINES)
-    }.orEmpty()
-    val followingCues = lookaheadSource.filter { it.isNotBlank() }.take(3)
-    if (previousCues.isEmpty() && followingCues.isEmpty()) return null
-
-    val ctxText = JSONArray().apply {
+            .toMutableList()
+    } ?: mutableListOf()
+    val followingCues = lookaheadSource.filter { it.isNotBlank() }.take(3).toMutableList()
+    fun encodePrevious(): String = JSONArray().apply {
         previousCues.forEach { (source, translated) ->
             put(JSONObject().put("source", source).put("translation", translated))
         }
     }.toString()
-    val followingText = JSONArray().apply {
+    fun encodeFollowing(): String = JSONArray().apply {
         followingCues.forEach { put(it) }
     }.toString()
+
+    // Never truncate a source/translation pair. Drop the oldest whole pair when needed,
+    // and omit a single oversized pair rather than sending a clipped or misleading example.
+    while (previousCues.isNotEmpty() && encodePrevious().length > TranslationContextPolicy.MAX_CONTEXT_JSON_CHARS) {
+        previousCues.removeAt(0)
+    }
+    while (followingCues.isNotEmpty() && encodeFollowing().length > TranslationContextPolicy.MAX_LOOKAHEAD_JSON_CHARS) {
+        followingCues.removeAt(0)
+    }
+    if (previousCues.isEmpty() && followingCues.isEmpty()) return null
+
+    val ctxText = encodePrevious()
+    val followingText = encodeFollowing()
     return buildString {
         if (previousCues.isNotEmpty()) {
-            append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Use these completed pairs only as reference for established names, terms, pronouns, references and tone; do not translate or repeat them. Do not infer a speaker's identity, gender, relationship or an ambiguous referent unless the source and context clearly support it. The current source text is authoritative; never alter its meaning just to match an earlier translation. A sentence may continue across cue boundaries, so use nearby context to understand its grammar while keeping every current cue's meaning within its own index; do not duplicate, omit, summarize or move content between rows.\n")
+            append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Use these completed pairs only as reference for established names, terms, pronouns, references and tone; do not translate or repeat them. Reuse a confirmed Chinese rendering for the same named entity or technical term consistently; do not invent alternate names. If prior rows use conflicting renderings, prefer the current source and clearly supported context instead of copying the conflict. Do not infer a speaker's identity, gender, relationship or an ambiguous referent unless the source and context clearly support it. The current source text is authoritative; never alter its meaning just to match an earlier translation. A sentence may continue across cue boundaries, so use nearby context to understand its grammar while keeping every current cue's meaning within its own index; do not duplicate, omit, summarize or move content between rows.\n")
             append(ctxText)
             append("\n\n")
         }
@@ -373,15 +385,12 @@ internal fun subtitleTranslationAcceptor(
     when {
         candidate.isBlank() -> false
         SubtitleInterjectionPolicy.chineseFor(original, srcLang, tgtLang) != null -> true
-        !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(candidate) -> false
-        !SourceLanguagePolicy.isChinese(srcLang) &&
-            SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(candidate, tgtLang) != null -> false
-        SubtitleTranslationQualityPolicy.numericContentMismatchReason(original, candidate, srcLang, tgtLang) != null -> false
-        SubtitleTranslationQualityPolicy.unitContentMismatchReason(original, candidate, srcLang, tgtLang) != null -> false
-        SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(original, candidate, srcLang, tgtLang) != null -> false
-        else ->
-            !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang) &&
-                !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(original, candidate, srcLang, tgtLang)
+        else -> SubtitleTranslationQualityPolicy.evaluateTranslation(
+            sourceText = original,
+            translatedText = candidate,
+            sourceLanguage = srcLang,
+            targetLanguage = tgtLang,
+        ).accepted
     }
 }
 
@@ -390,12 +399,13 @@ internal fun subtitleShortUntranslatedAcceptor(
     srcLang: String,
     tgtLang: String,
 ): (source: String, translation: String) -> Boolean = { original, candidate ->
-    (SourceLanguagePolicy.isChinese(srcLang) ||
-        SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(candidate, tgtLang) == null) &&
-        SubtitleTranslationQualityPolicy.numericContentMismatchReason(original, candidate, srcLang, tgtLang) == null &&
-        SubtitleTranslationQualityPolicy.unitContentMismatchReason(original, candidate, srcLang, tgtLang) == null &&
-        SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(original, candidate, srcLang, tgtLang) == null &&
-        SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(original, candidate, srcLang, tgtLang)
+    SubtitleTranslationQualityPolicy.evaluateTranslation(
+        sourceText = original,
+        translatedText = candidate,
+        sourceLanguage = srcLang,
+        targetLanguage = tgtLang,
+        acceptShortUnchanged = true,
+    ).shortUntranslatedAccepted
 }
 
 private val JSON = "application/json; charset=utf-8".toMediaType()

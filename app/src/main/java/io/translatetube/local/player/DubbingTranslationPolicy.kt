@@ -65,15 +65,15 @@ internal object DubbingTranslationPolicy {
                 "译文只有标点、符号或表情，没有可朗读内容",
             )
         }
-        if (!SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
-                sourceText = sourceText,
-                translatedText = cleaned,
-                sourceLanguage = detectedSource,
-                targetLanguage = "zh",
-                acceptShortUnchanged = true,
-            )
-        ) {
-            if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {
+        val qualityDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            sourceText = sourceText,
+            translatedText = cleaned,
+            sourceLanguage = detectedSource,
+            targetLanguage = "zh",
+            acceptShortUnchanged = true,
+        )
+        if (!qualityDecision.accepted) {
+            if (qualityDecision.sourceEcho) {
                 return DubbingTranslationResolution(
                     null,
                     if (ambiguousHanSource) {
@@ -83,29 +83,10 @@ internal object DubbingTranslationPolicy {
                     },
                 )
             }
-            val scriptMismatchReason = SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(cleaned, "zh")
-            if (scriptMismatchReason != null) return DubbingTranslationResolution(null, scriptMismatchReason)
-            val semanticMismatchReason = SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(sourceText, cleaned, detectedSource, "zh")
-            if (semanticMismatchReason != null) return DubbingTranslationResolution(null, semanticMismatchReason)
-            val numericMismatchReason = SubtitleTranslationQualityPolicy.numericContentMismatchReason(
-                sourceText, cleaned, detectedSource, "zh",
+            return DubbingTranslationResolution(
+                null,
+                qualityDecision.reason ?: "译文未通过中文字幕质量校验",
             )
-            if (numericMismatchReason != null) {
-                return DubbingTranslationResolution(null, numericMismatchReason)
-            }
-            val unitMismatchReason = SubtitleTranslationQualityPolicy.unitContentMismatchReason(
-                sourceText, cleaned, detectedSource, "zh",
-            )
-            if (unitMismatchReason != null) {
-                return DubbingTranslationResolution(null, unitMismatchReason)
-            }
-            val mismatchReason = SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
-                sourceText, cleaned, detectedSource, "zh",
-            )
-            if (mismatchReason != null) {
-                return DubbingTranslationResolution(null, mismatchReason)
-            }
-            return DubbingTranslationResolution(null, "译文未通过中文字幕质量校验")
         }
         return DubbingTranslationResolution(cleaned)
     }

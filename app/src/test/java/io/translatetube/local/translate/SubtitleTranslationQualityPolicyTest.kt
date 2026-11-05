@@ -1,5 +1,6 @@
 package io.translatetube.local.translate
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -842,6 +843,147 @@ class SubtitleTranslationQualityPolicyTest {
             "zh-Hant",
             "zh-CN",
         ))
+    }
+
+    @Test
+    fun detectsNumericUnitPairsWhenTheNumbersAndUnitSequenceAreOtherwiseUnchanged() {
+        val source = "The first route is 3 km and the second route is 5 m."
+        val swapped = "第一条路线是5公里，第二条路线是3米。"
+        val correct = "第一条路线是3公里，第二条路线是5米。"
+
+        assertTrue(
+            SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+                source, swapped, "en", "zh-CN",
+            )!!.contains("对应关系发生变化"),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+                source, correct, "en", "zh-CN",
+            ) != null,
+        )
+        val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            source, swapped, "en", "zh-CN",
+        )
+        assertFalse(decision.accepted)
+        assertEquals("NUMERIC_UNIT_ASSOCIATION_MISMATCH", decision.reasonCode)
+        assertTrue(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "The ticket costs 5 EUR.",
+            "这张票售价5美元。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "The trip lasts 5 days.",
+            "这趟旅程持续5天。",
+            "en",
+            "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun detectsPolarityReversalsForJapaneseKoreanFrenchGermanSpanishAndPortuguese() {
+        val examples = listOf(
+            Triple("行きません。", "我去。", "ja"),
+            Triple("저는 안 갑니다.", "我去。", "ko"),
+            Triple("Je ne sais pas.", "我知道。", "fr"),
+            Triple("Ich kann nicht kommen.", "我能来。", "de"),
+            Triple("No quiero ir.", "我想去。", "es"),
+            Triple("Eu não concordo.", "我同意。", "pt"),
+        )
+        examples.forEach { (source, translated, language) ->
+            val mismatch = SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+                source, translated, language, "zh-CN",
+            )
+            assertTrue("$language: $source -> $translated", mismatch.orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        }
+    }
+
+    @Test
+    fun preservesCommonPositiveIdiomsWithNegativeSurfaceFormsAcrossLanguages() {
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "問題ありません。", "没问题。", "ja", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "문제없습니다.", "没问题。", "ko", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Pas de problème.", "没问题。", "fr", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Kein Problem.", "没问题。", "de", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "No hay problema.", "没问题。", "es", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Sem problema.", "没问题。", "pt", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun checksMultilingualTimeCauseAndConditionRelationsConservatively() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Le train arrive avant midi.", "火车中午之后到达。", "fr", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "A menos que vengas, me iré.", "如果你来，我就离开。", "es", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Ich blieb, weil es regnete.", "尽管下雨，我还是留下了。", "de", "zh-CN",
+        )!!.startsWith("SEMANTIC_RELATION_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Le train arrive avant midi.", "火车中午之前到达。", "fr", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun detectsQuestionIntentLossButDoesNotMistakeAStatementForAQuestion() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Where are you?", "我在这里。", "en", "zh-CN",
+        )!!.startsWith("SEMANTIC_INTENT_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Est-ce que tu viens?", "你会来。", "fr", "zh-CN",
+        )!!.startsWith("SEMANTIC_INTENT_MISMATCH"))
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "What I want is coffee.", "我想要咖啡。", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Where are you?", "你在哪里。", "en", "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun sharedDecisionReturnsTheSameReasonForAllQualityCallers() {
+        val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "I have 3 cats and 2 dogs.",
+            "我有4只猫和2只狗。",
+            "en",
+            "zh-CN",
+        )
+        assertFalse(decision.accepted)
+        assertEquals("NUMERIC_CONTENT_MISMATCH", decision.reasonCode)
+        assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "I have 3 cats and 2 dogs.",
+            "我有4只猫和2只狗。",
+            "en",
+            "zh-CN",
+        ))
+    }
+
+    @Test
+    fun pairsCurrencySymbolsWrittenBeforeOrAfterTheNumber() {
+        assertTrue(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "The ticket costs €5.",
+            "这张票售价5美元。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "The ticket costs £5.",
+            "这张票售价5英镑。",
+            "en",
+            "zh-CN",
+        ) != null)
     }
 
 }
