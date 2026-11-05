@@ -285,6 +285,7 @@ internal object SubtitleTranslationQualityPolicy {
                 val normalized = normalize(token)
                 normalized in commonNonLatinNameWords ||
                     tokenLetters.isEmpty() ||
+                    token.any { !it.isLetter() && it !in shortTokenInnerPunctuation } ||
                     !isTitleCasedNameToken(token, allowInitials = true)
             }
         ) return null
@@ -1661,20 +1662,35 @@ internal object SubtitleTranslationQualityPolicy {
             .filter { it.isNotBlank() }
             .map(::normalize)
             .toSet()
+        val sourceProperNameTokens = sourceProperNameTokens(sourceText)
         var foreignLetters = 0
+        var ungroundedProperName = false
         translatedText.split(wordSeparatorRegex).forEach { token ->
             val letters = token.filter { it.isLetter() }
-            if (letters.isEmpty() || isLikelyRetainedTerm(token, letters, sourceTokens)) {
+            if (letters.isEmpty() || isLikelyRetainedTerm(
+                    token, letters, sourceTokens, sourceProperNameTokens,
+                )
+            ) {
                 return@forEach
+            }
+            val normalized = normalize(token)
+            val properNameShape = isTitleCasedNameToken(token, allowInitials = true) ||
+                (letters.first().isLowerCase() && letters.drop(1).any { it.isUpperCase() }) ||
+                (letters.length >= 2 && letters.all { it.isUpperCase() })
+            if (properNameShape && letters.length >= 3 &&
+                normalized !in sourceTokens && normalized !in retainedAcronyms
+            ) {
+                // An ungrounded proper-looking Latin/Cyrillic/Greek token can be a changed name
+                // or an invented entity. Do not let a long Chinese prefix hide that substitution.
+                ungroundedProperName = true
             }
             foreignLetters += letters.count {
                 Character.UnicodeScript.of(it.code) != Character.UnicodeScript.HAN
             }
         }
         // Even a short untranslated fragment (for example "你好 hello") is not a Chinese
-        // translation. Known source names, brands, acronyms and model identifiers are excluded
-        // above, so a small amount of ordinary Latin text should not be hidden by a long Han prefix.
-        return foreignLetters >= 2 && hanCount <= foreignLetters
+        // translation. Known names/terms are exempt only when grounded in the source text.
+        return ungroundedProperName || (foreignLetters >= 2 && hanCount <= foreignLetters)
     }
 
     private val retainedAcronyms = setOf(
@@ -1688,19 +1704,48 @@ internal object SubtitleTranslationQualityPolicy {
         token: String,
         letters: String,
         sourceTokens: Set<String>,
+        sourceProperNameTokens: Set<String>,
     ): Boolean {
         val normalized = normalize(token)
-        // Common English words remain translatable even when sentence-initial or uppercased.
-        if (normalized in commonShortWords) return false
-        // A model must not invent an all-caps word or a model/brand name and have it exempted
-        // from target-language validation. Numbered identifiers and mixed-case brands must
-        // also be grounded in the source cue.
+        // Common English words remain translatable unless they are a particle in a recognized
+        // proper-name span from the original cue (for example "The Hobbit" or "New York").
+        if (normalized in commonShortWords && normalized !in sourceProperNameTokens) return false
+        // A model must not invent an all-caps word or a model/brand name and have it exempted.
         if (token.any { it.isDigit() }) return normalized in sourceTokens
         if (letters.length >= 2 && letters.all { it.isUpperCase() }) {
             return normalized in sourceTokens || normalized in retainedAcronyms
         }
         if (letters.drop(1).any { it.isUpperCase() }) return normalized in sourceTokens
-        return letters.length >= 2 && letters.first().isUpperCase() && normalized in sourceTokens
+        return letters.length >= 2 && letters.first().isUpperCase() &&
+            normalized in sourceTokens &&
+            (normalized !in commonShortWords || normalized in sourceProperNameTokens)
+    }
+
+    /**
+     * Find only high-confidence multi-token proper-name spans in the original cue.
+     * This lets embedded names such as "The Hobbit" and "New York" survive inside Chinese
+     * sentences without exempting ordinary capitalized words such as "Good Morning".
+     */
+    private fun sourceProperNameTokens(sourceText: String): Set<String> {
+        val tokens = sourceText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (tokens.size < 2) return emptySet()
+        val retained = mutableSetOf<String>()
+        for (start in tokens.indices) {
+            for (length in 2..5) {
+                val end = start + length
+                if (end > tokens.size) break
+                val candidate = tokens.subList(start, end)
+                val letters = candidate.joinToString("").filter { it.isLetter() }
+                val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
+                if (scripts.size == 1 && isTitleCasedProperNamePhrase(candidate, scripts.single())) {
+                    candidate.forEach { raw ->
+                        val normalized = normalize(raw.trim { it in shortTokenBoundaryPunctuation })
+                        if (normalized.isNotEmpty()) retained += normalized
+                    }
+                }
+            }
+        }
+        return retained
     }
 
     /**
@@ -1721,10 +1766,6 @@ internal object SubtitleTranslationQualityPolicy {
             (!SubtitleSoundDescriptionPolicy.isSoundDescription(trimmed) && isTermLikeCue(trimmed))
     }
 
-    /**
-     * 专有名词、缩写、型号、签证类别（"H-1B"、"NASA"、"COVID-19"、"iPhone 15"、"Elon Musk"）本来就不翻译，
-     * 翻译结果与原文相同可以作为有效中文配音文本；普通句子/单词原样返回仍按翻译失败处理。
-     */
     private val properNameParticles = setOf(
         "al", "bin", "da", "de", "del", "den", "der", "di", "du", "ibn",
         "la", "le", "of", "st", "saint", "the", "van", "von",
