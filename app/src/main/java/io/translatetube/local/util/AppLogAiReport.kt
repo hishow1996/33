@@ -75,7 +75,7 @@ internal object AppLogAiReport {
             append("- 已有明确恢复记录的故障编号：").append(recovered.size).append('\n')
             append("- 日志写入器当前状态：").append(if (writerHealth.isHealthy) "正常" else "异常").append('\n')
             append("- 日志写入失败累计次数：").append(writerHealth.failedWriteCount).append('\n')
-            append("- 近期操作轨迹策略：优先按 operationId 隔离；缺失时仅使用同线程最近 2 分钟的事件。\n")
+            append("- 近期操作轨迹关联方式：优先按 operationId 隔离；缺失时仅使用同线程最近 2 分钟的事件。\n")
             if (!writerHealth.isHealthy) {
                 append("- 最近一次写入失败：")
                     .append(AppLogStore.redactForExport(writerHealth.lastFailureDescription))
@@ -524,7 +524,7 @@ internal object AppLogAiReport {
 
             append("\n## 4. AI 修复要求\n")
             if (translationDiagnosticId != null) {
-                append("翻译故障：按同一诊断 ID 还原请求、批次和字幕行；分别检查网络/HTTP、响应解析、字幕对齐、译文有效性；不要把原文回显、符号、音乐标签、人名或专有名词直接判为同一种错误。\n")
+                append("翻译专项要求：按同一诊断 ID 还原请求、批次和字幕行；分别检查网络/HTTP、响应解析、字幕对齐、译文有效性；不要把原文回显、符号、音乐标签、人名或专有名词直接判为同一种错误。\n")
             }
             append("定位真实责任文件/类/方法/行号；先检查最深层 cause 和 suppressed，再核对调用位置、状态码及最后成功步骤。区分已证实事实与推测；给出最小修复和 YouTube/网页/本地回归验证。不得吞异常、伪造成功或用原声兜底掩盖失败。\n")
             append("隐私：已执行常见凭据脱敏；发送前检查字幕片段、文件名和业务内容。\n")

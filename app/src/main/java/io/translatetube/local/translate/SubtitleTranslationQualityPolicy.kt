@@ -281,6 +281,7 @@ internal object SubtitleTranslationQualityPolicy {
     ): Boolean {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         if (!SourceLanguagePolicy.isChinese(targetLanguage)) return false
+        if (SubtitleSoundDescriptionPolicy.isSoundDescription(sourceText)) return false
         if (SourceLanguagePolicy.isChinese(SourceLanguagePolicy.normalizeTag(sourceLanguage))) return false
         if (SubtitleInterjectionPolicy.chineseFor(sourceText, sourceLanguage, targetLanguage) != null) return false
 
@@ -465,13 +466,9 @@ internal object SubtitleTranslationQualityPolicy {
         val shortNameCue = isAcceptableShortUntranslatedCue(
             sourceText, translatedText, sourceLanguage, targetLanguage,
         )
-        val exactShortNameEcho = shortNameCue &&
-            normalize(sourceText.orEmpty()) == normalize(translatedText)
-        val shortAccepted = modelMeta == null &&
-            ((acceptShortUnchanged && shortNameCue) || exactShortNameEcho)
-        // Exact spellings of names already verified by the strict short-entity recognizer do not
-        // need a pointless retry. A near-spelling variant (for example Sarah -> Sara) still uses
-        // the retry-only path, and ordinary common words never enter this exception.
+        // Even an exact short-name echo must pass through one targeted retry before it is retained.
+        // This prevents ordinary one-word replies (for example "Oh") from bypassing target-language checks.
+        val shortAccepted = modelMeta == null && acceptShortUnchanged && shortNameCue
         val shortNameNeedsRetry = !shortAccepted && !acceptShortUnchanged && shortNameCue
 
         val rejection = if (shortAccepted) null else when {
@@ -555,6 +552,22 @@ internal object SubtitleTranslationQualityPolicy {
         val scriptCheckedText = removeSourceGroundedNameTokens(
             translatedText, sourceText, sourceLanguage,
         )
+        val hanCount = scriptCheckedText.count {
+            Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN
+        }
+        val kanaCount = scriptCheckedText.count {
+            val script = Character.UnicodeScript.of(it.code)
+            script == Character.UnicodeScript.HIRAGANA || script == Character.UnicodeScript.KATAKANA
+        }
+        val hangulCount = scriptCheckedText.count {
+            Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HANGUL
+        }
+        if (kanaCount >= 2 && kanaCount > hanCount) {
+            return "TARGET_SCRIPT_MISMATCH：译文日文假名占主导，目标语言要求中文"
+        }
+        if (hangulCount >= 2 && hangulCount > hanCount) {
+            return "TARGET_SCRIPT_MISMATCH：译文韩文音节占主导，目标语言要求中文"
+        }
         val wrongCount = scriptCheckedText.count { it in wrongScript }
         val expectedCount = scriptCheckedText.count { it in expectedScript }
         val distinctWrong = scriptCheckedText.filter { it in wrongScript }.toSet().size
@@ -1970,7 +1983,7 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     private val properNameParticles = setOf(
-        "al", "and", "bin", "da", "de", "del", "den", "der", "di", "du", "ibn",
+        "al", "bin", "da", "de", "del", "den", "der", "di", "du", "ibn",
         "la", "le", "of", "st", "saint", "the", "van", "von",
     )
     private val geographicNamePrefixes = setOf("new")
@@ -2201,5 +2214,12 @@ internal object SubtitleTranslationQualityPolicy {
     private fun normalize(value: String): String =
         Normalizer.normalize(value, Normalizer.Form.NFKC)
             .lowercase(Locale.ROOT)
-            .filter { it.isLetterOrDigit() }
+            .filter { char ->
+                char.isLetterOrDigit() || when (Character.getType(char).toInt()) {
+                    Character.NON_SPACING_MARK.toInt(),
+                    Character.COMBINING_SPACING_MARK.toInt(),
+                    Character.ENCLOSING_MARK.toInt() -> true
+                    else -> false
+                }
+            }
 }

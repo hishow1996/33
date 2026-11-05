@@ -22,7 +22,7 @@ internal object SubtitleTranslationPromptPolicy {
             "otherwise translated sentence, while ordinary surrounding words must still be translated. A clearly name-shaped " +
             "standalone person, place, brand, organization, product or work name may retain its exact spelling when no established " +
             "target-language name is available. A list of standalone entities may use commas or semicolons and may contain multi-word " +
-            "names; do not apply this exception to common words or conversational phrases. A subtitle may be an incomplete " +
+            "names; do not apply this exception to common words, conversational phrases or sentence fragments. A subtitle may be an incomplete " +
             "fragment cut off by a line boundary: translate every supported word naturally, do not invent the missing ending, " +
             "and do not reject or leave the fragment untranslated merely because it is grammatically incomplete. Retain only " +
             "source-grounded entities inside such fragments. Keep each entity's rendering consistent throughout the video. " +

@@ -13,7 +13,7 @@ object SubtitleLanguageDetector {
         Regex("[\\uAC00-\\uD7AF\\u1100-\\u11FF\\u3130-\\u318F]"),
         Regex("[\\u0E00-\\u0E7F]"),
         Regex("[\\u0600-\\u06FF\\u0750-\\u077F]"),
-        Regex("[\\u0900-\\u097F]"),
+        Regex("[\\u0904-\\u0939\\u093C-\\u094D\\u0950-\\u0961\\u0971-\\u097F]"),
         Regex("[\\u0590-\\u05FF]"),
         Regex("[\\u0370-\\u03FF]"),
         Regex("[\\u0406\\u0456\\u0404\\u0454\\u0490\\u0491\\u0407\\u0457]"),
