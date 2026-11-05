@@ -179,7 +179,7 @@ internal object SubtitleTranslationQualityPolicy {
             // Chinese unit words may directly follow Chinese numerals (五公里、三米).
             // Permit only numeral characters at that boundary, not arbitrary adjacent Han words.
             val leftBoundary = if (chineseAlias) {
-                """(?:(?<![\\p{L}])|(?<=[零〇一二两兩三四五六七八九十百千万萬亿億点點半负負正]))"""
+                """(?:(?<![\p{L}])|(?<=[零〇一二两兩三四五六七八九十百千万萬亿億点點半负負正]))"""
             } else {
                 """(?<![\\p{L}])"""
             }
