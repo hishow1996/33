@@ -448,6 +448,9 @@ internal object SubtitleTranslationQualityPolicy {
      * Normalize explicit Arabic-number tokens without logging their values.
      * Parse source and Chinese output using their own number-format conventions.
      */
+    private fun hasChineseOrdinalPrefix(value: String, numericStart: Int): Boolean =
+        value.substring(maxOf(0, numericStart - 6), numericStart).trimEnd().endsWith("第")
+
     private fun normalizedExplicitNumbers(
         value: String,
         numberFormatLanguage: String,
@@ -466,6 +469,7 @@ internal object SubtitleTranslationQualityPolicy {
         explicitNumberPattern.findAll(value).forEach { match ->
             if (fractions.any { it.range.contains(match.range.first) && it.range.contains(match.range.last) }) return@forEach
             if (skipClockRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            if (hasChineseOrdinalPrefix(value, match.range.first)) return@forEach
             normalizeExplicitNumberMatch(match, value, numberFormatLanguage)?.let { tokens += match.range.first to it }
         }
         return tokens.sortedBy { it.first }.distinctBy { it.first }.map { it.second }
@@ -1143,6 +1147,7 @@ internal object SubtitleTranslationQualityPolicy {
         explicitNumberPattern.findAll(value).forEach { match ->
             if (fractions.any { it.range.contains(match.range.first) && it.range.contains(match.range.last) }) return@forEach
             if (skipRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            if (hasChineseOrdinalPrefix(value, match.range.first)) return@forEach
             normalizeExplicitNumberMatch(match, value, numberFormatLanguage)?.let { tokens += match.range.first to it }
         }
 
@@ -1179,8 +1184,7 @@ internal object SubtitleTranslationQualityPolicy {
             val nextChar = value.getOrNull(match.range.last + 1)
             if (raw == "零" && nextChar == '下') return@forEach
             // 序数词（第一、第二等）表达顺序，不是原文数量，不能参与数字一致性校验。
-            val preceding = value.substring(maxOf(0, match.range.first - 6), match.range.first).trimEnd()
-            if (preceding.endsWith("第")) return@forEach
+            if (hasChineseOrdinalPrefix(value, match.range.first)) return@forEach
             val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
             val hasMagnitude = raw.any { it in "十百千万萬亿億" }
             val isDigitSequence = raw.length >= 2 && raw.all { it in "零〇一二两兩三四五六七八九" }

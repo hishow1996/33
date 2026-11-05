@@ -881,6 +881,18 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun ordinalMarkersDoNotBecomeExplicitQuantityChanges() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                "第3章有2只猫。",
+                "第三章有两只猫。",
+                "ja",
+                "zh-CN",
+            ) != null,
+        )
+    }
+
+    @Test
     fun detectsPolarityReversalsForJapaneseKoreanFrenchGermanSpanishAndPortuguese() {
         val examples = listOf(
             Triple("行きません。", "我去。", "ja"),
