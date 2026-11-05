@@ -253,8 +253,8 @@ internal object SubtitleTranslationQualityPolicy {
         if (source.length > 40 || translated.length > 48) return false
         // Common expressions and ordinary words must never use the post-retry name exception.
         if (normalize(source) in commonShortPhrases || hasCommonEnglishWord(source)) return false
-        val sourceTokens = shortLatinTokens(source) ?: return false
-        val translatedTokens = shortLatinTokens(translated) ?: return false
+        val sourceTokens = shortNameTokens(source) ?: return false
+        val translatedTokens = shortNameTokens(translated) ?: return false
         if (sourceTokens.size != translatedTokens.size) return false
         // Only title-cased name-like text can use the spelling exception. All-caps phrases
         // (for example "NO WAY") are not names; acronyms are handled by the exact-term rule.
@@ -265,10 +265,36 @@ internal object SubtitleTranslationQualityPolicy {
         }
     }
 
-    /** 1~3 个拉丁词；允许字幕包裹符号与行尾标点，但不放行数字和其他文字系统。 */
-    private fun shortLatinTokens(value: String): List<String>? {
+    /**
+     * 短姓名允许拉丁字母，以及有大小写区分的西里尔/希腊文字；
+     * 无大小写文字系统不凭单个短词自动判断为人名，避免把普通问候语误放行。
+     */
+    private fun shortNameTokens(value: String): List<String>? {
+        shortLatinTokens(value)?.let { return it }
         val rawTokens = value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (rawTokens.isEmpty() || rawTokens.size > 3) return null
+        val cleaned = rawTokens.map { rawToken ->
+            rawToken.trim { it in shortTokenBoundaryPunctuation }
+        }
+        val letters = cleaned.flatMap { token -> token.filter { it.isLetter() } }
+        if (letters.isEmpty()) return null
+        val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
+        if (scripts.size != 1 || scripts.single() !in setOf("CYRILLIC", "GREEK")) return null
+        if (cleaned.any { token ->
+                val tokenLetters = token.filter { it.isLetter() }
+                val normalized = normalize(token)
+                normalized in commonNonLatinNameWords ||
+                    tokenLetters.isEmpty() ||
+                    !isTitleCasedNameToken(token, allowInitials = true)
+            }
+        ) return null
+        return cleaned.map(::normalize)
+    }
+
+    /** 1~5 个拉丁词；允许字幕包裹符号与行尾标点，但不放行数字和其他文字系统。 */
+    private fun shortLatinTokens(value: String): List<String>? {
+        val rawTokens = value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (rawTokens.isEmpty() || rawTokens.size > 5) return null
         return rawTokens.map { rawToken ->
             // Subtitle speaker labels/names are often wrapped as "(John):", "[Sarah]" or "“John”".
             // Remove only boundary punctuation; keep apostrophes, hyphens and periods inside names.
@@ -1699,38 +1725,101 @@ internal object SubtitleTranslationQualityPolicy {
      * 专有名词、缩写、型号、签证类别（"H-1B"、"NASA"、"COVID-19"、"iPhone 15"、"Elon Musk"）本来就不翻译，
      * 翻译结果与原文相同可以作为有效中文配音文本；普通句子/单词原样返回仍按翻译失败处理。
      */
+    private val properNameParticles = setOf(
+        "al", "bin", "da", "de", "del", "den", "der", "di", "du", "ibn",
+        "la", "le", "of", "st", "saint", "the", "van", "von",
+    )
+    private val geographicNamePrefixes = setOf("new")
+    private val commonNonLatinNameWords = setOf(
+        // Common Russian words/greetings are never accepted as names merely because they
+        // appear alone or are title-cased by a subtitle provider.
+        "привет", "здравствуйте", "спасибо", "пожалуйста", "доброе", "добрый", "утро",
+        "день", "вечер", "пока", "да", "нет", "хорошо", "ладно", "конечно", "сейчас",
+        "сегодня", "завтра", "вчера", "что", "это", "как", "почему", "куда", "где", "кто",
+        // Common Greek greetings and everyday words.
+        "γεια", "ευχαριστώ", "παρακαλώ", "ναι", "όχι", "καλημέρα", "καλησπέρα", "αντίο",
+    )
+
+    /**
+     * Standalone names, place names, organizations, brands and model identifiers may remain
+     * unchanged. Ordinary words and sentence fragments must still be translated.
+     */
     private fun isTermLikeCue(value: String): Boolean {
         // Compatibility forms (for example full-width Latin letters/digits) must reach the
         // NFKC-based source-echo comparison instead of being mistaken for unchanged acronyms.
         if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
-        // Common greetings/commands remain translatable even when every word is capitalized.
-        if (normalize(value) in commonShortPhrases || hasCommonEnglishWord(value)) return false
+        if (normalize(value) in commonShortPhrases) return false
         val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
-        if (tokens.isEmpty() || tokens.size > 3) return false
-        // 带感叹/问号/分号的是句子，不是词条。
+        if (tokens.isEmpty() || tokens.size > 5) return false
+        // A sentence with an explicit question, exclamation or semicolon is never a name cue.
         if (value.any { it in "!?;:" }) return false
         val letters = value.filter { it.isLetter() }
-        // 只对拉丁字母的词条放行；日文汉字、西里尔文等原样返回仍按没翻译处理。
-        if (letters.any { Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN }) return false
+        if (letters.isEmpty()) return false
+        val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
+        if (scripts.size != 1) return false
+        val script = scripts.single()
 
         if (tokens.size == 1) {
-            // Exact acronyms, opaque product identifiers, and internal-capitalization brands
-            // may remain unchanged. Ordinary uppercase words are excluded by commonShortWords.
+            val normalized = normalize(value)
+            if (normalized in commonShortWords || normalized in commonNonLatinNameWords) return false
+            // Exact acronyms and opaque model identifiers may remain unchanged.
             if (letters.length in 2..10 && letters.all { it.isUpperCase() }) return true
             if (value.any { it.isDigit() } && letters.isNotEmpty()) return true
-            if (letters.drop(1).any { it.isUpperCase() }) return true
-            return false
+            // Internal-capitalization product/brand names such as iPhone and YouTube.
+            return script == "LATIN" && letters.drop(1).any { it.isUpperCase() }
         }
 
-        // "iPhone 15" is a two-token model/brand identifier, not a translated sentence.
+        // Product/model form such as "iPhone 15".
         if (tokens.size == 2 &&
             tokens.first().filter { it.isLetter() }.drop(1).any { it.isUpperCase() } &&
             tokens.last().all { it.isDigit() }
         ) return true
 
-        // Title-cased multi-word proper names are retained terms; ordinary phrases containing
-        // common English words remain subject to target-language validation.
-        return hasTitleCasedWords(value) && !hasCommonEnglishWord(value)
+        return isTitleCasedProperNamePhrase(tokens, script)
+    }
+
+    /**
+     * Recognize multi-token names in scripts with letter case (Latin, Cyrillic, Greek, etc.).
+     * The Latin word list deliberately blocks ordinary title-cased phrases such as "Good Morning"
+     * and "Hello World", while allowing name particles and the common place-name prefix "New".
+     */
+    private fun isTitleCasedProperNamePhrase(tokens: List<String>, script: String): Boolean {
+        var meaningfulTokens = 0
+        val cleanedTokens = tokens.map { raw ->
+            raw.trim { it in shortTokenBoundaryPunctuation }
+        }
+        if (cleanedTokens.any { it.isEmpty() }) return false
+        val firstWord = normalize(cleanedTokens.first())
+
+        cleanedTokens.forEachIndexed { index, token ->
+            if (token.any { !it.isLetter() && it !in shortTokenInnerPunctuation }) return false
+            val word = normalize(token)
+            val particle = script == "LATIN" && word in properNameParticles
+            val geographicPrefix = script == "LATIN" &&
+                word in geographicNamePrefixes &&
+                (index == 0 || (index == 1 && firstWord in properNameParticles))
+            if (particle || geographicPrefix) {
+                val letters = token.filter { it.isLetter() }
+                if (letters.isEmpty() || !(letters.all { it.isLowerCase() } ||
+                        isTitleCasedNameToken(token, allowInitials = false))
+                ) return false
+                return@forEachIndexed
+            }
+
+            if (!isTitleCasedNameToken(token, allowInitials = true)) return false
+            if (script == "LATIN" && word in commonShortWords) return false
+            if (script != "LATIN" && word in commonNonLatinNameWords) return false
+            meaningfulTokens++
+        }
+        return meaningfulTokens > 0
+    }
+
+    private fun isTitleCasedNameToken(token: String, allowInitials: Boolean): Boolean {
+        val letters = token.filter { it.isLetter() }
+        if (letters.isEmpty() || !letters.first().isUpperCase()) return false
+        if (letters.drop(1).all { it.isLowerCase() }) return true
+        return allowInitials && letters.length <= 3 && letters.all { it.isUpperCase() } &&
+            token.endsWith(".")
     }
 
     /** Ignore case, whitespace and punctuation so formatting-only changes do not pass as translation. */
