@@ -3,6 +3,7 @@ package io.translatetube.local.player
 import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -308,7 +309,7 @@ class SubtitleCacheValidationPolicyTest {
     @Test
     fun symbolOnlySourceRowsMakeACompleteNoSpeechCacheRecoverable() {
         val source = listOf(
-            SubLine(0, 0L, 1_000L, "♪♪", null),
+            SubLine(0, 0L, 1_000L, "♪♪", "服务暂时不可用"),
             SubLine(1, 1_000L, 2_000L, "...", null),
         )
         val rows = source.map {
@@ -321,6 +322,9 @@ class SubtitleCacheValidationPolicyTest {
             source, rows, sourceLanguage = "en", targetLanguage = "zh-CN",
         )
         assertEquals(listOf(null, null), restored?.map { it.zh })
+        assertNull(SubtitleCacheValidationPolicy.sanitizeTranslationForStorage(
+            source.first(), "en",
+        ).zh)
     }
 
     @Test
