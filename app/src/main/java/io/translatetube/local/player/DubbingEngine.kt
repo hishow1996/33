@@ -156,7 +156,11 @@ class DubbingEngine(
     @Volatile private var synthesisRealtimeSampleCountValue: Int = 0
     val synthesisRealtimeSampleCount: Int get() = synthesisRealtimeSampleCountValue
     /** Adaptive estimate of actual System TTS duration, normalized to its approximate 1x rate. */
-    @Volatile private var directTtsMsPerCodePoint: Double = 220.0
+    @Volatile private var directTtsMsPerCodePoint: Double = DubbingSyncHoldPolicy.DEFAULT_MS_PER_CODE_POINT
+    /** 当前引擎/音色的实测语速校准系数（合并相邻句的预判用），按引擎 cacheKey 持久化。 */
+    @Volatile private var speechPaceScale: Double = DubbingSpeechPaceCalibration.DEFAULT_SCALE
+    @Volatile private var paceEngineKey: String? = null
+    private val paceUpdateCount = java.util.concurrent.atomic.AtomicInteger(0)
     /** Scheduler-aware lag: synthesis wall time divided by the interval before the next speech cue. */
     @Volatile private var synthesisTimelineLagFactorValue: Float = Float.NaN
     val synthesisTimelineLagFactor: Float get() = synthesisTimelineLagFactorValue
@@ -520,7 +524,10 @@ class DubbingEngine(
                 chunkTextByFirst.clear()
                 chunkRedirect.clear()
                 chunkWindowEndByFirst.clear()
-                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines) { index, _ ->
+                paceEngineKey = tts.cacheKey
+                speechPaceScale = DubbingSpeechPaceStore.load(appContext, tts.cacheKey)
+                paceUpdateCount.set(0)
+                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines, speechPaceScale, speed) { index, _ ->
                     index !in nonSpokenIndexes
                 }) {
                     chunkTextByFirst[chunk.firstIndex] = chunk.text
@@ -1208,6 +1215,7 @@ class DubbingEngine(
                     }
                     val firstAudio = audio ?: throw (lastFailure
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
+                    recordSpeechPace(synthText, firstAudio, synthesisSpeed)
                     // 本块可用的时间窗口：块首行开始 → 块末（含借用的静音间隙）。合并块覆盖两句，
                     // 必须按整块窗口而不是单行时长判断，否则会误以为"太长"而反复重合成。
                     val windowMs = ((chunkWindowEndByFirst[idx] ?: line.endMs) - line.startMs).coerceAtLeast(1L)
@@ -1771,6 +1779,32 @@ class DubbingEngine(
             }
             if (shouldRestart) startSynthLoop()
             }
+        }
+    }
+
+    /**
+     * 用刚合成出来的真实时长校准"这个引擎/音色读多快"，供下次合并相邻句时预判。
+     * 只是优化：任何异常样本都会被忽略，不会影响本句的合成和缓存。
+     */
+    private fun recordSpeechPace(
+        synthText: String,
+        audio: io.translatetube.local.tts.TtsAudio,
+        synthesisSpeed: Float,
+    ) {
+        val key = paceEngineKey ?: return
+        val observedMs = audio.samples.size.toLong() * 1_000L / audio.sampleRate.coerceAtLeast(1)
+        val baselineMs = DubbingChunkPolicy.estimateSpeechMs(synthText)
+        val updated = DubbingSpeechPaceCalibration.update(
+            current = speechPaceScale,
+            observedAudioMs = observedMs,
+            synthesisSpeed = synthesisSpeed,
+            baselineEstimateMs = baselineMs,
+        )
+        if (updated == speechPaceScale) return
+        speechPaceScale = updated
+        // 每 8 次更新落一次盘，避免每句都写 SharedPreferences；释放时再补一次。
+        if (paceUpdateCount.incrementAndGet() % 8 == 0) {
+            DubbingSpeechPaceStore.save(appContext, key, updated)
         }
     }
 
@@ -4243,6 +4277,11 @@ class DubbingEngine(
         // 共享总线属于播放器：旧引擎挂上去的句子必须随引擎一起撤掉，
         // 否则新引擎的配音会和旧引擎残留的音频叠在一起播出。
         purgeMountedCues()
+        paceEngineKey?.let { key ->
+            if (paceUpdateCount.get() % 8 != 0) {
+                DubbingSpeechPaceStore.save(appContext, key, speechPaceScale)
+            }
+        }
         logDubbingInfo(
             "配音引擎开始释放",
             mapOf(

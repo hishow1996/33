@@ -20,10 +20,14 @@ internal object DubbingChunkPolicy {
 
     /** 中文语速基准：普通朗读约 4.5 字/秒。预判宁可保守（估偏短），由 WSOLA 微调兜准。 */
     private const val SECONDS_PER_CHAR = 0.22f
-    /** 相邻行可借用的最大间隙（VideoLingo TOLERANCE 同思想）。 */
-    internal const val MAX_BORROW_MS = 2_000L
-    /** 允许的语速上限：超过会明显机械；"配完"优先，取 1.5。 */
-    internal const val MAX_SPEEDUP = 1.5f
+    /** 两行之间的静音间隙小于它才允许合并成一块（VideoLingo TOLERANCE 同思想）。 */
+    internal const val MAX_MERGE_GAP_MS = 2_000L
+
+    /**
+     * 合并预算使用的语速上限：必须与合成阶段 WSOLA 的压缩上限是同一个数，
+     * 否则"预判能放下"和"合成时真能压下"会各说各话。只在 [DubbingFitPolicy] 里定义一次。
+     */
+    private const val MAX_SPEEDUP = DubbingFitPolicy.MAX_COMPRESS
 
     internal data class Chunk(
         /** 块首行索引（合成与播放的锚点）。 */
@@ -38,15 +42,21 @@ internal object DubbingChunkPolicy {
     )
 
     /**
-     * 估算一段中文文本的朗读时长（毫秒）。标点附加自然停顿。
+     * 估算一段中文文本在 1 倍语速下的朗读时长（毫秒），标点附加自然停顿。
      * 合成前预判用；宁可略偏短，剩余交给 WSOLA 对齐。
+     *
+     * @param paceScale 实测校准系数（见 [DubbingSpeechPaceCalibration]）：实际朗读时长 ÷ 本公式估算。
+     *   默认 1.0 即保持原有估算；不同引擎/音色的真实语速差别很大，按它校准后合并判断才准。
+     * @param speechRate 用户设置的配音语速（>1 更快）；语速越快，同一段文本读得越短。
      */
-    fun estimateSpeechMs(text: String): Long {
+    fun estimateSpeechMs(text: String, paceScale: Double = 1.0, speechRate: Float = 1f): Long {
         val chars = text.count { !it.isWhitespace() }
         if (chars == 0) return 0L
         val pauses = text.count { it == '，' || it == '。' || it == '？' || it == '！' || it == '；' || it == '、' }
         val seconds = chars * SECONDS_PER_CHAR + pauses * 0.18f
-        return (seconds * 1000f).toLong()
+        val safeScale = DubbingSpeechPaceCalibration.sanitize(paceScale)
+        val safeRate = speechRate.takeIf { it.isFinite() && it > 0f }?.coerceIn(0.5f, 3.0f) ?: 1f
+        return (seconds * 1000.0 * safeScale / safeRate).toLong()
     }
 
     /**
@@ -57,9 +67,13 @@ internal object DubbingChunkPolicy {
      * - 合并也放不下 → 单行块，合成时压缩到上限，剩余超出由总线排队吸收。
      *
      * @param lines 已做过 extendCueWindows（借好间隙）的字幕行
+     * @param paceScale 当前引擎/音色的实测语速校准系数，默认 1.0（与旧行为一致）
+     * @param speechRate 用户设置的配音语速，默认 1.0
      */
     fun buildChunks(
         lines: List<SubLine>,
+        paceScale: Double = 1.0,
+        speechRate: Float = 1f,
         shouldSpeakCue: (index: Int, line: SubLine) -> Boolean = { _, _ -> true },
     ): List<Chunk> {
         val chunks = ArrayList<Chunk>(lines.size)
@@ -77,7 +91,7 @@ internal object DubbingChunkPolicy {
                 "第 ${i + 1} 行缺少有效中文译文，无法生成中文配音"
             }
             val windowEnd = line.endMs
-            val est = estimateSpeechMs(text)
+            val est = estimateSpeechMs(text, paceScale, speechRate)
             val singleWindow = windowEnd - line.startMs
 
             val next = lines.getOrNull(i + 1)
@@ -87,7 +101,7 @@ internal object DubbingChunkPolicy {
                 // A merged PCM block is synthesized with the first cue's voice only. Never merge
                 // across speaker assignments, otherwise the second cue silently loses its voice.
                 next.speakerId == line.speakerId &&
-                (next.startMs - line.endMs) < MAX_BORROW_MS
+                (next.startMs - line.endMs) < MAX_MERGE_GAP_MS
 
             if (est > singleWindow && mergeCandidate) {
                 val nextText = next!!.zh?.trim().orEmpty()
@@ -96,7 +110,7 @@ internal object DubbingChunkPolicy {
                 }
                 val mergedText = joinLines(text, nextText)
                 val mergedWindowEnd = next.endMs
-                val mergedEst = estimateSpeechMs(mergedText)
+                val mergedEst = estimateSpeechMs(mergedText, paceScale, speechRate)
                 val mergedWindow = mergedWindowEnd - line.startMs
                 // 引擎输入上限守卫：合并文本超限会导致整块合成失败（无声），
                 // 宁可不合并让 WSOLA 单行硬对齐，也不能让两行都没声音。

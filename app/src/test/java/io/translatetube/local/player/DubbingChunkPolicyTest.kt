@@ -87,4 +87,59 @@ class DubbingChunkPolicyTest {
         assertTrue(error is IllegalArgumentException)
         assertTrue(error?.message.orEmpty().contains("中文译文"))
     }
+    // ---- 实测语速校准 / 用户配音语速 ----
+
+    private val eightChars = "一二三四五六七八" // 无标点：默认估算 8 × 0.22s = 1.76s
+
+    private fun twoCues(firstWindowMs: Long) = listOf(
+        cue(0, 0L, firstWindowMs, 1, eightChars),
+        cue(1, firstWindowMs + 100L, firstWindowMs + 4_000L, 1, eightChars),
+    )
+
+    @Test
+    fun defaultPaceKeepsTheOriginalEstimateAndMergeDecisions() {
+        val text = "你好，我的朋友。"
+        assertEquals(
+            DubbingChunkPolicy.estimateSpeechMs(text),
+            DubbingChunkPolicy.estimateSpeechMs(text, 1.0, 1f),
+        )
+        // 1.76s 的句子放进 2s 窗口：不需要合并。
+        assertEquals(2, DubbingChunkPolicy.buildChunks(twoCues(2_000L)).size)
+    }
+
+    @Test
+    fun slowerMeasuredVoiceMergesAdjacentCuesThatNoLongerFit() {
+        // 实测这个音色比公式估算慢 40%：1.76s → 2.46s，放不进 2s 窗口，应与下一句合并。
+        val chunks = DubbingChunkPolicy.buildChunks(twoCues(2_000L), paceScale = 1.4)
+        assertEquals(1, chunks.size)
+        assertEquals(listOf(0, 1), chunks.single().lineIndices)
+    }
+
+    @Test
+    fun fasterMeasuredVoiceAvoidsNeedlessMerging() {
+        // 默认估算 1.76s > 1.5s 窗口会合并；实测偏快（×0.7 → 1.23s）时一句就放得下。
+        assertEquals(1, DubbingChunkPolicy.buildChunks(twoCues(1_500L)).size)
+        assertEquals(2, DubbingChunkPolicy.buildChunks(twoCues(1_500L), paceScale = 0.7).size)
+    }
+
+    @Test
+    fun fasterConfiguredSpeechRateShortensTheEstimate() {
+        assertEquals(1, DubbingChunkPolicy.buildChunks(twoCues(1_500L), speechRate = 1f).size)
+        // 配音语速 1.3：1.76s → 约 1.35s，放得进 1.5s 窗口。
+        assertEquals(2, DubbingChunkPolicy.buildChunks(twoCues(1_500L), speechRate = 1.3f).size)
+        assertTrue(
+            DubbingChunkPolicy.estimateSpeechMs(eightChars, speechRate = 2f) <
+                DubbingChunkPolicy.estimateSpeechMs(eightChars),
+        )
+    }
+
+    @Test
+    fun invalidCalibrationInputsFallBackToTheDefaultEstimate() {
+        val base = DubbingChunkPolicy.estimateSpeechMs(eightChars)
+        assertEquals(base, DubbingChunkPolicy.estimateSpeechMs(eightChars, Double.NaN, Float.NaN))
+        assertEquals(base, DubbingChunkPolicy.estimateSpeechMs(eightChars, -3.0, 0f))
+        // 超大系数被限制在上限，不会让每一句都被判成放不下。
+        assertTrue(DubbingChunkPolicy.estimateSpeechMs(eightChars, 1_000.0) <= base * 2 + 1)
+    }
+
 }

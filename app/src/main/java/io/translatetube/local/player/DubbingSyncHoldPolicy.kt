@@ -1,6 +1,9 @@
 package io.translatetube.local.player
 
 internal object DubbingSyncHoldPolicy {
+    /** 没有任何实测数据时，每个可朗读字符的默认时长（毫秒）。直读 TTS 的估算以它为起点。 */
+    const val DEFAULT_MS_PER_CODE_POINT = 220.0
+
     /**
      * Detect whether speech is predicted to exceed the cue window after applying the selected
      * rate. This is an overrun marker only; video playback is never paused for dubbing.
@@ -134,7 +137,7 @@ internal object DubbingSyncHoldPolicy {
         val safeMsPerCodePoint = msPerCodePoint
             .takeIf { it.isFinite() && it > 0.0 }
             ?.coerceIn(60.0, 900.0)
-            ?: 220.0
+            ?: DEFAULT_MS_PER_CODE_POINT
         val spokenCount = spokenCodePointCount(text)
         val durationMs = spokenCount.toDouble() * safeMsPerCodePoint + punctuationPauseMs(text).toDouble()
         return durationMs.takeIf { it.isFinite() }
@@ -163,7 +166,7 @@ internal object DubbingSyncHoldPolicy {
         val current = currentMsPerCodePoint
             .takeIf { it.isFinite() && it > 0.0 }
             ?.coerceIn(60.0, 900.0)
-            ?: 220.0
+            ?: DEFAULT_MS_PER_CODE_POINT
         if (
             elapsedMs !in 120L..60_000L ||
             codePointCount <= 0 ||
