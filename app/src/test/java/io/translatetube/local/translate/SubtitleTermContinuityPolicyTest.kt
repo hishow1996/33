@@ -124,4 +124,50 @@ class SubtitleTermContinuityPolicyTest {
         ))
     }
 
+    @Test
+    fun recognizesArabicHebrewAndDevanagariNamesFromHonorificsAcrossLaterCues() {
+        val arabic = SubtitleTermContinuityPolicy.extractStableTerms(
+            listOf("الدكتور محمد وصل إلى دبي."),
+            sourceLanguage = "ar",
+        )
+        assertTrue(arabic.contains("محمد"))
+        assertTrue(SubtitleTermContinuityPolicy.containsStableTerm(
+            "محمد سيتحدث لاحقاً.", arabic, "ar",
+        ))
+        assertFalse(SubtitleTermContinuityPolicy.containsStableTerm(
+            "محمود سيتحدث لاحقاً.", arabic, "ar",
+        ))
+
+        val hebrew = SubtitleTermContinuityPolicy.extractStableTerms(
+            listOf("ד״ר דוד הגיע לתל אביב."),
+            sourceLanguage = "he",
+        )
+        assertTrue(hebrew.contains("דוד"))
+        assertTrue(SubtitleTermContinuityPolicy.containsStableTerm(
+            "דוד ידבר מחר.", hebrew, "he",
+        ))
+
+        val hindi = SubtitleTermContinuityPolicy.extractStableTerms(
+            listOf("डॉ. नरेंद्र आज आए।"),
+            sourceLanguage = "hi",
+        )
+        assertTrue(hindi.contains("नरेंद्र"))
+        assertTrue(SubtitleTermContinuityPolicy.containsStableTerm(
+            "नरेंद्र फिर आए।", hindi, "hi",
+        ))
+    }
+
+    @Test
+    fun autoLanguageRecognizesArabicHebrewAndDevanagariNameContexts() {
+        assertEquals("ar", SubtitleTermContinuityPolicy.resolveLanguage(
+            listOf("الدكتور محمد وصل اليوم."), "auto",
+        ))
+        assertEquals("he", SubtitleTermContinuityPolicy.resolveLanguage(
+            listOf("ד״ר דוד הגיע היום."), "auto",
+        ))
+        assertEquals("hi", SubtitleTermContinuityPolicy.resolveLanguage(
+            listOf("डॉ. नरेंद्र आज आए।"), "auto",
+        ))
+    }
+
 }

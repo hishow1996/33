@@ -1615,13 +1615,27 @@ class OpenAiCompatEngine(
         videoTitle: String?,
     ): List<String> {
         val out = mutableListOf<String>()
-        var context = initialContext
+        val usableContextRow = subtitleTranslationAcceptor(srcLang, tgtLang)
+        val usableRecoveredNameRow = subtitleShortUntranslatedAcceptor(srcLang, tgtLang)
+        val coroutineContext = currentCoroutineContext()
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
+            val batchContext = TranslationContextPolicy.contextForBatchWithTermContinuity(
+                initialContext = initialContext,
+                completedSources = lines.subList(0, i),
+                completedTranslations = out,
+                currentSourceCues = batch,
+                sourceLanguage = srcLang,
+                checkActive = { coroutineContext.ensureActive() },
+                isUsable = { source, translation ->
+                    usableContextRow(source, translation) ||
+                        usableRecoveredNameRow(source, translation)
+                },
+            )
             val translated = translateBatchWithAdaptiveRecovery(
                 lines = batch,
-                context = context,
+                context = batchContext,
                 isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                 acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                 deferInvalidRowsToCaller = true,
@@ -1633,8 +1647,6 @@ class OpenAiCompatEngine(
                 )
             }
             out += translated
-            val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
-            context = batch.subList(from, batch.size) to translated.subList(from, translated.size)
             i += 30
         }
         return out
@@ -1774,13 +1786,27 @@ class GeminiEngine(
         videoTitle: String?,
     ): List<String> {
         val out = mutableListOf<String>()
-        var context = initialContext
+        val usableContextRow = subtitleTranslationAcceptor(srcLang, tgtLang)
+        val usableRecoveredNameRow = subtitleShortUntranslatedAcceptor(srcLang, tgtLang)
+        val coroutineContext = currentCoroutineContext()
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
+            val batchContext = TranslationContextPolicy.contextForBatchWithTermContinuity(
+                initialContext = initialContext,
+                completedSources = lines.subList(0, i),
+                completedTranslations = out,
+                currentSourceCues = batch,
+                sourceLanguage = srcLang,
+                checkActive = { coroutineContext.ensureActive() },
+                isUsable = { source, translation ->
+                    usableContextRow(source, translation) ||
+                        usableRecoveredNameRow(source, translation)
+                },
+            )
             val translated = translateBatchWithAdaptiveRecovery(
                 lines = batch,
-                context = context,
+                context = batchContext,
                 isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                 acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                 deferInvalidRowsToCaller = true,
@@ -1792,8 +1818,6 @@ class GeminiEngine(
                 )
             }
             out += translated
-            val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
-            context = batch.subList(from, batch.size) to translated.subList(from, translated.size)
             i += 30
         }
         return out

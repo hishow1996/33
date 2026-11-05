@@ -1502,4 +1502,134 @@ class SubtitleTranslationQualityPolicyTest {
         ) != null)
     }
 
+    @Test
+    fun sourceGroundedBrandNamesSurviveTransitionsAcrossDifferentUnicodeScripts() {
+        val cases = listOf(
+            Triple(
+                "このアプリはTikTokで人気です。",
+                "这个应用在 TikTok 上很受欢迎。",
+                "ja",
+            ),
+            Triple(
+                "이 앱은 YouTube에서 인기가 많습니다.",
+                "这个应用在 YouTube 上很受欢迎。",
+                "ko",
+            ),
+            Triple(
+                "هذا التطبيق مشهور على Instagram.",
+                "这个应用在 Instagram 上很受欢迎。",
+                "ar",
+            ),
+            Triple(
+                "Αυτό το βίντεο είναι στο YouTube.",
+                "这个视频在 YouTube 上。",
+                "el",
+            ),
+            Triple(
+                "यह ऐप YouTube पर लोकप्रिय है।",
+                "这个应用在 YouTube 上很受欢迎。",
+                "hi",
+            ),
+        )
+
+        cases.forEach { (source, translation, language) ->
+            assertTrue(
+                "$language source-grounded entity should remain valid",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    source, translation, language, "zh-CN",
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun retainsSourceGroundedUncasedScriptNamesWithoutAllowingArbitraryForeignText() {
+        val cases = listOf(
+            Triple(
+                "الدكتور محمد يتحدث الآن.",
+                "محمد正在讲话。",
+                "ar",
+            ),
+            Triple(
+                "ד״ר דוד מגיע היום.",
+                "דוד今天会来。",
+                "he",
+            ),
+            Triple(
+                "डॉ. नरेंद्र यहाँ हैं।",
+                "नरेंद्र在这里。",
+                "hi",
+            ),
+            Triple(
+                "田中さんが来ました。",
+                "田中来了。",
+                "ja",
+            ),
+            Triple(
+                "김민수 씨가 왔습니다.",
+                "김민수来了。",
+                "ko",
+            ),
+        )
+        cases.forEach { (source, translation, language) ->
+            assertTrue(
+                "$language source-grounded name should remain valid",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    source, translation, language, "zh-CN",
+                ),
+            )
+        }
+
+        assertFalse(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "هذه جملة عادية باللغة العربية.",
+            "这是一句 عادية باللغة العربية。",
+            "ar",
+            "zh-CN",
+        ))
+    }
+
+    @Test
+    fun sourceGroundedNamesDoNotTriggerForeignScriptDominanceByThemselves() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+                "김민수来了。",
+                "zh-CN",
+                "김민수 씨가 왔습니다。",
+                "ko",
+            ) != null,
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+                "田中来了。",
+                "zh-CN",
+                "田中さんが来ました。",
+                "ja",
+            ) != null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetChineseScriptMismatchReason(
+                "안녕하세요 김민수 왔습니다。",
+                "zh-CN",
+                "김민수 씨가 왔습니다。",
+                "ko",
+            ) != null,
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                "김민수 씨가 왔습니다。",
+                "김민수来了。",
+                "ko",
+                "zh-CN",
+            ) != null,
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+                "안녕하세요 김민수 왔습니다。",
+                "안녕하세요 김민수 왔습니다。",
+                "ko",
+                "zh-CN",
+            ) != null,
+        )
+    }
+
 }

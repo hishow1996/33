@@ -71,8 +71,8 @@ internal object TranslationContextPolicy {
     }
 
     /**
-     * Build a bounded context that combines the latest usable rows with a few older rows
-     * mentioning the same high-confidence Latin entities as the current batch.
+     * Build a bounded context that combines the latest usable rows with older rows mentioning
+     * source-grounded names or terms that recur in the current batch.
      *
      * Term references never replace current source text. Every accepted pair stays aligned;
      * scanning older rows is bounded and cancellation-aware for large subtitle timelines.
@@ -96,6 +96,21 @@ internal object TranslationContextPolicy {
 
         val resolvedSourceLanguage = SubtitleTermContinuityPolicy.resolveLanguage(currentSourceCues, sourceLanguage)
         val termKeys = SubtitleTermContinuityPolicy.extractStableTerms(currentSourceCues, resolvedSourceLanguage)
+        val currentHasUncasedScript = currentSourceCues.any { cue ->
+            cue.any { char ->
+                when (Character.UnicodeScript.of(char.code)) {
+                    Character.UnicodeScript.HIRAGANA,
+                    Character.UnicodeScript.KATAKANA,
+                    Character.UnicodeScript.HANGUL,
+                    Character.UnicodeScript.ARABIC,
+                    Character.UnicodeScript.HEBREW,
+                    Character.UnicodeScript.DEVANAGARI -> true
+                    Character.UnicodeScript.HAN -> resolvedSourceLanguage == "ja" ||
+                        resolvedSourceLanguage == "auto"
+                    else -> false
+                }
+            }
+        }
         val recent = ArrayList<Triple<Int, String, String>>(minOf(maxRows, boundary))
         var cursor = boundary - 1
         var scanned = 0
@@ -109,7 +124,9 @@ internal object TranslationContextPolicy {
             cursor--
         }
 
-        if (termKeys.isEmpty() || maxTermRows <= 0 || maxScanRows <= 0 || cursor < 0) {
+        if ((termKeys.isEmpty() && !currentHasUncasedScript) ||
+            maxTermRows <= 0 || maxScanRows <= 0 || cursor < 0
+        ) {
             checkActive()
             if (recent.isEmpty()) return null
             val ordered = recent.asReversed()
@@ -123,8 +140,20 @@ internal object TranslationContextPolicy {
             if ((scanned++ and 0xff) == 0) checkActive()
             val source = sourceAt(cursor).orEmpty()
             val translation = translationAt(cursor).orEmpty()
+            val matchesCurrentCasedOrMarkedTerm = termKeys.isNotEmpty() &&
+                SubtitleTermContinuityPolicy.containsStableTerm(
+                    source, termKeys, resolvedSourceLanguage,
+                )
+            val matchesUnmarkedUncasedName = currentHasUncasedScript &&
+                SubtitleTermContinuityPolicy.extractHighConfidenceUncasedEntityTokens(source).any { term ->
+                    currentSourceCues.any { cue ->
+                        SubtitleTermContinuityPolicy.containsStableTerm(
+                            cue, setOf(term), resolvedSourceLanguage,
+                        )
+                    }
+                }
             if (cursor !in recentIndices && source.isNotBlank() && translation.isNotBlank() &&
-                SubtitleTermContinuityPolicy.containsStableTerm(source, termKeys, resolvedSourceLanguage) &&
+                (matchesCurrentCasedOrMarkedTerm || matchesUnmarkedUncasedName) &&
                 isUsable(source, translation)
             ) {
                 historicalTerms += Triple(cursor, source, translation)
@@ -144,5 +173,51 @@ internal object TranslationContextPolicy {
         return selected.map { it.second } to selected.map { it.third }
     }
 
+    /**
+     * Build the current batch's history window from an optional incoming context plus all
+     * completed cues in this translation run. The history is accessed by index so long videos
+     * do not require copying their full source/translation prefixes for every batch.
+     */
+    fun contextForBatchWithTermContinuity(
+        initialContext: Pair<List<String>, List<String>>?,
+        completedSources: List<String>,
+        completedTranslations: List<String>,
+        currentSourceCues: List<String>,
+        sourceLanguage: String = "auto",
+        maxRows: Int = MAX_CONTEXT_ROWS,
+        maxTermRows: Int = MAX_TERM_REFERENCE_ROWS,
+        maxScanRows: Int = MAX_TERM_SCAN_ROWS,
+        checkActive: () -> Unit = {},
+        isUsable: (source: String, translation: String) -> Boolean = { _, translation ->
+            translation.isNotBlank()
+        },
+    ): Pair<List<String>, List<String>>? {
+        val initialSources = initialContext?.first.orEmpty()
+        val initialTranslations = initialContext?.second.orEmpty()
+        val initialCount = minOf(initialSources.size, initialTranslations.size)
+        val completedCount = minOf(completedSources.size, completedTranslations.size)
+        val historySize = initialCount + completedCount
+        if (historySize == 0) return null
+
+        return mostRecentPairsWithTermContinuityBefore(
+            size = historySize,
+            beforeIndex = historySize,
+            currentSourceCues = currentSourceCues,
+            sourceLanguage = sourceLanguage,
+            maxRows = maxRows,
+            maxTermRows = maxTermRows,
+            maxScanRows = maxScanRows,
+            checkActive = checkActive,
+            sourceAt = { index ->
+                if (index < initialCount) initialSources[index]
+                else completedSources[index - initialCount]
+            },
+            translationAt = { index ->
+                if (index < initialCount) initialTranslations[index]
+                else completedTranslations[index - initialCount]
+            },
+            isUsable = isUsable,
+        )
+    }
 
 }

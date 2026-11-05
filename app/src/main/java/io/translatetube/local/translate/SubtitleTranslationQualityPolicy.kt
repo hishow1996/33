@@ -24,7 +24,7 @@ internal data class TranslationQualityDecision(
 
 /** Shared validation for live translation batches and restored subtitle caches. */
 internal object SubtitleTranslationQualityPolicy {
-    private val wordSeparatorRegex = Regex("""[^\p{L}\p{N}]+""")
+    private val wordSeparatorRegex = Regex("""[^\p{L}\p{M}\p{N}]+""")
     private val urlPattern = Regex("""^(?:https?://|www\.)\S+$""", RegexOption.IGNORE_CASE)
     private val emailPattern = Regex(
         """^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$""",
@@ -419,7 +419,9 @@ internal object SubtitleTranslationQualityPolicy {
         val targetMismatch = targetLanguageMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val modelMeta = translationMetaResponseReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val scriptMismatch = if (SourceLanguagePolicy.isChinese(sourceLanguage)) null
-            else targetChineseScriptMismatchReason(translatedText, targetLanguage)
+            else targetChineseScriptMismatchReason(
+                translatedText, targetLanguage, sourceText, sourceLanguage,
+            )
         val numericMismatch = numericContentMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val numericUnitMismatch = numericUnitAssociationMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
         val unitMismatch = unitContentMismatchReason(sourceText, translatedText, sourceLanguage, targetLanguage)
@@ -495,6 +497,8 @@ internal object SubtitleTranslationQualityPolicy {
     fun targetChineseScriptMismatchReason(
         translatedText: String?,
         targetLanguage: String,
+        sourceText: String? = null,
+        sourceLanguage: String = "auto",
     ): String? {
         if (translatedText.isNullOrBlank() || !SourceLanguagePolicy.isChinese(targetLanguage)) return null
         val tag = SourceLanguagePolicy.normalizeTag(targetLanguage).lowercase(Locale.ROOT)
@@ -509,9 +513,15 @@ internal object SubtitleTranslationQualityPolicy {
         val traditionalOnly = "這為發後國門東車書雲電漢廣場龍風飯頭還沒與從讓說時間開關長萬億愛見聽寫話語遠邊個們嗎軟體續會"
         val wrongScript = if (traditionalTarget) simplifiedOnly else traditionalOnly
         val expectedScript = if (traditionalTarget) traditionalOnly else simplifiedOnly
-        val wrongCount = translatedText.count { it in wrongScript }
-        val expectedCount = translatedText.count { it in expectedScript }
-        val distinctWrong = translatedText.filter { it in wrongScript }.toSet().size
+
+        // Do not count source-grounded names as evidence that the whole subtitle uses the
+        // opposite Chinese script. Ordinary Chinese content still participates in this check.
+        val scriptCheckedText = removeSourceGroundedNameTokens(
+            translatedText, sourceText, sourceLanguage,
+        )
+        val wrongCount = scriptCheckedText.count { it in wrongScript }
+        val expectedCount = scriptCheckedText.count { it in expectedScript }
+        val distinctWrong = scriptCheckedText.filter { it in wrongScript }.toSet().size
         if (distinctWrong >= 3 && wrongCount >= 4 && wrongCount > expectedCount * 2 + 1) {
             val actualName = if (traditionalTarget) "简体" else "繁体"
             val expectedName = if (traditionalTarget) "繁体" else "简体"
@@ -1646,11 +1656,14 @@ internal object SubtitleTranslationQualityPolicy {
             sourceText, translatedText, sourceLanguage, targetLanguage,
         )?.let { return it }
 
+        val scriptCheckedText = removeSourceGroundedNameTokens(
+            translatedText, sourceText, sourceLanguage,
+        )
         var han = 0
         var kana = 0
         var hangul = 0
         var lettersOrDigits = 0
-        translatedText.forEach { char ->
+        scriptCheckedText.forEach { char ->
             if (char.isLetterOrDigit()) lettersOrDigits++
             when (Character.UnicodeScript.of(char.code)) {
                 Character.UnicodeScript.HAN -> han++
@@ -1677,45 +1690,66 @@ internal object SubtitleTranslationQualityPolicy {
         if (hangul >= 2 && hangul > han) {
             return "译文韩文音节占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
         }
-        if (hasDominantForeignText(sourceText, translatedText, han)) {
+        if (hasDominantForeignText(sourceText, translatedText, han, sourceLanguage)) {
             return "译文保留过多非汉字外语文本，汉字字符占比低于质量阈值"
         }
         return null
     }
 
     /**
-     * Split letter runs when Han text and another writing system touch without whitespace
-     * (for example "和Netflix"). Digits stay attached to the adjacent run so model identifiers
-     * such as iPhone15 are still checked as one source-grounded term.
+     * Split adjacent runs whenever the Unicode writing system changes, not only at Han/Latin
+     * boundaries. This keeps names such as TikTok source-grounded inside Japanese, Korean,
+     * Arabic, Hebrew and Devanagari text. Digits remain attached to the preceding run so model
+     * identifiers such as iPhone15 are still checked as one source-grounded term.
      */
     private fun splitMixedScriptTokens(value: String): List<String> {
         val result = mutableListOf<String>()
         value.split(wordSeparatorRegex).forEach { rawToken ->
             val current = StringBuilder()
-            var currentIsHan: Boolean? = null
+            var currentScript: Character.UnicodeScript? = null
+
             fun flush() {
                 if (current.isNotEmpty()) result += current.toString()
                 current.setLength(0)
-                currentIsHan = null
+                currentScript = null
             }
-            rawToken.forEach { char ->
-                if (!char.isLetterOrDigit()) {
-                    flush()
-                } else if (char.isLetter()) {
-                    val nextIsHan = Character.UnicodeScript.of(char.code) == Character.UnicodeScript.HAN
-                    if (current.isNotEmpty() && currentIsHan != null && currentIsHan != nextIsHan) {
-                        flush()
+
+            var offset = 0
+            while (offset < rawToken.length) {
+                val codePoint = rawToken.codePointAt(offset)
+                when {
+                    Character.isLetter(codePoint) -> {
+                        val nextScript = Character.UnicodeScript.of(codePoint)
+                        val concreteScript = nextScript != Character.UnicodeScript.COMMON &&
+                            nextScript != Character.UnicodeScript.INHERITED
+                        if (current.isNotEmpty() && concreteScript &&
+                            currentScript != null && currentScript != nextScript
+                        ) {
+                            flush()
+                        }
+                        current.appendCodePoint(codePoint)
+                        if (concreteScript) currentScript = nextScript
                     }
-                    current.append(char)
-                    currentIsHan = nextIsHan
-                } else {
-                    current.append(char)
+                    Character.isDigit(codePoint) -> current.appendCodePoint(codePoint)
+                    isCombiningMark(codePoint) -> {
+                        if (current.isNotEmpty()) current.appendCodePoint(codePoint)
+                    }
+                    else -> flush()
                 }
+                offset += Character.charCount(codePoint)
             }
             flush()
         }
         return result
     }
+
+    private fun isCombiningMark(codePoint: Int): Boolean =
+        when (Character.getType(codePoint)) {
+            Character.NON_SPACING_MARK.toInt(),
+            Character.COMBINING_SPACING_MARK.toInt(),
+            Character.ENCLOSING_MARK.toInt() -> true
+            else -> false
+        }
 
     /**
      * Reject a Chinese-prefixed response that leaves most of the sentence in another language.
@@ -1726,12 +1760,13 @@ internal object SubtitleTranslationQualityPolicy {
         sourceText: String,
         translatedText: String,
         hanCount: Int,
+        sourceLanguage: String,
     ): Boolean {
         val sourceTokens = splitMixedScriptTokens(sourceText)
             .map(::normalize)
             .filter { it.isNotEmpty() }
             .toSet()
-        val sourceProperNameTokens = sourceProperNameTokens(sourceText)
+        val sourceProperNameTokens = sourceProperNameTokens(sourceText, sourceLanguage)
         var foreignLetters = 0
         var ungroundedProperName = false
         splitMixedScriptTokens(translatedText).forEach { token ->
@@ -1779,9 +1814,10 @@ internal object SubtitleTranslationQualityPolicy {
         // Common English words remain translatable unless they are a particle in a recognized
         // proper-name span from the original cue (for example "The Hobbit" or "New York").
         if (normalized in commonShortWords && normalized !in sourceProperNameTokens) return false
-        if (normalized in sourceProperNameTokens && normalized in knownUncasedScriptProperNames) {
-            return true
-        }
+        // Every entry here was extracted from an explicit high-confidence name span or an
+        // established multi-token entity in the source; do not restrict retention to a tiny
+        // hard-coded list of uncased-script places.
+        if (normalized in sourceProperNameTokens) return true
         // A model must not invent an all-caps word or a model/brand name and have it exempted.
         if (token.any { it.isDigit() }) return normalized in sourceTokens
         if (letters.length >= 2 && letters.all { it.isUpperCase() }) {
@@ -1798,7 +1834,30 @@ internal object SubtitleTranslationQualityPolicy {
      * This lets embedded names such as "The Hobbit" and "New York" survive inside Chinese
      * sentences without exempting ordinary capitalized words such as "Good Morning".
      */
-    private fun sourceProperNameTokens(sourceText: String): Set<String> {
+    private fun removeSourceGroundedNameTokens(
+        translatedText: String,
+        sourceText: String?,
+        sourceLanguage: String,
+    ): String {
+        if (sourceText.isNullOrBlank()) return translatedText
+        var remaining = translatedText
+        sourceProperNameTokens(sourceText, sourceLanguage)
+            .sortedByDescending(String::length)
+            .forEach { name ->
+                if (name.isNotBlank()) {
+                    remaining = Regex(
+                        Regex.escape(name),
+                        RegexOption.IGNORE_CASE,
+                    ).replace(remaining, " ")
+                }
+            }
+        return remaining
+    }
+
+    private fun sourceProperNameTokens(
+        sourceText: String,
+        sourceLanguage: String = "auto",
+    ): Set<String> {
         // Split script runs inside each whitespace-delimited token too. This lets names such as
         // "我去了New York" or "このアプリはTikTokで" be found without treating the whole
         // mixed-script fragment as one unmatchable token.
@@ -1813,6 +1872,9 @@ internal object SubtitleTranslationQualityPolicy {
             val normalized = normalize(raw.trim { it in shortTokenBoundaryPunctuation })
             if (normalized in knownUncasedScriptProperNames) retained += normalized
         }
+        SubtitleTermContinuityPolicy.extractHighConfidenceUncasedEntityTokens(
+            sourceText, sourceLanguage,
+        ).forEach(retained::add)
         if (tokens.size < 2) return retained
         for (start in tokens.indices) {
             for (length in 2..8) {

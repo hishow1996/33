@@ -215,4 +215,71 @@ class TranslationContextPolicyTest {
         assertEquals(context.first.size, context.second.size)
     }
 
+    @Test
+    fun batchContextUsesEarlierEntityRowsAndRecentCompletedRows() {
+        val completedSources = listOf(
+            "The weather is clear.",
+            "The meeting starts soon.",
+            "The camera is ready.",
+            "The room is quiet.",
+        )
+        val completedTranslations = listOf(
+            "天气晴朗。",
+            "会议即将开始。",
+            "摄像机已经准备好。",
+            "房间很安静。",
+        )
+        val context = TranslationContextPolicy.contextForBatchWithTermContinuity(
+            initialContext = listOf("Sam arrived at the studio.") to listOf("Sam 到了工作室。"),
+            completedSources = completedSources,
+            completedTranslations = completedTranslations,
+            currentSourceCues = listOf("Sam is ready to speak."),
+            sourceLanguage = "en",
+            maxRows = 3,
+            maxTermRows = 1,
+            maxScanRows = 100,
+            isUsable = { _, translation -> translation.isNotBlank() },
+        ) ?: throw AssertionError("Expected batch history context")
+
+        assertTrue(context.first.contains("Sam arrived at the studio."))
+        assertTrue(context.second.contains("Sam 到了工作室。"))
+        assertTrue(context.first.contains("The room is quiet."))
+        assertEquals(context.first.size, context.second.size)
+        assertEquals(3, context.first.size)
+    }
+
+    @Test
+    fun preservesArabicNameContinuityWhenLaterCueOmitsItsHonorific() {
+        val sources = listOf(
+            "الدكتور محمد وصل إلى المدينة.",
+            "الطقس جميل اليوم.",
+            "المباراة ستبدأ قريباً.",
+            "محمد سيتحدث الآن.",
+        )
+        val translations = listOf(
+            "محمد到了这座城市。",
+            "今天天气很好。",
+            "比赛即将开始。",
+            "محمد现在要讲话。",
+        )
+        val context = TranslationContextPolicy.mostRecentPairsWithTermContinuityBefore(
+            size = sources.size,
+            beforeIndex = sources.size,
+            currentSourceCues = listOf("محمد سيبدأ الآن."),
+            sourceLanguage = "ar",
+            maxRows = 2,
+            maxTermRows = 1,
+            maxScanRows = 100,
+            sourceAt = { sources[it] },
+            translationAt = { translations[it] },
+            isUsable = { _, translation -> translation.isNotBlank() },
+        ) ?: throw AssertionError("Expected earlier Arabic name continuity")
+
+        assertTrue(context.first.contains("الدكتور محمد وصل إلى المدينة."))
+        assertTrue(context.second.contains("محمد到了这座城市。"))
+        assertTrue(context.first.contains("محمد سيتحدث الآن."))
+        assertEquals(context.first.size, context.second.size)
+        assertEquals(2, context.first.size)
+    }
+
 }

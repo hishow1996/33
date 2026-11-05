@@ -7,20 +7,33 @@ import io.translatetube.local.subs.SubtitleLanguageDetector
 /**
  * Conservative source-side term extraction for long-range subtitle continuity.
  *
- * Latin-script candidates are filtered by the video's known language. Japanese and Korean
- * support is intentionally limited to repeated Katakana terms and names with explicit honorifics;
- * this avoids treating every CJK word as a guessed person or brand.
+ * Latin-script candidates are filtered by the video's known language. Uncased scripts use
+ * explicit name markers or a small set of established entities; arbitrary words are not promoted
+ * to names merely because the script has no uppercase/lowercase distinction.
  */
 internal object SubtitleTermContinuityPolicy {
+    // Allow Latin names embedded directly beside another writing system (e.g. このTikTokは…),
+    // while still requiring a boundary between adjacent Latin letters/digits.
     private val candidateLatinToken = Regex(
-        """(?<![\p{L}\p{N}])(?:\p{Lu}[\p{L}\p{M}\p{N}]*(?:['’–-][\p{L}\p{M}\p{N}]+)*|[a-z][A-Z][A-Za-z0-9]*)"""
+        """(?<![A-Za-z0-9])(?:\p{Lu}[\p{L}\p{M}\p{N}]*(?:['’–-][\p{L}\p{M}\p{N}]+)*|[a-z][A-Z][A-Za-z0-9]*)"""
     )
     private val katakanaToken = Regex("""[\u30A1-\u30FA\u30FC]{2,}""")
+    // Same-script boundaries let Cyrillic and Greek names be recognized when adjacent
+    // to Japanese, Arabic, Hebrew, Devanagari or other writing systems.
     private val casedScriptNameToken = Regex(
-        """(?<![\p{L}\p{N}])\p{Lu}[\p{Ll}\p{M}]{1,}(?:['’–-]\p{Lu}[\p{Ll}\p{M}]+)*(?![\p{L}\p{N}])"""
+        """(?<![\p{IsCyrillic}\p{IsGreek}\p{M}\p{N}])\p{Lu}[\p{Ll}\p{M}]{1,}(?:['’–-]\p{Lu}[\p{Ll}\p{M}]+)*(?![\p{IsCyrillic}\p{IsGreek}\p{M}\p{N}])"""
     )
     private val japaneseHonorificName = Regex("""([\u4E00-\u9FFF]{2,6})(?:さん|様|さま|氏|先生|君|ちゃん)""")
     private val koreanHonorificName = Regex("""(?<![가-힣])([가-힣]{2,4})\s*(?:씨|님|선생님)""")
+    private val arabicHonorificName = Regex(
+        """(?:السيد|السيدة|الدكتور|الدكتورة|الأستاذ|الأستاذة|الشيخ|الشيخة|المهندس|المهندسة|الرئيس|الرئيسة|الأمير|الأميرة|الملك|الملكة)\s+([\u0600-\u06FF\u0750-\u077F]{2,})"""
+    )
+    private val hebrewHonorificName = Regex(
+        """(?:מר|מרת|ד["׳״]ר|דר׳|פרופ׳|הרב|רבי)\s+([\u05D0-\u05EA]{2,})"""
+    )
+    private val devanagariHonorificName = Regex(
+        """(?:श्री|श्रीमती|डॉ\.?|प्रो\.?|माननीय)\s+([\u0900-\u097F]{2,})"""
+    )
 
     private val commonLatinWords = setOf(
         "a", "an", "and", "are", "as", "at", "be", "because", "but", "by", "can", "could",
@@ -119,8 +132,47 @@ internal object SubtitleTermContinuityPolicy {
                     if (key !in koreanCommonTerms) result += key
                 }
             }
+            if (language == "ar") {
+                arabicHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "he") {
+                hebrewHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "hi") {
+                devanagariHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
         }
         return result
+    }
+
+    /**
+     * Return only high-confidence entities from scripts without upper/lowercase distinctions.
+     * This is shared with subtitle quality validation so a source-grounded Arabic/Hebrew/Indic
+     * name can remain in a Chinese sentence without allowing arbitrary foreign words through.
+     */
+    fun extractHighConfidenceUncasedEntityTokens(
+        text: String,
+        sourceLanguage: String = "auto",
+    ): Set<String> {
+        if (text.isBlank()) return emptySet()
+        val language = resolveLanguage(listOf(text), sourceLanguage)
+        val acceptedScripts = setOf(
+            Character.UnicodeScript.HAN,
+            Character.UnicodeScript.HANGUL,
+            Character.UnicodeScript.ARABIC,
+            Character.UnicodeScript.HEBREW,
+            Character.UnicodeScript.DEVANAGARI,
+        )
+        return extractStableTerms(listOf(text), language).filterTo(LinkedHashSet()) { term ->
+            term.isNotBlank() &&
+                Character.UnicodeScript.of(term.codePointAt(0)) in acceptedScripts
+        }
     }
 
     fun containsStableTerm(
@@ -129,8 +181,43 @@ internal object SubtitleTermContinuityPolicy {
         sourceLanguage: String = "auto",
     ): Boolean {
         if (terms.isEmpty() || text.isBlank()) return false
+        val normalizedText = normalize(text)
         val language = resolveLanguage(listOf(text), sourceLanguage)
-        return extractStableTerms(listOf(text), language).any(terms::contains)
+        val extracted = extractStableTerms(listOf(text), language)
+        if (extracted.any(terms::contains)) return true
+
+        // Uncased-script names can reappear without their honorific. Match them as complete
+        // words in spaced scripts, and as substrings in scripts that normally omit spaces.
+        return terms.any { term ->
+            if (term.isBlank()) return@any false
+            val script = Character.UnicodeScript.of(term.codePointAt(0))
+            val unsegmented = script in setOf(
+                Character.UnicodeScript.HAN,
+                Character.UnicodeScript.HIRAGANA,
+                Character.UnicodeScript.KATAKANA,
+                Character.UnicodeScript.HANGUL,
+                Character.UnicodeScript.THAI,
+                Character.UnicodeScript.LAO,
+                Character.UnicodeScript.KHMER,
+                Character.UnicodeScript.MYANMAR,
+            )
+            if (unsegmented) {
+                normalizedText.contains(term)
+            } else {
+                var index = normalizedText.indexOf(term)
+                var found = false
+                while (index >= 0 && !found) {
+                    val end = index + term.length
+                    val leftBoundary = index == 0 ||
+                        !Character.isLetterOrDigit(normalizedText.codePointBefore(index))
+                    val rightBoundary = end >= normalizedText.length ||
+                        !Character.isLetterOrDigit(normalizedText.codePointAt(end))
+                    found = leftBoundary && rightBoundary
+                    if (!found) index = normalizedText.indexOf(term, index + 1)
+                }
+                found
+            }
+        }
     }
 
     private fun normalize(value: String): String =

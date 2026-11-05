@@ -25,6 +25,7 @@ internal object SubtitleSoundDescriptionPolicy {
         "inaudible", "inaudible speech", "unintelligible", "unintelligible speech",
         "indistinct", "indistinct speech", "unclear", "unclear speech",
         "muffled speech", "speech is unclear", "speech is inaudible",
+        "door slams", "door slamming", "bleep", "beep", "bleeping",
     )
     private val englishPatterns = listOf(
         Regex("""^(?:(?:background|soft|instrumental|upbeat|dramatic|sad|happy|theme|gentle|quiet|loud)\s+)?music(?:\s+(?:plays?|playing|continues|fades?(?:\s+(?:in|out))?|starts?|stops?|begins?|ends?))?$"""),
@@ -33,6 +34,7 @@ internal object SubtitleSoundDescriptionPolicy {
         Regex("""^(?:phone|telephone)\s+ringing$"""),
         Regex("""^(?:birds?|dogs?|cats?)\s+(?:chirping|singing|barking|meowing)$"""),
         Regex("""^(?:heavy\s+)?(?:rain|wind|thunder|breathing|crying|laughter|applause)(?:\s+(?:continues|fades|stops))?$"""),
+        Regex("""^speaking(?:\s+in)?\s+(?:english|spanish|french|german|italian|portuguese|russian|japanese|korean|chinese|arabic|hindi)$"""),
     )
     private val chineseLabels = setOf(
         "音乐", "背景音乐", "轻音乐", "轻柔音乐", "舒缓音乐", "纯音乐", "音乐响起",
@@ -50,6 +52,21 @@ internal object SubtitleSoundDescriptionPolicy {
         Regex("""^(?:背景|轻柔|舒缓|轻|纯)?音乐(?:响起|继续|渐弱|渐强|停止|结束|播放)?$"""),
         Regex("""^(?:观众)?(?:掌声|笑声|欢呼声|哭声|抽泣声)$"""),
     )
+    private val speakingLanguageTranslations = mapOf(
+        "english" to "英语",
+        "spanish" to "西班牙语",
+        "french" to "法语",
+        "german" to "德语",
+        "italian" to "意大利语",
+        "portuguese" to "葡萄牙语",
+        "russian" to "俄语",
+        "japanese" to "日语",
+        "korean" to "韩语",
+        "chinese" to "中文",
+        "arabic" to "阿拉伯语",
+        "hindi" to "印地语",
+    )
+    private val speakingLanguagePattern = Regex("""^speaking(?:\s+in)?\s+([a-z]+)$""")
     private val knownEnglishTranslations = mapOf(
         "music" to "音乐",
         "background music" to "背景音乐",
@@ -79,6 +96,11 @@ internal object SubtitleSoundDescriptionPolicy {
         "footsteps" to "脚步声",
         "door opens" to "开门声",
         "door closes" to "关门声",
+        "door slams" to "关门声",
+        "door slamming" to "关门声",
+        "bleep" to "哔声",
+        "beep" to "哔声",
+        "bleeping" to "哔声",
         "knocking" to "敲门声",
         "phone ringing" to "电话铃声",
         "birds chirping" to "鸟鸣声",
@@ -146,7 +168,12 @@ internal object SubtitleSoundDescriptionPolicy {
         val trimmed = text.trim()
         val match = bracketedBody.matchEntire(trimmed) ?: return null
         val body = match.groupValues[1].trim().replace(Regex("""\s+"""), " ")
-        val translated = knownEnglishTranslations[body.lowercase(java.util.Locale.ROOT)] ?: return null
+        val normalizedBody = body.lowercase(java.util.Locale.ROOT)
+        val translated = knownEnglishTranslations[normalizedBody]
+            ?: speakingLanguagePattern.matchEntire(normalizedBody)?.groupValues?.getOrNull(1)
+                ?.let(speakingLanguageTranslations::get)
+                ?.let { "说$it" }
+            ?: return null
         val opening = trimmed.firstOrNull { it in "[【（(" } ?: return null
         val closing = when (opening) {
             '[' -> ']'

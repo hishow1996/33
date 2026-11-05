@@ -16,6 +16,10 @@ class SubtitleSoundDescriptionPolicyTest {
             "[applause]",
             "[laughter]",
             "[door opens]",
+            "[door slams]",
+            "[bleep]",
+            "[speaking Spanish]",
+            "[speaking in Arabic]",
             "[inaudible]",
             "[unintelligible speech]",
             "[speech is unclear]",
@@ -34,6 +38,7 @@ class SubtitleSoundDescriptionPolicyTest {
             "[Hello there]",
             "[music theory]",
             "[what is this?]",
+            "[speaking nonsense]",
             "music",
             "The music is beautiful.",
         ).forEach { caption ->
@@ -51,6 +56,10 @@ class SubtitleSoundDescriptionPolicyTest {
         assertEquals("[听不清]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[inaudible]"))
         assertEquals("[听不清]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[unintelligible speech]"))
         assertEquals("[说话声不清]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[indistinct speech]"))
+        assertEquals("[关门声]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[door slams]"))
+        assertEquals("[哔声]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[bleep]"))
+        assertEquals("[说西班牙语]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[speaking Spanish]"))
+        assertEquals("[说阿拉伯语]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[speaking in Arabic]"))
         assertNull(SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[music theory]"))
     }
 
