@@ -50,13 +50,14 @@ internal object SubtitleTranslationQualityPolicy {
         val source = sourceText.trim()
         val translated = translatedText.trim()
         if (source.length > 40 || translated.length > 48) return false
-        // Title casing alone must not turn common expressions such as "Good Morning" into names.
-        if (normalize(source) in commonShortPhrases) return false
+        // Common expressions and ordinary words must never use the post-retry name exception.
+        if (normalize(source) in commonShortPhrases || hasCommonEnglishWord(source)) return false
         val sourceTokens = shortLatinTokens(source) ?: return false
         val translatedTokens = shortLatinTokens(translated) ?: return false
         if (sourceTokens.size != translatedTokens.size) return false
-        if (sourceTokens.size > 1 && !hasTitleCasedWords(source)) return false
-        if (sourceTokens.size == 1 && sourceTokens.single() in commonShortWords) return false
+        // Only title-cased name-like text can use the spelling exception. All-caps phrases
+        // (for example "NO WAY") are not names; acronyms are handled by the exact-term rule.
+        if (!hasTitleCasedWords(source) || !hasTitleCasedWords(translated)) return false
 
         return sourceTokens.indices.all { index ->
             hasSameOrNearSpelling(sourceTokens[index], translatedTokens[index])
@@ -86,7 +87,9 @@ internal object SubtitleTranslationQualityPolicy {
 
     private fun hasTitleCasedWords(value: String): Boolean =
         value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { token ->
-            token.firstOrNull { it.isLetter() }?.isUpperCase() == true
+            val letters = token.filter { it.isLetter() }
+            letters.isNotEmpty() && letters.first().isUpperCase() &&
+                (letters.size == 1 || letters.drop(1).all { it.isLowerCase() })
         }
 
     /** Same spelling, or one insertion/deletion/substitution on a sufficiently long name token. */
@@ -150,21 +153,42 @@ internal object SubtitleTranslationQualityPolicy {
         )
     }
 
+    // High-frequency English words must never be treated as untranslated names merely
+    // because subtitles capitalize the first letter or the model returns the line in uppercase.
     private val commonShortWords = setOf(
-        "again", "always", "because", "bye", "come", "goodbye", "help", "here", "how",
-        "later", "listen", "look", "maybe", "never", "no", "now", "please", "really",
-        "right", "sorry", "stop", "thanks", "thank", "there", "wait", "welcome", "what",
-        "when", "where", "who", "why", "yes",
+        "about", "after", "again", "all", "also", "always", "am", "an", "and", "any", "are",
+        "around", "as", "ask", "at", "away", "back", "bad", "be", "because", "before", "best",
+        "better", "big", "but", "by", "bye", "call", "can", "care", "come", "could", "day",
+        "did", "do", "does", "down", "each", "enough", "even", "ever", "every", "fine", "first",
+        "for", "from", "fun", "get", "give", "go", "going", "good", "goodbye", "got", "great",
+        "had", "has", "have", "he", "hello", "her", "here", "hey", "him", "his", "how", "i",
+        "if", "in", "into", "is", "it", "its", "just", "keep", "know", "last", "later", "leave",
+        "let", "like", "little", "listen", "live", "look", "lot", "love", "make", "many", "maybe",
+        "me", "more", "most", "much", "must", "my", "name", "near", "need", "never", "new",
+        "next", "nice", "no", "not", "now", "of", "off", "on", "one", "only", "or", "other",
+        "our", "out", "over", "own", "please", "problem", "really", "right", "run", "same", "say",
+        "see", "she", "should", "so", "some", "something", "sorry", "still", "stop", "sure",
+        "take", "taxi", "than", "thank", "thanks", "that", "the", "their", "them", "then",
+        "there", "these", "they", "thing", "think", "this", "time", "to", "too", "try", "two",
+        "up", "us", "very", "wait", "want", "was", "way", "we", "well", "were", "what", "when",
+        "where", "which", "while", "who", "why", "will", "with", "work", "world", "would", "yes",
+        "you", "your",
     )
 
-    // Common expressions remain translatable even when every word is title-cased or uppercase.
     // Values use normalize()'s punctuation-free representation.
     private val commonShortPhrases = setOf(
         "goodmorning", "goodafternoon", "goodevening", "goodnight",
         "thankyou", "thanksalot", "howareyou", "nicetomeetyou",
         "seeyou", "takecare", "welldone", "comeon", "letsgo",
         "goodluck", "happybirthday", "haveaniceday", "whatsup",
+        "helloworld", "noway", "noproblem", "notyet", "nevermind",
+        "allright", "alright", "ofcourse", "dontworry", "becareful",
+        "getout", "goaway", "comeback", "rightnow", "notnow",
+        "onemore", "whatswrong", "goodjob", "nicework",
     )
+
+    private fun hasCommonEnglishWord(value: String): Boolean =
+        value.split(wordSeparatorRegex).any { token -> normalize(token) in commonShortWords }
 
     /** 原文里没有任何可朗读内容（只有 ♪、…、- 之类的符号）：不需要翻译，也不会有配音。 */
     fun hasNothingToSpeak(sourceText: String?): Boolean =
@@ -309,7 +333,10 @@ internal object SubtitleTranslationQualityPolicy {
         translatedText: String,
         hanCount: Int,
     ): Boolean {
-        val sourceTokens = sourceText.split(wordSeparatorRegex).filter { it.isNotBlank() }.toSet()
+        val sourceTokens = sourceText.split(wordSeparatorRegex)
+            .filter { it.isNotBlank() }
+            .map(::normalize)
+            .toSet()
         var foreignLetters = 0
         translatedText.split(wordSeparatorRegex).forEach { token ->
             val letters = token.filter { it.isLetter() }
@@ -320,9 +347,10 @@ internal object SubtitleTranslationQualityPolicy {
                 Character.UnicodeScript.of(it.code) != Character.UnicodeScript.HAN
             }
         }
-        // A real Chinese sentence may contain a long product/person name. Only reject when at
-        // least ten non-Han letters remain and Chinese characters account for less than 20%.
-        return foreignLetters >= 10 && hanCount * 4 < foreignLetters
+        // Even a short untranslated fragment (for example "你好 hello") is not a Chinese
+        // translation. Known source names, brands, acronyms and model identifiers are excluded
+        // above, so a small amount of ordinary Latin text should not be hidden by a long Han prefix.
+        return foreignLetters >= 2 && hanCount * 2 <= foreignLetters
     }
 
     private fun isLikelyRetainedTerm(
@@ -330,10 +358,13 @@ internal object SubtitleTranslationQualityPolicy {
         letters: String,
         sourceTokens: Set<String>,
     ): Boolean {
+        val normalized = normalize(token)
+        // Common English words remain translatable even when sentence-initial or uppercased.
+        if (normalized in commonShortWords) return false
         if (token.any { it.isDigit() }) return true
         if (letters.length >= 2 && letters.all { it.isUpperCase() }) return true
         if (letters.drop(1).any { it.isUpperCase() }) return true
-        return letters.length >= 2 && letters.first().isUpperCase() && token in sourceTokens
+        return letters.length >= 2 && letters.first().isUpperCase() && normalized in sourceTokens
     }
 
     /**
@@ -362,8 +393,8 @@ internal object SubtitleTranslationQualityPolicy {
         // Compatibility forms (for example full-width Latin letters/digits) must reach the
         // NFKC-based source-echo comparison instead of being mistaken for unchanged acronyms.
         if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
-        // A capitalized greeting is still a sentence/phrase, not a proper name or product term.
-        if (normalize(value) in commonShortPhrases) return false
+        // Common greetings/commands remain translatable even when every word is capitalized.
+        if (normalize(value) in commonShortPhrases || hasCommonEnglishWord(value)) return false
         val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (tokens.isEmpty() || tokens.size > 3) return false
         // 带感叹/问号/分号的是句子，不是词条。
@@ -371,15 +402,25 @@ internal object SubtitleTranslationQualityPolicy {
         val letters = value.filter { it.isLetter() }
         // 只对拉丁字母的词条放行；日文汉字、西里尔文等原样返回仍按没翻译处理。
         if (letters.any { Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN }) return false
-        // 全大写缩写 / 含数字的短词条
-        if (letters.none { it.isLowerCase() }) return true
-        if (value.any { it.isDigit() }) return true
-        // 单个驼峰/品牌写法（SomeBrandName、YouTube）：首字母之后还有大写字母。
-        if (tokens.size == 1 && letters.drop(1).any { it.isUpperCase() }) return true
-        // 专有名词：每个词都以大写字母开头（Elon Musk、Silicon Valley）；单个首字母大写的普通词不算。
-        return tokens.size >= 2 && tokens.all { token ->
-            token.firstOrNull { it.isLetter() }?.isUpperCase() == true
+
+        if (tokens.size == 1) {
+            // Exact acronyms, opaque product identifiers, and internal-capitalization brands
+            // may remain unchanged. Ordinary uppercase words are excluded by commonShortWords.
+            if (letters.length in 2..10 && letters.all { it.isUpperCase() }) return true
+            if (value.any { it.isDigit() } && letters.isNotEmpty()) return true
+            if (letters.drop(1).any { it.isUpperCase() }) return true
+            return false
         }
+
+        // "iPhone 15" is a two-token model/brand identifier, not a translated sentence.
+        if (tokens.size == 2 &&
+            tokens.first().filter { it.isLetter() }.drop(1).any { it.isUpperCase() } &&
+            tokens.last().all { it.isDigit() }
+        ) return true
+
+        // Multiword names are accepted only when every word uses true title case and no token
+        // is a common English word. All-caps sentences such as "NO WAY" cannot pass this guard.
+        return hasTitleCasedWords(value) && !hasCommonEnglishWord(value)
     }
 
     /** Ignore case, whitespace and punctuation so formatting-only changes do not pass as translation. */

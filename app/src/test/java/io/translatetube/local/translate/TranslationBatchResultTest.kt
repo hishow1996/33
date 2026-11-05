@@ -319,5 +319,33 @@ class TranslationBatchResultTest {
         assertEquals(listOf(2, 5), result.missingIndices)
         assertTrue(result.rejectedRows.any { it.reasonCode == "UNSPEAKABLE_TRANSLATION" })
     }
+ 
+    @Test
+    fun rejectsCommonShortPhraseEchoesAndMixedLanguagePartialOutput() {
+        val source = listOf(
+            "No Way",
+            "Hello World",
+            "CALL 911 NOW",
+            "Taxi",
+            "Hello there.",
+        )
+        val result = TranslationBatchResult.from(
+            indices = source.indices.toList(),
+            rawTranslations = listOf(
+                "No Way",
+                "Hello World",
+                "CALL 911 NOW",
+                "Taxi",
+                "你好 hello",
+            ),
+            sourceTexts = source.indices.associateWith { source[it] },
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+            acceptShortUnchanged = true,
+        )
 
+        assertTrue(result.translations.isEmpty())
+        assertEquals(source.indices.toList(), result.missingIndices)
+        assertEquals(5, result.rejectedRows.size)
+    }
 }

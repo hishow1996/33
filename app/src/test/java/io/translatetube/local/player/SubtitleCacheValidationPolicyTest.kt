@@ -240,6 +240,10 @@ class SubtitleCacheValidationPolicyTest {
             SubLine(5, 5_000L, 6_000L, "Hello world", "你好世界"),
             SubLine(6, 6_000L, 7_000L, "Good Morning", "Good Morning"),
             SubLine(7, 7_000L, 8_000L, "THANK YOU", "THANK YOU"),
+            SubLine(8, 8_000L, 9_000L, "No Way", "No Way"),
+            SubLine(9, 9_000L, 10_000L, "Hello World", "Hello World"),
+            SubLine(10, 10_000L, 11_000L, "Taxi", "Taxi"),
+            SubLine(11, 11_000L, 12_000L, "CALL 911 NOW", "CALL 911 NOW"),
         )
 
         val sanitized = lines.map {
@@ -247,7 +251,7 @@ class SubtitleCacheValidationPolicyTest {
         }
 
         assertEquals(
-            listOf("John", null, "Sara", null, null, "你好世界", null, null),
+            listOf("John", null, "Sara", null, null, "你好世界", null, null, null, null, null, null),
             sanitized.map { it.zh },
         )
     }

@@ -269,5 +269,74 @@ class SubtitleTranslationQualityPolicyTest {
                 ),
             )
         }
+    } 
+    @Test
+    fun rejectsCommonShortWordsAndCapitalizedPhrasesAsUntranslatedNames() {
+        listOf(
+            "NO WAY",
+            "No Way",
+            "Hello World",
+            "No Problem",
+            "CALL 911 NOW",
+            "Taxi",
+            "TAXI",
+            "Goodbye",
+            "Good Morning",
+        ).forEach { source ->
+            assertTrue("'$source' should be treated as an untranslated source echo",
+                SubtitleTranslationQualityPolicy.isSourceEcho(source, source, "en"))
+            assertTrue("'$source' should fail Chinese target-language validation",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(source, source, "en", "zh-CN"))
+            assertFalse("'$source' must not use the short-name exception",
+                SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(source, source, "en", "zh-CN"))
+            assertFalse("'$source' must not be accepted for dubbing after retry",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    source, source, "en", "zh-CN", acceptShortUnchanged = true,
+                ))
+        }
+    }
+
+    @Test
+    fun rejectsShortEnglishFragmentsInsideOtherwiseChineseTranslations() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Hello there, how are you?",
+                "你好 hello",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I do not agree.",
+                "我 no",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Thank you very much.",
+                "这是 thanks",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The new iPhone model is available.",
+                "新款 iPhone 已经上市。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun exactAcronymsAndProperNamesRemainEligibleButAreNotExpandedAsPhrases() {
+        listOf("NASA", "TV", "H-1B", "COVID-19", "iPhone 15", "Elon Musk", "Silicon Valley", "J. K. Rowling", "YouTube", "OK").forEach {
+            assertFalse("'$it' should remain eligible as a retained term",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(it, it, "en", "zh-CN"))
+        }
     }
 }
