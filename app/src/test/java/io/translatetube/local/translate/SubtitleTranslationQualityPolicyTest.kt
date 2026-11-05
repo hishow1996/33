@@ -350,9 +350,14 @@ class SubtitleTranslationQualityPolicyTest {
             Triple("The Hobbit", "The Hobbit", "en"),
             Triple("Martin Luther King Jr.", "Martin Luther King Jr.", "en"),
             Triple("J. K. Rowling", "J. K. Rowling", "en"),
+            Triple("One Direction", "One Direction", "en"),
+            Triple("One Piece", "One Piece", "en"),
             Triple("Александр Пушкин", "Александр Пушкин", "ru"),
             Triple("Владимир Путин", "Владимир Путин", "ru"),
             Triple("Αλέξανδρος Ωνάσης", "Αλέξανδρος Ωνάσης", "el"),
+            Triple("東京", "東京", "ja"),
+            Triple("서울", "서울", "ko"),
+            Triple("دبي", "دبي", "ar"),
         )
         retainedNames.forEach { (source, translated, language) ->
             assertFalse(
