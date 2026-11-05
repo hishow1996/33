@@ -30,14 +30,15 @@ class SubtitleTermContinuityPolicyTest {
     @Test
     fun filtersFrenchSentenceOpenersAndKeepsNamesAcrossLatinLanguageTracks() {
         val terms = SubtitleTermContinuityPolicy.extractStableTerms(
-            listOf("Je parle avec Sam et OpenAI."),
+            listOf("Je parle avec Sam, Élodie et OpenAI."),
             sourceLanguage = "fr",
         )
         assertFalse(terms.contains("je"))
         assertTrue(terms.contains("sam"))
+        assertTrue(terms.contains("élodie"))
         assertTrue(terms.contains("openai"))
         assertTrue(SubtitleTermContinuityPolicy.containsStableTerm(
-            "Nous reparlons avec Sam.",
+            "Nous reparlons avec Sam et Élodie.",
             terms,
             sourceLanguage = "fr",
         ))
