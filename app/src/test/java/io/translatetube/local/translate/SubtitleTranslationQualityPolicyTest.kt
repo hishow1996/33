@@ -401,6 +401,14 @@ class SubtitleTranslationQualityPolicyTest {
                 "zh-CN",
             ),
         )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "서울",
+                "我在 서울。",
+                "ko",
+                "zh-CN",
+            ),
+        )
         assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "Elon Musk arrived yesterday and spoke at the conference.",
