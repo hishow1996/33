@@ -26,6 +26,7 @@ internal object SubtitleCacheValidationPolicy {
         sourceLanguage: String,
         targetLanguage: String,
     ): String? {
+        if (SubtitleTranslationQualityPolicy.hasNothingToSpeak(sourceText)) return null
         val cleaned = SubtitleParsers.cleanTranslatedText(cached) ?: return null
         if (!SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
                 sourceText = sourceText,
@@ -63,7 +64,8 @@ internal object SubtitleCacheValidationPolicy {
         sourceLanguage: String,
         targetLanguage: String = "zh",
     ): Boolean = rows.any { row ->
-        usableCachedTranslation(row.sourceText, row.translatedText, sourceLanguage, targetLanguage) != null
+        SubtitleTranslationQualityPolicy.hasNothingToSpeak(row.sourceText) ||
+            usableCachedTranslation(row.sourceText, row.translatedText, sourceLanguage, targetLanguage) != null
     }
 
     /**
@@ -108,7 +110,9 @@ internal object SubtitleCacheValidationPolicy {
                 source.text, cached.translatedText, sourceLanguage, targetLanguage,
             )
             restoredTranslations += usableTranslation
-            if (usableTranslation != null) hasRecoverableTranslation = true
+            if (usableTranslation != null ||
+                SubtitleTranslationQualityPolicy.hasNothingToSpeak(source.text)
+            ) hasRecoverableTranslation = true
         }
         if (!hasRecoverableTranslation) return null
 
