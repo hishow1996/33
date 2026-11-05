@@ -91,8 +91,11 @@ class TranslationBatchResultTest {
             targetLanguage = "zh-CN",
         )
 
-        assertEquals(mapOf(1 to "你好"), result.translations)
-        assertEquals(listOf(0, 2), result.missingIndices)
+        // The verified J. K. Rowling entity is intentionally retained unchanged on
+        // the first pass (covered independently by verifiedNameEchoesAreAcceptedImmediately...).
+        // The English paraphrase for row 0 must still be retried.
+        assertEquals(mapOf(1 to "你好", 2 to "J. K. Rowling"), result.translations)
+        assertEquals(listOf(0), result.missingIndices)
 
         val afterRetry = TranslationBatchResult.from(
             indices = listOf(2),
