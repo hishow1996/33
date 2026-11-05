@@ -38,7 +38,9 @@ internal object AppLogEventRelationPolicy {
         selected: AppLogRecord,
     ): Map<String, AppLogEventRelation> {
         val selectedKey = eventKey(selected)
-        val selectedOperationId = selected.operationId
+        val selectedOperationId = selected.operationId.ifBlank {
+            AppLogStore.translationDiagnosticId(selected).orEmpty()
+        }
         val selectedTranslationDiagnosticId = TranslationDiagnosticPackPolicy.idFromRecord(selected)
         return records.associate { event ->
             val relation = when {
