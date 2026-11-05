@@ -352,6 +352,8 @@ class SubtitleTranslationQualityPolicyTest {
             Triple("J. K. Rowling", "J. K. Rowling", "en"),
             Triple("One Direction", "One Direction", "en"),
             Triple("One Piece", "One Piece", "en"),
+            Triple("The Fast and the Furious", "The Fast and the Furious", "en"),
+            Triple("NASA Summit", "NASA Summit", "en"),
             Triple("Александр Пушкин", "Александр Пушкин", "ru"),
             Triple("Владимир Путин", "Владимир Путин", "ru"),
             Triple("Αλέξανδρος Ωνάσης", "Αλέξανδρος Ωνάσης", "el"),
@@ -372,7 +374,7 @@ class SubtitleTranslationQualityPolicyTest {
             )
         }
 
-        listOf("Hello World", "Good Morning", "My Friend John").forEach { ordinaryPhrase ->
+        listOf("Hello World", "Good Morning", "My Friend John", "one piece").forEach { ordinaryPhrase ->
             assertTrue(
                 "'$ordinaryPhrase' must still be translated",
                 SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
