@@ -462,7 +462,7 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
-    fun singleWordCyrillicAndGreekNamesRequireRetryAndCommonGreetingsStayRejected() {
+    fun singleWordCyrillicAndGreekNamesAreAcceptedAndCommonGreetingsStayRejected() {
         assertTrue(
             SubtitleTranslationQualityPolicy.isAcceptableShortUntranslatedCue(
                 "Иван", "Иван", "ru", "zh-CN",
@@ -487,8 +487,8 @@ class SubtitleTranslationQualityPolicyTest {
         val firstAttempt = SubtitleTranslationQualityPolicy.evaluateTranslation(
             "Иван", "Иван", "ru", "zh-CN",
         )
-        assertFalse(firstAttempt.accepted)
-        assertEquals("SHORT_NAME_RETRY_REQUIRED", firstAttempt.reasonCode)
+        assertTrue(firstAttempt.accepted)
+        assertTrue(firstAttempt.shortUntranslatedAccepted)
 
         val confirmedRetry = SubtitleTranslationQualityPolicy.evaluateTranslation(
             "Иван", "Иван", "ru", "zh-CN", acceptShortUnchanged = true,

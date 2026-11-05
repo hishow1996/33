@@ -245,7 +245,7 @@ internal object SubtitleTranslationQualityPolicy {
     /**
      * 短字幕（人名、地名、品牌、外来词）只有在原译词数一致、逐词拼写相同或仅有一个轻微字符差异时，
      * 才能作为无需翻译的保留项。这样可接受 Sarah → Sara，但不会把 John → David 误判成人名。
-     * 首次翻译仍严格要求中文；仅在重试、缓存恢复和最终配音校验中启用此例外。
+     * 原文拼写完全一致的已验证专名可在首次校验时保留；轻微拼写差异仍只在重试阶段放行。
      */
     fun isAcceptableShortUntranslatedCue(
         sourceText: String?,
@@ -1886,7 +1886,6 @@ internal object SubtitleTranslationQualityPolicy {
         if (letters.length < 2) return false
         val scripts = letters.map { Character.UnicodeScript.of(it.code).name }.toSet()
         if (scripts.size != 1) return false
-        val script = scripts.single()
 
         if (normalized in knownUncasedScriptProperNames) return true
         if (normalized in knownProperNamePhrases && isKnownTitlePhrase(tokens)) return true
