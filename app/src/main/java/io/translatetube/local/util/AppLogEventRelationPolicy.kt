@@ -38,9 +38,8 @@ internal object AppLogEventRelationPolicy {
         selected: AppLogRecord,
     ): Map<String, AppLogEventRelation> {
         val selectedKey = eventKey(selected)
-        val selectedOperationId = selected.operationId.ifBlank {
-            AppLogStore.translationDiagnosticId(selected).orEmpty()
-        }
+        val selectedOperationId = selected.operationId
+        val selectedTranslationDiagnosticId = TranslationDiagnosticPackPolicy.idFromRecord(selected)
         return records.associate { event ->
             val relation = when {
                 eventKey(event) == selectedKey -> AppLogEventRelation(
@@ -55,6 +54,12 @@ internal object AppLogEventRelationPolicy {
                     AppLogEventRelation(
                         "RECOVERY_MATCHED_BY_ISSUE_KEY",
                         "resolvesIssueKey 与选中事件 issueKey 完全匹配；这是按故障签名关联的恢复记录，不保证对应唯一单次实例",
+                    )
+                selectedTranslationDiagnosticId != null &&
+                    TranslationDiagnosticPackPolicy.idFromRecord(event) == selectedTranslationDiagnosticId ->
+                    AppLogEventRelation(
+                        "SAME_TRANSLATION_DIAGNOSTIC",
+                        "翻译诊断 ID 完全匹配，属于同一翻译任务的诊断事件；时间顺序只表示处理先后，不单独证明因果",
                     )
                 selected.sessionId.isNotBlank() &&
                     event.sessionId == selected.sessionId &&
