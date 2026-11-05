@@ -141,8 +141,7 @@ internal object SubtitleTranslationQualityPolicy {
         ),
     )
 
-    // Only unambiguous, numeric-adjacent units are compared. Bare "m", "s", "g" and
-    // currency symbols are intentionally excluded because they are ambiguous in subtitles.
+    // Short symbols are recognized only beside explicit numbers, not as ordinary subtitle letters.
     private val explicitUnitAliases = listOf(
         ExplicitUnitAlias("km_per_hour", listOf("km/h", "kph", "公里/小时", "千米/小时")),
         ExplicitUnitAlias("miles_per_hour", listOf("mph", "miles per hour", "英里/小时")),
@@ -150,7 +149,7 @@ internal object SubtitleTranslationQualityPolicy {
         ExplicitUnitAlias("mile", listOf("miles", "mile", "英里")),
         ExplicitUnitAlias("centimeter", listOf("centimeters", "centimeter", "centimetres", "centimetre", "cm", "厘米", "公分")),
         ExplicitUnitAlias("millimeter", listOf("millimeters", "millimeter", "millimetres", "millimetre", "mm", "毫米")),
-        ExplicitUnitAlias("meter", listOf("meters", "meter", "metres", "metre", "米")),
+        ExplicitUnitAlias("meter", listOf("meters", "meter", "metres", "metre", "m", "米")),
         ExplicitUnitAlias("kilogram", listOf("kilograms", "kilogram", "kg", "公斤", "千克")),
         ExplicitUnitAlias("milligram", listOf("milligrams", "milligram", "mg", "毫克")),
         ExplicitUnitAlias("gram", listOf("grams", "gram", "克")),
@@ -532,9 +531,8 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     /**
-     * Preserve the association between each explicit numeric value and its adjacent unit.
-     * This check only runs when both sides expose the same count of Arabic-number/unit pairs;
-     * word-rendered values are left to the translation model instead of being guessed.
+     * Preserve the association between explicit numeric values and adjacent units.
+     * Require at least two pairs so single-unit substitutions use the dedicated unit-category check.
      */
     fun numericUnitAssociationMismatchReason(
         sourceText: String?,
@@ -548,7 +546,7 @@ internal object SubtitleTranslationQualityPolicy {
         ) return null
         val sourcePairs = explicitNumericUnitPairs(sourceText, sourceLanguage, includeChineseNumerals = false)
         val targetPairs = explicitNumericUnitPairs(translatedText, targetLanguage, includeChineseNumerals = true)
-        if (sourcePairs.isEmpty() || sourcePairs.size != targetPairs.size) return null
+        if (sourcePairs.size < 2 || sourcePairs.size != targetPairs.size) return null
         if (sourcePairs.groupingBy { it }.eachCount() == targetPairs.groupingBy { it }.eachCount()) return null
         return "数字与单位的对应关系发生变化；原文可识别配对数=" + sourcePairs.size +
             "，译文可识别配对数=" + targetPairs.size
@@ -597,6 +595,8 @@ internal object SubtitleTranslationQualityPolicy {
             val protectedRanges = chineseFractions.map { it.range } + ranges.map { it.range }
             chineseNumeralPattern.findAll(value).forEach { match ->
                 if (protectedRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+                val nextChar = value.getOrNull(match.range.last + 1)
+                if (match.value == "零" && nextChar == '下') return@forEach
                 val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
                 val hasMagnitude = match.value.any { it in "十百千万萬亿億" }
                 val hasClassifier = listOf(
@@ -751,10 +751,35 @@ internal object SubtitleTranslationQualityPolicy {
         val sourceNoLonger = Regex("""\b(?:no\s+longer|not\s+anymore)\b""", RegexOption.IGNORE_CASE)
             .containsMatchIn(source)
         val targetStill = Regex("""仍然|依然|仍旧|还是""").containsMatchIn(target)
-        val targetNoLonger = Regex("""不再|再也不|已不再""").containsMatchIn(target)
+        val targetNoLonger = Regex("""不再|再也不|已不再|已经不在|已不在""").containsMatchIn(target)
         if ((sourceStill && targetNoLonger && !targetStill) ||
             (sourceNoLonger && targetStill && !targetNoLonger)
         ) return "SEMANTIC_RELATION_MISMATCH：原文 still/no longer 的持续状态与译文明确表达的状态相反"
+
+        val sourceProhibition = englishProhibition.containsMatchIn(source)
+        val sourceObligation = !sourceProhibition && englishObligation.containsMatchIn(source)
+        val sourceRecommendation = englishRecommendation.containsMatchIn(source)
+        val mayIsPermission = Regex("""\b(?:may\s+(?:i|we|you)\b|(?:i|we|you)\s+may\b)""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(source)
+        val sourcePossibility = !mayIsPermission && englishPossibility.containsMatchIn(source)
+        val targetProhibition = chineseProhibition.containsMatchIn(target)
+        val targetObligation = chineseObligation.containsMatchIn(target)
+        val targetRecommendation = chineseRecommendation.containsMatchIn(target)
+        val targetPossibility = chinesePossibility.containsMatchIn(target)
+        val modalityReversed = when {
+            sourceProhibition ->
+                !targetProhibition && (targetObligation || targetRecommendation || targetPossibility)
+            sourceObligation ->
+                !targetObligation && !targetProhibition && (targetRecommendation || targetPossibility)
+            sourceRecommendation ->
+                !targetRecommendation && (targetProhibition || targetObligation || targetPossibility)
+            sourcePossibility ->
+                !targetPossibility && (targetProhibition || targetObligation || targetRecommendation)
+            else -> false
+        }
+        if (modalityReversed) {
+            return "SEMANTIC_MODALITY_MISMATCH：原文的禁止、必须、应该或可能性语气，与译文明确表达的语气等级相反"
+        }
 
         val sourceNegated = hasClearEnglishNegation(source)
         val targetNegated = hasClearChineseNegation(target)
@@ -1044,9 +1069,9 @@ internal object SubtitleTranslationQualityPolicy {
         }
         val extra = available.values.sum()
         return when {
-            missing > 0 -> "原文有 " + sourceNumbers.size + " 个数字项，译文有 " +
+            missing > 0 -> "显式数字校验失败：原文有 " + sourceNumbers.size + " 个数字项，译文有 " +
                 translatedNumbers.size + " 个数字项；其中 " + missing + " 项未保留或数值不一致"
-            extra > 0 -> "译文比原文多出 " + extra + " 个无法对应的数字项，可能擅自增加了数值"
+            extra > 0 -> "显式数字校验失败：译文比原文多出 " + extra + " 个无法对应的数字项，可能擅自增加了数值"
             else -> null
         }
     }
@@ -1101,6 +1126,8 @@ internal object SubtitleTranslationQualityPolicy {
             if (protectedRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
             if (skipRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
             val raw = match.value
+            val nextChar = value.getOrNull(match.range.last + 1)
+            if (raw == "零" && nextChar == '下') return@forEach
             val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
             val hasMagnitude = raw.any { it in "十百千万萬亿億" }
             val isDigitSequence = raw.length >= 2 && raw.all { it in "零〇一二两兩三四五六七八九" }
@@ -1237,7 +1264,7 @@ internal object SubtitleTranslationQualityPolicy {
         "next", "nice", "no", "not", "now", "of", "off", "on", "one", "only", "or", "other",
         "our", "out", "over", "own", "please", "problem", "really", "right", "run", "same", "say",
         "see", "she", "should", "so", "some", "something", "sorry", "still", "stop", "sure",
-        "take", "taxi", "than", "thank", "thanks", "that", "the", "their", "them", "then",
+        "take", "than", "thank", "thanks", "that", "the", "their", "them", "then",
         "there", "these", "they", "thing", "think", "this", "time", "to", "too", "try", "two",
         "up", "us", "very", "wait", "want", "was", "we", "well", "were", "what", "when",
         "where", "which", "while", "who", "why", "with", "work", "world", "would", "yes",
@@ -1380,6 +1407,9 @@ internal object SubtitleTranslationQualityPolicy {
 
         val source = sourceText.lowercase(Locale.ROOT)
         val output = normalize(translatedText)
+        if (output in setOf("正在翻译", "正在处理", "翻译中", "处理中", "翻译失败", "请求失败")) {
+            return "译文只是处理状态提示，不是字幕内容"
+        }
 
         val sourceExpressesAiIdentity = listOf(
             "as an ai language model", "i am an ai language model", "i'm an ai language model",
