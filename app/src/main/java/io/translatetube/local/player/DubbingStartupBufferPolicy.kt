@@ -23,7 +23,9 @@ internal object DubbingStartupBufferPolicy {
     fun spokenCueIndices(lines: List<SubLine>): List<Int> =
         lines.indices.filter { index ->
             val line = lines[index]
-            line.startMs >= 0L && line.endMs > line.startMs && !line.zh.isNullOrBlank()
+            line.startMs >= 0L && line.endMs > line.startMs && !line.zh.isNullOrBlank() &&
+                !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text) &&
+                !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.zh)
         }
 
     fun plan(
