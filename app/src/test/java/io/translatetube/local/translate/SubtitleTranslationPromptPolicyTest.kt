@@ -51,7 +51,9 @@ class SubtitleTranslationPromptPolicyTest {
         assertTrue(chinesePrompt.contains("每行只翻译自己的内容"))
 
         val traditionalPrompt = SubtitleTranslationPromptPolicy.guidelinesForTarget("zh-Hant")
-        assertTrue(traditionalPrompt.contains("Traditional Chinese only for zh-Hant/zh-TW/zh-HK"))
+        assertTrue(traditionalPrompt.contains(SubtitleTranslationPromptPolicy.TRADITIONAL_CHINESE_FIDELITY_GUIDELINES))
+        assertTrue(traditionalPrompt.contains("全片统一使用繁体字"))
+        assertFalse(traditionalPrompt.contains("全片统一使用简体字"))
 
         val englishPrompt = SubtitleTranslationPromptPolicy.guidelinesForTarget("en")
         assertTrue(englishPrompt.contains(SubtitleTranslationPromptPolicy.SOURCE_ALIGNMENT_GUIDELINES))
