@@ -466,7 +466,7 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun rejectsPolarityModalityEntityAndRelationContradictionsWithSpecificCodes() {
+    fun acceptsReadableRowsWhenSemanticHeuristicsReportContradictions() {
         val sources = listOf(
             "I don't agree with him.",
             "You must leave now.",
@@ -519,7 +519,7 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun rejectsChangedExplicitNumbersWithDedicatedDiagnosticCategory() {
+    fun acceptsReadableRowsAndKeepsNumberMismatchAsDiagnostic() {
         val result = TranslationBatchResult.from(
             indices = listOf(8),
             rawTranslations = listOf("我有4只猫和2只狗。"),
@@ -536,7 +536,7 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun rejectsExplicitUnitChangesWithDedicatedDiagnosticCategory() {
+    fun acceptsReadableRowsAndKeepsUnitMismatchAsDiagnostic() {
         val result = TranslationBatchResult.from(
             indices = listOf(3),
             rawTranslations = listOf("这条路长5米。"),
@@ -551,7 +551,7 @@ class TranslationBatchResultTest {
         ) != null)
     }
     @Test
-    fun rejectsExtraNumbersAndWrongChineseScriptWithSpecificReasonCodes() {
+    fun acceptsReadableRowsWithExtraNumbersAndAlternateChineseScript() {
         val extraNumber = TranslationBatchResult.from(
             indices = listOf(0),
             rawTranslations = listOf("我有3只猫和5只狗。"),
@@ -574,7 +574,7 @@ class TranslationBatchResultTest {
     }
 
     @Test
-    fun batchRejectsSwappedNumberUnitPairsWithOneUnifiedDiagnostic() {
+    fun batchKeepsReadableRowsWhenNumberUnitHeuristicsDisagree() {
         val result = TranslationBatchResult.from(
             indices = listOf(0),
             rawTranslations = listOf("第一条路线是5公里，第二条路线是3米。"),
