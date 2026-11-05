@@ -315,9 +315,7 @@ internal object SubtitleTranslationQualityPolicy {
 
     private fun hasTitleCasedWords(value: String): Boolean =
         value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { token ->
-            val letters = token.filter { it.isLetter() }
-            letters.isNotEmpty() && letters.first().isUpperCase() &&
-                (letters.length == 1 || letters.drop(1).all { it.isLowerCase() })
+            isTitleCasedNameToken(token, allowInitials = true)
         }
 
     /** Same spelling, or one insertion/deletion/substitution on a sufficiently long name token. */
@@ -1898,6 +1896,21 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     private fun isTitleCasedNameToken(token: String, allowInitials: Boolean): Boolean {
+        val letterSegments = token.split(Regex("[-'’]")).filter { it.isNotEmpty() }
+        if (letterSegments.size > 1) {
+            return letterSegments.withIndex().all { (index, segment) ->
+                val letters = segment.filter { it.isLetter() }
+                when {
+                    letters.isEmpty() -> false
+                    letters.first().isUpperCase() && letters.drop(1).all { it.isLowerCase() } -> true
+                    allowInitials && letters.length <= 3 && letters.all { it.isUpperCase() } -> true
+                    allowInitials && index == 0 && token.contains("'") &&
+                        letters.length == 1 && letters.first().isLowerCase() -> true
+                    else -> false
+                }
+            }
+        }
+
         val letters = token.filter { it.isLetter() }
         if (letters.isEmpty() || !letters.first().isUpperCase()) return false
         if (letters.drop(1).all { it.isLowerCase() }) return true
