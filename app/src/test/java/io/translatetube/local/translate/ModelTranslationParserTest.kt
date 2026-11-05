@@ -17,6 +17,27 @@ class ModelTranslationParserTest {
     }
 
     @Test
+    fun acceptsCompleteOneBasedResultsWithoutShiftingTheirOrder() {
+        assertEquals(
+            listOf("first", "second", "third"),
+            parseModelTranslations("1|first\n2|second\n3|third", 3),
+        )
+    }
+
+    @Test
+    fun rejectsMixedZeroAndOneBasedBoundaryMarkersWithSpecificDiagnostic() = runBlocking {
+        val trace = TranslationDiagnosticContext("d3c3d51b-fca6-4c59-bce1-5926dcf74a72")
+        TranslationDiagnosticContextHolder.withDiagnosticContext(trace) {
+            val failure = runCatching {
+                parseModelTranslations("0|first\n1|second\n2|extra", 2)
+            }.exceptionOrNull()
+            assertTrue(failure is IllegalStateException)
+            assertTrue(failure?.message.orEmpty().contains("混用了0起始和1起始边界"))
+        }
+        assertTrue(trace.snapshot().contains("result=REJECTED_MIXED_INDEX_BASE"))
+    }
+
+    @Test
     fun rejectsIncompleteIndexedResultsInsteadOfReturningMisalignedBlanks() {
         val error = runCatching {
             parseModelTranslations("0|hello", 2)

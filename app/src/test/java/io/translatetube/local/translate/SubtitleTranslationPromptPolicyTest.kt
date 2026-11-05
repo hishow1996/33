@@ -96,12 +96,15 @@ class SubtitleTranslationPromptPolicyTest {
         val english = SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES
         assertTrue(english.contains("organizations, companies, brands, products"))
         assertTrue(english.contains("Never invent a transliteration"))
+        assertTrue(english.contains("comma-separated list of clearly capitalized entities"))
+        assertTrue(english.contains("ordinary words or sentence fragments"))
         assertTrue(english.contains("substitute a different person or entity"))
 
         val simplified = SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES
         assertTrue(simplified.contains("地名、组织机构、公司、品牌、产品、软件、作品名称"))
         assertTrue(simplified.contains("没有可靠译名时保留原文拼写"))
         assertTrue(simplified.contains("周围普通词语仍须翻译"))
+        assertTrue(simplified.contains("仅由逗号分隔的明确专有名称组成"))
 
         val context = SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES
         assertTrue(context.contains("组织机构、品牌、产品、作品"))

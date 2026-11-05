@@ -285,6 +285,42 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun acceptsCommaSeparatedProperNameListsButStillRejectsOrdinaryWordLists() {
+        val source = "Instagram, YouTube, KakaoTalk,"
+        assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho(source, source, "en"))
+        assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(source, source, "en", "zh-CN"))
+        assertTrue(
+            SubtitleTranslationQualityPolicy.evaluateTranslation(source, source, "en", "zh-CN").accepted,
+        )
+
+        listOf("Good, Morning, Everyone", "Today, Tomorrow, Yesterday", "Instagram, YouTube, and KakaoTalk").forEach { ordinary ->
+            assertTrue(
+                "'$ordinary' must still be translated",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(ordinary, ordinary, "en", "zh-CN"),
+            )
+        }
+    }
+
+    @Test
+    fun acceptsSourceGroundedBrandNamesTouchingChineseText() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "and Netflix.", "和Netflix。", "en", "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I watched Netflix.", "我看了Netflix。", "en", "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should go now.", "我们应该go now。", "en", "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun onlyAnUnchangedProperNameIsExemptFromChineseTargetLanguageChecks() {
         assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch("Elon Musk", "Elon Musk", "en", "zh-CN"))
         assertTrue(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch("Elon Musk", "David Beckham", "en", "zh-CN"))

@@ -530,8 +530,19 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
             throw IllegalStateException("翻译服务重复返回字幕编号，已拒绝错位译文")
         }
         // If numbering begins at 1 and no zero row exists, accept the common one-based format.
-        val base = if (0 !in indexed.keys && indexed.keys.minOrNull() == 1) 1 else 0
-        if (base == 0 && size in indexed.keys) {
+        // A response containing both boundary markers (0 and size) is ambiguous: never shift it
+        // automatically because that could bind a valid translation to the wrong subtitle row.
+        val hasZeroBasedStart = 0 in indexed.keys
+        val hasOneBasedEnd = size in indexed.keys
+        if (hasZeroBasedStart && hasOneBasedEnd) {
+            recordParser(
+                "REJECTED_MIXED_INDEX_BASE",
+                "expectedRows=$size; containsZeroBasedStart=true; containsOneBasedEnd=true; indexedRows=${indexed.size}",
+            )
+            throw IllegalStateException("翻译服务返回的字幕编号混用了0起始和1起始边界，已拒绝可能错位的译文")
+        }
+        val base = if (!hasZeroBasedStart && indexed.keys.minOrNull() == 1) 1 else 0
+        if (base == 0 && hasOneBasedEnd) {
             recordParser("REJECTED_INDEX_BOUNDARY", "expectedRows=$size; lastIndex=$size; base=$base")
             throw IllegalStateException("翻译服务返回了超出本批范围的字幕编号")
         }

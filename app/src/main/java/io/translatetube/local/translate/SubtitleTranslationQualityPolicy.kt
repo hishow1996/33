@@ -1657,6 +1657,40 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     /**
+     * Split letter runs when Han text and another writing system touch without whitespace
+     * (for example "和Netflix"). Digits stay attached to the adjacent run so model identifiers
+     * such as iPhone15 are still checked as one source-grounded term.
+     */
+    private fun splitMixedScriptTokens(value: String): List<String> {
+        val result = mutableListOf<String>()
+        value.split(wordSeparatorRegex).forEach { rawToken ->
+            val current = StringBuilder()
+            var currentIsHan: Boolean? = null
+            fun flush() {
+                if (current.isNotEmpty()) result += current.toString()
+                current.setLength(0)
+                currentIsHan = null
+            }
+            rawToken.forEach { char ->
+                if (!char.isLetterOrDigit()) {
+                    flush()
+                } else if (char.isLetter()) {
+                    val nextIsHan = Character.UnicodeScript.of(char.code) == Character.UnicodeScript.HAN
+                    if (current.isNotEmpty() && currentIsHan != null && currentIsHan != nextIsHan) {
+                        flush()
+                    }
+                    current.append(char)
+                    currentIsHan = nextIsHan
+                } else {
+                    current.append(char)
+                }
+            }
+            flush()
+        }
+        return result
+    }
+
+    /**
      * Reject a Chinese-prefixed response that leaves most of the sentence in another language.
      * Proper names, acronyms, model names and brands that are also present in the source are
      * excluded, so ordinary Chinese subtitles can retain terms such as Google Gemini or iPhone.
@@ -1673,7 +1707,7 @@ internal object SubtitleTranslationQualityPolicy {
         val sourceProperNameTokens = sourceProperNameTokens(sourceText)
         var foreignLetters = 0
         var ungroundedProperName = false
-        translatedText.split(wordSeparatorRegex).forEach { token ->
+        splitMixedScriptTokens(translatedText).forEach { token ->
             val letters = token.filter { it.isLetter() }
             if (letters.isEmpty() || isLikelyRetainedTerm(
                     token, letters, sourceTokens, sourceProperNameTokens,
@@ -1790,6 +1824,14 @@ internal object SubtitleTranslationQualityPolicy {
         "la", "le", "of", "st", "saint", "the", "van", "von",
     )
     private val geographicNamePrefixes = setOf("new")
+    private val properNameListStopWords = setOf(
+        "today", "tomorrow", "yesterday", "morning", "afternoon", "evening", "night",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "january", "february", "march", "april", "may", "june", "july", "august",
+        "september", "october", "november", "december", "spring", "summer", "autumn",
+        "winter", "first", "second", "third", "north", "south", "east", "west",
+    )
+
     // Titles whose ordinary words would otherwise be rejected by the common-word guard.
     private val knownProperNamePhrases = setOf(
         "onedirection", "onepiece", "thelastofus", "thefastandthefurious",
@@ -1813,6 +1855,44 @@ internal object SubtitleTranslationQualityPolicy {
     )
 
     /**
+     * A comma-separated cue may consist entirely of standalone entity names (for example,
+     * "Instagram, YouTube, KakaoTalk"). Accept only when every item has a name-like form;
+     * ordinary capitalized words, dates and sentence fragments remain translatable.
+     */
+    private fun isProperNameListCue(value: String): Boolean {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty() || trimmed.any { it in "!?;:" }) return false
+        val listText = trimmed.trimEnd(',', '，', '、', ';', '；').trim()
+        val items = listText.split(Regex("[,，、;；]")).map { it.trim() }
+        if (items.size !in 2..8 || items.any { it.isEmpty() || it.any { char -> char.isWhitespace() } }) return false
+
+        var strongEntityCount = 0
+        for (rawItem in items) {
+            val token = rawItem.trim { it in shortTokenBoundaryPunctuation }
+            if (token.isEmpty()) return false
+            val normalized = normalize(token)
+            if (normalized.isEmpty() || normalized in commonShortWords ||
+                normalized in commonShortPhrases || normalized in properNameListStopWords
+            ) return false
+
+            val letters = token.filter { it.isLetter() }
+            if (letters.length < 3) return false
+            val scripts = letters.map { Character.UnicodeScript.of(it.code) }.toSet()
+            if (scripts.size != 1 || scripts.single() != Character.UnicodeScript.LATIN) return false
+
+            val allCapsAcronym = letters.length in 2..10 && letters.all { it.isUpperCase() }
+            val internalCapital = letters.drop(1).any { it.isUpperCase() }
+            val titleCased = isTitleCasedNameToken(token, allowInitials = false)
+            val identifier = token.any { it.isDigit() }
+            if (!allCapsAcronym && !internalCapital && !titleCased && !identifier) return false
+            if (allCapsAcronym || internalCapital || identifier) strongEntityCount++
+        }
+        // Two strong brand/model shapes are sufficient for a shorter list; three or more
+        // consistently name-cased items can also be a genuine list of people or entities.
+        return strongEntityCount >= 1 || items.size >= 3
+    }
+
+    /**
      * Standalone names, place names, organizations, brands and model identifiers may remain
      * unchanged. Ordinary words and sentence fragments must still be translated.
      */
@@ -1822,6 +1902,7 @@ internal object SubtitleTranslationQualityPolicy {
         if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
         val normalizedValue = normalize(value)
         if (normalizedValue in commonShortPhrases) return false
+        if (isProperNameListCue(value)) return true
         val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (normalizedValue in knownProperNamePhrases &&
             isKnownTitlePhrase(tokens)

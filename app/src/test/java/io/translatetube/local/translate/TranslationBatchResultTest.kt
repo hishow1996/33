@@ -153,6 +153,30 @@ class TranslationBatchResultTest {
     }
 
     @Test
+    fun acceptsEntityOnlyListsAndMixedChineseBrandRowsWithoutRetry() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(251, 252, 253),
+            rawTranslations = listOf(
+                "Instagram, YouTube, KakaoTalk,",
+                "和Netflix。",
+                "你好世界。",
+            ),
+            sourceTexts = mapOf(
+                251 to "Instagram, YouTube, KakaoTalk,",
+                252 to "and Netflix.",
+                253 to "Hello world.",
+            ),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertEquals(
+            mapOf(251 to "Instagram, YouTube, KakaoTalk,", 252 to "和Netflix。", 253 to "你好世界。"),
+            result.translations,
+        )
+        assertTrue(result.missingIndices.isEmpty())
+    }
+
+    @Test
     fun sourceEchoesAreAlwaysRejectedForRetryInsteadOfAcceptedAsBlankRows() {
         val result = TranslationBatchResult.from(
             indices = listOf(1, 4, 7),
