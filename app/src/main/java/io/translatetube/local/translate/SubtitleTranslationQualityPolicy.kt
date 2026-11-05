@@ -170,9 +170,10 @@ internal object SubtitleTranslationQualityPolicy {
         "see", "she", "should", "so", "some", "something", "sorry", "still", "stop", "sure",
         "take", "taxi", "than", "thank", "thanks", "that", "the", "their", "them", "then",
         "there", "these", "they", "thing", "think", "this", "time", "to", "too", "try", "two",
-        "up", "us", "very", "wait", "want", "was", "way", "we", "well", "were", "what", "when",
-        "where", "which", "while", "who", "why", "will", "with", "work", "world", "would", "yes",
-        "you", "your",
+        "up", "us", "very", "wait", "want", "was", "we", "well", "were", "what", "when",
+        "where", "which", "while", "who", "why", "with", "work", "world", "would", "yes",
+        "you", "your", "afk", "asap", "bff", "brb", "btw", "fyi", "gg", "idk", "imo", "irl",
+        "lmao", "lmk", "lol", "nvm", "omg", "rofl", "smh", "tbh", "tmi", "wtf",
     )
 
     // Values use normalize()'s punctuation-free representation.
@@ -350,7 +351,7 @@ internal object SubtitleTranslationQualityPolicy {
         // Even a short untranslated fragment (for example "你好 hello") is not a Chinese
         // translation. Known source names, brands, acronyms and model identifiers are excluded
         // above, so a small amount of ordinary Latin text should not be hidden by a long Han prefix.
-        return foreignLetters >= 2 && hanCount * 2 <= foreignLetters
+        return foreignLetters >= 2 && hanCount <= foreignLetters
     }
 
     private fun isLikelyRetainedTerm(

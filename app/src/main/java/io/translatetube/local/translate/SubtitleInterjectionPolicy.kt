@@ -33,7 +33,8 @@ internal object SubtitleInterjectionPolicy {
         "mr", "mrs", "ms", "dr", "st", "vs", "tv", "cd", "dvd", "pc", "ps", "nd", "rd", "th",
         "pm", "am", "cv", "dj", "mc", "pls", "plz", "thx", "btw", "fyi", "lol", "omg",
         "jr", "sr", "sgt", "lt", "cpl", "pvt", "cmdr", "mgr", "dept", "ave", "blvd", "hwy",
-        "brb", "imo", "tbh", "wtf", "ftw", "gl", "hf", "wtf", "nsfw", "html", "css", "sql",
+        "brb", "imo", "tbh", "wtf", "ftw", "gl", "hf", "nsfw", "html", "css", "sql",
+        "bff", "smh", "irl", "tmi", "lmk", "nvm", "afk", "asap", "gg", "lmao", "rofl",
     )
 
     private val vowelessSounds: Map<String, String> = mapOf(
@@ -59,6 +60,7 @@ internal object SubtitleInterjectionPolicy {
         "gosh" to "天哪", "gee" to "哎呀", "jeez" to "天哪", "geez" to "天哪", "ahem" to "咳咳",
         "hah" to "哈", "aha" to "啊哈", "ahah" to "啊哈", "oho" to "哦吼", "ooo" to "哦", "hurrah" to "耶",
         "blah" to "啦啦", "yo" to "哟", "ay" to "哎", "aye" to "是", "hi" to "嗨", "hello" to "你好",
+        "lol" to "哈哈", "lmao" to "笑死了", "rofl" to "哈哈", "omg" to "天哪", "wtf" to "搞什么",
         "bravo" to "太棒了", "encore" to "再来一个",
     )
 
@@ -133,7 +135,8 @@ internal object SubtitleInterjectionPolicy {
             if (rawLetters.length >= 2 && rawLetters.all { it.isUpperCase() }) return null
             vowelessSounds[letters]?.let { return it }
             vowelessSounds[collapsedOnce]?.let { return it }
-            if (letters.length in 2..6) return "嗯"
+            // Unknown consonant-only text may be an acronym or typo, not a vocalization.
+            // Only the explicit sound dictionary above is allowed to synthesize a Chinese substitute.
             return null
         }
         // 元音拉长："Aaaaah" / "Ooooh" / "Eeeek" / "Uhhhh"：同一字母连续 3 个以上，且全部由 a e i o u h 组成。

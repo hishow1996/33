@@ -347,5 +347,19 @@ class TranslationBatchResultTest {
         assertTrue(result.translations.isEmpty())
         assertEquals(source.indices.toList(), result.missingIndices)
         assertEquals(5, result.rejectedRows.size)
+    } 
+    @Test
+    fun rejectsConsonantOnlyAcronymEchoInsteadOfReplacingItWithAnInterjection() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(0, 1, 2),
+            rawTranslations = listOf("BFF", "SMH", "LOL"),
+            sourceTexts = mapOf(0 to "BFF", 1 to "SMH", 2 to "LOL"),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+            acceptShortUnchanged = true,
+        )
+
+        assertEquals(mapOf(2 to "哈哈"), result.translations)
+        assertEquals(listOf(0, 1), result.missingIndices)
     }
 }

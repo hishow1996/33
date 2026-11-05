@@ -338,5 +338,14 @@ class SubtitleTranslationQualityPolicyTest {
             assertFalse("'$it' should remain eligible as a retained term",
                 SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(it, it, "en", "zh-CN"))
         }
+    } 
+    @Test
+    fun rejectsUnknownConsonantWordsInsteadOfInventingChineseInterjections() {
+        assertFalse(SubtitleInterjectionPolicy.chineseFor("Bff", "en", "zh") != null)
+        assertFalse(SubtitleInterjectionPolicy.chineseFor("Smh", "en", "zh") != null)
+        assertFalse(SubtitleInterjectionPolicy.chineseFor("Tmr", "en", "zh") != null)
+        assertTrue(SubtitleInterjectionPolicy.chineseFor("Shhhh", "en", "zh") == "嘘")
+        assertTrue(SubtitleInterjectionPolicy.chineseFor("Brrr", "en", "zh") == "嘶")
+        assertTrue(SubtitleInterjectionPolicy.chineseFor("Hmmmm", "en", "zh") == "嗯")
     }
 }
