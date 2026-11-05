@@ -460,6 +460,9 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
 
     val normalized = content
         .replace(Regex("(?s)<think>.*?</think>"), "")
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
         .replace(Regex("(?m)^\\s*```[\\w-]*\\s*$"), "")
         .trim()
     if (normalized.isEmpty()) {
@@ -1249,7 +1252,7 @@ internal fun extractOpenAiCompatContent(body: String): String {
     return try {
         extractOpenAiCompatContentInternal(body).also { output ->
             trace?.recordParserEvent(
-                parser = "openai-compatible-response",
+                parser = "openai-compatible-final-text",
                 result = "PARSED",
                 reason = "outputChars=${output.length}; responseShape=${openAiCompatResponseSummary(body)}",
             )
@@ -1260,7 +1263,7 @@ internal fun extractOpenAiCompatContent(body: String): String {
             else -> "FAILED"
         }
         trace?.recordParserEvent(
-            parser = "openai-compatible-response",
+            parser = "openai-compatible-final-text",
             result = result,
             reason = "${failure.javaClass.simpleName}: ${TranslationFailureDiagnosticPolicy.safeDiagnosticText(failure.message, 220)}",
         )
