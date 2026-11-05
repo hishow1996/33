@@ -79,4 +79,21 @@ class AppLogEventRelationPolicyTest {
         operationId = operationId,
         issueKey = issueKey,
     )
+
+    @Test
+    fun matchingTranslationDiagnosticIdLinksEventsWithoutInventingCausality() {
+        val diagnosticId = "8caaf8ef-8d5b-437d-b292-5fc859a6e17d"
+        val selected = record(2_000L, "selected", "ERROR", "op-1", "session-1").copy(
+            details = listOf("故障上下文：", "- 翻译诊断 ID：$diagnosticId").joinToString("\n"),
+        )
+        val related = record(1_000L, "related", "INFO", "op-other", "session-2").copy(
+            details = listOf("故障上下文：", "- 翻译诊断 ID：$diagnosticId").joinToString("\n"),
+        )
+
+        val relations = AppLogEventRelationPolicy.againstSelected(listOf(selected, related), selected)
+
+        assertEquals("SAME_TRANSLATION_DIAGNOSTIC", relations["event:related"]?.role)
+        assertTrue(relations.getValue("event:related").evidence.contains("翻译诊断 ID 完全匹配"))
+        assertTrue(relations.getValue("event:related").evidence.contains("不单独证明因果"))
+    }
 }
