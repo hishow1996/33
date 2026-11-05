@@ -11202,7 +11202,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val initialRows = ArrayList<SubLine>(lines.size)
         for ((index, line) in lines.withIndex()) {
             checkTranslationActive(index)
-            initialRows += line
+            val knownSoundTranslation =
+                io.translatetube.local.translate.SubtitleSoundDescriptionPolicy
+                    .translateKnownSoundDescription(line.text)
+            initialRows += if (knownSoundTranslation != null) {
+                line.copy(zh = knownSoundTranslation)
+            } else {
+                line
+            }
         }
         var updatedLines: List<SubLine> = initialRows
         val db = AppDatabase.get(this)
@@ -11258,7 +11265,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         var completed = 0
         for (index in lines.indices) {
             checkTranslationActive(index)
-            val line = lines[index]
+            val line = updatedLines[index]
             val existingTranslation = SubtitleParsers.preferredTranslationText(line)
             if (existingTranslation != null) {
                 if (translationPreviewRows.size == 2) translationPreviewRows.removeAt(0)
