@@ -26,6 +26,14 @@ class SubtitleTranslationQualityPolicyTest {
         assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
             "You should try it.", "不妨试一试。", "en", "zh-CN",
         ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Reviews from people who have actually followed this route are pouring in.",
+            "这条路线实际体验者的评价正不断涌现。", "en", "zh-CN",
+        ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            "Reviews from people who have actually followed this route are pouring in.",
+            "这条路线实际体验者的评价正不断涌现。", "en", "zh-CN",
+        ))
     }
 
     @Test
@@ -878,6 +886,12 @@ class SubtitleTranslationQualityPolicyTest {
             "en",
             "zh-CN",
         ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "a 2-night, 3-day trip", "一个为期两晚三天的旅行", "en", "zh-CN",
+        ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "a 2-night, 3-day trip", "一个为期两天三晚的旅行", "en", "zh-CN",
+        ) != null)
     }
 
     @Test
@@ -1041,7 +1055,21 @@ class SubtitleTranslationQualityPolicyTest {
             "en",
             "zh-CN",
         ) != null)
-    }
+
+        val tripSource = "a 2-night, 3-day trip departing on Friday and returning on Sunday; however,"
+        val correctTrip = "一个为期两晚三天的旅行，从周五出发，周日返回；然而，"
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            tripSource, correctTrip, "en", "zh-CN",
+        ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+            tripSource, correctTrip, "en", "zh-CN",
+        ))
+        assertTrue(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            tripSource, "一个为期一晚三天的旅行，从周五出发，周日返回；然而，", "en", "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "a 1-night, 3-day trip", "一个一晚三天的旅行", "en", "zh-CN",
+        ) != null)
 
     @Test
     fun localizedHalfHourIsExcludedWithoutHidingOtherExplicitQuantities() {
