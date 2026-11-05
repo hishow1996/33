@@ -14245,8 +14245,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             isPlayableCue = { index ->
                 val cue = state.lines[index]
                 DubbingTimeline.isPlayableCue(cue) &&
-                    !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(cue.text) &&
-                    !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(cue.zh)
+                    !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(cue.text)
             },
         )
 
