@@ -355,6 +355,7 @@ class SubtitleTranslationQualityPolicyTest {
             Triple("One Direction", "One Direction", "en"),
             Triple("One Piece", "One Piece", "en"),
             Triple("The Fast and the Furious", "The Fast and the Furious", "en"),
+            Triple("The Good the Bad and the Ugly", "The Good the Bad and the Ugly", "en"),
             Triple("NASA Summit", "NASA Summit", "en"),
             Triple("Александр Пушкин", "Александр Пушкин", "ru"),
             Triple("Владимир Путин", "Владимир Путин", "ru"),
