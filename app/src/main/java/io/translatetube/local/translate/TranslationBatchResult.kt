@@ -72,13 +72,37 @@ internal data class TranslationBatchResult(
                     // A source cue made only of symbols has no speech to synthesize. Keep a
                     // speakable translated caption when supplied; otherwise preserve the source
                     // symbols as-is without treating the row as a translation failure.
-                    val preservedCue = value?.takeIf { TtsTextPolicy.hasSpeakableContent(it) }
-                        ?: sourceText
-                    if (translated[sourceIndex].isNullOrEmpty()) {
-                        translated[sourceIndex] = preservedCue
+                    if (value.isNullOrBlank()) {
+                        // Empty model output: retain the original non-speech cue as-is.
+                        if (translated[sourceIndex].isNullOrEmpty()) {
+                            translated[sourceIndex] = sourceText
+                        }
+                        missing.remove(sourceIndex)
+                        rejectionByIndex.remove(sourceIndex)
+                        return@forEachIndexed
                     }
-                    missing.remove(sourceIndex)
-                    rejectionByIndex.remove(sourceIndex)
+                    if (TtsTextPolicy.hasSpeakableContent(value)) {
+                        if (translated[sourceIndex].isNullOrEmpty()) {
+                            translated[sourceIndex] = value
+                        }
+                        missing.remove(sourceIndex)
+                        rejectionByIndex.remove(sourceIndex)
+                        return@forEachIndexed
+                    }
+                    missing += sourceIndex
+                    rejectionByIndex.putIfAbsent(
+                        sourceIndex,
+                        TranslationRowRejection(
+                            sourceIndex = sourceIndex,
+                            reasonCode = "UNSPEAKABLE_TRANSLATION",
+                            sourceCharCount = sourceText.length,
+                            rawOutputCharCount = rawValue?.length ?: 0,
+                            rawOutputPreview = rawValue.let {
+                                TranslationFailureDiagnosticPolicy.safeSnippet(it, 120)
+                            },
+                            diagnosticReason = "译文只有标点、符号或表情，没有可朗读内容",
+                        ),
+                    )
                     return@forEachIndexed
                 }
                 val qualityDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
