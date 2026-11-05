@@ -10169,7 +10169,10 @@ updateUiForSession(key, pipelineGeneration) {
                                 progress = "继续翻译缓存中尚未完成的字幕…",
                             )
                         }
-                        lines = translateLines(key, restored, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
+                        lines = translateLines(
+                            key, restored, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration,
+                            validateFinalDubbingRows = false,
+                        )
                     }
                 } else if (lines != null) {
                     // ---- 3. 翻译 ----
@@ -10239,6 +10242,7 @@ updateUiForSession(key, pipelineGeneration) {
                                 }
                                 translatedLines = translateLines(
                                     key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration,
+                                    validateFinalDubbingRows = false,
                                 )
                             }
                         } else if (translatedLines.isNotEmpty()) {
@@ -11017,6 +11021,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cacheKeyOverride: String? = null,
         activeIdOverride: Long? = null,
         pipelineGeneration: Long? = null,
+        validateFinalDubbingRows: Boolean = true,
     ): List<SubLine> {
         val startedAtNanos = System.nanoTime()
         val traceContext = io.translatetube.local.translate.TranslationDiagnosticContext(
@@ -11034,6 +11039,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 cacheKeyOverride = cacheKeyOverride,
                 activeIdOverride = activeIdOverride,
                 pipelineGeneration = pipelineGeneration,
+                validateFinalDubbingRows = validateFinalDubbingRows,
                 traceContext = traceContext,
             )
             // Log recovery is best-effort and must never turn a successful translation into a pipeline failure.
@@ -11145,14 +11151,20 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cacheKeyOverride: String? = null,
         activeIdOverride: Long? = null,
         pipelineGeneration: Long? = null,
+        validateFinalDubbingRows: Boolean = true,
         traceContext: io.translatetube.local.translate.TranslationDiagnosticContext,
     ): List<SubLine> {
         val translationStartedAtNanos = System.nanoTime()
         val diagnosticId = traceContext.diagnosticId
         val earlyExternalTranslation = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
         if (earlyExternalTranslation != null) {
-            val validatedExternalTranslation =
+            val validatedExternalTranslation = if (validateFinalDubbingRows) {
                 DubbingTranslationPolicy.prepareLinesForDubbing(earlyExternalTranslation, srcLang)
+            } else {
+                // awaitManualSubtitleTranslation has already validated the imported rows;
+                // the five-stage caller performs its final guard after all source rows are merged.
+                earlyExternalTranslation
+            }
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.info(
                     this@PlaybackService,
@@ -11899,7 +11911,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     ),
                 )
             }
-            return DubbingTranslationPolicy.prepareLinesForDubbing(updatedLines, srcLang)
+            return if (validateFinalDubbingRows) {
+                DubbingTranslationPolicy.prepareLinesForDubbing(updatedLines, srcLang)
+            } else {
+                // TranslationBatchResult validates every accepted row; the five-stage caller
+                // performs the complete dubbing validation once after cache/source rows are merged.
+                updatedLines
+            }
         } finally {
             // Release native resources on success, failure, or cancellation, keeping memory bounded.
             runCatching { engine?.close() }
