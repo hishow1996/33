@@ -466,4 +466,31 @@ class SubtitleCacheValidationPolicyTest {
         assertEquals(listOf(null, "再见。"), restored.map { it.zh })
     }
 
+    @Test
+    fun cacheUsesChineseNumberValidationAndKeepsValidNumeralTranslations() {
+        val source = listOf(
+            SubLine(0, 0L, 1_000L, "I have 3 cats and 2 dogs."),
+            SubLine(1, 1_000L, 2_000L, "Goodbye."),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                0L, 1_000L, "I have 3 cats and 2 dogs.", "我有三只猫。",
+            ),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                1_000L, 2_000L, "Goodbye.", "再见。",
+            ),
+        )
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source, cached, sourceLanguage = "en", targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected partial cache recovery")
+        assertEquals(listOf(null, "再见。"), restored.map { it.zh })
+
+        val completeCache = cached.toMutableList()
+        completeCache[0] = completeCache[0].copy(translatedText = "我有三只猫和两只狗。")
+        val restoredComplete = SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+            source, completeCache, sourceLanguage = "en", targetLanguage = "zh-CN",
+        ) ?: throw AssertionError("Expected Chinese numeral cache rows to survive")
+        assertEquals(listOf("我有三只猫和两只狗。", "再见。"), restoredComplete.map { it.zh })
+    }
+
 }

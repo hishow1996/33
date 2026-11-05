@@ -51,4 +51,14 @@ class TranslationAcceptancePolicyTest {
         ))
     }
 
+    @Test
+    fun autoLanguageAdaptiveChecksUseOnlyHighConfidenceSourceSignals() {
+        val accept = subtitleTranslationAcceptor("auto", "zh-CN")
+        assertFalse(accept("I do not agree.", "我同意。"))
+        assertFalse(accept("Je ne sais pas.", "我知道。"))
+        assertFalse(accept("行きません。", "我去。"))
+        assertTrue(accept("I do not agree.", "我不同意。"))
+        assertTrue(accept("Sam arrived yesterday.", "萨姆昨天到了。"))
+    }
+
 }

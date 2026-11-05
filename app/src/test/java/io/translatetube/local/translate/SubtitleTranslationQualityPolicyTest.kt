@@ -102,9 +102,9 @@ class SubtitleTranslationQualityPolicyTest {
         assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
             "Je ne sais pas.", "我知道。", "fr", "zh-CN",
         ) != null)
-        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
             "I do not agree.", "我同意。", "auto", "zh-CN",
-        ) != null)
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
         assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
             "I do not agree.", "我同意。", "eng", "zh-CN",
         )!!.startsWith("SEMANTIC_POLARITY_MISMATCH"))
@@ -978,9 +978,200 @@ class SubtitleTranslationQualityPolicyTest {
             "en",
             "zh-CN",
         ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "The first route is 3 km and the second route is 5 m.",
+            "第一条路线是五公里，第二条路线是三米。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "The first route is 3 km and the second route is 5 m.",
+            "第一条路线是三公里，第二条路线是五米。",
+            "en",
+            "zh-CN",
+        ) != null)
         assertFalse(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
             "The ticket costs £5.",
             "这张票售价5英镑。",
+            "en",
+            "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun parsesChineseNumeralsAndRejectsMissingOrChangedExplicitValues() {
+        val missing = SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 3 cats and 2 dogs.",
+            "我有三只猫。",
+            "en",
+            "zh-CN",
+        )
+        assertTrue(missing.orEmpty().contains("未保留"))
+
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 3 cats and 2 dogs.",
+            "我有三只猫和两只狗。",
+            "en",
+            "zh-CN",
+        ) != null)
+
+        assertTrue(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "The year is 2026.",
+            "年份是二〇二五年。",
+            "en",
+            "zh-CN",
+        ) != null)
+
+        // A natural classifier for an indefinite article is not treated as an added quantity.
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have a cat.",
+            "我有一只猫。",
+            "en",
+            "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun localizedHalfHourIsExcludedWithoutHidingOtherExplicitQuantities() {
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 2 cats and arrive at 3:30.",
+            "我有两只猫，三点半到达。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I have 2 cats and arrive at 3:30.",
+            "我有三只猫，三点半到达。",
+            "en",
+            "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun autoLanguageUsesOnlyHighConfidenceScriptDetectionForSemanticChecks() {
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "行きません。",
+            "我去。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Je ne sais pas.",
+            "我知道。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Ich kann nicht kommen.",
+            "我能来。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "No quiero ir.",
+            "我想去。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "저는 안 갑니다.",
+            "我去。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Я не согласен.",
+            "我同意。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "I do not agree.",
+            "我同意。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+    }
+
+    @Test
+    fun preservesRussianPositiveIdiomsAndChecksClearBeforeAfterRelations() {
+        assertFalse(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Нет проблем.",
+            "没问题。",
+            "auto",
+            "zh-CN",
+        ) != null)
+        assertTrue(SubtitleTranslationQualityPolicy.semanticConsistencyMismatchReason(
+            "Поезд прибудет до полудня.",
+            "火车中午之后到达。",
+            "auto",
+            "zh-CN",
+        ).orEmpty().startsWith("SEMANTIC_RELATION_MISMATCH"))
+    }
+
+    @Test
+    fun parsesFractionsRangesAndColloquialChineseLargeNumbers() {
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "I need 1/2 meter.",
+            "我需要半米。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+            "I need 1/2 meter.",
+            "我需要半米。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "Use 1/4 of the amount.",
+            "使用总量的四分之一。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "Set a range from 3 to 5.",
+            "范围设为三到五。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "The total is 13,000.",
+            "总数是一万三。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "The price is 1,300.",
+            "价格是一千三。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "The price is 230.",
+            "价格是二百三。",
+            "en",
+            "zh-CN",
+        ) != null)
+    }
+
+    @Test
+    fun preservesHyphenatedDatesWithoutTreatingDatePartsAsNegativeNumbers() {
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "The release date is 2026-11-05.",
+            "发布日期是2026年11月5日。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "The meeting is on 11/05/2026.",
+            "会议日期是2026年11月5日。",
+            "en",
+            "zh-CN",
+        ) != null)
+        assertFalse(SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+            "The temperature is -5 degrees.",
+            "温度是零下五度。",
             "en",
             "zh-CN",
         ) != null)

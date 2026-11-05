@@ -577,4 +577,27 @@ class TranslationBatchResultTest {
         assertTrue(question.rejectedRows.single().reasonCode == "SEMANTIC_INTENT_MISMATCH")
     }
 
+    @Test
+    fun batchAcceptsChineseNumberWordsButRejectsMissingExplicitQuantities() {
+        val valid = TranslationBatchResult.from(
+            indices = listOf(0),
+            rawTranslations = listOf("我有三只猫和两只狗。"),
+            sourceTexts = mapOf(0 to "I have 3 cats and 2 dogs."),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertEquals("我有三只猫和两只狗。", valid.translations[0])
+        assertTrue(valid.missingIndices.isEmpty())
+
+        val missing = TranslationBatchResult.from(
+            indices = listOf(1),
+            rawTranslations = listOf("我有三只猫。"),
+            sourceTexts = mapOf(1 to "I have 3 cats and 2 dogs."),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(missing.translations.isEmpty())
+        assertEquals("NUMERIC_CONTENT_MISMATCH", missing.rejectedRows.single().reasonCode)
+    }
+
 }

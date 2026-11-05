@@ -11453,6 +11453,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             size = updatedLines.size,
                             beforeIndex = firstIndex,
                             currentSourceCues = batch,
+                            sourceLanguage = src,
                             maxRows = io.translatetube.local.translate.TranslationContextPolicy.MAX_CONTEXT_ROWS,
                             checkActive = { translationJob?.ensureActive() },
                             sourceAt = { index -> updatedLines[index].text },

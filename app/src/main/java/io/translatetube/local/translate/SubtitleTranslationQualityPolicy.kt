@@ -1,9 +1,11 @@
 package io.translatetube.local.translate
 
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.text.Normalizer
 import java.util.Locale
 import io.translatetube.local.tts.TtsTextPolicy
+import io.translatetube.local.subs.SubtitleLanguageDetector
 
 internal data class TranslationQualityDecision(
     val accepted: Boolean,
@@ -12,9 +14,15 @@ internal data class TranslationQualityDecision(
     val sourceEcho: Boolean = false,
     val targetLanguageMismatchReason: String? = null,
     val shortUntranslatedAccepted: Boolean = false,
+    val modelMetaResponseReason: String? = null,
+    val scriptMismatchReason: String? = null,
+    val numericMismatchReason: String? = null,
+    val numericUnitAssociationMismatchReason: String? = null,
+    val unitMismatchReason: String? = null,
+    val semanticMismatchReason: String? = null,
 )
 
-/** Shared validation for live translation batches and restored subtitle caches. *//** Shared validation for live translation batches and restored subtitle caches. */
+/** Shared validation for live translation batches and restored subtitle caches. */
 internal object SubtitleTranslationQualityPolicy {
     private val wordSeparatorRegex = Regex("""[^\p{L}\p{N}]+""")
     private val urlPattern = Regex("""^(?:https?://|www\.)\S+$""", RegexOption.IGNORE_CASE)
@@ -25,7 +33,12 @@ internal object SubtitleTranslationQualityPolicy {
     private val explicitNumberPattern = Regex(
         """(?<!\d)-?\d+(?:[.,]\d+)*"""
     )
+    private val explicitFractionPattern = Regex("""(?<!\d)-?\d+\s*/\s*\d+(?!\d)""")
+    private val chineseFractionPattern = Regex("""([零〇一二两兩三四五六七八九十百千万萬亿億]+)分之([零〇一二两兩三四五六七八九十百千万萬亿億]+)""")
+    private val chineseRangePattern = Regex("""([零〇一二两兩三四五六七八九十百千万萬亿億]+)(?:到|至|~|～|—)([零〇一二两兩三四五六七八九十百千万萬亿億]+)""")
     private val clockTimePattern = Regex("""(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)""")
+    private val chineseNumeralPattern = Regex("""[零〇一二两兩三四五六七八九十百千万萬亿億点點半负負正]+""")
+    private val chineseClockPattern = Regex("""[零〇一二两兩三四五六七八九十百千万萬亿億\d]+[点點](?:[零〇一二两兩三四五六七八九十\d]+分|半)?""")
     private val commaDecimalLanguages = setOf(
         "de", "fr", "es", "it", "pt", "nl", "ru", "pl", "tr", "uk", "sv", "no",
         "da", "fi", "cs", "sk", "hu", "ro", "bg", "el", "hr", "sr", "id",
@@ -153,7 +166,7 @@ internal object SubtitleTranslationQualityPolicy {
         ExplicitUnitAlias("week", listOf("weeks", "week", "周", "星期")),
         ExplicitUnitAlias("month", listOf("months", "month", "个月", "個月", "月")),
         ExplicitUnitAlias("year", listOf("years", "year", "年")),
-        ExplicitUnitAlias("usd", listOf("US dollars", "US dollar", "dollars", "dollar", "USD", "美元", "美金")),
+        ExplicitUnitAlias("usd", listOf("US dollars", "US dollar", "dollars", "dollar", "USD", "美元", "美金", "$")),
         ExplicitUnitAlias("euro", listOf("euros", "euro", "EUR", "欧元", "€")),
         ExplicitUnitAlias("gbp", listOf("GBP", "英镑", "英鎊", "sterling", "£")),
         ExplicitUnitAlias("jpy", listOf("yen", "JPY", "日元", "円")),
@@ -321,16 +334,7 @@ internal object SubtitleTranslationQualityPolicy {
             modelMeta == null && scriptMismatch == null && numericMismatch == null &&
             numericUnitMismatch == null && unitMismatch == null && semanticMismatch == null
 
-        if (shortAccepted) {
-            return TranslationQualityDecision(
-                accepted = true,
-                sourceEcho = sourceEcho,
-                targetLanguageMismatchReason = targetMismatch,
-                shortUntranslatedAccepted = true,
-            )
-        }
-
-        val rejection = when {
+        val rejection = if (shortAccepted) null else when {
             isPunctuationOnlyTranslation(sourceText, translatedText) ->
                 "UNSPEAKABLE_TRANSLATION" to "译文只有标点、符号或表情，没有可朗读内容"
             modelMeta != null -> "MODEL_META_RESPONSE" to modelMeta
@@ -345,17 +349,20 @@ internal object SubtitleTranslationQualityPolicy {
             sourceEcho -> "SOURCE_ECHO" to "忽略大小写、空白和标点后，模型译文与原文相同"
             else -> null
         }
-        return if (rejection == null) {
-            TranslationQualityDecision(true)
-        } else {
-            TranslationQualityDecision(
-                accepted = false,
-                reasonCode = rejection.first,
-                reason = rejection.second,
-                sourceEcho = sourceEcho,
-                targetLanguageMismatchReason = targetMismatch,
-            )
-        }
+        return TranslationQualityDecision(
+            accepted = rejection == null,
+            reasonCode = rejection?.first,
+            reason = rejection?.second,
+            sourceEcho = sourceEcho,
+            targetLanguageMismatchReason = targetMismatch,
+            shortUntranslatedAccepted = shortAccepted,
+            modelMetaResponseReason = modelMeta,
+            scriptMismatchReason = scriptMismatch,
+            numericMismatchReason = numericMismatch,
+            numericUnitAssociationMismatchReason = numericUnitMismatch,
+            unitMismatchReason = unitMismatch,
+            semanticMismatchReason = semanticMismatch,
+        )
     }
 
     private fun semanticMismatchCode(reason: String): String = when {
@@ -421,40 +428,84 @@ internal object SubtitleTranslationQualityPolicy {
         value: String,
         numberFormatLanguage: String,
         skipClockRanges: List<IntRange> = emptyList(),
-    ): List<String> = explicitNumberPattern.findAll(value)
-        .filterNot { match ->
-            skipClockRanges.any { range ->
-                match.range.first >= range.first && match.range.last <= range.last
+    ): List<String> {
+        val tokens = mutableListOf<Pair<Int, String>>()
+        val fractions = explicitFractionPattern.findAll(value)
+            .filterNot { match ->
+                isSlashDateLike(match, value) ||
+                    skipClockRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }
             }
+            .toList()
+        fractions.forEach { match ->
+            normalizeArabicFraction(match.value)?.let { tokens += match.range.first to it }
         }
-        .map { match ->
-            val raw = match.value
-            val negative = raw.startsWith("-")
-            var number = raw.removePrefix("-")
-            val primaryLanguage = SourceLanguagePolicy.normalizeTag(numberFormatLanguage)
-                .lowercase(Locale.ROOT)
-                .substringBefore("-")
-            val commaDecimal = primaryLanguage in commaDecimalLanguages
-            val groupedComma = Regex("""^\d{1,3}(?:,\d{3})+$""").matches(number)
-            val groupedDot = Regex("""^\d{1,3}(?:\.\d{3})+$""").matches(number)
-            number = when {
-                number.contains(",") && number.contains(".") && commaDecimal ->
-                    number.replace(".", "").replace(',', '.')
-                number.contains(",") && number.contains(".") ->
-                    number.replace(",", "")
-                number.contains(",") && groupedComma && !commaDecimal ->
-                    number.replace(",", "")
-                number.contains(",") ->
-                    number.replace(',', '.')
-                number.contains(".") && groupedDot && commaDecimal ->
-                    number.replace(".", "")
-                else -> number
-            }
-            val signed = if (negative) "-$number" else number
-            runCatching { BigDecimal(signed).stripTrailingZeros().toPlainString() }
-                .getOrElse { signed }
+        explicitNumberPattern.findAll(value).forEach { match ->
+            if (fractions.any { it.range.contains(match.range.first) && it.range.contains(match.range.last) }) return@forEach
+            if (skipClockRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            normalizeExplicitNumberMatch(match, value, numberFormatLanguage)?.let { tokens += match.range.first to it }
         }
-        .toList()
+        return tokens.sortedBy { it.first }.distinctBy { it.first }.map { it.second }
+    }
+
+    private fun normalizeExplicitNumberMatch(
+        match: MatchResult,
+        fullText: String,
+        numberFormatLanguage: String,
+    ): String? {
+        val raw = match.value
+        // A hyphen immediately following a digit is a range/date separator, not a sign.
+        val hyphenIsSeparator = raw.startsWith("-") &&
+            match.range.first > 0 && fullText[match.range.first - 1].isDigit()
+        return normalizeArabicNumber(
+            if (hyphenIsSeparator) raw.removePrefix("-") else raw,
+            numberFormatLanguage,
+        )
+    }
+
+    private fun normalizeArabicNumber(rawValue: String, numberFormatLanguage: String): String? {
+        val negative = rawValue.startsWith("-")
+        var number = rawValue.removePrefix("-")
+        val primaryLanguage = SourceLanguagePolicy.normalizeTag(numberFormatLanguage)
+            .lowercase(Locale.ROOT)
+            .substringBefore("-")
+        val commaDecimal = primaryLanguage in commaDecimalLanguages
+        val groupedComma = Regex("""^\d{1,3}(?:,\d{3})+$""").matches(number)
+        val groupedDot = Regex("""^\d{1,3}(?:\.\d{3})+$""").matches(number)
+        number = when {
+            number.contains(",") && number.contains(".") && commaDecimal ->
+                number.replace(".", "").replace(',', '.')
+            number.contains(",") && number.contains(".") ->
+                number.replace(",", "")
+            number.contains(",") && groupedComma && !commaDecimal ->
+                number.replace(",", "")
+            number.contains(",") ->
+                number.replace(',', '.')
+            number.contains(".") && groupedDot && commaDecimal ->
+                number.replace(".", "")
+            else -> number
+        }
+        val signed = if (negative) "-$number" else number
+        return runCatching { BigDecimal(signed).stripTrailingZeros().toPlainString() }.getOrNull()
+    }
+
+    private fun isSlashDateLike(match: MatchResult, fullText: String): Boolean {
+        val nextIndex = match.range.last + 1
+        val followedByAnotherDatePart = nextIndex < fullText.length && fullText[nextIndex] == '/'
+        val firstPart = match.value.substringBefore('/').removePrefix("-")
+        return followedByAnotherDatePart || firstPart.length == 4
+    }
+
+    private fun normalizeArabicFraction(rawValue: String): String? {
+        val parts = rawValue.replace(" ", "").split("/")
+        if (parts.size != 2) return null
+        val numerator = runCatching { BigDecimal(parts[0]) }.getOrNull() ?: return null
+        val denominator = runCatching { BigDecimal(parts[1]) }.getOrNull() ?: return null
+        if (denominator.compareTo(BigDecimal.ZERO) == 0) return null
+        return runCatching {
+            numerator.divide(denominator, 8, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+        }.getOrNull()
+    }
+
 
 
     private fun explicitNumericUnits(value: String): List<String> {
@@ -495,16 +546,82 @@ internal object SubtitleTranslationQualityPolicy {
         if (!SourceLanguagePolicy.isChinese(targetLanguage) ||
             SourceLanguagePolicy.isChinese(sourceLanguage)
         ) return null
-        val sourcePairs = explicitNumericUnitPairs(sourceText, sourceLanguage)
-        val targetPairs = explicitNumericUnitPairs(translatedText, targetLanguage)
+        val sourcePairs = explicitNumericUnitPairs(sourceText, sourceLanguage, includeChineseNumerals = false)
+        val targetPairs = explicitNumericUnitPairs(translatedText, targetLanguage, includeChineseNumerals = true)
         if (sourcePairs.isEmpty() || sourcePairs.size != targetPairs.size) return null
         if (sourcePairs.groupingBy { it }.eachCount() == targetPairs.groupingBy { it }.eachCount()) return null
         return "数字与单位的对应关系发生变化；原文可识别配对数=" + sourcePairs.size +
             "，译文可识别配对数=" + targetPairs.size
     }
 
-    private fun explicitNumericUnitPairs(value: String, numberFormatLanguage: String): List<NumericUnitPair> {
-        val numberMatches = explicitNumberPattern.findAll(value).toList()
+    private data class NumericToken(val start: Int, val end: Int, val value: String)
+
+    private fun explicitNumericUnitPairs(
+        value: String,
+        numberFormatLanguage: String,
+        includeChineseNumerals: Boolean,
+    ): List<NumericUnitPair> {
+        val numberMatches = mutableListOf<NumericToken>()
+        val fractions = explicitFractionPattern.findAll(value)
+            .filterNot { isSlashDateLike(it, value) }
+            .toList()
+        fractions.forEach { match ->
+            normalizeArabicFraction(match.value)?.let {
+                numberMatches += NumericToken(match.range.first, match.range.last, it)
+            }
+        }
+        explicitNumberPattern.findAll(value).forEach { match ->
+            if (fractions.any { it.range.contains(match.range.first) && it.range.contains(match.range.last) }) return@forEach
+            normalizeExplicitNumberMatch(match, value, numberFormatLanguage)?.let {
+                numberMatches += NumericToken(match.range.first, match.range.last, it)
+            }
+        }
+        if (includeChineseNumerals) {
+            val chineseFractions = chineseFractionPattern.findAll(value).toList()
+            chineseFractions.forEach { match ->
+                val denominator = parseChineseInteger(match.groupValues[1])?.toBigDecimalOrNull() ?: return@forEach
+                val numerator = parseChineseInteger(match.groupValues[2])?.toBigDecimalOrNull() ?: return@forEach
+                if (denominator.compareTo(BigDecimal.ZERO) == 0) return@forEach
+                val fraction = runCatching {
+                    numerator.divide(denominator, 8, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+                }.getOrNull() ?: return@forEach
+                numberMatches += NumericToken(match.range.first, match.range.last, fraction)
+            }
+            val ranges = chineseRangePattern.findAll(value).toList()
+            ranges.forEach { match ->
+                val first = parseChineseNumeral(match.groupValues[1]) ?: return@forEach
+                val second = parseChineseNumeral(match.groupValues[2]) ?: return@forEach
+                numberMatches += NumericToken(match.groups[1]!!.range.first, match.groups[1]!!.range.last, first)
+                numberMatches += NumericToken(match.groups[2]!!.range.first, match.groups[2]!!.range.last, second)
+            }
+            val protectedRanges = chineseFractions.map { it.range } + ranges.map { it.range }
+            chineseNumeralPattern.findAll(value).forEach { match ->
+                if (protectedRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+                val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
+                val hasMagnitude = match.value.any { it in "十百千万萬亿億" }
+                val hasClassifier = listOf(
+                    "个", "個", "只", "条", "條", "本", "件", "位", "张", "張", "岁", "歲", "人",
+                    "年", "月", "日", "天", "周", "小时", "小時", "分钟", "分鐘", "秒", "公里",
+                    "千米", "米", "厘米", "毫米", "公斤", "千克", "克", "毫升", "升", "度", "元", "美元",
+                    "欧元", "英镑", "百分之", "百分比",
+                ).any(suffix::startsWith)
+                val prefix = value.substring(maxOf(0, match.range.first - 6), match.range.first)
+                val hasNumberPrefix = Regex("""(?:是|为|為|有|共|达|達|约|約|第|超过|超過|至少|少于|少於|多于|多於|等于|等於|只剩|还剩|還剩|剩下|剩余|剩餘|重达|重達|长达|長達|正好|刚好|百分之)$""")
+                    .containsMatchIn(prefix)
+                val consecutiveDigits = match.value.length >= 2 &&
+                    match.value.all { it in "零〇一二两兩三四五六七八九" }
+                val trailingHalf = match.value == "半" || match.value == "一半" ||
+                    ((match.value.endsWith('点') || match.value.endsWith('點')) && suffix.startsWith("半"))
+                val zeroBelow = prefix.endsWith("零下")
+                if (!hasMagnitude && !hasClassifier && !hasNumberPrefix && !consecutiveDigits && !trailingHalf) return@forEach
+                parseChineseNumeral(match.value, suffix)?.let { parsed ->
+                    val normalized = if (zeroBelow) {
+                        runCatching { BigDecimal(parsed).negate().stripTrailingZeros().toPlainString() }.getOrNull() ?: parsed
+                    } else parsed
+                    numberMatches += NumericToken(match.range.first, match.range.last, normalized)
+                }
+            }
+        }
         if (numberMatches.isEmpty()) return emptyList()
         val unitMatches = explicitUnitMatches.flatMap { (unitId, pattern) ->
             pattern.findAll(value).map { match -> Triple(match.range.first, match.range.last, unitId) }.toList()
@@ -523,21 +640,20 @@ internal object SubtitleTranslationQualityPolicy {
                 .mapNotNull { (index, number) ->
                     if (index in usedNumbers) return@mapNotNull null
                     val gap = when {
-                        number.range.last < unit.first -> unit.first - number.range.last - 1
-                        unit.second < number.range.first -> number.range.first - unit.second - 1
+                        number.end < unit.first -> unit.first - number.end - 1
+                        unit.second < number.start -> number.start - unit.second - 1
                         else -> Int.MAX_VALUE
                     }
                     if (gap <= 4) Triple(index, number, gap) else null
                 }
                 .minByOrNull { it.third }
                 ?: return@forEach
-            val normalized = normalizedExplicitNumbers(nearestNumber.second.value, numberFormatLanguage)
-                .singleOrNull() ?: return@forEach
             usedNumbers += nearestNumber.first
-            pairs += NumericUnitPair(normalized, unit.third)
+            pairs += NumericUnitPair(nearestNumber.second.value, unit.third)
         }
         return pairs
     }
+
 
     /**
      * Reject an explicit unit substitution only when both sides expose a numeric-adjacent unit.
@@ -560,6 +676,46 @@ internal object SubtitleTranslationQualityPolicy {
         return "原文和译文均出现明确数字单位，但单位类别不一致；原文单位数=${sourceUnits.size}，译文单位数=${translatedUnits.size}"
     }
 
+    /**
+     * Use a supplied language first, then strong script evidence, then a few unmistakable
+     * sentence patterns for Latin-script languages. A single common word is never enough.
+     */
+    private fun resolveSemanticSourceLanguage(source: String, sourceLanguage: String): String {
+        if (!SourceLanguagePolicy.isUndetermined(sourceLanguage)) {
+            return SourceLanguagePolicy.canonicalPrimaryCode(sourceLanguage)
+        }
+        val scriptLanguage = SubtitleLanguageDetector.detect(source)
+        if (scriptLanguage != "auto") return SourceLanguagePolicy.canonicalPrimaryCode(scriptLanguage)
+        val sample = source.trim()
+        val englishSignal = Regex(
+            """\b(?:i|you|we|they|he|she)\s+(?:(?:do|does|did)\s+not|(?:am|is|are|was|were|have|has|will|can|could|should|must|may|might)\s+not)\b|\b(?:don't|doesn't|didn't|can't|cannot|won't|isn't|aren't|wasn't|weren't|haven't|hasn't|shouldn't|mustn't)\b""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(sample) || Regex(
+            """\b(?:i|you|we|they|he|she)\s+(?:do|does|did|am|is|are|was|were|have|has|will|can|could|should|must|may|might)\s+\w+""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(sample)
+        if (englishSignal) return "en"
+
+        val frenchSignal = Regex(
+            """\bne\b.{0,48}\b(?:pas|plus|jamais|rien|personne)\b|\best-ce\s+que\b""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(sample)
+        if (frenchSignal) return "fr"
+
+        val germanSignal = Regex(
+            """\bich\b.{0,48}\b(?:nicht|kein|keine|nie|nichts)\b|\b(?:ich|du|er|sie|wir)\s+(?:bin|bist|ist|sind|war|waren|kann|können|will|wollen)\b""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(sample)
+        if (germanSignal) return "de"
+
+        val spanishSignal = Regex(
+            """\bno\s+(?:quiero|puedo|sé|se|estoy|soy|tengo|hay|vamos)\b|\b(?:yo|tú|tu|él|ella|nosotros)\s+(?:no\s+)?(?:quiero|puedo|sé|se|estoy|soy|tengo)\b""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(sample)
+        if (spanishSignal) return "es"
+        return "auto"
+    }
+
     /** Conservative checks for explicit English-to-Chinese semantic contradictions. */
     fun semanticConsistencyMismatchReason(
         sourceText: String?,
@@ -569,7 +725,7 @@ internal object SubtitleTranslationQualityPolicy {
     ): String? {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return null
         if (!SourceLanguagePolicy.isChinese(targetLanguage)) return null
-        val language = SourceLanguagePolicy.canonicalPrimaryCode(sourceLanguage)
+        val language = resolveSemanticSourceLanguage(sourceText, sourceLanguage)
         val source = sourceText.trim()
         val target = translatedText.trim()
         if (source.isEmpty() || target.isEmpty() || isNonTranslatableCue(source)) return null
@@ -705,6 +861,7 @@ internal object SubtitleTranslationQualityPolicy {
             "de" -> Regex("""(?:kein\s+Problem|nicht\s+schlecht)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
             "es" -> Regex("""(?:no\s+hay\s+problema|sin\s+problema|no\s+está\s+mal|no\s+esta\s+mal)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
             "pt" -> Regex("""(?:não\s+há\s+problema|nao\s+há\s+problema|sem\s+problema|não\s+é\s+ruim|nao\s+é\s+ruim)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "ru" -> Regex("""(?:нет\s+проблем|без\s+проблем|ничего\s+страшного|неплохо)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
             else -> false
         }
         if (neutralNegativeSurface) return null
@@ -719,6 +876,8 @@ internal object SubtitleTranslationQualityPolicy {
                 !Regex("""\bno\s+sólo\b|\bno\s+solo\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
             "pt" -> Regex("""\b(?:não|nao|nunca|jamais|sem|ninguém|ninguem|nada|tampouco|nenhum|nenhuma)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
                 !Regex("""\bnão\s+só\b|\bnao\s+so\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "ru" -> Regex("""\b(?:не|ни|нет|никогда|никто|ничего|никакой|никакая|никакое|без|нельзя)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !Regex("""\bне\s+только\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
             else -> false
         }
         val targetNegated = hasClearChineseNegation(target)
@@ -765,6 +924,7 @@ internal object SubtitleTranslationQualityPolicy {
             "fr" -> Regex("""\bavant\b""", RegexOption.IGNORE_CASE)
             "de" -> Regex("""\bvor\b""", RegexOption.IGNORE_CASE)
             "es", "pt" -> Regex("""\bantes\b""", RegexOption.IGNORE_CASE)
+            "ru" -> Regex("""\bдо\b""", RegexOption.IGNORE_CASE)
             "ja" -> Regex("""前に|以前""")
             "ko" -> Regex("""전에|이전에""")
             else -> null
@@ -774,6 +934,7 @@ internal object SubtitleTranslationQualityPolicy {
             "de" -> Regex("""\bnach\b""", RegexOption.IGNORE_CASE)
             "es" -> Regex("""\b(?:después|despues)\b""", RegexOption.IGNORE_CASE)
             "pt" -> Regex("""\bdepois\b""", RegexOption.IGNORE_CASE)
+            "ru" -> Regex("""\bпосле\b""", RegexOption.IGNORE_CASE)
             "ja" -> Regex("""後に|あとで|後で|以後""")
             "ko" -> Regex("""후에|이후""")
             else -> null
@@ -824,7 +985,7 @@ internal object SubtitleTranslationQualityPolicy {
         return null
     }
 
-    private fun hasClearEnglishNegation(value: String): Boolean {    private fun hasClearEnglishNegation(value: String): Boolean {
+    private fun hasClearEnglishNegation(value: String): Boolean {
         val neutralRanges = neutralEnglishNegation.findAll(value).map { it.range }.toList()
         return englishNegation.findAll(value).any { match ->
             neutralRanges.none { it.contains(match.range.first) }
@@ -837,9 +998,9 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     /**
-     * Conservative explicit-number guard. If the target has fewer numeric tokens, it may have
-     * rendered a value in Chinese words or a clock as 点/半; this heuristic declines to reject.
-     * It never adds a second model/API request.
+     * Compare explicit source values with Arabic or confidently parsed Chinese numeral values.
+     * Chinese clock forms are excluded only when the source also contains a clock token and the
+     * translation visibly uses Chinese time notation. An explicit source quantity may not vanish.
      */
     fun numericContentMismatchReason(
         sourceText: String?,
@@ -852,16 +1013,28 @@ internal object SubtitleTranslationQualityPolicy {
             SourceLanguagePolicy.isChinese(sourceLanguage)
         ) return null
 
-        val localizedClock = listOf("点", "时", "時", "半", "上午", "下午", "凌晨", "中午")
-            .any(translatedText::contains)
-        val ignoredClockRanges = if (localizedClock) {
+        val localizedClock = listOf("点", "點", "时", "時", "上午", "下午", "凌晨", "中午")
+            .any(translatedText::contains) ||
+            chineseClockPattern.containsMatchIn(translatedText)
+        val ignoredSourceClockRanges = if (localizedClock) {
             clockTimePattern.findAll(sourceText).map { it.range }.toList()
         } else {
             emptyList()
         }
-        val sourceNumbers = normalizedExplicitNumbers(sourceText, sourceLanguage, ignoredClockRanges)
-        val translatedNumbers = normalizedExplicitNumbers(translatedText, targetLanguage)
-        if (sourceNumbers.isEmpty() || translatedNumbers.size < sourceNumbers.size) return null
+        val sourceNumbers = normalizedExplicitNumbers(sourceText, sourceLanguage, ignoredSourceClockRanges)
+        val ignoredTargetClockRanges = if (localizedClock) {
+            (clockTimePattern.findAll(translatedText).map { it.range } +
+                chineseClockPattern.findAll(translatedText).map { it.range }).toList()
+        } else {
+            emptyList()
+        }
+        val translatedNumbers = normalizedTranslationNumbers(
+            translatedText, targetLanguage, ignoredTargetClockRanges,
+        )
+        if (sourceNumbers.isEmpty()) return null
+        // Only compare extra quantities when the source actually states an explicit number.
+        // This avoids treating a natural Chinese classifier (for example "一只猫" for "a cat")
+        // as invented numeric information when the source uses an indefinite article.
 
         val available = translatedNumbers.groupingBy { it }.eachCount().toMutableMap()
         var missing = 0
@@ -871,11 +1044,183 @@ internal object SubtitleTranslationQualityPolicy {
         }
         val extra = available.values.sum()
         return when {
-            missing > 0 -> "原文有 ${sourceNumbers.size} 个显式数字项，译文有 ${translatedNumbers.size} 个数字项；其中 $missing 项未保留或数值不一致"
-            extra > 0 -> "译文比原文多出 $extra 个无法对应的显式数字项，可能擅自增加了数值"
+            missing > 0 -> "原文有 " + sourceNumbers.size + " 个数字项，译文有 " +
+                translatedNumbers.size + " 个数字项；其中 " + missing + " 项未保留或数值不一致"
+            extra > 0 -> "译文比原文多出 " + extra + " 个无法对应的数字项，可能擅自增加了数值"
             else -> null
         }
     }
+
+    private fun normalizedTranslationNumbers(
+        value: String,
+        numberFormatLanguage: String,
+        skipRanges: List<IntRange> = emptyList(),
+    ): List<String> {
+        val tokens = mutableListOf<Pair<Int, String>>()
+        val fractions = explicitFractionPattern.findAll(value)
+            .filterNot { isSlashDateLike(it, value) }
+            .toList()
+        fractions.forEach { match ->
+            if (skipRanges.none { it.contains(match.range.first) && it.contains(match.range.last) }) {
+                normalizeArabicFraction(match.value)?.let { tokens += match.range.first to it }
+            }
+        }
+        explicitNumberPattern.findAll(value).forEach { match ->
+            if (fractions.any { it.range.contains(match.range.first) && it.range.contains(match.range.last) }) return@forEach
+            if (skipRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            normalizeExplicitNumberMatch(match, value, numberFormatLanguage)?.let { tokens += match.range.first to it }
+        }
+
+        val chineseFractions = chineseFractionPattern.findAll(value).toList()
+        chineseFractions.forEach { match ->
+            if (skipRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            val denominator = parseChineseInteger(match.groupValues[1])?.toBigDecimalOrNull() ?: return@forEach
+            val numerator = parseChineseInteger(match.groupValues[2])?.toBigDecimalOrNull() ?: return@forEach
+            if (denominator.compareTo(BigDecimal.ZERO) == 0) return@forEach
+            val fraction = runCatching {
+                numerator.divide(denominator, 8, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+            }.getOrNull() ?: return@forEach
+            tokens += match.range.first to fraction
+        }
+
+        val ranges = chineseRangePattern.findAll(value).toList()
+        ranges.forEach { match ->
+            if (skipRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            val start = parseChineseNumeral(match.groupValues[1]) ?: return@forEach
+            val end = parseChineseNumeral(match.groupValues[2]) ?: return@forEach
+            val firstRange = match.groups[1]?.range ?: return@forEach
+            val secondRange = match.groups[2]?.range ?: return@forEach
+            tokens += firstRange.first to start
+            tokens += secondRange.first to end
+        }
+
+        val protectedRanges = fractions.map { it.range } +
+            chineseFractions.map { it.range } +
+            ranges.map { it.range }
+        chineseNumeralPattern.findAll(value).forEach { match ->
+            if (protectedRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            if (skipRanges.any { it.contains(match.range.first) && it.contains(match.range.last) }) return@forEach
+            val raw = match.value
+            val suffix = value.substring(match.range.last + 1, minOf(value.length, match.range.last + 4))
+            val hasMagnitude = raw.any { it in "十百千万萬亿億" }
+            val isDigitSequence = raw.length >= 2 && raw.all { it in "零〇一二两兩三四五六七八九" }
+            val hasClassifier = listOf(
+                "个", "個", "只", "条", "條", "本", "件", "位", "张", "張", "杯", "块", "塊",
+                "岁", "歲", "名", "次", "层", "層", "份", "辆", "輛", "座", "家", "种", "種",
+                "倍", "人", "号", "號", "年", "月", "日", "天", "周", "星期", "小时", "小時",
+                "分钟", "分鐘", "秒", "公里", "千米", "米", "厘米", "毫米", "公斤", "千克", "克",
+                "毫升", "升", "元", "美元", "欧元", "英镑", "度", "百分之", "百分比", "点", "點", "分",
+            ).any(suffix::startsWith)
+            val prefix = value.substring(maxOf(0, match.range.first - 6), match.range.first)
+            val hasNumberPrefix = Regex("""(?:是|为|為|有|共|达|達|约|約|第|超过|超過|至少|少于|少於|多于|多於|等于|等於|只剩|还剩|還剩|剩下|剩余|剩餘|重达|重達|长达|長達|正好|刚好|百分之)$""")
+                .containsMatchIn(prefix)
+            val trailingHalf = (raw == "半" || raw == "一半") ||
+                ((raw.endsWith('点') || raw.endsWith('點')) && suffix.startsWith("半"))
+            val zeroBelow = prefix.endsWith("零下")
+            if (!hasMagnitude && !isDigitSequence && !hasClassifier && !hasNumberPrefix && !trailingHalf) return@forEach
+            parseChineseNumeral(raw, suffix)?.let { parsed ->
+                val normalized = if (zeroBelow) {
+                    runCatching { BigDecimal(parsed).negate().stripTrailingZeros().toPlainString() }.getOrNull() ?: parsed
+                } else parsed
+                tokens += match.range.first to normalized
+            }
+        }
+        // A recognized expression contributes one token per numeric value, never one per character.
+        return tokens.sortedBy { it.first }.distinctBy { it.first }.map { it.second }
+    }
+
+
+    private fun parseChineseNumeral(rawValue: String, followingText: String = ""): String? {
+        if (rawValue.isEmpty()) return null
+        if (rawValue == "半" || rawValue == "一半") return "0.5"
+        val negative = rawValue.first() in "负負"
+        val raw = rawValue.removePrefix("负").removePrefix("負").removePrefix("正")
+        if (raw.isEmpty()) return null
+        val decimalAt = raw.indexOfFirst { it == '点' || it == '點' }
+        val integerPart = if (decimalAt >= 0) raw.substring(0, decimalAt) else raw
+        val fractionPart = if (decimalAt >= 0) raw.substring(decimalAt + 1) else ""
+        if (decimalAt >= 0 && fractionPart.isEmpty() && followingText.startsWith("半")) {
+            val whole = parseChineseInteger(integerPart) ?: return null
+            val half = BigDecimal(whole).add(BigDecimal("0.5"))
+            return (if (negative) half.negate() else half).stripTrailingZeros().toPlainString()
+        }
+        if (decimalAt >= 0 && (fractionPart.isEmpty() || fractionPart.any { chineseDigitValue(it) == null })) return null
+        val whole = parseChineseInteger(integerPart) ?: return null
+        val value = if (decimalAt >= 0) {
+            BigDecimal("$whole." + fractionPart.mapNotNull(::chineseDigitValue).joinToString(""))
+        } else {
+            BigDecimal(whole)
+        }
+        return (if (negative) value.negate() else value).stripTrailingZeros().toPlainString()
+    }
+
+    private fun parseChineseInteger(value: String): String? {
+        if (value.isEmpty()) return "0"
+        // Colloquial "一万三" means 13,000, not 10,003.
+        val tenThousandShorthand = Regex("""^([一二两兩三四五六七八九])([万萬])([一二两兩三四五六七八九])$""")
+            .matchEntire(value)
+        if (tenThousandShorthand != null) {
+            val first = chineseDigitValue(tenThousandShorthand.groupValues[1].first()) ?: return null
+            val last = chineseDigitValue(tenThousandShorthand.groupValues[3].first()) ?: return null
+            return (first * 10_000 + last * 1_000).toString()
+        }
+        val lowerMagnitudeShorthand = Regex("""^([一二两兩三四五六七八九])([千百])([一二两兩三四五六七八九])$""")
+            .matchEntire(value)
+        if (lowerMagnitudeShorthand != null) {
+            val first = chineseDigitValue(lowerMagnitudeShorthand.groupValues[1].first()) ?: return null
+            val scale = when (lowerMagnitudeShorthand.groupValues[2]) {
+                "千" -> 1_000
+                else -> 100
+            }
+            val trailingScale = scale / 10
+            val last = chineseDigitValue(lowerMagnitudeShorthand.groupValues[3].first()) ?: return null
+            return (first * scale + last * trailingScale).toString()
+        }
+        if (value.all { chineseDigitValue(it) != null }) {
+            return value.mapNotNull(::chineseDigitValue).joinToString("").ifEmpty { "0" }
+        }
+        var total = 0L
+        var section = 0L
+        var number = 0L
+        value.forEach { char ->
+            val digit = chineseDigitValue(char)
+            when {
+                digit != null -> number = digit.toLong()
+                char == '十' -> { section += (if (number == 0L) 1L else number) * 10L; number = 0L }
+                char == '百' -> { section += (if (number == 0L) 1L else number) * 100L; number = 0L }
+                char == '千' -> { section += (if (number == 0L) 1L else number) * 1_000L; number = 0L }
+                char == '万' || char == '萬' -> {
+                    section += number
+                    total += (if (section == 0L) 1L else section) * 10_000L
+                    section = 0L
+                    number = 0L
+                }
+                char == '亿' || char == '億' -> {
+                    section += number
+                    total = (total + if (section == 0L) 1L else section) * 100_000_000L
+                    section = 0L
+                    number = 0L
+                }
+                else -> return null
+            }
+        }
+        return (total + section + number).toString()
+    }
+
+    private fun chineseDigitValue(char: Char): Int? = when (char) {
+        '零', '〇' -> 0
+        '一' -> 1
+        '二', '两', '兩' -> 2
+        '三' -> 3
+        '四' -> 4
+        '五' -> 5
+        '六' -> 6
+        '七' -> 7
+        '八' -> 8
+        '九' -> 9
+        else -> null
+    }
+
 
     // High-frequency English words must never be treated as untranslated names merely
     // because subtitles capitalize the first letter or the model returns the line in uppercase.
@@ -943,6 +1288,7 @@ internal object SubtitleTranslationQualityPolicy {
         translatedText: String?,
         sourceLanguage: String,
         targetLanguage: String,
+        decision: TranslationQualityDecision? = null,
     ): String {
         if (sourceText.isNullOrBlank()) return "source=empty; target=${targetLanguage}"
         val output = translatedText.orEmpty()
@@ -962,30 +1308,28 @@ internal object SubtitleTranslationQualityPolicy {
                 else -> Unit
             }
         }
-        val mismatch = targetLanguageMismatchReason(
-            sourceText = sourceText,
-            translatedText = output,
-            sourceLanguage = sourceLanguage,
-            targetLanguage = targetLanguage,
-        )
-        val numericMismatch = numericContentMismatchReason(
-            sourceText, output, sourceLanguage, targetLanguage,
-        )
-        val numericUnitMismatch = numericUnitAssociationMismatchReason(
-            sourceText, output, sourceLanguage, targetLanguage,
-        )
-        val unitMismatch = unitContentMismatchReason(
-            sourceText, output, sourceLanguage, targetLanguage,
-        )
-        val semanticMismatch = semanticConsistencyMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
-        val scriptMismatch = if (SourceLanguagePolicy.isChinese(sourceLanguage)) null
+        val mismatch = decision?.targetLanguageMismatchReason
+            ?: targetLanguageMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
+        val numericMismatch = decision?.numericMismatchReason
+            ?: numericContentMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
+        val numericUnitMismatch = decision?.numericUnitAssociationMismatchReason
+            ?: numericUnitAssociationMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
+        val unitMismatch = decision?.unitMismatchReason
+            ?: unitContentMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
+        val semanticMismatch = decision?.semanticMismatchReason
+            ?: semanticConsistencyMismatchReason(sourceText, output, sourceLanguage, targetLanguage)
+        val scriptMismatch = decision?.scriptMismatchReason ?: if (SourceLanguagePolicy.isChinese(sourceLanguage)) null
             else targetChineseScriptMismatchReason(output, targetLanguage)
         val nonTranslatable = isNonTranslatableCue(sourceText)
-        val sourceEcho = isSourceEcho(sourceText, output, sourceLanguage)
-        val punctuationOnly = isPunctuationOnlyTranslation(sourceText, output)
+        val sourceEcho = decision?.sourceEcho ?: isSourceEcho(sourceText, output, sourceLanguage)
+        val punctuationOnly = decision?.let { !it.accepted && it.reasonCode == "UNSPEAKABLE_TRANSLATION" }
+            ?: isPunctuationOnlyTranslation(sourceText, output)
         val speakable = TtsTextPolicy.hasSpeakableContent(output)
         val shortSpellingMatch = diagnosticShortSpellingMatch(sourceText, output)
-        val shortCueAccepted = isAcceptableShortUntranslatedCue(sourceText, output, sourceLanguage, targetLanguage)
+        val shortCueAccepted = decision?.shortUntranslatedAccepted
+            ?: isAcceptableShortUntranslatedCue(sourceText, output, sourceLanguage, targetLanguage)
+        val modelMeta = decision?.modelMetaResponseReason
+            ?: translationMetaResponseReason(sourceText, output, sourceLanguage, targetLanguage)
         return buildString {
             append("sourceLanguage=").append(sourceLanguage.ifBlank { "auto" })
             append("; targetLanguage=").append(targetLanguage)
@@ -1013,6 +1357,8 @@ internal object SubtitleTranslationQualityPolicy {
             append("; semanticMismatchReason=").append(semanticMismatch?.take(180) ?: "无")
             append("; targetChineseScriptMismatch=").append(scriptMismatch != null)
             append("; scriptMismatchReason=").append(scriptMismatch?.take(180) ?: "无")
+            append("; modelMetaResponse=").append(modelMeta != null)
+            append("; modelMetaReason=").append(modelMeta?.take(180) ?: "无")
             append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
         }
     }

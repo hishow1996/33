@@ -115,6 +115,7 @@ internal data class TranslationBatchResult(
                                             translatedText = value,
                                             sourceLanguage = sourceLanguage,
                                             targetLanguage = targetLanguage,
+                                            decision = qualityDecision,
                                         ),
                                         diagnosticReason = qualityDecision.reason,
                                     ),

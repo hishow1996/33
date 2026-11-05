@@ -81,6 +81,7 @@ internal object TranslationContextPolicy {
         size: Int,
         beforeIndex: Int,
         currentSourceCues: List<String>,
+        sourceLanguage: String = "auto",
         maxRows: Int = MAX_CONTEXT_ROWS,
         maxTermRows: Int = MAX_TERM_REFERENCE_ROWS,
         maxScanRows: Int = MAX_TERM_SCAN_ROWS,
@@ -93,7 +94,8 @@ internal object TranslationContextPolicy {
         val boundary = beforeIndex.coerceIn(0, size)
         if (boundary <= 0) return null
 
-        val termKeys = SubtitleTermContinuityPolicy.extractStableTerms(currentSourceCues)
+        val resolvedSourceLanguage = SubtitleTermContinuityPolicy.resolveLanguage(currentSourceCues, sourceLanguage)
+        val termKeys = SubtitleTermContinuityPolicy.extractStableTerms(currentSourceCues, resolvedSourceLanguage)
         val recent = ArrayList<Triple<Int, String, String>>(minOf(maxRows, boundary))
         var cursor = boundary - 1
         var scanned = 0
@@ -122,7 +124,7 @@ internal object TranslationContextPolicy {
             val source = sourceAt(cursor).orEmpty()
             val translation = translationAt(cursor).orEmpty()
             if (cursor !in recentIndices && source.isNotBlank() && translation.isNotBlank() &&
-                SubtitleTermContinuityPolicy.containsStableTerm(source, termKeys) &&
+                SubtitleTermContinuityPolicy.containsStableTerm(source, termKeys, resolvedSourceLanguage) &&
                 isUsable(source, translation)
             ) {
                 historicalTerms += Triple(cursor, source, translation)

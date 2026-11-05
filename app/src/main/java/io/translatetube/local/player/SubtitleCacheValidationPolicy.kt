@@ -79,6 +79,7 @@ internal object SubtitleCacheValidationPolicy {
         // lists. Large subtitle caches can contain hundreds of thousands of rows on mobile devices.
         var previousStart = -1L
         var hasRecoverableTranslation = false
+        val restoredTranslations = ArrayList<String?>(cachedRows.size)
         val uniqueRows = HashSet<Triple<Long, Long, String>>(cachedRows.size)
         for (index in cachedRows.indices) {
             if ((index and 0xff) == 0) checkActive()
@@ -95,12 +96,11 @@ internal object SubtitleCacheValidationPolicy {
                 source.text != cached.sourceText
             ) return null
             previousStart = cached.startMs
-            if (usableCachedTranslation(
-                    source.text, cached.translatedText, sourceLanguage, targetLanguage,
-                ) != null
-            ) {
-                hasRecoverableTranslation = true
-            }
+            val usableTranslation = usableCachedTranslation(
+                source.text, cached.translatedText, sourceLanguage, targetLanguage,
+            )
+            restoredTranslations += usableTranslation
+            if (usableTranslation != null) hasRecoverableTranslation = true
         }
         if (!hasRecoverableTranslation) return null
 
@@ -108,11 +108,7 @@ internal object SubtitleCacheValidationPolicy {
         for (index in sourceLines.indices) {
             if ((index and 0xff) == 0) checkActive()
             val source = sourceLines[index]
-            restored += source.copy(
-                zh = usableCachedTranslation(
-                    source.text, cachedRows[index].translatedText, sourceLanguage, targetLanguage,
-                ),
-            )
+            restored += source.copy(zh = restoredTranslations[index])
         }
         checkActive()
         return restored
