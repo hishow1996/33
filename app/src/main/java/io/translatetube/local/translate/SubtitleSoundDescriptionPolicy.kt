@@ -8,7 +8,7 @@ package io.translatetube.local.translate
  * inside one pair of brackets so ordinary bracketed text remains speakable.
  */
 internal object SubtitleSoundDescriptionPolicy {
-    private val bracketedBody = Regex("""^\\s*(?:\\[|【|（|\\()\\s*(.+?)\\s*(?:\\]|】|）|\\))\\s*[.!?。！？,，;；]*\\s*$""")
+    private val bracketedBody = Regex("""^\s*(?:\[|【|（|\()\s*(.+?)\s*(?:\]|】|）|\))\s*[.!?。！？,，;；]*\s*$""")
     private val englishLabels = setOf(
         "music", "background music", "soft music", "instrumental music", "upbeat music",
         "dramatic music", "sad music", "happy music", "theme music", "singing", "song",
@@ -24,12 +24,12 @@ internal object SubtitleSoundDescriptionPolicy {
         "music starts", "music stops", "music plays", "music playing",
     )
     private val englishPatterns = listOf(
-        Regex("""^(?:(?:background|soft|instrumental|upbeat|dramatic|sad|happy|theme|gentle|quiet|loud)\\s+)?music(?:\\s+(?:plays?|playing|continues|fades?(?:\\s+(?:in|out))?|starts?|stops?|begins?|ends?))?$"""),
-        Regex("""^(?:crowd|audience)\\s+(?:cheering|cheers|applauding)$"""),
-        Regex("""^(?:door|window)\\s+(?:opens?|closes?)$"""),
-        Regex("""^(?:phone|telephone)\\s+ringing$"""),
-        Regex("""^(?:birds?|dogs?|cats?)\\s+(?:chirping|singing|barking|meowing)$"""),
-        Regex("""^(?:heavy\\s+)?(?:rain|wind|thunder|breathing|crying|laughter|applause)(?:\\s+(?:continues|fades|stops))?$"""),
+        Regex("""^(?:(?:background|soft|instrumental|upbeat|dramatic|sad|happy|theme|gentle|quiet|loud)\s+)?music(?:\s+(?:plays?|playing|continues|fades?(?:\s+(?:in|out))?|starts?|stops?|begins?|ends?))?$"""),
+        Regex("""^(?:crowd|audience)\s+(?:cheering|cheers|applauding)$"""),
+        Regex("""^(?:door|window)\s+(?:opens?|closes?)$"""),
+        Regex("""^(?:phone|telephone)\s+ringing$"""),
+        Regex("""^(?:birds?|dogs?|cats?)\s+(?:chirping|singing|barking|meowing)$"""),
+        Regex("""^(?:heavy\s+)?(?:rain|wind|thunder|breathing|crying|laughter|applause)(?:\s+(?:continues|fades|stops))?$"""),
     )
     private val chineseLabels = setOf(
         "音乐", "背景音乐", "轻音乐", "轻柔音乐", "舒缓音乐", "纯音乐", "音乐响起",
@@ -51,7 +51,7 @@ internal object SubtitleSoundDescriptionPolicy {
         if (text.isNullOrBlank()) return false
         val body = bracketedBody.matchEntire(text.trim())?.groupValues?.getOrNull(1)
             ?.trim()
-            ?.replace(Regex("""\\s+"""), " ")
+            ?.replace(Regex("""\s+"""), " ")
             ?: return false
         if (body.isEmpty()) return false
         val normalized = body.lowercase(java.util.Locale.ROOT)
