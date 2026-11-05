@@ -39,4 +39,23 @@ class SubtitleTranslationPromptPolicyTest {
         assertTrue(instructions.contains("习语、俚语、幽默和反讽"))
         assertTrue(instructions.contains("全片统一使用简体字"))
     }
+
+    @Test
+    fun attachesChineseFidelityAndContextRulesToTheActualChineseTargetPrompt() {
+        val chinesePrompt = SubtitleTranslationPromptPolicy.guidelinesForTarget("zh-CN")
+        assertTrue(chinesePrompt.contains(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES))
+        assertTrue(chinesePrompt.contains(SubtitleTranslationPromptPolicy.SOURCE_ALIGNMENT_GUIDELINES))
+        assertTrue(chinesePrompt.contains(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES))
+        assertTrue(chinesePrompt.contains(SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES))
+        assertTrue(chinesePrompt.contains("不得改变说话者态度"))
+        assertTrue(chinesePrompt.contains("每行只翻译自己的内容"))
+
+        val traditionalPrompt = SubtitleTranslationPromptPolicy.guidelinesForTarget("zh-Hant")
+        assertTrue(traditionalPrompt.contains("Traditional Chinese only for zh-Hant/zh-TW/zh-HK"))
+
+        val englishPrompt = SubtitleTranslationPromptPolicy.guidelinesForTarget("en")
+        assertTrue(englishPrompt.contains(SubtitleTranslationPromptPolicy.SOURCE_ALIGNMENT_GUIDELINES))
+        assertFalse(englishPrompt.contains(SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES))
+        assertFalse(englishPrompt.contains(SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES))
+    }
 }
