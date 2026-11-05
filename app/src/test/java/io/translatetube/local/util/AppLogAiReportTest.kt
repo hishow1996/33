@@ -258,7 +258,7 @@ class AppLogAiReportTest {
             level = "ERROR",
             tag = "Translation",
             message = "字幕翻译失败",
-            details = "故障上下文：\\n- 翻译诊断 ID：$diagnosticId",
+            details = listOf("故障上下文：", "- 翻译诊断 ID：$diagnosticId").joinToString("\n"),
             thread = "DefaultDispatcher-worker-2",
             eventId = "translation-failure",
             sessionId = "session-a",
@@ -269,7 +269,7 @@ class AppLogAiReportTest {
             timestampMs = 19_000L,
             level = "INFO",
             message = "翻译任务开始",
-            details = "故障上下文：\\n- 翻译诊断 ID：$diagnosticId",
+            details = listOf("故障上下文：", "- 翻译诊断 ID：$diagnosticId").joinToString("\n"),
             eventId = "translation-start",
             sequence = 1L,
         )
