@@ -415,13 +415,13 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
         assertTrue(
+            "A substituted English name must not be hidden by a longer Chinese sentence",
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "Elon Musk arrived yesterday and spoke at the conference.",
                 "David Beckham 昨天到达，并在会议上发表讲话。",
                 "en",
                 "zh-CN",
             ),
-            "A substituted English name must not be hidden by a longer Chinese sentence",
         )
     }
 
