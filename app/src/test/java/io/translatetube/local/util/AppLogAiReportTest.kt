@@ -1,5 +1,6 @@
 package io.translatetube.local.util
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -136,9 +137,10 @@ class AppLogAiReportTest {
         assertTrue(report.contains("诊断证据覆盖率"))
         assertTrue(report.contains("缺失证据="))
         assertTrue(report.contains("diagnosticCoverage"))
-        assertTrue(report.contains("aiDiagnosis"))
-        assertTrue(report.contains("recentEventTrailScope"))
+        assertTrue(report.contains("证据覆盖"))
+        assertTrue(report.contains("近期操作轨迹关联方式"))
         assertTrue(report.contains("diagnosticContextBudget"))
+        assertEquals(1, report.split("failure-2").size - 1)
     }
 
     @Test
@@ -222,7 +224,7 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v7"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v8"))
         assertTrue(report.contains("failure-2"))
         assertTrue(report.contains("start-1"))
         assertTrue(report.contains("rootCauseMessage"))
@@ -235,8 +237,8 @@ class AppLogAiReportTest {
         assertTrue(report.contains("diagnosticContext"))
         assertTrue(report.contains("HTTP 504"))
         assertTrue(report.contains("关联事件时间线"))
-        assertTrue(report.contains("不同进程会话不会混合"))
-        assertTrue(report.contains("故障关系分析"))
+        assertTrue(report.contains("会话"))
+        assertTrue(report.contains("关联关系"))
         assertTrue(report.contains("relationToSelectedEvent"))
         assertTrue(report.contains("processingStage"))
         assertTrue(report.contains("SAME_OPERATION_CONTEXT"))
@@ -249,6 +251,50 @@ class AppLogAiReportTest {
         assertTrue(report.contains("diagnosticContextBudget"))
     }
 
+
+    @Test
+    fun incidentRepairReportStaysWithinChatLengthAndMarksOmittedTimelineEvents() {
+        val target = AppLogRecord(
+            timestampMs = 50_000L,
+            level = "ERROR",
+            tag = "Translation",
+            message = "主故障",
+            details = "主故障上下文 ".repeat(500),
+            thread = "worker-main",
+            eventId = "primary-large",
+            sessionId = "session-large",
+            operationId = "large-operation",
+            errorClass = "java.io.IOException",
+            rootCauseMessage = "response body was invalid",
+            firstAppStackFrame = "io.translatetube.local.translate.TranslationEngine.run(TranslationEngine.kt:120)",
+        )
+        val related = (1..60).map { index ->
+            target.copy(
+                timestampMs = 50_000L + index,
+                level = if (index % 3 == 0) "ERROR" else "INFO",
+                message = "关联事件-$index",
+                details = "较长的过程上下文 ".repeat(180),
+                eventId = "large-event-$index",
+                sequence = index.toLong(),
+            )
+        }
+
+        val report = AppLogAiReport.renderIncident(
+            records = related + target,
+            target = target,
+            exportedAt = "now",
+            appVersion = "1.0",
+            device = "Test Device",
+            androidVersion = "9 (API 28)",
+            writerHealth = AppLogWriterHealth(0L, 0L, "", 50_000L, true),
+        )
+
+        assertTrue(report.length <= 12_000)
+        assertTrue(report.contains("primary-large"))
+        assertTrue(report.contains("response body was invalid"))
+        assertTrue(report.contains("省略"))
+        assertEquals(1, report.split("primary-large").size - 1)
+    }
 
     @Test
     fun incidentRepairReportIdentifiesMergedTranslationDiagnosticEvidence() {
@@ -285,7 +331,7 @@ class AppLogAiReportTest {
         )
 
         assertTrue(report.contains("翻译诊断 ID：$diagnosticId"))
-        assertTrue(report.contains("翻译关联事件数：2"))
+        assertTrue(report.contains("同 ID 事件：2"))
         assertTrue(report.contains("翻译专项要求"))
         assertTrue(report.contains("translation-start"))
         assertTrue(report.contains("translation-failure"))
