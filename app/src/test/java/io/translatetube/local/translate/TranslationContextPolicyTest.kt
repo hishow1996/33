@@ -147,6 +147,39 @@ class TranslationContextPolicyTest {
     }
 
     @Test
+    fun retainsOlderRussianNameTranslationForLaterBatches() {
+        val sources = listOf(
+            "Александр Пушкин приехал в город.",
+            "Встреча начнется через час.",
+            "Погода сегодня хорошая.",
+            "Александр снова здесь.",
+        )
+        val translations = listOf(
+            "亚历山大·普希金到了这座城市。",
+            "会议一小时后开始。",
+            "今天天气很好。",
+            "亚历山大又来了。",
+        )
+        val context = TranslationContextPolicy.mostRecentPairsWithTermContinuityBefore(
+            size = sources.size,
+            beforeIndex = sources.size,
+            currentSourceCues = listOf("Александр готов говорить."),
+            sourceLanguage = "ru",
+            maxRows = 2,
+            maxTermRows = 1,
+            maxScanRows = 20,
+            sourceAt = { sources[it] },
+            translationAt = { translations[it] },
+            isUsable = { _, _ -> true },
+        ) ?: throw AssertionError("Expected historical name continuity context")
+
+        assertTrue(context.first.contains("Александр Пушкин приехал в город."))
+        assertTrue(context.second.contains("亚历山大·普希金到了这座城市。"))
+        assertEquals(2, context.first.size)
+        assertEquals(context.first.size, context.second.size)
+    }
+
+    @Test
     fun preservesOlderMatchingEntityPairsAlongsideTheLatestContextRows() {
         val sources = listOf(
             "Sam arrived at the studio.",
