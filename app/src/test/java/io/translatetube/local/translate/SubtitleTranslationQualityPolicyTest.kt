@@ -387,10 +387,18 @@ class SubtitleTranslationQualityPolicyTest {
                 "zh-CN",
             ),
         )
-        assertFalse(
+        assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "This dialogue discusses an AI language model.",
                 "作为一个 AI 语言模型，我可以回答。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "As an AI language model, I cannot answer this.",
+                "作为一个 AI 语言模型，我无法回答这个问题。",
                 "en",
                 "zh-CN",
             ),

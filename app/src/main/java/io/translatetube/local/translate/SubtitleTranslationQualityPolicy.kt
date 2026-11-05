@@ -289,16 +289,24 @@ internal object SubtitleTranslationQualityPolicy {
         val source = sourceText.lowercase(Locale.ROOT)
         val output = normalize(translatedText)
 
-        val sourceMentionsAi = source.contains("ai") && source.contains("language model")
+        val sourceExpressesAiIdentity = listOf(
+            "as an ai language model", "i am an ai language model", "i'm an ai language model",
+            "as an artificial intelligence language model", "i am an artificial intelligence language model",
+        ).any(source::contains)
         val aiIdentityReply = listOf(
-            "作为ai语言模型", "作为人工智能语言模型", "作为一个ai", "作为ai助手", "我是ai语言模型",
+            "作为ai语言模型", "作为人工智能语言模型", "作为一个ai语言模型",
+            "作为ai助手", "我是ai语言模型",
         ).any(output::contains)
-        if (aiIdentityReply && !sourceMentionsAi) {
+        if (aiIdentityReply && !sourceExpressesAiIdentity) {
             return "译文包含 AI 身份说明，疑似模型说明而非字幕内容"
         }
 
-        val sourceRequestsText = listOf("provide", "send", "give").any(source::contains) &&
-            listOf("text", "subtitle", "sentence", "content", "original").any(source::contains)
+        val sourceRequestsText = listOf(
+            "please provide the original text", "please provide the text to translate",
+            "please provide the sentence to translate", "please send me the text",
+            "please send me the original text", "send me the original text",
+            "give me the text to translate", "provide the subtitle text",
+        ).any(source::contains)
         val asksForInput = listOf("请提供", "请发送", "请给出", "请粘贴").any(output::startsWith) &&
             listOf("需要翻译", "待翻译", "要翻译", "原文", "文本", "字幕").any(output::contains)
         if (asksForInput && !sourceRequestsText) {
