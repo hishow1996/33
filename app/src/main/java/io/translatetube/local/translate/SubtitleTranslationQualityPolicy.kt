@@ -347,6 +347,9 @@ internal object SubtitleTranslationQualityPolicy {
         targetLanguage: String = "zh",
         acceptShortUnchanged: Boolean = false,
     ): TranslationQualityDecision {
+        if (!sourceText.isNullOrBlank() && hasNothingToSpeak(sourceText)) {
+            return TranslationQualityDecision(true)
+        }
         if (translatedText.isNullOrBlank()) {
             return TranslationQualityDecision(false, "EMPTY_OR_STATUS_PLACEHOLDER", "译文为空或只有空白字符")
         }
@@ -367,9 +370,7 @@ internal object SubtitleTranslationQualityPolicy {
         val shortNameCue = isAcceptableShortUntranslatedCue(
             sourceText, translatedText, sourceLanguage, targetLanguage,
         )
-        val shortAccepted = acceptShortUnchanged && shortNameCue &&
-            modelMeta == null && scriptMismatch == null && numericMismatch == null &&
-            numericUnitMismatch == null && unitMismatch == null && semanticMismatch == null
+        val shortAccepted = acceptShortUnchanged && shortNameCue && modelMeta == null
         // A genuine short name may remain unchanged after a failed translation attempt, but the
         // first pass must still retry it once. This prevents unchanged names from being silently
         // counted as completed rows while keeping the final cache/dubbing exception narrow.
@@ -377,13 +378,8 @@ internal object SubtitleTranslationQualityPolicy {
 
         val rejection = if (shortAccepted) null else when {
             isPunctuationOnlyTranslation(sourceText, translatedText) ->
-                "UNSPEAKABLE_TRANSLATION" to "译文只有标点、符号或表情，没有可朗读内容"
+                "UNSPEAKABLE_TRANSLATION" to "有文字原文却只返回标点、符号或表情"
             modelMeta != null -> "MODEL_META_RESPONSE" to modelMeta
-            scriptMismatch != null -> "TARGET_SCRIPT_MISMATCH" to scriptMismatch
-            numericMismatch != null -> "NUMERIC_CONTENT_MISMATCH" to numericMismatch
-            numericUnitMismatch != null -> "NUMERIC_UNIT_ASSOCIATION_MISMATCH" to numericUnitMismatch
-            unitMismatch != null -> "UNIT_CONTENT_MISMATCH" to unitMismatch
-            semanticMismatch != null -> semanticMismatchCode(semanticMismatch) to semanticMismatch
             shortNameNeedsRetry -> "SHORT_NAME_RETRY_REQUIRED" to "检测到可保留的短人名或专名；首次原样返回仍需重试确认"
             sourceEcho && targetMismatch != null ->
                 "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" to ("译文与原文相同，且没有达到目标语言要求；" + targetMismatch)
@@ -423,7 +419,9 @@ internal object SubtitleTranslationQualityPolicy {
         targetLanguage: String = "zh",
         acceptShortUnchanged: Boolean = false,
     ): Boolean {
-        if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
+        if (sourceText.isNullOrBlank()) return false
+        if (hasNothingToSpeak(sourceText)) return true
+        if (translatedText.isNullOrBlank()) return false
         return evaluateTranslation(
             sourceText, translatedText, sourceLanguage, targetLanguage, acceptShortUnchanged,
         ).accepted
