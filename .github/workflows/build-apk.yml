@@ -1,3 +1,4 @@
+# Retry APK build after fixing ambiguous Han dubbing, symbol-row output boundaries and prompt wording (2026-11-05).
 # Retry APK build after fixing proper-name, prompt-context and symbol-row regression tests (2026-11-05).
 # Retry APK build after fixing Han-only source echoes, numeric-unit associations and symbol-only batch rows (2026-11-05).
 # Retry APK build after correcting JUnit assertTrue argument order (2026-11-05).
