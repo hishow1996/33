@@ -1,3 +1,4 @@
+# Retry APK build after fixing Han-only source echoes, numeric-unit associations and symbol-only batch rows (2026-11-05).
 # Retry APK build after correcting JUnit assertTrue argument order (2026-11-05).
 # Retry APK build after closing the numeric translation test method (2026-11-05).
 # Retry APK build after fixing Unicode short-name token Kotlin type inference errors (2026-11-05).
