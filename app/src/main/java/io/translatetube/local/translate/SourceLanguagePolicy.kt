@@ -119,6 +119,7 @@ internal object SourceLanguagePolicy {
         "tel" to "te",
         "tgl" to "tl", "fil" to "tl",
         "tha" to "th",
+        "tir" to "ti",
         "tur" to "tr",
         "tsn" to "tn",
         "ukr" to "uk",

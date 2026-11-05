@@ -31,6 +31,7 @@ internal object SubtitleSoundDescriptionPolicy {
         "footsteps approaching", "footsteps receding", "water splashing", "waves crashing",
         "door creaking", "dog barking", "cat meowing", "baby crying", "metal clanging",
         "wood cracking", "keys jingling", "fire crackling", "wind blowing",
+        "crowd cheering loudly", "people clapping", "distant traffic", "faint voices",
     )
     private val englishPatterns = listOf(
         Regex("""^(?:(?:background|soft|instrumental|upbeat|dramatic|sad|happy|theme|gentle|quiet|loud)\s+)?music(?:\s+(?:plays?|playing|continues|fades?(?:\s+(?:in|out))?|starts?|stops?|begins?|ends?))?$"""),
@@ -39,9 +40,13 @@ internal object SubtitleSoundDescriptionPolicy {
         Regex("""^(?:phone|telephone)\s+ringing$"""),
         Regex("""^(?:birds?|dogs?|cats?)\s+(?:chirping|singing|barking|meowing)$"""),
         Regex("""^(?:heavy\s+)?(?:rain|wind|thunder|breathing|crying|laughter|applause)(?:\s+(?:continues|fades|stops))?$"""),
-        Regex("""^speaking(?:\s+in)?\s+(?:english|spanish|french|german|italian|portuguese|russian|japanese|korean|chinese|arabic|hindi|vietnamese|thai|bengali|dutch|swedish|norwegian|danish|finnish|polish|ukrainian|greek|hebrew|persian|turkish|indonesian|malay|cantonese|filipino|tagalog|czech|romanian)$"""),
+        Regex("""^speaking(?:\s+in)?\s+(?:english|spanish|french|german|italian|portuguese|russian|japanese|korean|chinese|arabic|hindi|vietnamese|thai|bengali|dutch|swedish|norwegian|danish|finnish|polish|ukrainian|greek|hebrew|persian|farsi|urdu|turkish|indonesian|malay|cantonese|filipino|tagalog|czech|romanian|tamil|telugu|kannada|malayalam|sinhala|georgian|armenian|amharic|tigrinya)$"""),
         Regex("""^(?:an?\s+)?(?:car|engine|motor|machine|glass|window|door|bell|phone|alarm|dog|cat|bird|baby|crowd|water|waves?|wind|rain|thunder|fire|footsteps|keys?|keyboard|metal|wood)\s+(?:starts?(?:\s+up)?|stops?|breaks?|breaking|shatters?|shattering|crashes?|crashing|splashes?|splashing|approaches|approaching|recedes|receding|rings?|ringing|barks?|barking|meows?|meowing|chirps?|chirping|howls?|howling|falls?|falling|opens?|closes?|slams?|slamming|creaks?|creaking|blows?|blowing|flows?|flowing|rushes|rushing|continues|fades?(?:\s+(?:in|out))?)$"""),
         Regex("""^(?:car|truck|motorcycle)\s+engine\s+(?:starts?|stops?)$"""),
+        Regex("""^(?:(?:someone|somebody|a man|a woman|a person|the man|the woman)\s+)?(?:whispers?|whispering|murmurs?|mumbling|speaks?|speaking|talks?|talking|shouts?|shouting|screams?|screaming|laughs?|laughing|cries|crying|sobs?|sobbing|coughs?|coughing)(?:\s+(?:softly|quietly|loudly|faintly|nervously|angrily))?(?:\s+(?:in the background|offscreen|nearby|in the distance))?$"""),
+        Regex("""^(?:crowd|audience|people|a group)\s+(?:cheering|clapping|applauding|laughing|shouting|singing|chanting)(?:\s+(?:loudly|softly|wildly|in the background))?$"""),
+        Regex("""^(?:faint|distant|loud|soft|quiet|background)\s+(?:voices?|conversation|traffic|applause|footsteps?|music|noise)$"""),
+        Regex("""^(?:people|children|a crowd)\s+(?:talking|chatting|whispering|murmuring)(?:\s+(?:quietly|loudly|in the background))?$"""),
     )
     private val chineseLabels = setOf(
         "音乐", "背景音乐", "轻音乐", "轻柔音乐", "舒缓音乐", "纯音乐", "音乐响起",
@@ -85,6 +90,7 @@ internal object SubtitleSoundDescriptionPolicy {
         "greek" to "希腊语",
         "hebrew" to "希伯来语",
         "persian" to "波斯语",
+        "farsi" to "波斯语",
         "turkish" to "土耳其语",
         "indonesian" to "印度尼西亚语",
         "malay" to "马来语",
@@ -93,6 +99,16 @@ internal object SubtitleSoundDescriptionPolicy {
         "tagalog" to "他加禄语",
         "czech" to "捷克语",
         "romanian" to "罗马尼亚语",
+        "urdu" to "乌尔都语",
+        "tamil" to "泰米尔语",
+        "telugu" to "泰卢固语",
+        "kannada" to "卡纳达语",
+        "malayalam" to "马拉雅拉姆语",
+        "sinhala" to "僧伽罗语",
+        "georgian" to "格鲁吉亚语",
+        "armenian" to "亚美尼亚语",
+        "amharic" to "阿姆哈拉语",
+        "tigrinya" to "提格利尼亚语",
     )
     private val speakingLanguagePattern = Regex("""^speaking(?:\s+in)?\s+([a-z]+)$""")
     private val knownEnglishTranslations = mapOf(

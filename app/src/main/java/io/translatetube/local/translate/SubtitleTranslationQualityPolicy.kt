@@ -26,6 +26,9 @@ internal data class TranslationQualityDecision(
 internal object SubtitleTranslationQualityPolicy {
     private val wordSeparatorRegex = Regex("""[^\p{L}\p{M}\p{N}]+""")
     private val urlPattern = Regex("""^(?:https?://|www\.)\S+$""", RegexOption.IGNORE_CASE)
+    private val socialIdentifierPattern = Regex("""^[@#][\p{L}\p{M}\p{N}_][\p{L}\p{M}\p{N}_.-]{0,63}$""")
+    private val embeddedSocialIdentifierPattern = Regex("""(?<![\p{L}\p{N}_])[@#]([\p{L}\p{M}\p{N}_][\p{L}\p{M}\p{N}_.-]{0,63})""")
+    private val opaqueVersionIdentifierPattern = Regex("""^(?=.*\p{L})(?=.*\d)[\p{L}\p{M}\d][\p{L}\p{M}\d_.:+/#-]{1,63}$""")
     private val emailPattern = Regex(
         """^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$""",
         RegexOption.IGNORE_CASE,
@@ -253,7 +256,8 @@ internal object SubtitleTranslationQualityPolicy {
         // instead of showing "。" as the subtitle and leaving nothing to dub.
         if (isPunctuationOnlyTranslation(sourceText, translatedText)) return true
 
-        // Numbers, symbol-only cues, URLs and email addresses are valid even when unchanged.
+        // Numbers, symbol-only cues, URLs, email addresses, handles, hashtags and version IDs
+        // are valid when they remain unchanged. Ordinary words still require translation.
         // Kanji-only cues are different: they may be Japanese, so an unchanged Han-only term must
         // not bypass source-echo validation merely because it appears in a proper-name allowlist.
         val ambiguousHan = SubtitleLanguageDetector.isHanDominantAmbiguous(sourceText)
@@ -1799,12 +1803,13 @@ internal object SubtitleTranslationQualityPolicy {
             .filter { it.isNotEmpty() }
             .toSet()
         val sourceProperNameTokens = sourceProperNameTokens(sourceText, sourceLanguage)
+        val sourceIdentifiers = sourceIdentifierTokens(sourceText)
         var foreignLetters = 0
         var ungroundedProperName = false
         splitMixedScriptTokens(translatedText).forEach { token ->
             val letters = token.filter { it.isLetter() }
             if (letters.isEmpty() || isLikelyRetainedTerm(
-                    token, letters, sourceTokens, sourceProperNameTokens,
+                    token, letters, sourceTokens, sourceProperNameTokens, sourceIdentifiers,
                 )
             ) {
                 return@forEach
@@ -1841,8 +1846,10 @@ internal object SubtitleTranslationQualityPolicy {
         letters: String,
         sourceTokens: Set<String>,
         sourceProperNameTokens: Set<String>,
+        sourceIdentifiers: Set<String>,
     ): Boolean {
         val normalized = normalize(token)
+        if (normalized in sourceIdentifiers) return true
         // Common English words remain translatable unless they are a particle in a recognized
         // proper-name span from the original cue (for example "The Hobbit" or "New York").
         if (normalized in commonShortWords && normalized !in sourceProperNameTokens) return false
@@ -1859,6 +1866,18 @@ internal object SubtitleTranslationQualityPolicy {
         return letters.length >= 2 && letters.first().isUpperCase() &&
             normalized in sourceTokens &&
             (normalized !in commonShortWords || normalized in sourceProperNameTokens)
+    }
+
+    /** Extract only source-present hashtag/handle words for exact retention inside translated cues. */
+    private fun sourceIdentifierTokens(value: String): Set<String> {
+        val result = LinkedHashSet<String>()
+        embeddedSocialIdentifierPattern.findAll(value).forEach { match ->
+            splitMixedScriptTokens(match.groupValues[1]).forEach { token ->
+                val normalized = normalize(token)
+                if (normalized.isNotEmpty()) result += normalized
+            }
+        }
+        return result
     }
 
     /**
@@ -1945,6 +1964,8 @@ internal object SubtitleTranslationQualityPolicy {
         return trimmed.none { it.isLetter() } ||
             urlPattern.matches(trimmed) ||
             emailPattern.matches(trimmed) ||
+            socialIdentifierPattern.matches(trimmed) ||
+            opaqueVersionIdentifierPattern.matches(trimmed) ||
             (!SubtitleSoundDescriptionPolicy.isSoundDescription(trimmed) && isTermLikeCue(trimmed))
     }
 
@@ -1974,6 +1995,13 @@ internal object SubtitleTranslationQualityPolicy {
         "ירושלים", "תלאביב", "חיפה",
         "กรุงเทพ", "กรุงเทพฯ", "เชียงใหม่", "ঢাকা", "চট্টগ্রাম", "ភ្នំពេញ",
         "ວຽງຈັນ", "ရန်ကုန်", "မန္တလေး",
+        "சென்னை", "மதுரை", "கோயம்புத்தூர்",
+        "హైదరాబాద్", "విజయవాడ",
+        "ಬೆಂಗಳೂರು", "ಮೈಸೂರು",
+        "തിരുവനന്തപുരം", "കൊച്ചി",
+        "කොළඹ", "මහනුවර",
+        "თბილისი", "ბათумი", "Երևան", "Գյումրի",
+        "አዲስአበባ", "ድሬዳዋ",
     )
     private val commonNonLatinNameWords = setOf(
         // Common Russian words/greetings are never accepted as names merely because they
@@ -2059,6 +2087,7 @@ internal object SubtitleTranslationQualityPolicy {
         if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
         val normalizedValue = normalize(value)
         if (normalizedValue in commonShortPhrases) return false
+        if (socialIdentifierPattern.matches(value) || opaqueVersionIdentifierPattern.matches(value)) return true
         if (isProperNameListCue(value)) return true
         val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (normalizedValue in knownProperNamePhrases &&

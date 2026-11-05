@@ -28,6 +28,14 @@ object SubtitleLanguageDetector {
         Regex("[\\u1780-\\u17FF]"),
         Regex("[\\u0E80-\\u0EFF]"),
         Regex("[\\u1000-\\u109F\\uA9E0-\\uA9FF\\uAA60-\\uAA7F]"),
+        Regex("[\\u0B80-\\u0BFF]"), // Tamil
+        Regex("[\\u0C00-\\u0C7F]"), // Telugu
+        Regex("[\\u0C80-\\u0CFF]"), // Kannada
+        Regex("[\\u0D00-\\u0D7F]"), // Malayalam
+        Regex("[\\u0D80-\\u0DFF]"), // Sinhala
+        Regex("[\\u10A0-\\u10FF\\u1C90-\\u1CBF\\u2D00-\\u2D2F]"), // Georgian
+        Regex("[\\u0530-\\u058F]"), // Armenian
+        Regex("[\\u1200-\\u137F\\u1380-\\u139F\\u2D80-\\u2DDF]"), // Ethiopic
     )
 
 
@@ -64,11 +72,16 @@ object SubtitleLanguageDetector {
         contentLanguage: String,
         sampleText: String,
     ): String {
+        val supplied = normalizeProviderLanguage(providerLanguage)
+        // Arabic-derived scripts are shared by Arabic, Persian and Urdu. Honor an explicit
+        // provider language for these scripts instead of collapsing every transcript to "ar".
+        if (contentLanguage == "ar" && supplied in setOf("fa", "ur")) return supplied
+        // Ethiopic script is shared by Amharic and Tigrinya; retain a reliable provider hint.
+        if (contentLanguage == "am" && supplied in setOf("am", "ti")) return supplied
         if (contentLanguage != "auto") return contentLanguage
         // A Han-only sample can be Chinese or Japanese written without kana. Do not let a provider
         // hint force either result; the on-device language identifier gets the next chance.
         if (isHanDominantAmbiguous(sampleText)) return "auto"
-        val supplied = normalizeProviderLanguage(providerLanguage)
         return if (supplied.startsWith("zh") || supplied == "cmn" || supplied.startsWith("yue")) {
             "auto"
         } else {
@@ -112,6 +125,17 @@ object SubtitleLanguageDetector {
             "khmer", "khm" -> "km"
             "lao", "lao language" -> "lo"
             "burmese", "myanmar", "mya" -> "my"
+            "persian", "farsi", "fas", "per" -> "fa"
+            "urdu", "urd" -> "ur"
+            "amharic", "amh" -> "am"
+            "tigrinya", "tir" -> "ti"
+            "tamil", "tam" -> "ta"
+            "telugu", "tel" -> "te"
+            "kannada", "kan" -> "kn"
+            "malayalam", "mal" -> "ml"
+            "sinhala", "sin" -> "si"
+            "georgian", "geo" -> "ka"
+            "armenian", "hye", "arm" -> "hy"
             "malay", "msa", "may" -> "ms"
             else -> normalized.substringBefore('-').takeIf { it.length == 2 || it == "yue" } ?: "auto"
         }
@@ -201,6 +225,14 @@ object SubtitleLanguageDetector {
             has(16) -> "km"
             has(17) -> "lo"
             has(18) -> "my"
+            has(19) -> "ta"
+            has(20) -> "te"
+            has(21) -> "kn"
+            has(22) -> "ml"
+            has(23) -> "si"
+            has(24) -> "ka"
+            has(25) -> "hy"
+            has(26) -> "am"
             // Han-only text is not enough to distinguish Chinese from Japanese written without
             // kana. Keep it ambiguous so ML Kit or an explicit source-language selection can decide.
             hanDominates -> "auto"

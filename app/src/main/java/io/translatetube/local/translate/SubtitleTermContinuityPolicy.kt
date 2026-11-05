@@ -18,15 +18,15 @@ internal object SubtitleTermContinuityPolicy {
         """(?<![A-Za-z0-9])(?:\p{Lu}[\p{L}\p{M}\p{N}]*(?:['’\u2010-\u2015\u2212-][\p{L}\p{M}\p{N}]+)*|[a-z][A-Z][A-Za-z0-9]*)"""
     )
     private val katakanaToken = Regex("""[\u30A1-\u30FA\u30FC]{2,}""")
-    // Same-script boundaries let Cyrillic and Greek names be recognized when adjacent
+    // Same-script boundaries let Cyrillic, Greek, Armenian and Georgian names be recognized when adjacent
     // to Japanese, Arabic, Hebrew, Devanagari or other writing systems.
     private val casedScriptNameToken = Regex(
-        """(?<![\p{IsCyrillic}\p{IsGreek}\p{M}\p{N}])\p{Lu}[\p{Ll}\p{M}]{1,}(?:['’–-]\p{Lu}[\p{Ll}\p{M}]+)*(?![\p{IsCyrillic}\p{IsGreek}\p{M}\p{N}])"""
+        """(?<![\p{IsCyrillic}\p{IsGreek}\p{IsArmenian}\p{IsGeorgian}\p{M}\p{N}])\p{Lu}[\p{Ll}\p{M}]{1,}(?:['’–-]\p{Lu}[\p{Ll}\p{M}]+)*(?![\p{IsCyrillic}\p{IsGreek}\p{IsArmenian}\p{IsGeorgian}\p{M}\p{N}])"""
     )
     private val japaneseHonorificName = Regex("""([\u4E00-\u9FFF]{2,6})(?:さん|様|さま|氏|先生|君|ちゃん)""")
     private val koreanHonorificName = Regex("""(?<![가-힣])([가-힣]{2,4})\s*(?:씨|님|선생님)""")
     private val arabicHonorificName = Regex(
-        """(?:السيد|السيدة|الدكتور|الدكتورة|الأستاذ|الأستاذة|الشيخ|الشيخة|المهندس|المهندسة|الرئيس|الرئيسة|الأمير|الأميرة|الملك|الملكة)\s+([\u0600-\u06FF\u0750-\u077F]{2,})"""
+        """(?:السيد|السيدة|الدكتور|الدكتورة|الأستاذ|الأستاذة|الشيخ|الشيخة|المهندس|المهندسة|الرئيس|الرئيسة|الأمير|الأميرة|الملك|الملكة|آقای|آقا|خانم|دکتر|استاد|جناب|محترم|محترمہ|مسٹر|مسز)\s+([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{2,})"""
     )
     private val hebrewHonorificName = Regex(
         """(?:מר|מרת|ד["׳״]ר|דר׳|פרופ׳|הרב|רבי)\s+([\u05D0-\u05EA]{2,})"""
@@ -49,7 +49,37 @@ internal object SubtitleTermContinuityPolicy {
     private val myanmarHonorificName = Regex(
         """(?:ဒေါက်တာ|ဦး|ဒေါ်|ကို|မ|ဆရာမ?|ဆရာ)\s+([\u1000-\u109F]{2,})"""
     )
+    private val tamilHonorificName = Regex(
+        """(?:திரு\.?|திருமதி|செல்வி|டாக்டர்|பேராசிரியர்)\s+([\u0B80-\u0BFF]{2,})"""
+    )
+    private val teluguHonorificName = Regex(
+        """(?:శ్రీ|శ్రీమతి|డా\.?|డాక్టర్|ప్రొఫెసర్|మిస్టర్)\s+([\u0C00-\u0C7F]{2,})"""
+    )
+    private val kannadaHonorificName = Regex(
+        """(?:ಶ್ರೀ|ಶ್ರೀಮತಿ|ಡಾ\.?|ವೈದ್ಯರು|ಪ್ರೊಫೆಸರ್|ಮಿಸ್ಟರ್)\s+([\u0C80-\u0CFF]{2,})"""
+    )
+    private val malayalamHonorificName = Regex(
+        """(?:ശ്രീ|ശ്രീമതി|ഡോ\.?|ഡോക്ടർ|പ്രൊഫസർ|മിസ്റ്റർ)\s+([\u0D00-\u0D7F]{2,})"""
+    )
+    private val sinhalaHonorificName = Regex(
+        """(?:මහතා|මහත්මිය|වෛද්‍ය|ආචාර්ය|මහාචාර්ය)\s+([\u0D80-\u0DFF]{2,})"""
+    )
+    private val georgianHonorificName = Regex(
+        """(?:ბატონი|ქალბატონი|დოქტორი|პროფესორი)\s+([\u10A0-\u10FF\u1C90-\u1CBF]{2,})"""
+    )
+    private val armenianHonorificName = Regex(
+        """(?:Պարոն|Տիկին|Դոկտոր|Պրոֆեսոր)\s+([\u0530-\u058F]{2,})"""
+    )
+    private val ethiopicHonorificName = Regex(
+        """(?:አቶ|ወ/ሮ|ዶ/ር|ፕሮፌሰር)\s+([\u1200-\u137F\u1380-\u139F]{2,})"""
+    )
 
+    private val introducedLatinName = Regex(
+        """(?i)\b(?:(?:my|his|her|their)\s+name\s+is|call\s+me|meet)\s+([\p{L}\p{M}][\p{L}\p{M}'’\u2010-\u2015-]{1,30})"""
+    )
+    private val standaloneNameTitle = Regex(
+        """(?i)^(?:mr|mrs|ms|miss|dr|doctor|prof|professor|sir|madam|mme|m|sr|sra)\.?$"""
+    )
     private val commonLatinWords = setOf(
         "a", "an", "and", "are", "as", "at", "be", "because", "but", "by", "can", "could",
         "do", "does", "for", "from", "had", "has", "have", "he", "her", "here", "his", "how",
@@ -86,6 +116,13 @@ internal object SubtitleTermContinuityPolicy {
         "ירושלים", "תלאביב", "חיפה",
         "กรุงเทพ", "กรุงเทพฯ", "เชียงใหม่", "ঢাকা", "চট্টগ্রাম", "ភ្នំពេញ",
         "ວຽງຈັນ", "ရန်ကုန်", "မန္တလေး",
+        "சென்னை", "மதுரை", "கோயம்புத்தூர்",
+        "హైదరాబాద్", "విజయవాడ",
+        "ಬೆಂಗಳೂರು", "ಮೈಸೂರು",
+        "തിരുവനന്തപുരം", "കൊച്ചി",
+        "කොළඹ", "මහනුවර",
+        "თბილისი", "ბათუმი", "Երևան", "Գյումրի",
+        "አዲስ አበባ", "ድሬዳዋ",
     )
 
     fun resolveLanguage(
@@ -115,17 +152,48 @@ internal object SubtitleTermContinuityPolicy {
         val language = resolveLanguage(texts, sourceLanguage)
         val stopWords = commonLatinWords + if (language == "auto") allLanguageStopWords else languageStopWords[language].orEmpty()
         val result = LinkedHashSet<String>()
-        texts.forEach { text ->
+        texts.forEachIndexed { index, cue ->
+            val nextCue = texts.getOrNull(index + 1)?.takeIf { it.isNotBlank() }
+            val continuityText = if (nextCue == null) cue else "$cue $nextCue"
+            // Keep ordinary cue extraction local. Only merge across a cue boundary for a clear
+            // name introduction or an honorific/title that directly precedes a name.
+            val text = cue
             candidateLatinToken.findAll(text).forEach { match ->
                 if (Character.UnicodeScript.of(match.value.first().code) == Character.UnicodeScript.LATIN) {
                     val key = normalize(match.value)
                     if (key.length >= 2 && key !in stopWords) result += key
                 }
             }
+            introducedLatinName.findAll(continuityText).forEach { match ->
+                val name = match.groupValues[1]
+                val key = normalize(name)
+                if (Character.UnicodeScript.of(name.first().code) == Character.UnicodeScript.LATIN &&
+                    key.length >= 2 && key !in stopWords
+                ) {
+                    result += key
+                }
+            }
+            if (standaloneNameTitle.matches(cue.trim())) {
+                val followingToken = nextCue
+                    ?.trim()
+                    ?.split(Regex("""\s+"""))
+                    ?.firstOrNull()
+                    ?.trim { it in ".,!?;:，。！？；：" }
+                    .orEmpty()
+                val key = normalize(followingToken)
+                if (followingToken.isNotEmpty() &&
+                    Character.UnicodeScript.of(followingToken.first().code) == Character.UnicodeScript.LATIN &&
+                    key.length >= 2 && key !in stopWords
+                ) {
+                    result += key
+                }
+            }
             casedScriptNameToken.findAll(text).forEach { match ->
                 val script = Character.UnicodeScript.of(match.value.first().code)
                 if (script == Character.UnicodeScript.CYRILLIC ||
-                    script == Character.UnicodeScript.GREEK
+                    script == Character.UnicodeScript.GREEK ||
+                    script == Character.UnicodeScript.ARMENIAN ||
+                    script == Character.UnicodeScript.GEORGIAN
                 ) {
                     val key = normalize(match.value)
                     if (key.length >= 2 && key !in stopWords) result += key
@@ -149,7 +217,7 @@ internal object SubtitleTermContinuityPolicy {
                     if (key !in koreanCommonTerms) result += key
                 }
             }
-            if (language == "ar") {
+            if (language in setOf("ar", "fa", "ur")) {
                 arabicHonorificName.findAll(text).forEach { match ->
                     result += normalize(match.groupValues[1])
                 }
@@ -189,6 +257,46 @@ internal object SubtitleTermContinuityPolicy {
                     result += normalize(match.groupValues[1])
                 }
             }
+            if (language == "ta") {
+                tamilHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "te") {
+                teluguHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "kn") {
+                kannadaHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "ml") {
+                malayalamHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "si") {
+                sinhalaHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "ka") {
+                georgianHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "hy") {
+                armenianHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
+            if (language == "am" || language == "ti") {
+                ethiopicHonorificName.findAll(text).forEach { match ->
+                    result += normalize(match.groupValues[1])
+                }
+            }
         }
         return result
     }
@@ -215,6 +323,14 @@ internal object SubtitleTermContinuityPolicy {
             Character.UnicodeScript.KHMER,
             Character.UnicodeScript.LAO,
             Character.UnicodeScript.MYANMAR,
+            Character.UnicodeScript.TAMIL,
+            Character.UnicodeScript.TELUGU,
+            Character.UnicodeScript.KANNADA,
+            Character.UnicodeScript.MALAYALAM,
+            Character.UnicodeScript.SINHALA,
+            Character.UnicodeScript.GEORGIAN,
+            Character.UnicodeScript.ARMENIAN,
+            Character.UnicodeScript.ETHIOPIC,
         )
         return extractStableTerms(listOf(text), language).filterTo(LinkedHashSet()) { term ->
             term.isNotBlank() &&
