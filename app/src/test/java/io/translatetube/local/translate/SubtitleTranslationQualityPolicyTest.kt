@@ -412,4 +412,52 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun rejectsServiceStatusRepliesButPreservesDialogueAboutTheSameFailure() {
+        val source = "I think we should leave now."
+        val statusReplies = listOf(
+            "请求过于频繁，请稍后重试。",
+            "服务器暂时不可用，请稍后重试。",
+            "API 密钥无效，请检查配置。",
+            "网络连接失败，请检查网络后重试。",
+        )
+        statusReplies.forEach { output ->
+            assertTrue(
+                "'$output' should be rejected as service status text",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(source, output, "en", "zh-CN"),
+            )
+            assertFalse(
+                "'$output' must not be accepted as a subtitle translation",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    source, output, "en", "zh-CN", acceptShortUnchanged = true,
+                ),
+            )
+        }
+
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The request limit is too high, so try again later.",
+                "请求过于频繁，请稍后重试。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The server is unavailable; try again later.",
+                "服务器暂时不可用，请稍后重试。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "The API key is invalid. Check the configuration.",
+                "API 密钥无效，请检查配置。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
 }

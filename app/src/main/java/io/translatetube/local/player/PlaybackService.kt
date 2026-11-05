@@ -11350,7 +11350,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "ROW_COUNT_MISMATCH" -> "返回行数不匹配，无法安全对齐"
                             "EMPTY_OR_STATUS_PLACEHOLDER" -> "译文为空或仅含状态占位内容"
                             "TARGET_LANGUAGE_MISMATCH" -> "译文未达到中文目标语言"
-                            "MODEL_META_RESPONSE" -> "模型返回说明、拒绝答复或补充输入提示，不是字幕译文"
+                            "MODEL_META_RESPONSE" -> "模型/接口返回说明、拒绝答复或服务状态，不是字幕译文"
                             "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" -> "返回原文，未生成中文译文"
                             "SOURCE_ECHO" -> "译文与原文实质相同"
                             else -> row.reasonCode

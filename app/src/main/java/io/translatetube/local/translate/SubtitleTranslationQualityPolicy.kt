@@ -331,6 +331,26 @@ internal object SubtitleTranslationQualityPolicy {
         if (explanatoryReply && listOf("means", "meaning", "signifies").none(source::contains)) {
             return "译文在解释句意而不是翻译字幕原句，疑似模型说明内容"
         }
+
+        val serviceFailureMarkers = listOf(
+            "请求过于频繁", "请求频率过高", "服务暂时不可用", "服务器暂时不可用",
+            "翻译服务异常", "翻译接口异常", "接口返回异常", "网络请求失败",
+            "网络连接失败", "认证失败", "鉴权失败", "权限不足", "密钥无效",
+            "api密钥", "服务端错误", "系统发生错误", "服务器错误",
+        )
+        val hasServiceFailure = serviceFailureMarkers.any(output::contains)
+        val asksForRetryOrConfiguration = listOf(
+            "请稍后重试", "稍后再试", "请重试", "检查网络", "检查配置",
+            "检查密钥", "重新配置", "再次尝试",
+        ).any(output::contains)
+        val sourceDiscussesServiceFailure = listOf(
+            "server", "network", "request limit", "too many requests",
+            "translation service", "api key", "authentication", "unauthorized",
+            "access denied", "http 429", "http 500", "try again later",
+        ).any(source::contains)
+        if (hasServiceFailure && asksForRetryOrConfiguration && !sourceDiscussesServiceFailure) {
+            return "译文疑似翻译服务/网络/鉴权错误提示，不是字幕内容"
+        }
         return null
     }
 

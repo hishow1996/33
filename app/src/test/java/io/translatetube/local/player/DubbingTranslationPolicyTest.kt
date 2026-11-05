@@ -190,4 +190,15 @@ class DubbingTranslationPolicyTest {
         assertNull(result.text)
         assertTrue(result.reason.orEmpty().contains("补充原文"))
     }
+
+    @Test
+    fun rejectsServiceErrorRepliesBeforeTheyBecomeSpokenAudio() {
+        val result = DubbingTranslationPolicy.resolveText(
+            "Hello there.",
+            "服务器暂时不可用，请稍后重试。",
+            "en",
+        )
+        assertNull(result.text)
+        assertTrue(result.reason.orEmpty().contains("服务/网络/鉴权错误"))
+    }
 }

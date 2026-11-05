@@ -392,4 +392,30 @@ class TranslationBatchResultTest {
                 it.diagnosticReason.orEmpty().contains("要求补充")
         })
     }
+
+    @Test
+    fun rejectsServiceErrorTextAsTranslationRows() {
+        val outputs = listOf(
+            "请求过于频繁，请稍后重试。",
+            "服务器暂时不可用，请稍后重试。",
+            "API 密钥无效，请检查配置。",
+        )
+        val result = TranslationBatchResult.from(
+            indices = listOf(0, 1, 2),
+            rawTranslations = outputs,
+            sourceTexts = mapOf(
+                0 to "Hello there.",
+                1 to "What happened?",
+                2 to "I think so.",
+            ),
+            sourceLanguage = "en",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(result.translations.isEmpty())
+        assertEquals(listOf(0, 1, 2), result.missingIndices)
+        assertEquals(
+            listOf("MODEL_META_RESPONSE", "MODEL_META_RESPONSE", "MODEL_META_RESPONSE"),
+            result.rejectedRows.map { it.reasonCode },
+        )
+    }
 }
