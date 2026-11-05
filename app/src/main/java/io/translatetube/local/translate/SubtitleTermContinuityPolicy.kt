@@ -16,6 +16,9 @@ internal object SubtitleTermContinuityPolicy {
         """(?<![\p{L}\p{N}])(?:[A-Z][A-Za-z0-9]*(?:['’–-][A-Za-z0-9]+)*|[A-Z]{2,8}|[a-z][A-Z][A-Za-z0-9]*)"""
     )
     private val katakanaToken = Regex("""[\u30A1-\u30FA\u30FC]{2,}""")
+    private val casedScriptNameToken = Regex(
+        """(?<![\p{L}\p{N}])\p{Lu}[\p{Ll}\p{M}]{1,}(?:['’–-]\p{Lu}[\p{Ll}\p{M}]+)*(?![\p{L}\p{N}])"""
+    )
     private val japaneseHonorificName = Regex("""([\u4E00-\u9FFF]{2,6})(?:さん|様|さま|氏|先生|君|ちゃん)""")
     private val koreanHonorificName = Regex("""(?<![가-힣])([가-힣]{2,4})\s*(?:씨|님|선생님)""")
 
@@ -34,6 +37,8 @@ internal object SubtitleTermContinuityPolicy {
         "es" to setOf("yo", "tú", "tu", "él", "ella", "nosotros", "vosotros", "ellos", "ellas", "el", "la", "los", "las", "un", "una", "y", "es", "son", "no", "con", "para", "por", "de", "en", "qué", "que", "hola", "gracias"),
         "pt" to setOf("eu", "tu", "ele", "ela", "nós", "vocês", "eles", "elas", "o", "a", "os", "as", "um", "uma", "e", "é", "são", "não", "com", "para", "por", "de", "em", "que", "olá", "obrigado", "obrigada"),
         "it" to setOf("io", "tu", "lui", "lei", "noi", "voi", "loro", "il", "lo", "la", "gli", "le", "un", "una", "e", "è", "sono", "non", "con", "per", "di", "che", "ciao", "grazie"),
+        "ru" to setOf("я", "ты", "он", "она", "оно", "мы", "вы", "они", "меня", "тебя", "его", "ее", "её", "нас", "вас", "их", "это", "этот", "эта", "эти", "что", "как", "где", "кто", "куда", "почему", "когда", "не", "да", "нет", "привет", "здравствуйте", "спасибо", "пожалуйста", "доброе", "добрый", "утро", "день", "вечер", "пока", "хорошо", "ладно", "конечно", "сейчас", "сегодня", "завтра", "вчера"),
+        "el" to setOf("εγώ", "εσύ", "αυτός", "αυτή", "αυτό", "εμείς", "εσείς", "αυτοί", "αυτές", "το", "τα", "και", "είναι", "δεν", "ναι", "όχι", "γεια", "ευχαριστώ", "παρακαλώ", "καλημέρα", "καλησπέρα", "αντίο", "σήμερα", "αύριο", "χθες", "πού", "τι", "πώς", "ποιος", "ποια"),
     )
     private val allLanguageStopWords = languageStopWords.values.flatten().toSet() + setOf(
         "called", "calls", "came", "comes", "arrived", "arrive", "replied", "replies", "asked",
@@ -46,6 +51,12 @@ internal object SubtitleTermContinuityPolicy {
     )
     private val japaneseCommonKatakana = setOf("テレビ", "カメラ", "コーヒー", "ホテル", "タクシー")
     private val koreanCommonTerms = setOf("사람", "오늘", "내일", "어제", "시간", "이것", "저것", "여기", "저기")
+    private val knownUncasedScriptTerms = setOf(
+        "東京", "大阪", "京都", "名古屋", "北海道", "沖縄", "富士山", "新宿", "渋谷",
+        "서울", "부산", "인천", "제주도", "김민수", "김연아",
+        "دبي", "القاهرة", "أبوظبي", "الرياض",
+        "ירושלים", "תלאביב", "חיפה",
+    )
 
     fun resolveLanguage(
         texts: List<String>,
@@ -78,6 +89,18 @@ internal object SubtitleTermContinuityPolicy {
             candidateLatinToken.findAll(text).forEach { match ->
                 val key = normalize(match.value)
                 if (key.length >= 2 && key !in stopWords) result += key
+            }
+            casedScriptNameToken.findAll(text).forEach { match ->
+                val script = Character.UnicodeScript.of(match.value.first().code)
+                if (script == Character.UnicodeScript.CYRILLIC ||
+                    script == Character.UnicodeScript.GREEK
+                ) {
+                    val key = normalize(match.value)
+                    if (key.length >= 2 && key !in stopWords) result += key
+                }
+            }
+            knownUncasedScriptTerms.forEach { knownTerm ->
+                if (text.contains(knownTerm)) result += normalize(knownTerm)
             }
             if (language == "ja") {
                 katakanaToken.findAll(text).forEach { match ->
