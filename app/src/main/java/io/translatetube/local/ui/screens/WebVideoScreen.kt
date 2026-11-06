@@ -31,6 +31,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
@@ -73,7 +75,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -289,14 +295,21 @@ fun WebVideoScreen(
 ) {
     val appCtx = LocalContext.current.applicationContext
     val backgroundScope = remember(appCtx) { (appCtx as TranslateTubeApp).appScope }
-    var address by remember(initialUrl) { mutableStateOf(initialUrl) }
+    // TextFieldValue is the single source of truth for text, cursor and selection.
     var addressFieldValue by remember(initialUrl) {
         mutableStateOf(TextFieldValue(text = initialUrl, selection = TextRange(initialUrl.length)))
     }
     var addressFieldHasFocus by remember(initialUrl) { mutableStateOf(false) }
+    var addressEditPending by remember(initialUrl) { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     fun setAddress(value: String) {
-        address = value
+        addressEditPending = false
         addressFieldValue = TextFieldValue(text = value, selection = TextRange(value.length))
+    }
+    fun syncAddressFromPage(value: String) {
+        // A late WebView callback must not replace a draft the user is editing or has typed.
+        if (!addressEditPending && !addressFieldHasFocus) setAddress(value)
     }
     LaunchedEffect(addressFieldHasFocus) {
         if (addressFieldHasFocus) {
@@ -1101,6 +1114,29 @@ fun WebVideoScreen(
         return true
     }
 
+    fun submitAddress() {
+        val rawAddress = addressFieldValue.text.trim()
+        val inputUrl = SharedLinkTextParser.extractFirstHttpUrl(rawAddress) ?: rawAddress
+        // 受密码保护的分享保持官方网页原始验证流程；提取码仍由用户在网页内输入。
+        pikpakPassCode = ""
+        if (tryBilibiliNative(inputUrl)) {
+            setAddress(inputUrl)
+            focusManager.clearFocus()
+            keyboardController?.hide()
+            return
+        }
+        val normalized = WebMediaUrlPolicy.normalizePageUrl(inputUrl)
+        if (normalized == null) {
+            status = "网页地址无效，请输入 HTTP/HTTPS 链接。"
+            return
+        }
+        resetForNavigation(normalized)
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        pageLoadToken++
+        webViewState.value?.loadUrl(normalized)
+    }
+
     // 初始链接就是 B 站：进页即拦截（WebView 工厂据此跳过首次加载）
     androidx.compose.runtime.LaunchedEffect(initialUrl) {
         if (bilibiliHandledAtStart) {
@@ -1688,8 +1724,9 @@ fun WebVideoScreen(
                 OutlinedTextField(
                     value = addressFieldValue,
                     onValueChange = { value ->
+                        val textChanged = value.text != addressFieldValue.text
                         addressFieldValue = value
-                        address = value.text
+                        if (textChanged) addressEditPending = true
                     },
                     // 保持紧凑高度；输入内容和光标在地址栏内垂直居中且完整显示。
                     modifier = Modifier
@@ -1699,6 +1736,13 @@ fun WebVideoScreen(
                             addressFieldHasFocus = focusState.isFocused
                         },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Uri,
+                        imeAction = ImeAction.Go,
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onGo = { submitAddress() },
+                    ),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = 13.sp,
                         lineHeight = 18.sp,
@@ -1718,25 +1762,7 @@ fun WebVideoScreen(
                         )
                     },
                 )
-                IconButton(onClick = {
-                    val rawAddress = address.trim()
-                    val inputUrl = SharedLinkTextParser.extractFirstHttpUrl(rawAddress) ?: rawAddress
-                    // 受密码保护的分享保持官方网页原始验证流程：
-                    // 用户在网页内手动输入提取码，不从粘贴文本自动填入私有接口。
-                    pikpakPassCode = ""
-                    if (tryBilibiliNative(inputUrl)) {
-                        // B 站链接：原生直连解析（成功直接进播放器；失败函数内部回退 WebView）
-                        return@IconButton
-                    }
-                    val normalized = WebMediaUrlPolicy.normalizePageUrl(inputUrl)
-                    if (normalized == null) {
-                        status = "网页地址无效，请输入 HTTP/HTTPS 链接。"
-                    } else {
-                        resetForNavigation(normalized)
-                        pageLoadToken++
-                        webViewState.value?.loadUrl(normalized)
-                    }
-                }) {
+                IconButton(onClick = { submitAddress() }) {
                     Icon(
                         Icons.Filled.ArrowBack,
                         contentDescription = "打开网页",
@@ -1930,6 +1956,7 @@ fun WebVideoScreen(
                                 if (BilibiliDeepLinkPolicy.isVideoPageUrl(originalUrl)) {
                                     mainHandler.post {
                                         if (!screenActive.get()) return@post
+                                        addressEditPending = false
                                         setAddress(originalUrl)
                                         status = "已识别 B 站视频页，正在直连解析…"
                                     }
@@ -1944,6 +1971,7 @@ fun WebVideoScreen(
 
                                 mainHandler.post {
                                     if (!screenActive.get()) return@post
+                                    addressEditPending = false
                                     setAddress(safeUrl)
                                     status = "已识别 B 站分享链接，正在打开视频网页…"
                                     io.translatetube.local.util.AppLogStore.info(
@@ -1980,7 +2008,7 @@ fun WebVideoScreen(
                                         // sources are already visible. Do not clear candidates or restart detection.
                                         applyPikpakUserAgent(url)
                                         currentPage = url
-                                        setAddress(url)
+                                        syncAddressFromPage(url)
                                         Log.d(TAG_WEB, "Ignoring repeated navigation callback for detected Bilibili video")
                                     }
                                     navigationInProgress.compareAndSet(false, true) -> {
@@ -1994,7 +2022,7 @@ fun WebVideoScreen(
                                         // Do not clear candidates or reinitialize the detection generation.
                                         applyPikpakUserAgent(url)
                                         currentPage = url
-                                        setAddress(url)
+                                        syncAddressFromPage(url)
                                     }
                                 }
                                 // 普通视频站仍尽早挂 hook；PikPak 分享页先让官方 SPA 完成初始化，
@@ -2019,7 +2047,7 @@ fun WebVideoScreen(
                                     // Do not reset the status or restart the recurring JS probe for
                                     // the same already-finished Bilibili video.
                                     navigationInProgress.set(false)
-                                    setAddress(url)
+                                    syncAddressFromPage(url)
                                     Log.d(TAG_WEB, "Ignoring repeated finish callback for completed Bilibili video")
                                     return
                                 }
@@ -2028,7 +2056,7 @@ fun WebVideoScreen(
                                 canGoBack = view.canGoBack()
                                 lastCompletedNavigationUrl.set(url)
                                 lastCompletedNavigationGeneration.set(completedGeneration)
-                                setAddress(url)
+                                syncAddressFromPage(url)
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
                                 io.translatetube.local.util.AppLogStore.info(
