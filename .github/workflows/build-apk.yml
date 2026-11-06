@@ -377,3 +377,4 @@ jobs:
 # Explicit user-requested APK build trigger for subtitle numeric/unit validation (2026-11-05).
 
 # Explicit user-requested APK build trigger (2026-11-06 14:48 +08:00): build latest main.
+# Explicit user-requested APK build retry after fixing PlaybackService unresolvedIndices type (2026-11-06 14:55 +08:00).
