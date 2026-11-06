@@ -17,6 +17,7 @@ class KokoroRuntimeFilePolicyTest {
         assertFalse(missing.contains("model.int8.onnx"))
         assertFalse(missing.contains("voices.bin"))
         assertTrue(missing.contains("tokens.txt"))
+        assertTrue(missing.contains("lexicon-us-en.txt"))
         assertTrue(missing.contains("lexicon-zh.txt"))
         assertTrue(missing.contains("espeak-ng-data/"))
     }
@@ -60,6 +61,7 @@ class KokoroRuntimeFilePolicyTest {
         createSizedFile(dir, "model.int8.onnx", 1L * 1024 * 1024)
         createSizedFile(dir, "voices.bin", 1L * 1024 * 1024)
         createSizedFile(dir, "tokens.txt", 512L)
+        createSizedFile(dir, "lexicon-us-en.txt", 1L * 1024 * 1024)
         createSizedFile(dir, "lexicon-zh.txt", 1L * 1024 * 1024)
         createSizedFile(dir, "phone-zh.fst", 32L * 1024)
         createSizedFile(dir, "date-zh.fst", 20L * 1024)
