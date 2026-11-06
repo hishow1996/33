@@ -149,6 +149,7 @@ class KokoroTts(
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val startedAtMs = android.os.SystemClock.elapsedRealtime()
         var usedOriginalTextFallback = false
+        var originalFallbackFailure: Exception? = null
         fun generateSpeech(input: String) =
             guard.use { tts.generate(input, selectedSpeaker, safeSpeed) }
 
@@ -174,6 +175,9 @@ class KokoroTts(
             try {
                 val fallbackAudio = generateSpeech(originalNormalizedText)
                 checkActive()
+                if (fallbackAudio.sampleRate !in 8_000..192_000 || fallbackAudio.samples.isEmpty()) {
+                    throw IllegalStateException("原始字幕文本兜底返回无效音频")
+                }
                 usedOriginalTextFallback = true
                 android.util.Log.w(
                     "KokoroTts",
@@ -221,10 +225,13 @@ class KokoroTts(
                         "KokoroTts",
                         "Mixed-language normalization returned invalid PCM; original subtitle text fallback succeeded",
                     )
+                } else {
+                    originalFallbackFailure = IllegalStateException("原始字幕文本兜底返回无效音频")
                 }
             } catch (cancelled: java.util.concurrent.CancellationException) {
                 throw cancelled
             } catch (fallbackFailure: Exception) {
+                originalFallbackFailure = fallbackFailure
                 android.util.Log.w(
                     "KokoroTts",
                     "Original subtitle text fallback failed after invalid mixed-language PCM",
@@ -234,7 +241,10 @@ class KokoroTts(
         }
 
         if (sampleRate !in 8_000..192_000 || rawSamples == 0) {
-            val failure = IllegalStateException("Kokoro 模型返回无效音频：采样率=$sampleRate Hz，样本数=$rawSamples")
+            val failure = IllegalStateException(
+                "Kokoro 模型返回无效音频：采样率=$sampleRate Hz，样本数=$rawSamples",
+                originalFallbackFailure,
+            )
             android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=$rawSamples")
             logKokoroFailure(
                 "Kokoro 推理完成但返回无效 PCM",
