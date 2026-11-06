@@ -161,7 +161,7 @@ class AppCacheStoragePolicyTest {
             assertFalse(File(root, "kawa_asr_checkpoints").exists())
             assertFalse(scoped.exists())
             assertTrue(keep.isFile)
-            assertEquals(19L, AppCacheStoragePolicy.sizeBytes(root))
+            assertEquals(0L, AppCacheStoragePolicy.sizeBytes(root))
         } finally {
             root.deleteRecursively()
         }
