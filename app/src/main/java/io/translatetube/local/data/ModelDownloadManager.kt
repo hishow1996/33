@@ -69,7 +69,7 @@ private class CountingInputStream(input: java.io.InputStream) : FilterInputStrea
 object ModelFiles {
     private val ttsAssetInstallLock = Any()
     private val bundledTtsSupportFiles = listOf(
-        "tokens.txt", "lexicon-zh.txt", "phone-zh.fst", "date-zh.fst", "number-zh.fst",
+        "tokens.txt", "lexicon-us-en.txt", "lexicon-zh.txt", "phone-zh.fst", "date-zh.fst", "number-zh.fst",
     )
 
     fun ttsDir(ctx: Context) = File(ctx.filesDir, "models/tts")
