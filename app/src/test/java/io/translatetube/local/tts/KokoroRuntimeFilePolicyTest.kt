@@ -40,6 +40,23 @@ class KokoroRuntimeFilePolicyTest {
     }
 
     @Test
+    fun cacheSignatureChangesWhenEnglishLexiconContentChanges() = withTempDir { dir ->
+        createCompleteRuntime(dir)
+        val file = File(dir, "lexicon-us-en.txt")
+        val originalTimestamp = file.lastModified()
+        val first = KokoroRuntimeFilePolicy.cacheSignature(dir)
+
+        RandomAccessFile(file, "rw").use { stream ->
+            stream.seek(0L)
+            stream.write(1)
+        }
+        assertTrue(file.setLastModified(originalTimestamp))
+
+        val second = KokoroRuntimeFilePolicy.cacheSignature(dir)
+        assertFalse(first == second)
+    }
+
+    @Test
     fun cacheSignatureDetectsSmallFileContentChangesWhenSizeAndTimestampStayTheSame() = withTempDir { dir ->
         createCompleteRuntime(dir)
         val file = File(dir, "tokens.txt")
