@@ -7006,7 +7006,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     contentAlignment = Alignment.Center,
                 ) {
                     PlaybackOverlayIconButton(
-                        icon = Icons.Filled.LockOpen,
+                        icon = Icons.Filled.Lock,
                         contentDescription = "解锁播放控制",
                         touchSize = controlTargetSize,
                         iconSize = controlIconSize,
@@ -7086,7 +7086,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
             val fullscreenLockControl: @Composable () -> Unit = {
                 PlaybackOverlayIconButton(
-                    icon = Icons.Filled.Lock,
+                    icon = Icons.Filled.LockOpen,
                     contentDescription = "锁定播放控制",
                     touchSize = controlTargetSize,
                     iconSize = controlIconSize,
