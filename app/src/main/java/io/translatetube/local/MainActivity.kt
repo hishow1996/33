@@ -285,6 +285,12 @@ class MainActivity : ComponentActivity() {
                 val pageMotion = remember { Animatable(1f) }
                 var hasInitializedScreenMotion by remember { mutableStateOf(false) }
                 LaunchedEffect(screen) {
+                    if (screen == Screen.HOME) {
+                        // Deletion/cache clearing updates the durable resume journal from the
+                        // storage screen. Refresh the Activity-held snapshot on return to Home
+                        // so an already-composed stale task card cannot resurrect that session.
+                        pendingResumeTaskState.value = loadPendingResumeTask()
+                    }
                     if (!hasInitializedScreenMotion) {
                         hasInitializedScreenMotion = true
                         displayedScreen = screen
