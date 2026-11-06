@@ -13552,6 +13552,169 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
     }
 
+    /**
+     * 油管（googlevideo）音轨分块下载：每块约 10MB、每块一个 Range 请求。
+     * 对油管来说，不带 Range、一个请求读完整条的下载会被限速到很慢；分块请求不受影响。
+     * - 已写入的数据保留，网络中断后从当前位置续传（不用从头再来）。
+     * - 第一块如果服务器不按 Range 返回，抛出 [GoogleVideoRangeUnsupportedException]，
+     *   由调用方回退到原有的整段下载，所以最差情况与改动前一致。
+     * - 进度、暂停/取消、网页/错误文本嗅探、完整性校验与整段下载保持一致。
+     */
+    private suspend fun downloadAudioInChunks(
+        url: String,
+        writeTarget: File,
+        ownerJob: Job?,
+        sessionKey: String,
+        progressLabel: String,
+        pipelineGeneration: Long?,
+        dubbingMutationGeneration: Long?,
+        speakerRecognitionOnly: Boolean,
+    ) {
+        withContext(Dispatchers.IO) {
+            var got = 0L
+            var total = -1L
+            var lastProgressBytes = 0L
+            var lastProgressAtMs = android.os.SystemClock.elapsedRealtime()
+            val payloadPrefix = ByteArray(512)
+            var payloadPrefixSize = 0
+            var consecutiveFailures = 0
+            val userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }
+                ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0"
+
+            fun publishProgress(force: Boolean) {
+                val nowMs = android.os.SystemClock.elapsedRealtime()
+                if (!force && got - lastProgressBytes < 512L * 1024L && nowMs - lastProgressAtMs < 350L) return
+                val downloaded = got
+                val totalNow = total.takeIf { it > 0L }
+                val percent = if (totalNow != null) {
+                    (downloaded * 100.0 / totalNow.toDouble()).toInt().coerceIn(0, 100)
+                } else null
+                val progress = AudioDownloadProgressFormatter.formatProgress(
+                    label = "${progressLabel} · 正在下载",
+                    downloadedBytes = downloaded,
+                    totalBytes = totalNow,
+                    percent = percent,
+                )
+                updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                    if (state.key == sessionKey) state.copy(
+                        progress = progress,
+                        audioProgress = AudioProgressSnapshot(
+                            downloadedBytes = downloaded,
+                            totalBytes = totalNow,
+                            percent = percent,
+                        ),
+                    ) else state
+                }
+                lastProgressBytes = downloaded
+                lastProgressAtMs = nowMs
+            }
+
+            writeTarget.outputStream().buffered().use { out ->
+                val buf = ByteArray(64 * 1024)
+                while (total < 0L || got < total) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                    val chunkStart = got
+                    try {
+                        SafeMediaHttp.execute(
+                            url = url,
+                            requestHeaders = mapOf("Range" to GoogleVideoChunkPolicy.rangeHeader(chunkStart, total)),
+                            userAgent = userAgent,
+                            ownerJob = ownerJob,
+                        ).use { resp ->
+                            if (resp.code == 200 && chunkStart == 0L) {
+                                throw GoogleVideoRangeUnsupportedException("服务器没有按 Range 返回音频分块")
+                            }
+                            if (resp.code != 206) {
+                                throw IllegalStateException("音频分块下载未返回预期响应（HTTP ${resp.code}）。")
+                            }
+                            val range = GoogleVideoChunkPolicy.parseContentRange(resp.header("Content-Range"))
+                            if (range == null || range.start != chunkStart) {
+                                if (chunkStart == 0L) {
+                                    throw GoogleVideoRangeUnsupportedException("音频分块响应缺少有效的 Content-Range")
+                                }
+                                throw IllegalStateException("音频分块响应的 Content-Range 与请求不一致。")
+                            }
+                            range.total?.let { reported ->
+                                if (total > 0L && reported != total) {
+                                    throw IllegalStateException("音频分块响应的总长度前后不一致，链接可能已变化。")
+                                }
+                                total = reported
+                            }
+                            if (total <= 0L) {
+                                throw GoogleVideoRangeUnsupportedException("服务器没有提供音频总长度")
+                            }
+                            val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
+                            if (chunkStart == 0L && isHtmlOrJsonContentType(body.contentType()?.toString())) {
+                                throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")
+                            }
+                            val expected = range.end - range.start + 1L
+                            var chunkGot = 0L
+                            body.byteStream().use { ins ->
+                                while (chunkGot < expected) {
+                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                                    val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
+                                    if (n < 0) break
+                                    val take = minOf(n.toLong(), expected - chunkGot).toInt()
+                                    if (payloadPrefixSize < payloadPrefix.size) {
+                                        val copyCount = minOf(take, payloadPrefix.size - payloadPrefixSize)
+                                        System.arraycopy(buf, 0, payloadPrefix, payloadPrefixSize, copyCount)
+                                        payloadPrefixSize += copyCount
+                                        if (isHlsManifestPayload(payloadPrefix, payloadPrefixSize)) {
+                                            throw HlsManifestPayloadException(url)
+                                        }
+                                        if (isLikelyTextErrorPayload(payloadPrefix, payloadPrefixSize)) {
+                                            throw IllegalStateException(
+                                                "服务器返回了登录页或错误文本，而不是音频数据；链接可能过期或需要登录。"
+                                            )
+                                        }
+                                    }
+                                    out.write(buf, 0, take)
+                                    chunkGot += take.toLong()
+                                    got += take.toLong()
+                                    publishProgress(force = false)
+                                }
+                            }
+                            if (chunkGot == 0L) {
+                                throw IllegalStateException("音频下载不完整：这一块没有收到任何数据")
+                            }
+                        }
+                        consecutiveFailures = 0
+                    } catch (unsupported: GoogleVideoRangeUnsupportedException) {
+                        throw unsupported
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        // 已写入的数据保留；下一轮从 got 处继续请求。
+                        consecutiveFailures++
+                        if (
+                            consecutiveFailures >= MediaDownloadRetryPolicy.MAX_NETWORK_ATTEMPTS ||
+                            !MediaDownloadRetryPolicy.shouldRetry(error)
+                        ) {
+                            throw error
+                        }
+                        awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                        val attemptNumber = consecutiveFailures
+                        updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
+                            if (state.key == sessionKey) {
+                                state.copy(progress = "网络不稳定，正在从断点续传音频下载（第 $attemptNumber 次）")
+                            } else state
+                        }
+                        kotlinx.coroutines.delay(MediaDownloadRetryPolicy.retryDelayMillis(error, attemptNumber))
+                    }
+                }
+                out.flush()
+            }
+            publishProgress(force = true)
+            if (!AsrAudioCachePolicy.isCompleteDownload(total, got)) {
+                throw IllegalStateException(
+                    "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
+                )
+            }
+        }
+    }
+
     private suspend fun downloadAudio(
         url: String,
         destination: File? = null,
@@ -13577,7 +13740,27 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             writeTarget.delete()
             try {
-                withContext(Dispatchers.IO) {
+                // 油管 googlevideo 的整条不分块下载会被限速，优先按约 10MB 一块的 Range 请求下载；
+                // 服务器不按 Range 返回时回退到下面原有的整段下载。
+                var chunkedDone = false
+                if (GoogleVideoChunkPolicy.shouldChunk(url)) {
+                    try {
+                        downloadAudioInChunks(
+                            url = url,
+                            writeTarget = writeTarget,
+                            ownerJob = ownerJob,
+                            sessionKey = sessionKey,
+                            progressLabel = progressLabel,
+                            pipelineGeneration = pipelineGeneration,
+                            dubbingMutationGeneration = dubbingMutationGeneration,
+                            speakerRecognitionOnly = speakerRecognitionOnly,
+                        )
+                        chunkedDone = true
+                    } catch (_: GoogleVideoRangeUnsupportedException) {
+                        writeTarget.delete()
+                    }
+                }
+                if (!chunkedDone) withContext(Dispatchers.IO) {
                     SafeMediaHttp.execute(
                         url = url,
                         // This operation needs the full track, not a Range captured from a WebView request.
