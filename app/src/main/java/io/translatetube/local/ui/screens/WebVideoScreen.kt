@@ -303,6 +303,8 @@ fun WebVideoScreen(
     var addressEditPending by remember(initialUrl) { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    // Keep 52dp at the normal font scale; grow only when the scaled 18sp line needs more room.
+    val addressBarHeight = maxOf(52f, 18f * LocalDensity.current.fontScale + 34f).dp
     fun setAddress(value: String) {
         addressEditPending = false
         addressFieldValue = TextFieldValue(text = value, selection = TextRange(value.length))
@@ -1686,6 +1688,8 @@ fun WebVideoScreen(
                                 // Use the same single-generation reset as address navigation.
                                 // onPageStarted recognizes this prepared reload and will not clear
                                 // candidates or start another detection round for the same action.
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
                                 resetForNavigation(currentPage)
                                 pageLoadToken++
                                 runCatching { view.stopLoading() }
@@ -1710,6 +1714,8 @@ fun WebVideoScreen(
                     onClick = {
                         val view = webViewState.value
                         if (view != null && view.canGoBack()) {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                             view.goBack()
                         } else {
                             canGoBack = false
@@ -1731,7 +1737,7 @@ fun WebVideoScreen(
                     // 保持紧凑高度；输入内容和光标在地址栏内垂直居中且完整显示。
                     modifier = Modifier
                         .weight(1f)
-                        .height(52.dp)
+                        .height(addressBarHeight)
                         .onFocusChanged { focusState ->
                             addressFieldHasFocus = focusState.isFocused
                         },
