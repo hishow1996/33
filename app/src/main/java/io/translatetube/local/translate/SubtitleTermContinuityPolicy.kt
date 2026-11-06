@@ -20,8 +20,18 @@ internal object SubtitleTermContinuityPolicy {
     private val katakanaToken = Regex("""[\u30A1-\u30FA\u30FC]{2,}""")
     // Same-script boundaries let Cyrillic, Greek, Armenian and Georgian names be recognized when adjacent
     // to Japanese, Arabic, Hebrew, Devanagari or other writing systems.
+    // Explicit code-point ranges are used instead of \p{IsCyrillic}-style script names: Android's
+    // ICU regex engine rejects some of those names (PatternSyntaxException on API 28), and a failure
+    // while initializing this object breaks every subtitle translation.
+    private const val CASED_SCRIPT_RANGES =
+        "\\u0370-\\u03FF\\u1F00-\\u1FFF" + // Greek and Greek Extended
+            "\\u0400-\\u052F\\u1C80-\\u1C8F\\u2DE0-\\u2DFF\\uA640-\\uA69F" + // Cyrillic and extensions
+            "\\u0530-\\u058F" + // Armenian
+            "\\u10A0-\\u10FF\\u1C90-\\u1CBF\\u2D00-\\u2D2F" // Georgian, Mtavruli, Supplement
     private val casedScriptNameToken = Regex(
-        """(?<![\p{IsCyrillic}\p{IsGreek}\p{IsArmenian}\p{IsGeorgian}\p{M}\p{N}])\p{Lu}[\p{Ll}\p{M}]{1,}(?:['’–-]\p{Lu}[\p{Ll}\p{M}]+)*(?![\p{IsCyrillic}\p{IsGreek}\p{IsArmenian}\p{IsGeorgian}\p{M}\p{N}])"""
+        "(?<![" + CASED_SCRIPT_RANGES + "\\p{M}\\p{N}])\\p{Lu}[\\p{Ll}\\p{M}]{1,}" +
+            "(?:['\u2019\u2013-]\\p{Lu}[\\p{Ll}\\p{M}]+)*" +
+            "(?![" + CASED_SCRIPT_RANGES + "\\p{M}\\p{N}])"
     )
     private val japaneseHonorificName = Regex("""([\u4E00-\u9FFF]{2,6})(?:さん|様|さま|氏|先生|君|ちゃん)""")
     private val koreanHonorificName = Regex("""(?<![가-힣])([가-힣]{2,4})\s*(?:씨|님|선생님)""")

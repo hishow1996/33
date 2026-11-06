@@ -170,4 +170,14 @@ class SubtitleTermContinuityPolicyTest {
         ))
     }
 
+    @Test
+    fun cyrillicNameBesideJapaneseTextIsStillFoundAndNeverBreaksInitialization() {
+        // The name regex uses explicit code-point ranges (not \\p{IsCyrillic}-style script names,
+        // which Android 9's ICU engine rejects, making the whole object fail to initialize).
+        val terms = SubtitleTermContinuityPolicy.extractStableTerms(
+            listOf("私はАлександрと話した。"),
+            sourceLanguage = "ja",
+        )
+        assertTrue(terms.contains("александр"))
+    }
 }

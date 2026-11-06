@@ -890,6 +890,14 @@ private fun formatConnectionErrorMessage(error: Exception): String {
     }
 }
 
+/** 把 Error（如 ExceptionInInitializerError）包成 Exception，让失败提示和日志走同一条路径。 */
+private fun Throwable.asFailureException(): Exception =
+    this as? Exception
+        ?: RuntimeException(
+            "${javaClass.simpleName}: ${message ?: cause?.message ?: cause?.javaClass?.simpleName ?: "未知错误"}",
+            this,
+        )
+
 private fun apiConnectionFailureMessage(profile: ApiProfile, error: Exception): String {
     val detail = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
     val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
@@ -1783,7 +1791,9 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
+                } catch (thrown: Throwable) {
+                    // 连 Error（例如某个类初始化失败）也要走失败分支，否则"拉取中…"会一直转下去。
+                    val e = thrown.asFailureException()
                     AppLogStore.warning(
                         ctx,
                         "ApiManagerScreen",
@@ -1853,7 +1863,10 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
+                } catch (thrown: Throwable) {
+                    // 连 Error（例如某个类初始化失败）也要走失败分支，否则"测试中…"会一直转下去，
+                    // 按钮永远点不了。
+                    val e = thrown.asFailureException()
                     val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                     AppLogStore.warning(
                         ctx,
