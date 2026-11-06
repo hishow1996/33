@@ -300,7 +300,14 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
         // through the old fallback label, which made Web/Edge TTS look like Kokoro.
         val ttsLabel = when (ttsEngine) {
             "system" -> "系统 TTS"
-            "piper" -> "Piper 多语种"
+            "piper" -> {
+                val selectedId = prefs.getString("piper_model", "zh_cn_chaowen_medium")
+                    ?: "zh_cn_chaowen_medium"
+                val selectedModel = io.translatetube.local.tts.PiperModels.byId(selectedId)
+                if (selectedModel != null && selectedModel.engineName != "Piper") {
+                    "${selectedModel.engineName}（本地）"
+                } else "Piper 多语种"
+            }
             "edge" -> "微软 Edge TTS"
             "google" -> "谷歌在线语音"
             "gemini" -> "Gemini TTS 配音"
@@ -751,7 +758,7 @@ Section(
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            EngineOption("piper", "Piper", ttsEngine) { e ->
+            EngineOption("piper", "本地多语种模型", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
                         ctx,
