@@ -4144,6 +4144,14 @@ private fun buildTranslationHelixGeometry(
     }
 }
 
+private data class DubbingWaveBarSpec(
+    val widthPx: Float,
+    val gapPx: Float,
+    val baseHeightFactor: Float,
+    val phaseA: Float,
+    val phaseB: Float,
+)
+
 @Composable
 private fun StageProgressVisual(
     stageIndex: Int,
@@ -4158,6 +4166,33 @@ private fun StageProgressVisual(
 ) {
     var translationCanvasSize by remember(stageIndex) { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current.density
+    val transcriptionStaticHeightFactors = remember(stageIndex) {
+        FloatArray(64) { index ->
+            val broad = (kotlin.math.sin(index * 0.31f + 0.4f) + 1f) / 2f
+            val detail = (kotlin.math.sin(index * 0.79f + 1.7f) + 1f) / 2f
+            broad * 0.58f + detail * 0.42f
+        }
+    }
+    val dubbingWaveBarSpecs = remember(stageIndex, density) {
+        ArrayList<DubbingWaveBarSpec>(256).apply {
+            repeat(256) { index ->
+                val heightA = kotlin.math.abs(kotlin.math.sin(index * 2.17f)) * 0.34f
+                val heightB = kotlin.math.abs(kotlin.math.sin(index * 0.71f + 1.4f)) * 0.36f
+                val baseHeight = (0.20f + heightA + heightB).coerceIn(0.18f, 0.94f)
+                val widthFactor = (kotlin.math.sin(index * 1.37f) + 1f) / 2f
+                val gapFactor = (kotlin.math.sin(index * 2.43f + 0.8f) + 1f) / 2f
+                add(
+                    DubbingWaveBarSpec(
+                        widthPx = (1.35f + widthFactor * 0.95f) * density,
+                        gapPx = (1.0f + gapFactor * 1.15f) * density,
+                        baseHeightFactor = baseHeight,
+                        phaseA = index * 0.52f,
+                        phaseB = index * 0.91f,
+                    ),
+                )
+            }
+        }
+    }
     val translationHelixTemplate = remember(stageIndex, translationCanvasSize, density) {
         if (stageIndex == 3 && translationCanvasSize.width > 0 && translationCanvasSize.height > 0) {
             buildTranslationHelixTemplate(
@@ -4170,7 +4205,11 @@ private fun StageProgressVisual(
         }
     }
     val translationHelixGeometry = remember(translationHelixTemplate) {
-        translationHelixTemplate?.let { TranslationHelixGeometry() }
+        translationHelixTemplate?.let { template ->
+            TranslationHelixGeometry().also { geometry ->
+                buildTranslationHelixGeometry(template, 0f, geometry)
+            }
+        }
     }
     val transition = rememberInfiniteTransition(label = "stageProgressMotion")
     val pulse by transition.animateFloat(
@@ -4256,9 +4295,6 @@ private fun StageProgressVisual(
     // the helix phase. The projected wave height stays constant throughout a full turn.
     val translationAnimationActive = stageIndex == 3 && isAnimating &&
         !isPaused && !isFailed && !isCompleted && !isSkipped
-    val translationWholeRotation = remember(stageIndex) {
-        androidx.compose.animation.core.Animatable(0f)
-    }
     // Keep the original travelling highlight while the complete graphic rotates.
     // The highlighted head repeatedly travels only within the measured progress range.
     val translationFlowActive = translationAnimationActive && !isIndeterminate
@@ -4280,26 +4316,6 @@ private fun StageProgressVisual(
             }
         } else if (!isPaused) {
             translationFlowPhase.snapTo(0f)
-        }
-    }
-    LaunchedEffect(translationAnimationActive, isPaused) {
-        if (translationAnimationActive) {
-            while (true) {
-                val remaining = (1f - translationWholeRotation.value / 6.2831855f)
-                    .coerceIn(0.001f, 1f)
-                translationWholeRotation.animateTo(
-                    targetValue = 6.2831855f,
-                    animationSpec = tween(
-                        durationMillis = (2400f * remaining).roundToInt().coerceAtLeast(1),
-                        easing = androidx.compose.animation.core.LinearEasing,
-                    ),
-                )
-                // 0 and 2π are the same full-turn pose, so the loop is seamless.
-                translationWholeRotation.snapTo(0f)
-            }
-        } else if (!isPaused) {
-            // A completed, failed, skipped, or stopped stage returns to its neutral pose.
-            translationWholeRotation.snapTo(0f)
         }
     }
     val primaryColor = when {
@@ -4331,13 +4347,6 @@ private fun StageProgressVisual(
             .onSizeChanged { measuredSize ->
                 if (stageIndex == 3 && translationCanvasSize != measuredSize) {
                     translationCanvasSize = measuredSize
-                }
-            }
-            .graphicsLayer {
-                if (stageIndex == 3) {
-                    // BlendMode.Clear must erase only this progress visual,
-                    // never pixels belonging to the parent card or other UI.
-                    compositingStrategy = CompositingStrategy.Offscreen
                 }
             },
     ) {
@@ -4471,16 +4480,12 @@ private fun StageProgressVisual(
 
                 // A fixed seed creates a stable music-spectrum silhouette while every
                 // active bar follows two independent rhythms and a travelling beat.
-                val staticHeights = FloatArray(barCount) { index ->
-                    val broad = (kotlin.math.sin(index * 0.31f + 0.4f) + 1f) / 2f
-                    val detail = (kotlin.math.sin(index * 0.79f + 1.7f) + 1f) / 2f
-                    minBarHeight + (maxBarHeight - minBarHeight) * (broad * 0.58f + detail * 0.42f)
-                }
 
                 // The unprocessed portion remains grey, with varied but still heights.
                 repeat(barCount) { index ->
                     val x = index * (barWidth + actualGap)
-                    val barHeight = staticHeights[index]
+                    val barHeight = minBarHeight +
+                        (maxBarHeight - minBarHeight) * transcriptionStaticHeightFactors[index]
                     drawRoundRect(
                         color = trackColor.copy(alpha = 0.86f),
                         topLeft = Offset(x, centerY - barHeight / 2f),
@@ -4502,7 +4507,8 @@ private fun StageProgressVisual(
                         val barHeight = if (animate) {
                             minBarHeight + (maxBarHeight - minBarHeight) * energy
                         } else {
-                            staticHeights[index]
+                            minBarHeight +
+                                (maxBarHeight - minBarHeight) * transcriptionStaticHeightFactors[index]
                         }
                         drawRoundRect(
                             color = color.copy(alpha = if (animate) 0.78f + energy * 0.22f else 1f),
@@ -4550,33 +4556,34 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 4. Translation — four open-ended DNA double-helix cycles.
+            // 4. Translation — a cached double helix with a lightweight travelling highlight.
             3 -> {
-                // Reuse size-dependent samples, but project the helix at its current
-                // axial rotation phase on each animation frame.
                 val template = translationHelixTemplate ?: return@Canvas
                 val geometry = translationHelixGeometry ?: return@Canvas
-                buildTranslationHelixGeometry(
-                    template = template,
-                    rotationPhase = translationWholeRotation.value,
-                    geometry = geometry,
-                )
                 val progressX = size.width * fraction
-                val strandA = geometry.strandA
-                val strandB = geometry.strandB
-                val rungs = geometry.rungs
-                val crossings = geometry.crossings
-                val rungCount = geometry.rungCount
-                val crossingCount = geometry.crossingCount
-
+                val motionEnabled = translationAnimationActive
+                val flowHead = when {
+                    !motionEnabled -> null
+                    isIndeterminate -> scanPosition * size.width
+                    else -> translationFlowPhase.value * progressX
+                }
+                val flowIntensity = when {
+                    !motionEnabled -> 0f
+                    isIndeterminate -> kotlin.math.sin(
+                        kotlin.math.PI.toFloat() * scanPosition,
+                    ).coerceIn(0f, 1f)
+                    else -> kotlin.math.sin(
+                        kotlin.math.PI.toFloat() * translationFlowPhase.value,
+                    ).coerceIn(0f, 1f)
+                }
                 val pendingColor = if (isSkipped) Color(0xFFBBC5D2) else Color(0xFFD1DAE5)
-                val blueStrandColor = when {
+                val blueColor = when {
                     isFailed -> Color(0xFFD74655)
                     isCompleted -> Color(0xFF18A879)
                     isSkipped -> Color(0xFFBBC5D2)
                     else -> Color(0xFF3684EB)
                 }
-                val greenStrandColor = when {
+                val greenColor = when {
                     isFailed -> Color(0xFFD74655)
                     isCompleted -> Color(0xFF18A879)
                     isSkipped -> Color(0xFFBBC5D2)
@@ -4584,17 +4591,10 @@ private fun StageProgressVisual(
                 }
                 val curveStroke = 2.dp.toPx()
                 val rungStroke = 1.dp.toPx()
-                val curveStyle = Stroke(
-                    width = curveStroke,
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round,
-                )
-                val rungGradientColors = listOf(blueStrandColor, greenStrandColor)
 
-                // Draw the complete muted structure first; both strands stay continuous
-                // and the left/right ends remain visibly open.
-                for (rungIndex in 0 until rungCount) {
-                    val rung = rungs[rungIndex]
+                // Draw the muted full track once per frame using geometry built only on resize.
+                for (rungIndex in 0 until geometry.rungCount) {
+                    val rung = geometry.rungs[rungIndex]
                     drawLine(
                         color = pendingColor,
                         start = rung.start,
@@ -4603,246 +4603,88 @@ private fun StageProgressVisual(
                         cap = StrokeCap.Round,
                     )
                 }
-                drawPath(strandA, color = pendingColor, style = curveStyle)
-                drawPath(strandB, color = pendingColor, style = curveStyle)
-                fun drawActiveRungs(
-                    pulseHead: Float?,
-                    pulseRadius: Float,
-                    pulseIntensity: Float = 1f,
-                ) {
-                    for (rungIndex in 0 until rungCount) {
-                        val rung = rungs[rungIndex]
-                        val strength = if (pulseHead != null) {
-                            (1f - kotlin.math.abs(rung.x - pulseHead) / pulseRadius)
-                                .coerceIn(0f, 1f) * pulseIntensity
-                        } else {
-                            0f
-                        }
-                        val gradient = Brush.linearGradient(
-                            colors = rungGradientColors,
-                            start = rung.start,
-                            end = rung.end,
-                        )
-                        drawLine(
-                            brush = gradient,
-                            start = rung.start,
-                            end = rung.end,
-                            strokeWidth = rungStroke + strength * 1.0.dp.toPx(),
-                            cap = StrokeCap.Round,
-                        )
-                        if (strength > 0.04f) {
-                            drawLine(
-                                color = Color.White.copy(alpha = strength * 0.82f),
-                                start = rung.start,
-                                end = rung.end,
-                                strokeWidth = 0.8.dp.toPx() + strength * 0.55.dp.toPx(),
-                                cap = StrokeCap.Round,
-                            )
-                        }
-                    }
-                }
-
-                fun drawActiveCurves(alpha: Float = 1f, strokeWidth: Float = curveStroke) {
-                    drawPath(
-                        strandA,
-                        color = blueStrandColor.copy(alpha = alpha),
-                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round),
-                    )
-                    drawPath(
-                        strandB,
-                        color = greenStrandColor.copy(alpha = alpha),
-                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round),
-                    )
-                }
-
-                // Crossover segment paths are also cached with the static geometry.
-
-                fun drawOverUnderWeave(
-                    colorA: Color,
-                    colorB: Color,
-                    alpha: Float = 1f,
-                    strokeWidth: Float = curveStroke,
-                    maskRear: Boolean = true,
-                ) {
-                    // Stroke styles are shared by all crossover points in this pass.
-                    val featherStyle = Stroke(
-                        width = strokeWidth + 4.5.dp.toPx(),
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    )
-                    val clearStyle = Stroke(
-                        width = strokeWidth + 1.0.dp.toPx(),
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    )
-                    val rearTraceStyle = Stroke(
-                        width = (strokeWidth * 0.68f).coerceAtLeast(1.dp.toPx()),
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    )
-                    val frontStyle = Stroke(
-                        width = strokeWidth + 0.2.dp.toPx(),
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    )
-                    val featherColor = Color.Black.copy(alpha = 0.38f)
-                    for (crossingIndex in 0 until crossingCount) {
-                        val crossing = crossings[crossingIndex]
-                        val frontColor = if (crossing.strandAIsFront) colorA else colorB
-                        val backColor = if (crossing.strandAIsFront) colorB else colorA
-                        val backPath = crossing.backPath
-                        val frontPath = crossing.frontPath
-
-                        if (maskRear) {
-                            // Feather the rear strand's edges first. DstOut partially
-                            // fades the pixels in an isolated layer, avoiding a hard cut.
-                            drawPath(
-                                backPath,
-                                color = featherColor,
-                                style = featherStyle,
-                                blendMode = BlendMode.DstOut,
-                            )
-                            // Clear the center of the rear strand so the front strand
-                            // reads clearly as passing over it.
-                            drawPath(
-                                backPath,
-                                color = Color.Transparent,
-                                style = clearStyle,
-                                blendMode = BlendMode.Clear,
-                            )
-                            // Restore a very faint rear trace to keep the helix continuous.
-                            drawPath(
-                                backPath,
-                                color = backColor.copy(alpha = alpha * 0.20f),
-                                style = rearTraceStyle,
-                            )
-                        }
-                        drawPath(
-                            frontPath,
-                            color = frontColor.copy(alpha = alpha),
-                            style = frontStyle,
-                        )
-                    }
-                }
-
-                // Draw the muted over/under crossings after the local helper is declared.
-                drawOverUnderWeave(
-                    colorA = pendingColor,
-                    colorB = pendingColor,
-                    strokeWidth = curveStroke,
+                drawPath(
+                    geometry.strandA,
+                    color = pendingColor,
+                    style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
                 )
-
-                val motionEnabled = translationAnimationActive
-                val pulseRadius = if (isIndeterminate) 15.dp.toPx() else 24.dp.toPx()
-                val flowHead = when {
-                    !motionEnabled -> null
-                    isIndeterminate -> scanPosition * size.width
-                    else -> translationFlowPhase.value * progressX
-                }
-                // Fade the travelling glow at both loop endpoints. This makes the
-                // reset from the right edge to the left edge visually unobtrusive.
-                val flowIntensity = when {
-                    !motionEnabled -> 0f
-                    isIndeterminate ->
-                        kotlin.math.sin(kotlin.math.PI.toFloat() * scanPosition).coerceIn(0f, 1f)
-                    else ->
-                        kotlin.math.sin(kotlin.math.PI.toFloat() * translationFlowPhase.value)
-                            .coerceIn(0f, 1f)
-                }
-                var nearestCrossoverDistance = size.width
-                if (flowHead != null) {
-                    for (crossingIndex in 0 until crossingCount) {
-                        val distance = kotlin.math.abs(crossings[crossingIndex].x - flowHead)
-                        if (distance < nearestCrossoverDistance) {
-                            nearestCrossoverDistance = distance
-                        }
-                    }
-                }
-                val crossoverBlend = (
-                    (nearestCrossoverDistance - 3.dp.toPx()) / 11.dp.toPx()
-                ).coerceIn(0f, 1f)
-                val smoothCrossoverBlend = crossoverBlend * crossoverBlend *
-                    (3f - 2f * crossoverBlend)
-                // Keep at least 48% of the glow at a crossover so the flow never
-                // appears to stop; only its brightest edge is softened.
-                val crossoverIntensity = 0.48f + 0.52f * smoothCrossoverBlend
-                val effectiveFlowIntensity = flowIntensity * crossoverIntensity
+                drawPath(
+                    geometry.strandB,
+                    color = pendingColor,
+                    style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                )
 
                 if (!isIndeterminate && fraction > 0f && !isSkipped) {
                     clipRect(right = progressX.coerceIn(0f, size.width)) {
-                        drawActiveRungs(
-                            pulseHead = flowHead,
-                            pulseRadius = pulseRadius,
-                            pulseIntensity = effectiveFlowIntensity,
-                        )
-                        drawActiveCurves()
-                        drawOverUnderWeave(
-                            colorA = blueStrandColor,
-                            colorB = greenStrandColor,
-                        )
-
-                        // A short, bright highlight travels along both strands and
-                        // the rungs, looping over the already-completed portion.
-                        if (motionEnabled && flowHead != null) {
-                            clipRect(
-                                left = (flowHead - pulseRadius * 1.15f).coerceAtLeast(0f),
-                                right = (flowHead + pulseRadius * 0.35f).coerceAtMost(progressX),
-                            ) {
-                                drawActiveCurves(
-                                    alpha = 0.62f * effectiveFlowIntensity,
-                                    strokeWidth = 3.1.dp.toPx(),
-                                )
-                                drawOverUnderWeave(
-                                    colorA = blueStrandColor,
-                                    colorB = greenStrandColor,
-                                    alpha = 0.78f * effectiveFlowIntensity,
-                                    strokeWidth = 3.1.dp.toPx(),
-                                    maskRear = true,
-                                )
-                            }
+                        for (rungIndex in 0 until geometry.rungCount) {
+                            val rung = geometry.rungs[rungIndex]
+                            drawLine(
+                                color = blueColor.copy(alpha = 0.78f),
+                                start = rung.start,
+                                end = rung.end,
+                                strokeWidth = rungStroke,
+                                cap = StrokeCap.Round,
+                            )
                         }
+                        drawPath(
+                            geometry.strandA,
+                            color = blueColor,
+                            style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                        )
+                        drawPath(
+                            geometry.strandB,
+                            color = greenColor,
+                            style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                        )
                     }
                 } else if (isIndeterminate && motionEnabled) {
-                    // Unknown progress has no percentage claim: keep the full track
-                    // softly active and move the highlight across it as an indeterminate flow.
-                    drawActiveRungs(
-                        pulseHead = flowHead,
-                        pulseRadius = pulseRadius,
-                        pulseIntensity = effectiveFlowIntensity,
+                    drawPath(
+                        geometry.strandA,
+                        color = blueColor.copy(alpha = 0.55f),
+                        style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
                     )
-                    drawActiveCurves(alpha = 0.88f, strokeWidth = 2.6.dp.toPx())
-                    drawOverUnderWeave(
-                        colorA = blueStrandColor,
-                        colorB = greenStrandColor,
-                        alpha = 0.88f,
-                        strokeWidth = 2.6.dp.toPx(),
+                    drawPath(
+                        geometry.strandB,
+                        color = greenColor.copy(alpha = 0.55f),
+                        style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
                     )
-                    if (flowHead != null) {
-                        clipRect(
-                            left = (flowHead - pulseRadius * 1.15f).coerceAtLeast(0f),
-                            right = (flowHead + pulseRadius * 0.35f).coerceAtMost(size.width),
-                        ) {
-                            drawActiveCurves(
-                                alpha = 0.68f * effectiveFlowIntensity,
-                                strokeWidth = 3.1.dp.toPx(),
-                            )
-                            drawOverUnderWeave(
-                                colorA = blueStrandColor,
-                                colorB = greenStrandColor,
-                                alpha = 0.8f * effectiveFlowIntensity,
-                                strokeWidth = 3.1.dp.toPx(),
-                                maskRear = true,
-                            )
-                        }
-                    }
                 }
 
-                // The slim blue cursor follows the exact measured translation boundary.
+                // A small paired pulse moves along the cached strands; no path rebuild or
+                // per-crossover masking is needed on animation frames.
+                if (flowHead != null && flowIntensity > 0f && size.width > 0f) {
+                    val headX = flowHead.coerceIn(0f, size.width)
+                    val phase = template.basePhase + template.totalPhase * (headX / size.width)
+                    val offsetY = template.amplitude * kotlin.math.sin(phase)
+                    val centerA = Offset(headX, template.centerY - offsetY)
+                    val centerB = Offset(headX, template.centerY + offsetY)
+                    val haloRadius = 3.6.dp.toPx()
+                    drawCircle(
+                        color = Color.White.copy(alpha = flowIntensity * 0.75f),
+                        radius = haloRadius,
+                        center = centerA,
+                    )
+                    drawCircle(
+                        color = blueColor,
+                        radius = 1.8.dp.toPx(),
+                        center = centerA,
+                    )
+                    drawCircle(
+                        color = Color.White.copy(alpha = flowIntensity * 0.75f),
+                        radius = haloRadius,
+                        center = centerB,
+                    )
+                    drawCircle(
+                        color = greenColor,
+                        radius = 1.8.dp.toPx(),
+                        center = centerB,
+                    )
+                }
+
                 if (!isIndeterminate && !isCompleted && !isSkipped) {
-                    val markerColor = if (isFailed) Color(0xFFD74655) else Color(0xFF3268F5)
                     val markerX = progressX.coerceIn(0f, size.width)
                     drawLine(
-                        color = markerColor,
+                        color = if (isFailed) Color(0xFFD74655) else Color(0xFF3268F5),
                         start = Offset(markerX, 0f),
                         end = Offset(markerX, size.height),
                         strokeWidth = 1.2.dp.toPx(),
@@ -4879,36 +4721,30 @@ private fun StageProgressVisual(
                     !isPaused && !isFailed && !isCompleted && !isSkipped
 
                 fun drawWaveBars(color: Color, animate: Boolean) {
-                    var x = 0.8.dp.toPx()
-                    var index = 0
-                    while (x < size.width) {
-                        // Deterministic variation gives each bar a different height and gap.
-                        val heightA = kotlin.math.abs(kotlin.math.sin(index * 2.17f)) * 0.34f
-                        val heightB = kotlin.math.abs(kotlin.math.sin(index * 0.71f + 1.4f)) * 0.36f
-                        val baseHeight = (0.20f + heightA + heightB).coerceIn(0.18f, 0.94f)
-                        val widthFactor = (kotlin.math.sin(index * 1.37f) + 1f) / 2f
-                        val gapFactor = (kotlin.math.sin(index * 2.43f + 0.8f) + 1f) / 2f
-                        val barWidth = (1.35f + widthFactor * 0.95f).dp.toPx()
-                        val gap = (1.0f + gapFactor * 1.15f).dp.toPx()
-
-                        val waveA = (kotlin.math.sin(dubbingWaveformPhase * 1.2f - index * 0.52f) + 1f) / 2f
-                        val waveB = (kotlin.math.sin(dubbingWaveformPhase * 0.78f + index * 0.91f) + 1f) / 2f
-                        val motion = waveA * 0.72f + waveB * 0.28f
-                        // Broad height swing makes the full completed range visibly pulse.
-                        val animatedHeight = (baseHeight * 0.18f + motion * 0.82f)
-                            .coerceIn(0.14f, 1f)
-                        val heightFactor = if (animate) animatedHeight else baseHeight
+                    var x = 0.8f * density
+                    for (bar in dubbingWaveBarSpecs) {
+                        if (x >= size.width) break
+                        val motion = if (animate) {
+                            val waveA = (kotlin.math.sin(dubbingWaveformPhase * 1.2f - bar.phaseA) + 1f) / 2f
+                            val waveB = (kotlin.math.sin(dubbingWaveformPhase * 0.78f + bar.phaseB) + 1f) / 2f
+                            waveA * 0.72f + waveB * 0.28f
+                        } else {
+                            0f
+                        }
+                        val heightFactor = if (animate) {
+                            (bar.baseHeightFactor * 0.18f + motion * 0.82f).coerceIn(0.14f, 1f)
+                        } else {
+                            bar.baseHeightFactor
+                        }
                         val barHeight = (maxBarHeight * heightFactor).coerceAtLeast(1.8.dp.toPx())
                         val top = centerY - barHeight / 2f
-
                         drawRoundRect(
                             color = color,
                             topLeft = Offset(x, top),
-                            size = Size(barWidth, barHeight),
-                            cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+                            size = Size(bar.widthPx, barHeight),
+                            cornerRadius = CornerRadius(bar.widthPx / 2f, bar.widthPx / 2f),
                         )
-                        x += barWidth + gap
-                        index += 1
+                        x += bar.widthPx + bar.gapPx
                     }
                 }
 
@@ -5226,7 +5062,7 @@ private fun TranslationStageResultPreview(
                             verticalArrangement = Arrangement.spacedBy(1.dp),
                         ) {
                             Text(
-                                line.text,
+                                line.sourceText,
                                 color = Color(0xFF6F7C8D),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontSize = 10.sp,
