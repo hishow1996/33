@@ -131,6 +131,8 @@ private object ReadyHistorySessionConfigStore {
                 key.startsWith("cloud_tts_") ||
                 key.startsWith("local_tts_") ||
                 key.startsWith("piper_") ||
+                key.startsWith("melo_") ||
+                key.startsWith("matcha_") ||
                 key.startsWith("kokoro_") ||
                 key.startsWith("system_tts_")
         )
