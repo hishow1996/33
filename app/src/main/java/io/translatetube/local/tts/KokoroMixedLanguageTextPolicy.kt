@@ -97,11 +97,7 @@ internal object KokoroMixedLanguageTextPolicy {
         RegexOption.IGNORE_CASE,
     )
     private val urlOrDomainPattern = Regex(
-        """(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!    private val ipVersionPattern = Regex(
-        """(?<![A-Za-z0-9])IPv([46])(?![A-Za-z0-9])""",
-        RegexOption.IGNORE_CASE,
-    )
-'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)""",
+        """(?i)(?:(?:https?://|ftp://|www\\.)[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+)""",
     )
 
     /** Never rewrite an abbreviation or brand inside a URL/domain embedded in subtitle text. */
@@ -238,12 +234,14 @@ internal object KokoroMixedLanguageTextPolicy {
 
         // Explicit group references keep language boundaries at CJK/Latin and punctuation edges.
         // The cue is still synthesized once with one Kokoro voice to preserve sentence prosody.
-        prepared = replaceOutsideUrls(prepared, cjkBeforeLatin) { match -> "\$1 \$2".replace("\$1", match.groupValues[1]).replace("\$2", match.groupValues[2]) }
+        prepared = replaceOutsideUrls(prepared, cjkBeforeLatin) { match ->
+            match.groupValues[1] + " " + match.groupValues[2]
+        }
         prepared = replaceOutsideUrls(prepared, punctuationBeforeLatin) { match ->
-            "\$1 \$2".replace("\$1", match.groupValues[1]).replace("\$2", match.groupValues[2])
+            match.groupValues[1] + " " + match.groupValues[2]
         }
         prepared = replaceOutsideUrls(prepared, latinBeforeCjk) { match ->
-            "\$1 \$2".replace("\$1", match.groupValues[1]).replace("\$2", match.groupValues[2])
+            match.groupValues[1] + " " + match.groupValues[2]
         }
         prepared = prepared.replace(Regex("""\s+"""), " ").trim()
 
