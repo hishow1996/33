@@ -40,10 +40,10 @@ class KokoroMixedLanguageTextPolicyTest {
     @Test
     fun leavesUnlistedAndAmbiguousEnglishTermsUntouched() {
         val prepared = KokoroMixedLanguageTextPolicy.prepare(
-            "使用Python、Kokoro、Sherpa-ONNX以及SQL",
+            "使用Android、Python、Kokoro、Sherpa-ONNX以及SQL",
         )
 
-        assertEquals("使用 Python、 Kokoro、 Sherpa-ONNX 以及 SQL", prepared.text)
+        assertEquals("使用 Android、 Python、 Kokoro、 Sherpa-ONNX 以及 SQL", prepared.text)
         assertEquals(0, prepared.expandedInitialismCount)
         assertEquals(0, prepared.expandedProperNameCount)
     }
