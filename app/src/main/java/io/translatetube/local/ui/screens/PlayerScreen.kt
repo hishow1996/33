@@ -3008,7 +3008,7 @@ private fun VideoParsingPage(
 
 
         ProcessingStageCards(
-            state = state.toProcessingStageCardState(),
+            state = state.toProcessingStageCardState(translationProgressSummary(state)),
             source = source,
             flow = flow,
             complete = complete,
@@ -3129,7 +3129,7 @@ private data class ProcessingStageCardState(
     val completedTranscriptionPreviewLines: List<ProcessingStagePreviewLine>,
     val translationPreviewLines: List<ProcessingStagePreviewLine>,
     val completedTranslationPreviewLines: List<ProcessingStagePreviewLine>,
-    val translatedLineCount: Int,
+    val translationProgressSummary: String,
     val translationCurrentBatch: Int,
     val translationTotalBatches: Int,
     val translationRetryCount: Int,
@@ -3144,7 +3144,7 @@ private data class ProcessingStageCardState(
     val ttsEngineName: String,
 )
 
-private fun PlayerUiState.toProcessingStageCardState(): ProcessingStageCardState {
+private fun PlayerUiState.toProcessingStageCardState(translationProgressSummary: String): ProcessingStageCardState {
     fun previewLine(line: SubLine, includeTranslation: Boolean = false) =
         ProcessingStagePreviewLine(
             startMs = line.startMs,
@@ -3205,7 +3205,7 @@ private fun PlayerUiState.toProcessingStageCardState(): ProcessingStageCardState
         completedTranscriptionPreviewLines = completedTranscription,
         translationPreviewLines = activeTranslation,
         completedTranslationPreviewLines = completedTranslation,
-        translatedLineCount = translatedLineCount,
+        translationProgressSummary = translationProgressSummary,
         translationCurrentBatch = translationCurrentBatch,
         translationTotalBatches = translationTotalBatches,
         translationRetryCount = translationRetryCount,
@@ -3477,7 +3477,7 @@ private fun ProcessingStageCards(
                                 }
                                 add("翻译方向" to sourceLanguageDisplay + " → 简体中文")
                                 if (state.totalLines > 0) {
-                                    add("翻译进度" to translationProgressSummary(state))
+                                    add("翻译进度" to state.translationProgressSummary)
                                 }
                                 VideoProcessingFlowPolicy.translationBatchLabel(
                                     state.translationCurrentBatch,
@@ -8464,10 +8464,36 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
     }
 }
 
+@Composable
 private fun translationProgressSummary(state: PlayerUiState): String {
     val total = state.totalLines.coerceAtLeast(0)
-    val translated = state.translatedLineCount.coerceIn(0, total)
-    return "中文译文 $translated/$total"
+    val valid = remember(state.lines, state.sourceLang) {
+        state.lines.count { line ->
+            val translated = SubtitleParsers.cleanTranslatedText(line.zh)
+            if (
+                line.text.isBlank() ||
+                translated.isNullOrBlank()
+            ) {
+                false
+            } else {
+                val sourceLanguage = if (
+                    io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(state.sourceLang)
+                ) {
+                    io.translatetube.local.subs.SubtitleLanguageDetector.detect(line.text)
+                } else {
+                    state.sourceLang
+                }
+                io.translatetube.local.translate.SourceLanguagePolicy.isChinese(sourceLanguage) ||
+                    (
+                        !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                            .isSourceEcho(line.text, translated, sourceLanguage) &&
+                        !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                            .isTargetLanguageMismatch(line.text, translated, sourceLanguage, "zh")
+                    )
+            }
+        }
+    }
+    return "中文译文 $valid/$total"
 }
 
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
