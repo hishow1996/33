@@ -30,7 +30,7 @@ class KokoroMixedLanguageTextPolicyTest {
         )
 
         assertEquals(
-            "A P I 和 G P U 可以与 Open A I 协作，again 不是缩写，Chat G P T 也不是普通 G P T 单词",
+            "A P I 和 G P U 可以与 Open A I 协作， again 不是缩写， Chat G P T 也不是普通 G P T 单词",
             prepared.text,
         )
         assertEquals(3, prepared.expandedInitialismCount)
@@ -43,7 +43,7 @@ class KokoroMixedLanguageTextPolicyTest {
             "使用GitHub、Python、Kokoro、Sherpa-ONNX以及SQL",
         )
 
-        assertEquals("使用 GitHub、Python、Kokoro、Sherpa-ONNX 以及 SQL", prepared.text)
+        assertEquals("使用 GitHub、 Python、 Kokoro、 Sherpa-ONNX 以及 SQL", prepared.text)
         assertEquals(0, prepared.expandedInitialismCount)
         assertEquals(0, prepared.expandedProperNameCount)
     }
@@ -62,6 +62,6 @@ class KokoroMixedLanguageTextPolicyTest {
     fun keepsPunctuationAndNumbersAndOnlyCollapsesWhitespace() {
         val prepared = KokoroMixedLanguageTextPolicy.prepare("第 3 章：AI  模型，支持 ChatGPT！")
 
-        assertEquals("第 3 章：A I 模型，支持 Chat G P T！", prepared.text)
+        assertEquals("第 3 章： A I 模型，支持 Chat G P T！", prepared.text)
     }
 }
