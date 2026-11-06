@@ -12,6 +12,7 @@ import java.util.concurrent.CancellationException
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsMatchaModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,35 +46,44 @@ import java.util.concurrent.TimeUnit
  *   model.onnx / tokens.txt / espeak-ng-data/
  */
 class PiperTts(context: Context, private val modelId: String) : TtsEngine, LocalCpuBoundTtsEngine {
-    override val name = "Piper"
     private val appCtx = context.applicationContext
     private val dir: File = PiperModels.modelDir(appCtx, modelId)
     private val definition: PiperModelDef = PiperModels.byId(modelId)
-        ?: throw IllegalArgumentException("未知 Piper 模型：$modelId")
-    private val model: File = dir.listFiles()
-        ?.filter { it.isFile && it.extension.equals("onnx", ignoreCase = true) }
-        ?.sortedBy { it.name }
-        ?.firstOrNull()
-        ?: File(dir, "model.onnx")
+        ?: throw IllegalArgumentException("未知本地语音模型：$modelId")
+    override val name: String get() = definition.engineName
+    private val model: File = definition.modelFileName?.let { File(dir, it) }
+        ?: dir.listFiles()
+            ?.filter { it.isFile && it.extension.equals("onnx", ignoreCase = true) }
+            ?.sortedBy { it.name }
+            ?.firstOrNull()
+            ?: File(dir, "model.onnx")
     private val numThreads: Int = TtsCpuThreadPolicy.recommendedThreads(appCtx)
 
     private val modelCacheKey: String by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         // Preserve the historical identity for Chinese models. For other languages the active
         // runtime also consumes espeak-ng-data, so its recursive content signature must be part
         // of the cache key too; hashing is done once per engine, never for every cue lookup.
+        val trackedNames = buildSet {
+            add("tokens.txt")
+            add("lexicon.txt")
+            addAll(definition.ruleFstNames)
+            definition.modelFileName?.let(::add)
+            definition.vocoderFileName?.let(::add)
+        }
         val signature = dir.listFiles().orEmpty()
             .filter {
                 it.isFile && (
-                    it.extension.equals("onnx", true) ||
-                        it.name in setOf("tokens.txt", "lexicon.txt", "phone.fst", "date.fst", "number.fst")
+                    it.extension.equals("onnx", true) || it.name in trackedNames
                     )
             }
             .sortedBy { it.name }
             .joinToString(",") { "${it.name}:${it.length()}:${it.lastModified()}" }
-        val espeakSignature = if (definition.supportsChineseOutput) {
-            ""
-        } else {
+        val espeakSignature = if (
+            !definition.supportsChineseOutput || definition.requiresEspeakDataForChinese
+        ) {
             "-espeak-${PiperTtsCacheIdentityPolicy.espeakDataSignature(File(dir, "espeak-ng-data"))}"
+        } else {
+            ""
         }
         "$name-$modelId-$signature$espeakSignature"
     }
@@ -100,31 +110,48 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
             "Piper 词表文件缺失或为空：${tokens.absolutePath}，文件大小=${tokens.length()} 字节"
         }
         val lexicon = File(dir, "lexicon.txt")
-        val ruleFsts = PiperModelFilePolicy.CHINESE_RULE_FST_NAMES.map { File(dir, it) }
+        val ruleFsts = definition.ruleFstNames.map { File(dir, it) }
+        val vocoder = definition.vocoderFileName?.let { File(dir, it) }
         if (definition.supportsChineseOutput) {
             val missingOrEmptyResources = buildList {
                 if (!lexicon.isFile || lexicon.length() <= 0L) {
-                    add("中文词典 lexicon.txt 缺失或为空：${lexicon.absolutePath}（${lexicon.length()} 字节）")
+                    add("中英文词典 lexicon.txt 缺失或为空：${lexicon.absolutePath}（${lexicon.length()} 字节）")
                 }
                 ruleFsts.filter { !it.isFile || it.length() <= 0L }.forEach { file ->
-                    add("中文发音规则文件 ${file.name} 缺失或为空：${file.absolutePath}（${file.length()} 字节）")
+                    add("发音规则文件 ${file.name} 缺失或为空：${file.absolutePath}（${file.length()} 字节）")
+                }
+                if (definition.requiresEspeakDataForChinese && !dataDir.isDirectory) {
+                    add("espeak-ng-data 目录缺失：${dataDir.absolutePath}")
+                }
+                if (definition.vocoderFileName != null &&
+                    (vocoder?.isFile != true || (vocoder?.length() ?: 0L) < PiperModelFilePolicy.MIN_ONNX_BYTES)
+                ) {
+                    add("Matcha 声码器缺失或不完整：${vocoder?.absolutePath ?: definition.vocoderFileName}")
                 }
             }
             require(missingOrEmptyResources.isEmpty()) {
-                "中文 Piper 模型资源不完整（模型 ID=$modelId）：${missingOrEmptyResources.joinToString("；")}"
+                "${definition.engineName} 模型资源不完整（模型 ID=$modelId）：${missingOrEmptyResources.joinToString("；")}"
             }
         } else {
             require(dataDir.isDirectory) { "Piper 语音数据目录缺失：${dataDir.absolutePath}" }
         }
 
+        val isMatcha = definition.vocoderFileName != null
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
-                vits = OfflineTtsVitsModelConfig(
+                vits = if (!isMatcha) OfflineTtsVitsModelConfig(
                     model = model.absolutePath,
                     tokens = tokens.absolutePath,
                     lexicon = if (definition.supportsChineseOutput) lexicon.absolutePath else "",
                     dataDir = if (definition.supportsChineseOutput) "" else dataDir.absolutePath,
-                ),
+                ) else OfflineTtsVitsModelConfig(),
+                matcha = if (isMatcha) OfflineTtsMatchaModelConfig(
+                    acousticModel = model.absolutePath,
+                    vocoder = requireNotNull(vocoder).absolutePath,
+                    lexicon = lexicon.absolutePath,
+                    tokens = tokens.absolutePath,
+                    dataDir = dataDir.absolutePath,
+                ) else OfflineTtsMatchaModelConfig(),
                 numThreads = this@PiperTts.numThreads,
                 debug = false,
                 provider = "cpu",
@@ -139,7 +166,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
             OfflineTts(null, config)
         }
         tts = nativeTts
-        guard = NativeResourceGuard("Piper") {
+        guard = NativeResourceGuard(name) {
             try {
                 nativeTts.release()
             } finally {
@@ -156,10 +183,10 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
 
     private fun synthInternal(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio {
         checkActive()
-        if (text.isBlank()) return TtsAudio(FloatArray(0), 22050)
+        if (text.isBlank()) return TtsAudio(FloatArray(0), definition.sampleRate)
         TtsTextPolicy.validate(text)
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
-        if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 22050)
+        if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), definition.sampleRate)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val sid = 0
         val inferenceStartedAtMs = android.os.SystemClock.elapsedRealtime()
@@ -169,9 +196,9 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
             throw cancelled
         } catch (failure: Exception) {
             logSynthesisFailure(
-                message = "Piper 本地神经 TTS 推理失败",
+                message = "${name} 本地神经 TTS 推理失败",
                 failure = failure,
-                stage = "Sherpa-ONNX VITS 原生推理",
+                stage = if (definition.vocoderFileName != null) "Sherpa-ONNX Matcha 原生推理" else "Sherpa-ONNX VITS 原生推理",
                 textLength = normalizedText.length,
                 speed = safeSpeed,
                 elapsedMs = android.os.SystemClock.elapsedRealtime() - inferenceStartedAtMs,
@@ -183,10 +210,10 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
         val rawSamples = audio.samples.size
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
             val failure = IllegalStateException(
-                "Piper 模型返回无效音频：采样率=${sampleRate} Hz，样本数=$rawSamples；请检查模型文件和本次推理结果"
+                "${name} 模型返回无效音频：采样率=${sampleRate} Hz，样本数=$rawSamples；请检查模型文件和本次推理结果"
             )
             logSynthesisFailure(
-                message = "Piper 推理完成但返回无效 PCM",
+                message = "${name} 推理完成但返回无效 PCM",
                 failure = failure,
                 stage = "原生推理输出格式校验",
                 textLength = normalizedText.length,
@@ -207,7 +234,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
             throw cancelled
         } catch (failure: Exception) {
             logSynthesisFailure(
-                message = "Piper PCM 后处理失败",
+                message = "${name} PCM 后处理失败",
                 failure = failure,
                 stage = "PCM 数值清理/首尾静音裁剪",
                 textLength = normalizedText.length,
@@ -220,9 +247,9 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
         }
         checkActive()
         if (trimmed.isEmpty()) {
-            val failure = IllegalStateException("Piper PCM 后处理后没有剩余可播放样本")
+            val failure = IllegalStateException("${name} PCM 后处理后没有剩余可播放样本")
             logSynthesisFailure(
-                message = "Piper 合成得到音频，但清理和静音裁剪后结果为空",
+                message = "${name} 合成得到音频，但清理和静音裁剪后结果为空",
                 failure = failure,
                 stage = "PCM 后处理结果校验",
                 textLength = normalizedText.length,
@@ -249,10 +276,10 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
     ) {
         val tokens = File(dir, "tokens.txt")
         val lexicon = File(dir, "lexicon.txt")
-        val ruleFiles = PiperModelFilePolicy.CHINESE_RULE_FST_NAMES.map { File(dir, it) }
+        val ruleFiles = definition.ruleFstNames.map { File(dir, it) }
         val espeakDir = File(dir, "espeak-ng-data")
         val details = mapOf(
-            "配音服务商" to "Piper / Sherpa-ONNX",
+            "配音服务商" to "${name} / Sherpa-ONNX",
             "失败阶段" to stage,
             "模型 ID" to modelId,
             "模型语言" to definition.langLabel,
@@ -269,6 +296,8 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
             },
             "多语言语音数据目录存在" to espeakDir.isDirectory.toString(),
             "多语言语音数据目录项目数" to espeakDir.listFiles()?.size?.toString().orEmpty().ifBlank { "未知" },
+            "声码器文件名" to (definition.vocoderFileName ?: "无"),
+            "声码器文件完整性" to (vocoder?.let { it.isFile && it.length() >= PiperModelFilePolicy.MIN_ONNX_BYTES } ?: true).toString(),
             "ONNX 推理线程数" to numThreads.toString(),
             "推理设备" to "CPU",
             "当前语速" to speed.toString(),
@@ -282,7 +311,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
             "异常摘要" to (failure.message ?: "无异常消息").take(360),
         )
         runCatching {
-            AppLogStore.error(appCtx, "PiperTTS", message, failure, diagnosticContext = details)
+            AppLogStore.error(appCtx, "${name}TTS", message, failure, diagnosticContext = details)
         }
     }
 
@@ -300,6 +329,18 @@ data class PiperModelDef(
     val supportsChineseOutput: Boolean = false,
     /** SHA-256 published by the upstream GitHub release API; null only when upstream omits it. */
     val archiveSha256: String? = null,
+    val engineName: String = "Piper",
+    val modelFileName: String? = null,
+    val sampleRate: Int = 22050,
+    val ruleFstNames: List<String> = PiperModelFilePolicy.CHINESE_RULE_FST_NAMES,
+    val requiresEspeakDataForChinese: Boolean = false,
+    val vocoderFileName: String? = null,
+    val vocoderUrl: String? = null,
+    val vocoderSha256: String? = null,
+    val vocoderSizeBytes: Long = 0L,
+    val archiveSizeBytes: Long? = null,
+    val archiveSizeMB: Int = sizeMB,
+    val extractedSizeMB: Int = sizeMB * 2,
 )
 
 enum class PiperModelDownloadStatus {
@@ -352,6 +393,41 @@ object PiperModels {
             supportsChineseOutput = true,
             archiveSha256 = "9396a3dffbb95b037acaa18094500f58d0db9a7c4f2689554e2539717cf0db65",
         ),
+        PiperModelDef(
+            id = "melo_zh_en",
+            langLabel = "中文 / 英语",
+            voiceLabel = "MeloTTS",
+            archive = "vits-melo-tts-zh_en.tar.bz2",
+            sizeMB = 167,
+            supportsChineseOutput = true,
+            engineName = "MeloTTS",
+            modelFileName = "model.onnx",
+            sampleRate = 44_100,
+            archiveSizeBytes = 167_006_755L,
+            archiveSizeMB = 167,
+            extractedSizeMB = 347,
+        ),
+        PiperModelDef(
+            id = "matcha_zh_en",
+            langLabel = "中文 / 英语",
+            voiceLabel = "Matcha TTS",
+            archive = "matcha-icefall-zh-en.tar.bz2",
+            sizeMB = 133,
+            supportsChineseOutput = true,
+            archiveSha256 = "271b804af570400d3bcdcb53bf6e53cc9f75180ee763b9f13eb5eaf2b0d086ef",
+            engineName = "Matcha TTS",
+            modelFileName = "model-steps-3.onnx",
+            sampleRate = 16_000,
+            ruleFstNames = listOf("phone-zh.fst", "date-zh.fst", "number-zh.fst"),
+            requiresEspeakDataForChinese = true,
+            vocoderFileName = "vocos-16khz-univ.onnx",
+            vocoderUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-16khz-univ.onnx",
+            vocoderSha256 = "b599142a1fb8ff03de3e84ac35ff537c619e56f4267a6fe894851a42844acf9e",
+            vocoderSizeBytes = 53_882_848L,
+            archiveSizeBytes = 79_033_838L,
+            archiveSizeMB = 79,
+            extractedSizeMB = 222,
+        ),
     )
 
     fun byId(id: String): PiperModelDef? = catalog.firstOrNull { it.id == id }
@@ -378,6 +454,10 @@ object PiperModels {
             rootFiles = files,
             hasEspeakData = File(dir, "espeak-ng-data").isDirectory,
             requiresChineseAssets = definition.supportsChineseOutput,
+            modelFileName = definition.modelFileName,
+            vocoderFileName = definition.vocoderFileName,
+            requiresEspeakDataForChinese = definition.requiresEspeakDataForChinese,
+            ruleFstNames = definition.ruleFstNames,
         )
     }
 
@@ -773,15 +853,17 @@ object PiperModels {
         }
 
         onStage("正在检查模型下载和安装所需空间…")
-        val estimatedArchiveBytes = def.sizeMB.toLong() * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB
+        val estimatedArchiveBytes = def.archiveSizeBytes
+            ?: def.archiveSizeMB.toLong() * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB
         val archiveUrls = PiperDownloadSourcePolicy.urls("$BASE/${def.archive}")
         val alreadyDownloadedBytes = maxOf(
             archive.length(),
             archiveUrls.maxOfOrNull { url -> ResumableModelArchiveDownloader.partFileFor(archive, url).length() } ?: 0L,
         ).coerceAtMost(estimatedArchiveBytes)
         val requiredStorageBytes = io.translatetube.local.data.ModelStoragePreflightPolicy.requiredBytes(
-            archiveBytes = (estimatedArchiveBytes - alreadyDownloadedBytes).coerceAtLeast(0L),
-            extractedBytes = def.sizeMB.toLong() * 2L * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB,
+            archiveBytes = (estimatedArchiveBytes - alreadyDownloadedBytes).coerceAtLeast(0L) +
+                def.vocoderSizeBytes,
+            extractedBytes = def.extractedSizeMB.toLong() * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB,
         )
         val usableSpace = io.translatetube.local.data.ModelStoragePreflightPolicy.minimumKnownUsableSpace(
             ctx.cacheDir.usableSpace,
@@ -834,21 +916,35 @@ object PiperModels {
             downloadArchiveWithFallback(
                 archive = archive,
                 definition = def,
-                onProgress = onProgress,
+                onProgress = { progress ->
+                    onProgress(if (def.vocoderUrl != null) (progress * 65 / 100) else progress)
+                },
                 onStage = onStage,
                 checkActive = checkActive,
             )
 
             checkActive()
             if (staging.exists() && !staging.deleteRecursively()) {
-                throw java.io.IOException("无法清理上次未完成的 Piper 解压目录")
+                throw java.io.IOException("无法清理上次未完成的本地语音模型解压目录")
             }
-            if (!staging.mkdirs()) throw java.io.IOException("无法创建 Piper 临时解压目录")
+            if (!staging.mkdirs()) throw java.io.IOException("无法创建本地语音模型临时目录")
             onProgress(70)
-            onStage("正在解压并校验 Piper 模型…")
+            onStage("正在解压并校验 ${def.engineName} 模型…")
 
             extractArchive(archive, staging, checkActive) { extractedBytes ->
-                onStage("正在解压并安装模型（已处理 ${extractedBytes / (1024L * 1024L)} MB）…")
+                onStage("正在解压并安装 ${def.engineName}（已处理 ${extractedBytes / (1024L * 1024L)} MB）…")
+            }
+            if (def.vocoderUrl != null) {
+                val vocoderName = def.vocoderFileName
+                    ?: throw java.io.IOException("Matcha 模型未配置声码器文件名")
+                downloadSupplementalVocoder(
+                    ctx = ctx,
+                    definition = def,
+                    destination = File(staging, vocoderName),
+                    onProgress = { progress -> onProgress(70 + progress * 25 / 100) },
+                    onStage = onStage,
+                    checkActive = checkActive,
+                )
             }
             if (!complete(staging, def)) {
                 throw java.io.IOException("Piper 模型包不完整：ONNX（至少 1 MB）、tokens.txt 及所需语言资源均须完整")
@@ -871,7 +967,7 @@ object PiperModels {
             }
             if (backup.exists()) runCatching { backup.deleteRecursively() }
             onProgress(100)
-            onStage("Piper 模型已就绪")
+            onStage("${def.engineName} 模型已就绪")
             refreshInstalled(ctx)
             archive.delete()
             ResumableModelArchiveDownloader.cleanupPartialFiles(archive)
@@ -898,7 +994,7 @@ object PiperModels {
 
         if (ResumableModelArchiveDownloader.isReusableArchive(
                 archive, MAX_ARCHIVE_BYTES, definition.archiveSha256, checkActive,
-            )
+            ) && (definition.archiveSizeBytes == null || archive.length() == definition.archiveSizeBytes)
         ) {
             onProgress(100)
             onStage("模型包已下载并校验通过，继续解压安装…")
@@ -917,8 +1013,8 @@ object PiperModels {
             val priorBytes = partFile.length()
             val attemptLabel = orderedSources.indexOf(sourceIndex to url) + 1
             onProgress(
-                if (priorBytes > 0L && definition.sizeMB > 0) {
-                    (priorBytes * 100L / (definition.sizeMB.toLong() * 1024L * 1024L)).toInt().coerceIn(0, 99)
+                if (priorBytes > 0L && definition.archiveSizeMB > 0) {
+                    (priorBytes * 100L / (definition.archiveSizeMB.toLong() * 1024L * 1024L)).toInt().coerceIn(0, 99)
                 } else 0
             )
             onStage(
@@ -945,7 +1041,7 @@ object PiperModels {
                             (downloaded.toDouble() * 100.0 / total.toDouble()).toInt().coerceIn(0, 99)
                         } else {
                             (downloaded.toDouble() * 100.0 /
-                                (definition.sizeMB.toLong() * 1024.0 * 1024.0)).toInt().coerceIn(0, 99)
+                                (definition.archiveSizeMB.toLong() * 1024.0 * 1024.0)).toInt().coerceIn(0, 99)
                         }
                         onProgress(percent)
                     },
@@ -953,7 +1049,14 @@ object PiperModels {
                 if (definition.archiveSha256 != null &&
                     !result.sha256.equals(definition.archiveSha256, ignoreCase = true)
                 ) {
-                    throw java.io.IOException("Piper 模型压缩包 SHA-256 校验失败")
+                    throw java.io.IOException("${definition.engineName} 模型压缩包 SHA-256 校验失败")
+                }
+                if (definition.archiveSizeBytes != null &&
+                    result.downloadedBytes != definition.archiveSizeBytes
+                ) {
+                    throw java.io.IOException(
+                        "${definition.engineName} 模型包大小校验失败：预期 ${definition.archiveSizeBytes} 字节，实际 ${result.downloadedBytes} 字节"
+                    )
                 }
                 AtomicFileInstaller.install(partFile, archive)
                 ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
@@ -977,6 +1080,98 @@ object PiperModels {
             "Piper 模型全部下载源均失败：" + (lastError?.message ?: "网络异常"),
             lastError,
         )
+    }
+
+    private suspend fun downloadSupplementalVocoder(
+        ctx: Context,
+        definition: PiperModelDef,
+        destination: File,
+        onProgress: (Int) -> Unit,
+        onStage: (String) -> Unit,
+        checkActive: () -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        val url = definition.vocoderUrl ?: return@withContext
+        val expectedSha256 = definition.vocoderSha256
+            ?: throw java.io.IOException("Matcha 声码器缺少 SHA-256 校验值")
+        val expectedBytes = definition.vocoderSizeBytes
+        val maxBytes = (expectedBytes.takeIf { it > 0L } ?: 80L * 1024L * 1024L) + 1024L * 1024L
+        val parent = destination.parentFile ?: throw java.io.IOException("Matcha 声码器目录无效")
+        if (!parent.isDirectory && !parent.mkdirs()) throw java.io.IOException("无法创建 Matcha 声码器目录")
+        val archive = File(ctx.cacheDir, "piper-vocoder-${definition.id}.onnx.tmp")
+        val urls = PiperDownloadSourcePolicy.urls(url)
+        if (urls.isEmpty()) throw java.io.IOException("Matcha 声码器下载地址为空")
+
+        val cachedValid = ResumableModelArchiveDownloader.isReusableArchive(
+            archive = archive,
+            maxBytes = maxBytes,
+            expectedSha256 = expectedSha256,
+            checkActive = checkActive,
+        ) && (expectedBytes <= 0L || archive.length() == expectedBytes)
+
+        if (!cachedValid) {
+            if (archive.exists() && !archive.delete()) throw java.io.IOException("无法清理校验失败的 Matcha 声码器缓存")
+            var lastFailure: Exception? = null
+            val orderedSources = ResumableModelArchiveDownloader.orderSourcesByResumeProgress(archive, urls)
+            for ((sourceIndex, sourceUrl) in orderedSources) {
+                checkActive()
+                val partFile = ResumableModelArchiveDownloader.partFileFor(archive, sourceUrl)
+                onStage(if (sourceIndex == 0) "正在下载 Matcha 声码器…" else "正在切换 Matcha 声码器下载源…")
+                try {
+                    val result = ResumableModelArchiveDownloader.download(
+                        client = http,
+                        url = sourceUrl,
+                        partFile = partFile,
+                        maxBytes = maxBytes,
+                        expectedSha256 = expectedSha256,
+                        checkActive = checkActive,
+                        shouldFallbackToMirror = { received, elapsed ->
+                            HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(sourceIndex, received, elapsed)
+                        },
+                        onProgress = { downloaded, total ->
+                            val percent = if (total > 0L) {
+                                (downloaded.toDouble() * 100.0 / total.toDouble()).toInt().coerceIn(0, 99)
+                            } else if (expectedBytes > 0L) {
+                                (downloaded.toDouble() * 100.0 / expectedBytes.toDouble()).toInt().coerceIn(0, 99)
+                            } else 0
+                            onProgress(percent)
+                        },
+                    )
+                    if (expectedBytes > 0L && result.downloadedBytes != expectedBytes) {
+                        throw java.io.IOException("Matcha 声码器大小校验失败：预期 ${expectedBytes} 字节，实际 ${result.downloadedBytes} 字节")
+                    }
+                    AtomicFileInstaller.install(partFile, archive)
+                    ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
+                    ResumableModelArchiveDownloader.cleanupPartialFiles(archive)
+                    lastFailure = null
+                    break
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    lastFailure = failure
+                    android.util.Log.w("PiperModels", "Matcha 声码器下载源失败：" + (failure.message ?: failure.javaClass.simpleName), failure)
+                }
+            }
+            if (lastFailure != null) {
+                throw java.io.IOException("Matcha 声码器下载失败：" + (lastFailure.message ?: "网络异常"), lastFailure)
+            }
+        } else {
+            onProgress(100)
+        }
+
+        checkActive()
+        if (!ResumableModelArchiveDownloader.isReusableArchive(
+                archive = archive,
+                maxBytes = maxBytes,
+                expectedSha256 = expectedSha256,
+                checkActive = checkActive,
+            ) || (expectedBytes > 0L && archive.length() != expectedBytes)
+        ) throw java.io.IOException("Matcha 声码器最终完整性校验失败")
+        AtomicFileInstaller.install(archive, destination)
+        if (destination.length() < PiperModelFilePolicy.MIN_ONNX_BYTES) {
+            throw java.io.IOException("Matcha 声码器安装后文件不完整")
+        }
+        onProgress(100)
+        onStage("Matcha 声码器校验通过")
     }
 
     private fun extractArchive(
