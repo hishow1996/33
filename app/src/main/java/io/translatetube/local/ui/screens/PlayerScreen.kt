@@ -2712,7 +2712,7 @@ private fun VideoParsingPage(
                         bottomEnd = 9.dp,
                     ),
                 )
-                .padding(horizontal = 14.dp, vertical = if (compactLayout) 6.dp else 8.dp),
+                .padding(horizontal = 14.dp, vertical = if (compactLayout) 8.dp else 10.dp),
         ) {
             Column {
                 Row(
@@ -2722,7 +2722,7 @@ private fun VideoParsingPage(
                 ) {
                     Box(
                         Modifier
-                            .size(52.dp)
+                            .size(58.dp)
                             .clip(RoundedCornerShape(21.dp))
                             .background(
                                 Brush.linearGradient(
@@ -2733,7 +2733,7 @@ private fun VideoParsingPage(
                     ) {
                         Box(
                             Modifier
-                                .size(width = 42.dp, height = 37.dp)
+                                .size(width = 46.dp, height = 40.dp)
                                 .graphicsLayer { rotationZ = -7f }
                                 .shadow(5.dp, RoundedCornerShape(13.dp))
                                 .clip(RoundedCornerShape(13.dp))
@@ -2743,7 +2743,7 @@ private fun VideoParsingPage(
                         ) {
                             Box(
                                 Modifier
-                                    .size(width = 28.dp, height = 21.dp)
+                                    .size(width = 30.dp, height = 22.dp)
                                     .clip(RoundedCornerShape(7.dp))
                                     .background(
                                         if (source == VideoSourceKind.YOUTUBE) Color(0xFFFF4A55)
@@ -2755,7 +2755,7 @@ private fun VideoParsingPage(
                                     Icons.Filled.PlayArrow,
                                     contentDescription = null,
                                     tint = Color.White,
-                                    modifier = Modifier.size(20.dp),
+                                    modifier = Modifier.size(22.dp),
                                 )
                             }
                         }
@@ -2772,7 +2772,7 @@ private fun VideoParsingPage(
                                 .shadow(2.dp, RoundedCornerShape(7.dp))
                                 .clip(RoundedCornerShape(7.dp))
                                 .background(Color.White)
-                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
                         )
                         Text(
                             "A↔文",
@@ -2787,7 +2787,7 @@ private fun VideoParsingPage(
                                 .shadow(2.dp, RoundedCornerShape(6.dp))
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(Color.White)
-                                .padding(horizontal = 4.dp, vertical = 3.dp),
+                                .padding(horizontal = 4.dp, vertical = 4.dp),
                         )
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -2826,7 +2826,7 @@ private fun VideoParsingPage(
                         modifier = Modifier
                             .padding(start = 1.dp)
                             .widthIn(max = 68.dp)
-                            .offset(y = (-7).dp),
+                            
                     ) {
                         val stateColor = when {
                             isError || isCancelled -> Color(0xFFCB3E4D)
@@ -2844,7 +2844,7 @@ private fun VideoParsingPage(
                             Modifier
                                 .clip(CircleShape)
                                 .background(stateBg)
-                                .padding(horizontal = 7.dp, vertical = 5.dp),
+                                .padding(horizontal = 7.dp, vertical = 6.dp),
                             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
@@ -2888,7 +2888,7 @@ private fun VideoParsingPage(
                         detail,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 3.dp),
+                            .padding(top = 4.dp),
                         color = Color(0xFF71819B),
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontSize = if (isTranslationSummary && screenConfig.screenWidthDp < 360) 9.sp else 10.sp,
@@ -2900,7 +2900,7 @@ private fun VideoParsingPage(
                         overflow = if (isTranslationSummary) TextOverflow.Clip else TextOverflow.Ellipsis,
                     )
                 }
-                Spacer(Modifier.height(if (compactLayout) 5.dp else 6.dp))
+                Spacer(Modifier.height(if (compactLayout) 6.dp else 8.dp))
                 Row(
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -2918,7 +2918,7 @@ private fun VideoParsingPage(
                     )
                 }
                 Row(
-                    Modifier.fillMaxWidth().padding(top = if (compactLayout) 5.dp else 6.dp),
+                    Modifier.fillMaxWidth().padding(top = if (compactLayout) 7.dp else 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 ) {
@@ -2959,14 +2959,14 @@ private fun VideoParsingPage(
 
                 if (busy) {
                     Row(
-                        Modifier.fillMaxWidth().padding(top = 5.dp),
+                        Modifier.fillMaxWidth().padding(top = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(9.dp),
                     ) {
                         val pauseLabel = if (state.isProcessingPaused) "继续处理" else "暂停处理"
                         Box(
                             Modifier
                                 .weight(1f)
-                                .height(34.dp)
+                                .height(36.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (state.isProcessingPaused) Brush.linearGradient(listOf(Color(0xFF3268F5), Color(0xFF517EF8))) else Brush.linearGradient(listOf(Color.White, Color(0xFFF9FBFF))))
                                 .border(1.dp, Color(0xFFCBDCFF), RoundedCornerShape(14.dp))
@@ -2993,7 +2993,7 @@ private fun VideoParsingPage(
                         Box(
                             Modifier
                                 .weight(1f)
-                                .height(34.dp)
+                                .height(36.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(Brush.linearGradient(listOf(Color.White, Color(0xFFFFF5F6))))
                                 .border(1.dp, Color(0xFFFFD6DB), RoundedCornerShape(14.dp))
