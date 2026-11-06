@@ -23,29 +23,29 @@ internal object KokoroMixedLanguageTextPolicy {
     private const val CJK =
         "\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF"
 
-    // These initialisms are conventionally spoken as individual English letter names.
+    // These initialisms are expanded to unambiguous English letter-name words.
     // Keep this list deliberately explicit: words such as RAM, ROM, FAQ and SQL have
     // competing word/letter readings and must not be guessed or expanded automatically.
     private val initialismSpellings = mapOf(
-        "AI" to "A I",
-        "API" to "A P I",
-        "CPU" to "C P U",
-        "GPU" to "G P U",
-        "URL" to "U R L",
-        "GPT" to "G P T",
-        "HTML" to "H T M L",
-        "HTTP" to "H T T P",
-        "HTTPS" to "H T T P S",
-        "USB" to "U S B",
-        "PDF" to "P D F",
-        "UI" to "U I",
-        "UX" to "U X",
-        "SDK" to "S D K",
-        "VPN" to "V P N",
-        "DNS" to "D N S",
-        "LLM" to "L L M",
-        "XML" to "X M L",
-        "SSH" to "S S H",
+        "AI" to "ay eye",
+        "API" to "ay pee eye",
+        "CPU" to "see pee you",
+        "GPU" to "gee pee you",
+        "URL" to "you are ell",
+        "GPT" to "gee pee tee",
+        "HTML" to "aitch tee em ell",
+        "HTTP" to "aitch tee tee pee",
+        "HTTPS" to "aitch tee tee pee ess",
+        "USB" to "you ess bee",
+        "PDF" to "pee dee eff",
+        "UI" to "you eye",
+        "UX" to "you ex",
+        "SDK" to "ess dee kay",
+        "VPN" to "vee pee en",
+        "DNS" to "dee en ess",
+        "LLM" to "ell ell em",
+        "XML" to "ex em ell",
+        "SSH" to "ess ess aitch",
     )
 
     private val initialismPattern = Regex(
@@ -53,11 +53,11 @@ internal object KokoroMixedLanguageTextPolicy {
         RegexOption.IGNORE_CASE,
     )
 
-    // These branded names are commonly written as one token but spoken with letter names.
+    // These branded names are expanded into familiar English word units for reliable pronunciation.
     // They are changed only in the private speech payload; visible subtitles remain untouched.
     private val properNameAliases = listOf(
-        Regex("""(?<![A-Za-z0-9])OpenAI(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Open A I",
-        Regex("""(?<![A-Za-z0-9])ChatGPT(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Chat G P T",
+        Regex("""(?<![A-Za-z0-9])OpenAI(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Open ay eye",
+        Regex("""(?<![A-Za-z0-9])ChatGPT(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Chat gee pee tee",
         Regex("""(?<![A-Za-z0-9])YouTube(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "You Tube",
         Regex("""(?<![A-Za-z0-9])GitHub(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Git Hub",
     )
