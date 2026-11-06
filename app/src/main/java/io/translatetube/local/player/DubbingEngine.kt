@@ -347,13 +347,28 @@ class DubbingEngine(
     @Volatile private var activeTrackFinalChunkSampleCount = -1
 
     // ---- Chunk 层（VideoLingo 式相邻句合并 + WSOLA 时长对齐，实时播放适配）----
-    /** 块首行 → 合并后的合成文本（相邻两句一口气念，衔接自然）。 */
-    private val chunkTextByFirst = HashMap<Int, String>()
+    /**
+     * 当前块表（不可变，整体替换）：开始配音和改语速时重算，播放线程/合成线程读到的
+     * 永远是自洽的一份。下面几个属性只是它的读取视图。
+     */
+    @Volatile private var chunkTable = DubbingChunkPolicy.ChunkTable.EMPTY
     @Volatile private var nonSpokenAnnotationIndexes: Set<Int> = emptySet()
+    /** 块首行 → 合并后的合成文本（相邻两句一口气念，衔接自然）。 */
+    private val chunkTextByFirst: Map<Int, String> get() = chunkTable.textByFirst
     /** 块次行 → 块首行（合成与 PCM 取用都重定向到首行）。 */
-    private val chunkRedirect = HashMap<Int, Int>()
+    private val chunkRedirect: Map<Int, Int> get() = chunkTable.redirect
     /** 块首行 → 借用间隙后的窗口截止毫秒（WSOLA 对齐目标）。 */
-    private val chunkWindowEndByFirst = HashMap<Int, Long>()
+    private val chunkWindowEndByFirst: Map<Int, Long> get() = chunkTable.windowEndByFirst
+
+    /**
+     * 按当前语速和实测语速系数重算块表。语速一变，同一句话"读多久"就变了，
+     * 旧表里的合并判断（哪两句并成一块）不再成立，必须跟着重算。
+     */
+    private fun rebuildChunkTable(preparedLines: List<SubLine>, nonSpokenIndexes: Set<Int>) {
+        chunkTable = DubbingChunkPolicy.buildTable(preparedLines, speechPaceScale, speed) { index, _ ->
+            index !in nonSpokenIndexes
+        }
+    }
 
     /** PCM 取用统一入口：块次行重定向到首行（已对齐的整块 PCM）。 */
     private fun resolveChunkIndex(idx: Int): Int = chunkRedirect[idx] ?: idx
@@ -522,21 +537,10 @@ class DubbingEngine(
                 this.timeline = preparedTimeline
                 // VideoLingo 式分块：预算放不下的相邻句合并成块一口气合成（衔接自然），
                 // 块 PCM 由 WSOLA 变速不变调对齐到窗口（每条都配完、不暂停视频）。
-                chunkTextByFirst.clear()
-                chunkRedirect.clear()
-                chunkWindowEndByFirst.clear()
                 paceEngineKey = tts.cacheKey
                 speechPaceScale = DubbingSpeechPaceStore.load(appContext, tts.cacheKey)
                 paceUpdateCount.set(0)
-                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines, speechPaceScale, speed) { index, _ ->
-                    index !in nonSpokenIndexes
-                }) {
-                    chunkTextByFirst[chunk.firstIndex] = chunk.text
-                    chunkWindowEndByFirst[chunk.firstIndex] = chunk.windowEndMs
-                    for (secondary in chunk.lineIndices.drop(1)) {
-                        chunkRedirect[secondary] = chunk.firstIndex
-                    }
-                }
+                rebuildChunkTable(preparedLines, nonSpokenIndexes)
                 val nextSpeechStarts = LongArray(preparedLines.size) { Long.MAX_VALUE }
                 var nextSpeechStart = Long.MAX_VALUE
                 for (lineIndex in preparedLines.indices.reversed()) {
@@ -1987,26 +1991,23 @@ class DubbingEngine(
         readinessProgress.markPrepared(idx, hasAudio, lines.size, ::publishReadinessProgress)
         if (hasAudio) silentCueReasonsByIndex.remove(idx)
         // 块首行完成时同步补标其次行（次行播放重定向到首行 PCM，就绪状态跟随首行）。
-        if (chunkRedirect.containsValue(idx)) {
-            for ((secondary, firstIndex) in chunkRedirect) {
-                if (firstIndex == idx && secondary != idx) {
-                    readinessProgress.markPrepared(secondary, hasAudio, lines.size, ::publishReadinessProgress)
-                    if (hasAudio) {
-                        silentCueReasonsByIndex.remove(secondary)
-                    } else {
-                        val firstReason = silentCueReasonsByIndex[idx]
-                        if (!firstReason.isNullOrBlank()) {
-                            silentCueReasonsByIndex[secondary] =
-                                "所属合并配音块首句第 ${idx + 1} 行失败：$firstReason"
-                        }
-                    }
+        for (secondary in chunkTable.secondariesOf(idx)) {
+            if (secondary == idx) continue
+            readinessProgress.markPrepared(secondary, hasAudio, lines.size, ::publishReadinessProgress)
+            if (hasAudio) {
+                silentCueReasonsByIndex.remove(secondary)
+            } else {
+                val firstReason = silentCueReasonsByIndex[idx]
+                if (!firstReason.isNullOrBlank()) {
+                    silentCueReasonsByIndex[secondary] =
+                        "所属合并配音块首句第 ${idx + 1} 行失败：$firstReason"
                 }
             }
         }
     }
 
     private fun markCuePending(idx: Int) {
-        val affected = DubbingChunkReadinessPolicy.affectedIndexes(idx, chunkRedirect)
+        val affected = chunkTable.membersOf(idx)
         readinessProgress.markPendingGroup(affected, lines.size, ::publishReadinessProgress)
         affected.forEach { silentCueReasonsByIndex.remove(it) }
     }
@@ -4063,11 +4064,12 @@ class DubbingEngine(
     fun spokenCaptionFor(lineIdx: Int): String? {
         if (released || usesImmediateTimelinePlayback) return null
         val first = resolveChunkIndex(lineIdx)
-        val merged = chunkTextByFirst[first]?.takeIf { it.isNotBlank() } ?: return null
-        val isMergedChunk = chunkRedirect.containsValue(first)
-        if (!isMergedChunk || !isPrepared(first) || isSilent(first)) return null
+        val table = chunkTable
+        val merged = table.textByFirst[first]?.takeIf { it.isNotBlank() } ?: return null
+        // 这个方法随播放器刷新频繁调用：用块表的反向表一次查出，不扫全表。
+        val partners = table.secondariesOf(first)
+        if (partners.isEmpty() || !isPrepared(first) || isSilent(first)) return null
         // 任一合并行缺少有效中文译文时，不覆盖字幕原有显示。
-        val partners = chunkRedirect.filterValues { it == first }.keys
         if (lines.getOrNull(first)?.zh.isNullOrBlank() || partners.any { lines.getOrNull(it)?.zh.isNullOrBlank() }) return null
         return merged
     }
@@ -4124,6 +4126,9 @@ class DubbingEngine(
             oldSynthesis?.join()
             if (released || generation != cacheInitGeneration.get()) return@launch
 
+            // 语速/配置变了：合并相邻字幕的判断要按新语速和最新实测语速重算，
+            // 必须在重置就绪状态之前换表，这样次行跟随首行的标记用的是新表。
+            rebuildChunkTable(lines, nonSpokenAnnotationIndexes)
             // Clear once more after joining: a validator already between two instructions may
             // have published progress immediately before observing cancellation.
             resetReadinessForCurrentConfiguration()

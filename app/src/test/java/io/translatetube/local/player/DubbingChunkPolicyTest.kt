@@ -142,4 +142,66 @@ class DubbingChunkPolicyTest {
         assertTrue(DubbingChunkPolicy.estimateSpeechMs(eightChars, 1_000.0) <= base * 2 + 1)
     }
 
+    // ---- 块表（ChunkTable）：预先建好反向表，改语速后整体重算 ----
+
+    private fun shortPair() = listOf(
+        cue(0, 0L, 1_000L, 1, "你好啊我的朋友"),
+        cue(1, 1_100L, 3_000L, 1, "今天天气真不错"),
+    )
+
+    @Test
+    fun tableExposesMergedBlockMembershipWithoutScanning() {
+        val table = DubbingChunkPolicy.buildTable(shortPair())
+
+        assertEquals(1, table.redirect.size)
+        assertEquals(0, table.firstOf(1))
+        assertEquals(0, table.firstOf(0))
+        assertTrue(table.isMergedFirst(0))
+        assertEquals(listOf(1), table.secondariesOf(0))
+        assertEquals(listOf(0, 1), table.membersOf(1))
+        assertEquals(listOf(0, 1), table.membersOf(0))
+        assertEquals(listOf(3_000L), listOf(table.windowEndByFirst[0]))
+        assertEquals(setOf(0), table.textByFirst.keys)
+    }
+
+    @Test
+    fun singleLineBlocksHaveNoSecondariesAndNegativeIndexHasNoMembers() {
+        val lines = listOf(
+            cue(0, 0L, 5_000L, 1, "你好"),
+            cue(1, 6_000L, 11_000L, 1, "再见"),
+        )
+        val table = DubbingChunkPolicy.buildTable(lines)
+
+        assertTrue(table.redirect.isEmpty())
+        assertTrue(!table.isMergedFirst(0))
+        assertEquals(listOf(1), table.membersOf(1))
+        assertEquals(emptyList<Int>(), table.membersOf(-1))
+        assertEquals(setOf(0, 1), table.textByFirst.keys)
+    }
+
+    @Test
+    fun fasterSpeechRateRebuildsTableWithoutTheMerge() {
+        val normal = DubbingChunkPolicy.buildTable(shortPair(), speechRate = 1f)
+        val fast = DubbingChunkPolicy.buildTable(shortPair(), speechRate = 2f)
+
+        assertTrue(normal.isMergedFirst(0))
+        assertTrue(!fast.isMergedFirst(0))
+        assertEquals(setOf(0, 1), fast.textByFirst.keys)
+    }
+
+    @Test
+    fun tableMatchesBuildChunksAndKeepsNonSpokenRowsAsEmptyBlocks() {
+        val lines = listOf(
+            cue(0, 0L, 1_000L, 1, "你好啊我的朋友"),
+            cue(1, 1_100L, 3_000L, 1, "今天天气真不错"),
+            cue(2, 4_000L, 6_000L, 1, "(音乐)"),
+        )
+        val skip: (Int, SubLine) -> Boolean = { index, _ -> index != 2 }
+        val chunks = DubbingChunkPolicy.buildChunks(lines, shouldSpeakCue = skip)
+        val table = DubbingChunkPolicy.buildTable(lines, shouldSpeakCue = skip)
+
+        assertEquals(chunks.map { it.firstIndex }.toSet(), table.textByFirst.keys)
+        assertEquals("", table.textByFirst[2])
+        assertEquals(chunks.first { it.firstIndex == 0 }.text, table.textByFirst[0])
+    }
 }

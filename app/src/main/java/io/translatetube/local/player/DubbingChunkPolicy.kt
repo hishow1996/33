@@ -131,6 +131,62 @@ internal object DubbingChunkPolicy {
         return chunks
     }
 
+    /**
+     * 整份字幕的块表（不可变）：引擎持有它的引用，重算时整体替换，读取方永远看到一份自洽的表，
+     * 不会读到改了一半的数据。同时预先建好"块首行 → 次行"的反向表，
+     * 判断"这一行是不是合并块"和"块里有哪几行"都是一次查表，不用每次扫全表。
+     */
+    internal class ChunkTable(
+        /** 块首行 → 合成文本（不可播/不朗读的行是空串）。 */
+        val textByFirst: Map<Int, String>,
+        /** 块首行 → 窗口截止毫秒。 */
+        val windowEndByFirst: Map<Int, Long>,
+        /** 块次行 → 块首行。 */
+        val redirect: Map<Int, Int>,
+        /** 块首行 → 它的次行们（只有合并块才有）。 */
+        val secondariesByFirst: Map<Int, List<Int>>,
+    ) {
+        fun firstOf(index: Int): Int = redirect[index] ?: index
+
+        fun isMergedFirst(firstIndex: Int): Boolean = secondariesByFirst.containsKey(firstIndex)
+
+        fun secondariesOf(firstIndex: Int): List<Int> = secondariesByFirst[firstIndex].orEmpty()
+
+        /** 这一行所在整块的全部行（块首行在前）；行号为负返回空。 */
+        fun membersOf(index: Int): List<Int> {
+            if (index < 0) return emptyList()
+            val first = firstOf(index)
+            return listOf(first) + secondariesOf(first)
+        }
+
+        companion object {
+            val EMPTY = ChunkTable(emptyMap(), emptyMap(), emptyMap(), emptyMap())
+        }
+    }
+
+    /** 按 [buildChunks] 的结果生成块表；参数含义与 [buildChunks] 相同。 */
+    fun buildTable(
+        lines: List<SubLine>,
+        paceScale: Double = 1.0,
+        speechRate: Float = 1f,
+        shouldSpeakCue: (index: Int, line: SubLine) -> Boolean = { _, _ -> true },
+    ): ChunkTable {
+        val textByFirst = HashMap<Int, String>()
+        val windowEndByFirst = HashMap<Int, Long>()
+        val redirect = HashMap<Int, Int>()
+        val secondaries = HashMap<Int, List<Int>>()
+        for (chunk in buildChunks(lines, paceScale, speechRate, shouldSpeakCue)) {
+            textByFirst[chunk.firstIndex] = chunk.text
+            windowEndByFirst[chunk.firstIndex] = chunk.windowEndMs
+            val rest = chunk.lineIndices.drop(1)
+            if (rest.isNotEmpty()) {
+                secondaries[chunk.firstIndex] = rest
+                rest.forEach { redirect[it] = chunk.firstIndex }
+            }
+        }
+        return ChunkTable(textByFirst, windowEndByFirst, redirect, secondaries)
+    }
+
     /** 行间连接：句读结尾直接相连，否则补一个逗号让 TTS 有自然停顿。 */
     private fun joinLines(first: String, second: String): String {
         val tail = first.lastOrNull()
