@@ -238,9 +238,13 @@ internal object KokoroMixedLanguageTextPolicy {
 
         // Explicit group references keep language boundaries at CJK/Latin and punctuation edges.
         // The cue is still synthesized once with one Kokoro voice to preserve sentence prosody.
-        prepared = cjkBeforeLatin.replace(prepared, "\$1 \$2")
-        prepared = punctuationBeforeLatin.replace(prepared, "\$1 \$2")
-        prepared = latinBeforeCjk.replace(prepared, "\$1 \$2")
+        prepared = replaceOutsideUrls(prepared, cjkBeforeLatin) { match -> "\$1 \$2".replace("\$1", match.groupValues[1]).replace("\$2", match.groupValues[2]) }
+        prepared = replaceOutsideUrls(prepared, punctuationBeforeLatin) { match ->
+            "\$1 \$2".replace("\$1", match.groupValues[1]).replace("\$2", match.groupValues[2])
+        }
+        prepared = replaceOutsideUrls(prepared, latinBeforeCjk) { match ->
+            "\$1 \$2".replace("\$1", match.groupValues[1]).replace("\$2", match.groupValues[2])
+        }
         prepared = prepared.replace(Regex("""\s+"""), " ").trim()
 
         // Letter expansion must not make an otherwise valid subtitle exceed the per-cue limit.
