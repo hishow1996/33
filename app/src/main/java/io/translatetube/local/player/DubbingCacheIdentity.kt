@@ -28,6 +28,28 @@ internal object DubbingCacheIdentity {
         return fileName.substring(0, separator).toIntOrNull()?.takeIf { it >= 0 }
     }
 
+    // 重进视频时要给每一句字幕算一次缓存文件名；每次都 getInstance + String.format 在老手机上
+    // 累计起来很可观。每个线程复用一个 SHA-256，十六进制用查表拼接。输出与旧实现逐字节一致，
+    // 所以已有的 PCM 缓存文件名不会变。
+    private val sha256Local = object : ThreadLocal<java.security.MessageDigest>() {
+        override fun initialValue(): java.security.MessageDigest =
+            java.security.MessageDigest.getInstance("SHA-256")
+    }
+    private val HEX_DIGITS = "0123456789abcdef".toCharArray()
+
+    private fun fingerprint(value: String): String {
+        val digest = sha256Local.get()!!
+        digest.reset()
+        val bytes = digest.digest(value.toByteArray(Charsets.UTF_8))
+        val out = CharArray(16)
+        for (i in 0 until 8) {
+            val b = bytes[i].toInt() and 0xff
+            out[i * 2] = HEX_DIGITS[b ushr 4]
+            out[i * 2 + 1] = HEX_DIGITS[b and 0x0f]
+        }
+        return String(out)
+    }
+
     fun fileName(
         lineIndex: Int,
         speakerId: Int,
@@ -36,12 +58,6 @@ internal object DubbingCacheIdentity {
         speed: Float,
         cueDurationMs: Long,
     ): String {
-        fun fingerprint(value: String): String {
-            val bytes = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(value.toByteArray(Charsets.UTF_8))
-            return bytes.take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        }
-
         val textHash = fingerprint(text)
         // Bump the version when cached PCM content rules change; include the bounded cue window.
         // v10: cached PCM is now only ever compressed to fit its window (never stretched), and a

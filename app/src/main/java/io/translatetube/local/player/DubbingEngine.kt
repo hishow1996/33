@@ -268,6 +268,8 @@ class DubbingEngine(
     @Volatile private var priorityLookAhead = 2
     @Volatile private var synthJob: Job? = null
     @Volatile private var cacheInitJob: Job? = null
+    /** 旧缓存 LRU 清理：延后到合成启动之后，不再挡在「预检 → 开始合成」的路上。 */
+    @Volatile private var pruneJob: Job? = null
     private val synthStartLock = Any()
     /** Wakes a CPU-bound TTS worker when a deferred cue enters the playhead window. */
     private val synthesisScheduleWakeup = kotlinx.coroutines.channels.Channel<Unit>(
@@ -594,6 +596,7 @@ class DubbingEngine(
                 ),
             )
             cacheInitJob?.cancel()
+            pruneJob?.cancel()
             val generation = synchronized(cacheConfigurationLock) {
                 cacheInitGeneration.incrementAndGet()
             }
@@ -705,11 +708,18 @@ class DubbingEngine(
                         // Immediate playback used to return before the global PCM LRU pass.
                         // Keep old voice/model variants and other videos under the same storage
                         // budget even when the selected system TTS mode does not synthesize PCM.
-                        pruneOldDubbingCaches()
+                        scheduleDeferredCachePrune(generation)
                         if (backgroundSynthesisRequested) ensureBackgroundSynthesisEngine()
                         return@launch
                     }
 
+                    // 重进视频时「检测上次合成进度」要快：先把缓存目录的文件名一次列出来，
+                    // 之后每句只在内存里查名字；只有名字存在的文件才碰磁盘（取大小/删除）。
+                    // 没有缓存的句子（以及全部无声行）不再做任何文件系统调用。
+                    val cacheScanStartedNs = System.nanoTime()
+                    val existingCacheNames: Set<String> =
+                        cacheDir.list()?.let { names -> HashSet<String>(names.asList()) } ?: emptySet()
+                    var cacheFastHitCount = 0
                     for (i in this@DubbingEngine.lines.indices) {
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         if (released || generation != cacheInitGeneration.get()) return@launch
@@ -718,32 +728,55 @@ class DubbingEngine(
                             // Invalid timing or blank source text can never be selected by lineAt().
                             // Remove this engine's now-unusable cache and avoid PCM inspection/TTS.
                             val invalidCache = cacheFile(i)
-                            deleteCacheIfUnchanged(invalidCache, DubbingCacheFileStamp.capture(invalidCache))
+                            if (invalidCache.name in existingCacheNames) {
+                                deleteCacheIfUnchanged(invalidCache, DubbingCacheFileStamp.capture(invalidCache))
+                            }
                             markCuePrepared(i, hasAudio = false)
                             continue
                         }
                         if (!isSpeechCue(i)) {
                             val annotationCache = cacheFile(i)
-                            deleteCacheIfUnchanged(
-                                annotationCache,
-                                DubbingCacheFileStamp.capture(annotationCache),
-                            )
+                            if (annotationCache.name in existingCacheNames) {
+                                deleteCacheIfUnchanged(
+                                    annotationCache,
+                                    DubbingCacheFileStamp.capture(annotationCache),
+                                )
+                            }
                             markCuePrepared(i, hasAudio = false)
                             continue
                         }
                         val file = cacheFile(i)
+                        val cacheExists = file.name in existingCacheNames
+                        val blankCueTranslation = cue.zh.isNullOrBlank()
                         // Returning to a previously used engine combination must not reuse its old
                         // PCM when processing is explicitly restarted after an engine change.
                         // Queue a fresh synthesis; writeCache atomically replaces this canonical file.
-                        val cacheInspection = if (forceRegeneratePcmForAttach) {
-                            // Bypass and remove the active identity before queueing fresh synthesis.
-                            // Otherwise a failed replacement could still let load() play the old
-                            // PCM because playback reads the canonical cache path independently.
-                            val oldStamp = DubbingCacheFileStamp.capture(file)
-                            deleteCacheIfUnchanged(file, oldStamp)
-                            DubbingCacheInspection(null, DubbingCacheFileStamp.capture(file))
-                        } else {
-                            inspectCache(file, ::checkCacheInitActive)
+                        val cacheInspection = when {
+                            forceRegeneratePcmForAttach -> {
+                                // Bypass and remove the active identity before queueing fresh synthesis.
+                                // Otherwise a failed replacement could still let load() play the old
+                                // PCM because playback reads the canonical cache path independently.
+                                if (cacheExists) {
+                                    val oldStamp = DubbingCacheFileStamp.capture(file)
+                                    deleteCacheIfUnchanged(file, oldStamp)
+                                    DubbingCacheInspection(null, DubbingCacheFileStamp.capture(file))
+                                } else {
+                                    DubbingCacheInspection(null, null)
+                                }
+                            }
+                            !cacheExists -> DubbingCacheInspection(null, null)
+                            else -> {
+                                // 文件名里已经带了引擎/文本/说话人/语速/窗口的身份，名字对得上就是
+                                // 这一句的缓存。比 8 字节头更长就先当作有音频、直接标就绪；
+                                // 真正的整文件校验仍在播放取用时的 load() 里做，损坏会自动重排队合成。
+                                // 只有 ≤8 字节（空标记/残缺）或译文为空这类少见情况才走完整检查。
+                                if (!blankCueTranslation && file.length() > 8L) {
+                                    cacheFastHitCount++
+                                    DubbingCacheInspection(true, null)
+                                } else {
+                                    inspectCache(file, ::checkCacheInitActive)
+                                }
+                            }
                         }
                         val cacheHasAudio = cacheInspection.hasAudio
                         val blankTranslation = cue.zh.isNullOrBlank()
@@ -767,7 +800,7 @@ class DubbingEngine(
                         }
                     }
 
-                    pruneOldDubbingCaches()
+                    val cacheScanElapsedMs = (System.nanoTime() - cacheScanStartedNs) / 1_000_000L
 
                     // A seek can happen while cache validation is running. Honor the latest cue
                     // before starting synthesis instead of letting the whole first pass run in order.
@@ -795,14 +828,16 @@ class DubbingEngine(
                                 "当前已就绪行数" to _preparedCount.value.toString(),
                                 "连续就绪前缀行数" to _preparedUntil.value.toString(),
                                 "待合成队列行数" to pending.totalSize().toString(),
-                                "有效缓存文件数" to cacheDir.listFiles().orEmpty().count {
-                                    it.isFile && it.name.endsWith(".pcm")
-                                }.toString(),
+                                "有效缓存文件数" to existingCacheNames.count { it.endsWith(".pcm") }.toString(),
+                                "快速命中缓存行数" to cacheFastHitCount.toString(),
+                                "缓存预检耗时 ms" to cacheScanElapsedMs.toString(),
                                 "配音引擎" to (tts?.name ?: "未知引擎"),
                                 "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
                             ),
                         )
                         startSynthLoop()
+                        // 旧缓存清理放到合成已经启动之后，不再让它挡住首句合成。
+                        scheduleDeferredCachePrune(generation)
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -2014,6 +2049,34 @@ class DubbingEngine(
 
     private fun bumpPrepared() {
         readinessProgress.refresh(lines.size, ::publishReadinessProgress)
+    }
+
+    /**
+     * 在合成已经启动后，稍等片刻再清理旧缓存。清理要遍历整个配音缓存目录（所有历史视频），
+     * 历史越多越慢；放在预检和首句合成之前会让「检测进度」和首句配音一起被拖住。
+     * 清理本身对并发写入是安全的（每个删除都在锁内核对文件指纹），所以可以和合成并行。
+     */
+    private fun scheduleDeferredCachePrune(generation: Long) {
+        pruneJob?.cancel()
+        pruneJob = scope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(DEFERRED_CACHE_PRUNE_DELAY_MS)
+            if (released || generation != cacheInitGeneration.get()) return@launch
+            val startedNs = System.nanoTime()
+            try {
+                pruneOldDubbingCaches()
+                logDubbingInfo(
+                    "配音旧缓存清理完成",
+                    mapOf(
+                        "缓存初始化代次" to generation.toString(),
+                        "清理耗时 ms" to ((System.nanoTime() - startedNs) / 1_000_000L).toString(),
+                    ),
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("DubbingEngine", "Deferred dubbing cache prune failed", e)
+            }
+        }
     }
 
     /**
@@ -4347,6 +4410,7 @@ class DubbingEngine(
         backgroundTtsInitializationJob = null
         cacheInitGeneration.incrementAndGet()
         cacheInitJob?.cancel()
+        pruneJob?.cancel()
         // Serialize the task snapshot with startSynthLoop(). Without this lock, release()
         // could read a null/old Job while a new worker is being installed, then close the native
         // TTS engine underneath that just-started synthesis call.
@@ -4398,7 +4462,8 @@ class DubbingEngine(
     }
 
     private fun isStalePcmTemp(file: File, nowMs: Long): Boolean {
-        if (!file.isFile || !file.name.endsWith(".pcm.tmp")) return false
+        // 先看名字再碰磁盘：目录里绝大多数是正式 .pcm，不需要为它们逐个 stat。
+        if (!file.name.endsWith(".pcm.tmp") || !file.isFile) return false
         val modified = file.lastModified()
         return modified > 0L && nowMs >= modified && nowMs - modified > TEMP_PCM_AGE_MS
     }
@@ -4423,6 +4488,8 @@ class DubbingEngine(
         private val cacheInstallLock = Any()
         private val nextCacheWriterId = AtomicInteger(0)
         private const val TEMP_PCM_AGE_MS = 6L * 60L * 60L * 1_000L
+        /** 预检完成、合成启动后，等这么久再清理旧缓存，让首批句子先占用 IO/CPU。 */
+        private const val DEFERRED_CACHE_PRUNE_DELAY_MS = 4_000L
         // Keep each native static track well below Android's common 1 MiB static-buffer ceiling.
         // Keep static chunks small for Android 9/OEM AudioTrack implementations with
         // restrictive buffer limits. At 24 kHz this is at most one second of audio.
