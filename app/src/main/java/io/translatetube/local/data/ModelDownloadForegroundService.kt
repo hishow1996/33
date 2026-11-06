@@ -186,6 +186,13 @@ class ModelDownloadForegroundService : Service() {
                     )
                 }
 
+                val piperEngineNames = piperTasks.keys
+                    .mapNotNull { id -> io.translatetube.local.tts.PiperModels.byId(id)?.engineName }
+                    .distinct()
+                val piperNotificationTitle = when (piperEngineNames.size) {
+                    1 -> "正在准备 ${piperEngineNames.first()} 配音模型"
+                    else -> "正在准备本地配音模型"
+                }
                 val piperDetail = piperTasks.entries.joinToString("；") { (id, state) ->
                     val modelName = io.translatetube.local.tts.PiperModels.byId(id)?.voiceLabel ?: id
                     val progressText = if (
@@ -211,7 +218,7 @@ class ModelDownloadForegroundService : Service() {
                         indeterminate = true,
                     )
                     piperActive -> ModelNotificationContent(
-                        title = "正在准备 Piper 配音模型",
+                        title = piperNotificationTitle,
                         detail = listOf(piperDetail, externalTaskDetail)
                             .filter { it.isNotBlank() }.joinToString("；"),
                         progress = piperProgress.takeUnless { piperExtracting },

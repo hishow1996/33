@@ -102,12 +102,12 @@ class SherpaOfflineTts(context: Context, private val modelId: String) : TtsEngin
         }
         val tokens = File(dir, "tokens.txt")
         val dataDir = File(dir, "espeak-ng-data")
-        require(model.isFile) { "Piper 模型文件缺失：${model.absolutePath}" }
+        require(model.isFile) { "${definition.engineName} 模型文件缺失：${model.absolutePath}" }
         require(model.length() >= PiperModelFilePolicy.MIN_ONNX_BYTES) {
-            "Piper 模型文件可能未下载完整：路径=${model.absolutePath}，文件大小=${model.length()} 字节，最低要求=${PiperModelFilePolicy.MIN_ONNX_BYTES} 字节"
+            "${definition.engineName} 模型文件可能未下载完整：路径=${model.absolutePath}，文件大小=${model.length()} 字节，最低要求=${PiperModelFilePolicy.MIN_ONNX_BYTES} 字节"
         }
         require(tokens.isFile && tokens.length() > 0L) {
-            "Piper 词表文件缺失或为空：${tokens.absolutePath}，文件大小=${tokens.length()} 字节"
+            "${definition.engineName} 词表文件缺失或为空：${tokens.absolutePath}，文件大小=${tokens.length()} 字节"
         }
         val lexicon = File(dir, "lexicon.txt")
         val ruleFsts = definition.ruleFstNames.map { File(dir, it) }
@@ -133,7 +133,7 @@ class SherpaOfflineTts(context: Context, private val modelId: String) : TtsEngin
                 "${definition.engineName} 模型资源不完整（模型 ID=$modelId）：${missingOrEmptyResources.joinToString("；")}"
             }
         } else {
-            require(dataDir.isDirectory) { "Piper 语音数据目录缺失：${dataDir.absolutePath}" }
+            require(dataDir.isDirectory) { "${definition.engineName} 语音数据目录缺失：${dataDir.absolutePath}" }
         }
 
         val isMatcha = definition.vocoderFileName != null
@@ -505,9 +505,9 @@ object PiperModels {
     /** Create a native engine while holding a lease that prevents concurrent model removal. */
     internal fun <T> withModelLease(ctx: Context, id: String, create: () -> T): T =
         synchronized(modelUseLock) {
-            val definition = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：${id}")
+            val definition = byId(id) ?: throw IllegalArgumentException("未知本地配音模型：${id}")
             check(complete(modelDir(ctx, id), definition)) {
-                "Piper 模型尚未完整安装，无法加载：${id}"
+                "${definition.engineName} 模型尚未完整安装，无法加载：${id}"
             }
             modelUseCounts[id] = (modelUseCounts[id] ?: 0) + 1
             _activeModelIds.value = modelUseCounts.keys.toSet()
@@ -537,17 +537,17 @@ object PiperModels {
      * native engine creation and removal share modelUseLock so files cannot disappear mid-load.
      */
     suspend fun uninstallInstalledModel(ctx: Context, id: String): Boolean = installMutex.withLock {
-        val definition = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：${id}")
+        val definition = byId(id) ?: throw IllegalArgumentException("未知本地配音模型：${id}")
         val removed = synchronized(modelUseLock) {
             check((modelUseCounts[id] ?: 0) == 0) {
-                "该 Piper 音色仍被配音引擎占用，请先停止并释放当前配音任务"
+                "该${definition.engineName}音色仍被配音引擎占用，请先停止并释放当前配音任务"
             }
             val downloadActive = synchronized(downloadStateLock) {
                 val job = downloadJobs[id]
                 (job != null && !job.isCompleted && !job.isCancelled) ||
                     (_downloadStates.value[id]?.isActive == true)
             }
-            check(!downloadActive) { "该 Piper 模型正在下载或安装，暂不能卸载" }
+            check(!downloadActive) { "该${definition.engineName}模型正在下载或安装，暂不能卸载" }
 
             val prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
             val selectedEngine = prefs.getString("tts_engine", "edge").orEmpty()
@@ -565,13 +565,13 @@ object PiperModels {
 
             val root = piperRoot(ctx).canonicalFile
             val target = modelDir(ctx, id).canonicalFile
-            check(target.parentFile == root) { "Piper 模型路径校验失败，已阻止删除" }
+            check(target.parentFile == root) { "本地语音模型路径校验失败，已阻止删除" }
             if (!target.exists()) return@synchronized false
             check(target.isDirectory && complete(target, definition)) {
-                "该目录不是完整的已安装 Piper 模型，已拒绝自动删除"
+                "该目录不是完整的已安装${definition.engineName}模型，已拒绝自动删除"
             }
             if (!target.deleteRecursively()) {
-                throw java.io.IOException("无法完整删除 Piper 音色模型：${definition.voiceLabel}")
+                throw java.io.IOException("无法完整删除${definition.engineName}音色模型：${definition.voiceLabel}")
             }
             true
         }
@@ -617,7 +617,7 @@ object PiperModels {
                 PiperModelDownloadState(
                     status = PiperModelDownloadStatus.READY,
                     progress = 100,
-                    stageMessage = "Piper 模型已就绪",
+                    stageMessage = "${definition.engineName} 模型已就绪",
                 )
             }
             return false
@@ -629,7 +629,7 @@ object PiperModels {
                 id to PiperModelDownloadState(
                     status = PiperModelDownloadStatus.DOWNLOADING,
                     progress = 0,
-                    stageMessage = "正在准备下载…",
+                    stageMessage = "正在准备 ${definition.engineName} 下载…",
                 )
             )
             scope.launch(context = Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.LAZY) {
@@ -647,7 +647,7 @@ object PiperModels {
                         PiperModelDownloadState(
                             status = PiperModelDownloadStatus.READY,
                             progress = 100,
-                            stageMessage = "Piper 模型已就绪",
+                            stageMessage = "${definition.engineName} 模型已就绪",
                         )
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -778,7 +778,7 @@ object PiperModels {
                         states + (definition.id to PiperModelDownloadState(
                             status = PiperModelDownloadStatus.READY,
                             progress = 100,
-                            stageMessage = "Piper 模型已就绪",
+                            stageMessage = "${definition.engineName} 模型已就绪",
                         ))
                     old?.status == PiperModelDownloadStatus.READY ->
                         states + (definition.id to PiperModelDownloadState())
@@ -842,14 +842,14 @@ object PiperModels {
         checkActive()
         val root = piperRoot(ctx)
         if (!root.isDirectory && !root.mkdirs()) {
-            throw java.io.IOException("无法创建 Piper 模型目录：${root.absolutePath}")
+            throw java.io.IOException("无法创建本地语音模型目录：${root.absolutePath}")
         }
         val dest = modelDir(ctx, def.id)
         val archive = File(ctx.cacheDir, "piper-model-${def.id}.tar.bz2.tmp")
         val staging = File(root, "${def.id}.extract")
         val backup = File(root, "${def.id}.backup")
         if (dest.exists() && !dest.isDirectory) {
-            throw java.io.IOException("Piper 模型目标路径不是目录，已停止覆盖以保护现有文件")
+            throw java.io.IOException("${def.engineName} 模型目标路径不是目录，已停止覆盖以保护现有文件")
         }
         if (complete(dest, def)) {
             // A crash after publishing a complete model may leave a redundant backup behind.
@@ -885,7 +885,7 @@ object PiperModels {
             )
         ) {
             throw java.io.IOException(
-                "存储空间不足：下载和安装该 Piper 模型预计至少需要 ${io.translatetube.local.data.ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间。"
+                "存储空间不足：下载和安装该${def.engineName}模型预计至少需要 ${io.translatetube.local.data.ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间。"
             )
         }
 
@@ -894,7 +894,7 @@ object PiperModels {
             // model in .backup merely because the download source is temporarily unavailable.
             if (backup.exists()) {
                 if (!backup.isDirectory) {
-                    throw java.io.IOException("Piper 模型备份路径不是目录，无法安全恢复")
+                    throw java.io.IOException("${def.engineName} 模型备份路径不是目录，无法安全恢复")
                 }
                 val destinationIsComplete = complete(dest, def)
                 val backupIsComplete = complete(backup, def)
@@ -906,21 +906,21 @@ object PiperModels {
                 ) {
                     val invalid = File(root, "${def.id}.invalid")
                     if (invalid.exists() && !invalid.deleteRecursively()) {
-                        throw java.io.IOException("无法清理上次损坏的 Piper 模型副本")
+                        throw java.io.IOException("无法清理上次损坏的${def.engineName}模型副本")
                     }
                     if (dest.exists() && !dest.renameTo(invalid)) {
-                        throw java.io.IOException("无法暂存损坏的 Piper 模型以恢复旧版本")
+                        throw java.io.IOException("无法暂存损坏的${def.engineName}模型以恢复旧版本")
                     }
                     if (!backup.renameTo(dest)) {
                         if (invalid.exists()) runCatching { invalid.renameTo(dest) }
-                        throw java.io.IOException("上次 Piper 模型安装中断，无法恢复原模型")
+                        throw java.io.IOException("上次${def.engineName}模型安装中断，无法恢复原模型")
                     }
                     if (invalid.exists()) runCatching { invalid.deleteRecursively() }
                 } else if (!backup.deleteRecursively()) {
                     // A backup is not trusted merely because it exists: an interrupted old download
                     // may have left a truncated model there. Delete only that unusable backup and
                     // download/replace the destination from a newly validated staging directory.
-                    throw java.io.IOException("无法清理不完整的 Piper 模型备份")
+                    throw java.io.IOException("无法清理不完整的${def.engineName}模型备份")
                 }
             }
             downloadArchiveWithFallback(
@@ -957,17 +957,17 @@ object PiperModels {
                 )
             }
             if (!complete(staging, def)) {
-                throw java.io.IOException("Piper 模型包不完整：ONNX（至少 1 MB）、tokens.txt 及所需语言资源均须完整")
+                throw java.io.IOException("${def.engineName} 模型包不完整：ONNX（至少 1 MB）、tokens.txt 及所需语言资源均须完整")
             }
             checkActive()
             onStage("模型文件校验通过，正在安装…")
 
             val hadDestination = dest.exists()
             if (hadDestination && !dest.renameTo(backup)) {
-                throw java.io.IOException("无法备份现有 Piper 模型，旧模型仍保留")
+                throw java.io.IOException("无法备份现有${def.engineName}模型，旧模型仍保留")
             }
             if (!staging.renameTo(dest)) {
-                val installError = java.io.IOException("无法发布新的 Piper 模型")
+                val installError = java.io.IOException("无法发布新的${def.engineName}模型")
                 if (hadDestination && backup.exists() && !backup.renameTo(dest)) {
                     installError.addSuppressed(
                         java.io.IOException("新模型发布失败，旧模型仍保留在 ${backup.absolutePath}")
@@ -1000,7 +1000,7 @@ object PiperModels {
         checkActive: () -> Unit,
     ) = withContext(Dispatchers.IO) {
         val urls = PiperDownloadSourcePolicy.urls("$BASE/${definition.archive}")
-        if (urls.isEmpty()) throw java.io.IOException("Piper 模型下载地址为空")
+        if (urls.isEmpty()) throw java.io.IOException("${definition.engineName} 模型下载地址为空")
 
         if (ResumableModelArchiveDownloader.isReusableArchive(
                 archive, MAX_ARCHIVE_BYTES, definition.archiveSha256, checkActive,
@@ -1029,10 +1029,10 @@ object PiperModels {
             )
             onStage(
                 when {
-                    priorBytes > 0L -> "正在续传上次未完成的 Piper 模型包（已下载 " + (priorBytes / (1024L * 1024L)) + " MB）…"
-                    sourceIndex == 0 -> "正在连接 Piper 官方模型源…"
-                    primarySourceWasSlow -> "官方源下载速度较慢，正在切换加速源（" + attemptLabel + "/" + urls.size + "）…"
-                    else -> "官方源不可用，正在切换下载源（" + attemptLabel + "/" + urls.size + "）…"
+                    priorBytes > 0L -> "正在续传上次未完成的${definition.engineName}模型包（已下载 " + (priorBytes / (1024L * 1024L)) + " MB）…"
+                    sourceIndex == 0 -> "正在连接 ${definition.engineName} 官方模型源…"
+                    primarySourceWasSlow -> "${definition.engineName} 官方源下载速度较慢，正在切换加速源（" + attemptLabel + "/" + urls.size + "）…"
+                    else -> "官方模型源不可用，正在切换下载源（" + attemptLabel + "/" + urls.size + "）…"
                 }
             )
             try {
@@ -1087,7 +1087,7 @@ object PiperModels {
             }
         }
         throw java.io.IOException(
-            "Piper 模型全部下载源均失败：" + (lastError?.message ?: "网络异常"),
+            "${definition.engineName} 模型全部下载源均失败：" + (lastError?.message ?: "网络异常"),
             lastError,
         )
     }
@@ -1190,7 +1190,7 @@ object PiperModels {
         checkActive: () -> Unit,
         onProgress: (Long) -> Unit = {},
     ) {
-        if (!destination.isDirectory) throw java.io.IOException("Piper 临时解压目录不存在")
+        if (!destination.isDirectory) throw java.io.IOException("本地语音模型临时解压目录不存在")
         val rootPath = destination.canonicalFile.path + File.separator
         val buffer = ByteArray(64 * 1024)
         var archiveRootName: String? = null
@@ -1239,17 +1239,17 @@ object PiperModels {
                 }
                 if (entry.isDirectory) {
                     if (!output.isDirectory && !output.mkdirs()) {
-                        throw java.io.IOException("无法创建 Piper 模型子目录")
+                        throw java.io.IOException("无法创建模型子目录")
                     }
                     continue
                 }
 
                 if (!PiperModelFilePolicy.isWithinLimit(extractedBytes, entry.size, MAX_EXTRACTED_BYTES)) {
-                    throw java.io.IOException("Piper 模型解压内容超过 512 MB 安全上限")
+                    throw java.io.IOException("模型包解压内容超过 512 MB 安全上限")
                 }
                 output.parentFile?.let { parent ->
                     if (!parent.isDirectory && !parent.mkdirs()) {
-                        throw java.io.IOException("无法创建 Piper 模型子目录")
+                        throw java.io.IOException("无法创建模型子目录")
                     }
                 }
 
@@ -1259,12 +1259,12 @@ object PiperModels {
                         checkActive()
                         val wanted = minOf(buffer.size.toLong(), entry.size - written).toInt()
                         val count = io.translatetube.local.util.ProgressSafeInput.read(tar, buffer, 0, wanted)
-                        if (count < 0) throw java.io.IOException("Piper 模型文件解压不完整：${entry.name}")
+                        if (count < 0) throw java.io.IOException("模型文件解压不完整：${entry.name}")
                         if (count == 0) continue
                         if (!PiperModelFilePolicy.isWithinLimit(extractedBytes, count.toLong(), MAX_EXTRACTED_BYTES) ||
                             !PiperModelFilePolicy.isWithinLimit(written, count.toLong(), entry.size)
                         ) {
-                            throw java.io.IOException("Piper 模型文件长度超过声明或总解压上限")
+                            throw java.io.IOException("模型文件长度超过声明或总解压上限")
                         }
                         out.write(buffer, 0, count)
                         written += count
@@ -1279,7 +1279,7 @@ object PiperModels {
                     // atomicity: only the completed staging directory is published below.
                 }
                 if (!PiperModelFilePolicy.hasExpectedEntryLength(entry.size, written)) {
-                    throw java.io.IOException("Piper 模型文件长度校验失败：${entry.name}")
+                    throw java.io.IOException("模型文件长度校验失败：${entry.name}")
                 }
             }
         }

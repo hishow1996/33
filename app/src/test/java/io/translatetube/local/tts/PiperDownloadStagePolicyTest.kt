@@ -8,7 +8,7 @@ class PiperDownloadStagePolicyTest {
     fun networkAndPreparationStagesRemainDownloadProgress() {
         assertEquals(
             PiperModelDownloadStatus.DOWNLOADING,
-            PiperDownloadStagePolicy.statusFor("正在连接 Piper 官方模型源…"),
+            PiperDownloadStagePolicy.statusFor("正在连接 MeloTTS 官方模型源…"),
         )
         assertEquals(
             PiperModelDownloadStatus.DOWNLOADING,
@@ -38,9 +38,11 @@ class PiperDownloadStagePolicyTest {
 
     @Test
     fun readyIsPublishedOnlyAfterTheModelHasBeenInstalled() {
-        assertEquals(
-            PiperModelDownloadStatus.READY,
-            PiperDownloadStagePolicy.statusFor("Piper 模型已就绪"),
-        )
+        listOf("Piper", "MeloTTS", "Matcha TTS").forEach { engineName ->
+            assertEquals(
+                PiperModelDownloadStatus.READY,
+                PiperDownloadStagePolicy.statusFor("$engineName 模型已就绪"),
+            )
+        }
     }
 }
