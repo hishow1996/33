@@ -2423,6 +2423,26 @@ private fun VideoParsingPage(
         animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
         label = "processingProgress",
     )
+    val topProgressMotionActive = busy &&
+        !state.isProcessingPaused &&
+        !isError &&
+        !isCancelled &&
+        !waitingForTranscriptionEngine &&
+        !waitingForDubbingEngine &&
+        !state.manualTranslationWaiting
+    val topProgressTransition = rememberInfiniteTransition(label = "overallProgressMotion")
+    val topProgressMotionPhase by topProgressTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (topProgressMotionActive) 1f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 1250,
+                easing = androidx.compose.animation.core.LinearEasing,
+            ),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "overallProgressMotionPhase",
+    )
 
     Column(
         Modifier
@@ -2906,13 +2926,40 @@ private fun VideoParsingPage(
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
                     if (fraction != null) {
-                        LinearProgressIndicator(
-                            progress = { animatedFraction },
-                            modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
-                            color = Color(0xFF3268F5),
-                            trackColor = Color(0xFFE8EDF6),
-                        )
-                    } else if (busy && !state.isProcessingPaused) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(7.dp)
+                                .clip(CircleShape),
+                        ) {
+                            LinearProgressIndicator(
+                                progress = { animatedFraction },
+                                modifier = Modifier.fillMaxSize(),
+                                color = Color(0xFF3268F5),
+                                trackColor = Color(0xFFE8EDF6),
+                            )
+                            if (topProgressMotionActive && animatedFraction < 1f) {
+                                Canvas(Modifier.fillMaxSize()) {
+                                    val progressX = size.width * animatedFraction.coerceIn(0f, 1f)
+                                    val remainingWidth = (size.width - progressX).coerceAtLeast(0f)
+                                    if (remainingWidth > 0f) {
+                                        val markerWidth = 2.5.dp.toPx().coerceAtMost(remainingWidth)
+                                        val markerLeft = progressX +
+                                            (remainingWidth - markerWidth) * topProgressMotionPhase
+                                        drawRoundRect(
+                                            color = Color(0xFF8FB0FF),
+                                            topLeft = Offset(markerLeft, 0f),
+                                            size = Size(markerWidth, size.height),
+                                            cornerRadius = CornerRadius(
+                                                markerWidth / 2f,
+                                                markerWidth / 2f,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else if (topProgressMotionActive) {
                         LinearProgressIndicator(
                             modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
                             color = Color(0xFF3268F5),
@@ -4248,7 +4295,9 @@ private fun StageProgressVisual(
     )
     val scanPosition by transition.animateFloat(
         initialValue = 0f,
-        targetValue = if (isAnimating && isIndeterminate) 1f else 0f,
+        targetValue = if (
+            isAnimating && !isPaused && !isFailed && !isCompleted && !isSkipped
+        ) 1f else 0f,
         animationSpec = infiniteRepeatable(
             animation = tween(
                 durationMillis = 1150,
@@ -4319,7 +4368,8 @@ private fun StageProgressVisual(
     // Keep the double-helix geometry static and animate only its lightweight highlight.
     val translationAnimationActive = stageIndex == 3 && isAnimating &&
         !isPaused && !isFailed && !isCompleted && !isSkipped
-    // The highlight travels only within the measured progress range.
+    // The paired highlight travels across the complete helix track; the blue/green
+    // completed section below remains clipped to the real measured progress.
     val translationFlowActive = translationAnimationActive && !isIndeterminate
     val translationFlowPhase = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
@@ -4386,11 +4436,19 @@ private fun StageProgressVisual(
                 val top = (size.height - frameHeight) / 2f
                 val frameWidth = (size.width - gap * (count - 1)) / count
                 val completedFrames = (fraction * count).toInt()
-                val scanIndex = (scanPosition * count).toInt().coerceIn(0, count - 1)
+                val motionEnabled = isAnimating && !isPaused &&
+                    !isFailed && !isCompleted && !isSkipped
+                val scanProgress = if (isIndeterminate) {
+                    scanPosition
+                } else {
+                    fraction + scanPosition * (1f - fraction)
+                }
+                val scanIndex = (scanProgress * count).toInt().coerceIn(0, count - 1)
                 repeat(count) { i ->
                     val left = i * (frameWidth + gap)
                     val filled = i < completedFrames
-                    val scanning = isIndeterminate && i == scanIndex
+                    val scanning = motionEnabled && i == scanIndex &&
+                        (isIndeterminate || fraction < 1f)
                     val frameColor = when {
                         filled -> fill
                         scanning -> fill.copy(alpha = pulseAlpha)
@@ -4437,17 +4495,27 @@ private fun StageProgressVisual(
                 val barGap = 2.2.dp.toPx()
                 val barWidth = (size.width - barGap * (count - 1)) / count
                 val completedBars = (fraction * count).toInt()
-                val scanIndex = (scanPosition * count).toInt().coerceIn(0, count - 1)
+                val motionEnabled = isAnimating && !isPaused &&
+                    !isFailed && !isCompleted && !isSkipped
+                val scanProgress = if (isIndeterminate) {
+                    scanPosition
+                } else {
+                    fraction + scanPosition * (1f - fraction)
+                }
+                val scanIndex = (scanProgress * count).toInt().coerceIn(0, count - 1)
                 heights.forEachIndexed { i, heightFactor ->
-                    val isCurrent = isIndeterminate && i == scanIndex
-                    val wave = if (isAnimating && !isIndeterminate && i < completedBars) {
+                    val isCurrent = motionEnabled && i == scanIndex &&
+                        (isIndeterminate || i >= completedBars)
+                    val wave = if (motionEnabled && (i < completedBars || isCurrent)) {
                         (kotlin.math.sin(waveformPhase - i * 0.78f) + 1f) / 2f
                     } else {
                         1f
                     }
                     // A slightly wider height range makes the moving waveform easy to notice,
                     // while the cap keeps the tallest bars inside the progress track.
-                    val pulseFactor = if (isAnimating && !isIndeterminate && i < completedBars) {
+                    val pulseFactor = if (
+                        motionEnabled && (i < completedBars || isCurrent)
+                    ) {
                         0.70f + wave * 0.46f
                     } else {
                         1f
@@ -4542,6 +4610,14 @@ private fun StageProgressVisual(
                     }
                 }
 
+                // Keep the pending portion grey, but let its equalizer bars move with
+                // the same rhythm so a long-running transcription never looks frozen.
+                if (!isIndeterminate && motionEnabled && revealX < size.width) {
+                    clipRect(left = revealX.coerceIn(0f, size.width), right = size.width) {
+                        drawRhythmBars(trackColor, animate = true)
+                    }
+                }
+
                 when {
                     isIndeterminate && motionEnabled -> {
                         // Unknown progress animates the full prefix up to the moving cursor.
@@ -4588,7 +4664,7 @@ private fun StageProgressVisual(
                 val flowHead = when {
                     !motionEnabled -> null
                     isIndeterminate -> scanPosition * size.width
-                    else -> translationFlowPhase.value * progressX
+                    else -> translationFlowPhase.value * size.width
                 }
                 val flowIntensity = when {
                     !motionEnabled -> 0f
@@ -4771,10 +4847,11 @@ private fun StageProgressVisual(
                     }
                 }
 
-                // The unprocessed waveform remains grey and completely still.
-                drawWaveBars(trackColor, animate = false)
+                // The pending waveform stays grey but keeps the original ECG motion.
+                // The completed range keeps its own coloured waveform and true boundary.
+                drawWaveBars(trackColor, animate = shouldPulse)
 
-                // Only the range up to the real progress point receives the moving waveform.
+                // Only the range up to the real progress point receives the coloured waveform.
                 when {
                     isIndeterminate && isAnimating -> {
                         val scanWidth = size.width * 0.24f
