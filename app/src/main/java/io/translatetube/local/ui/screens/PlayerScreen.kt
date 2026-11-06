@@ -6324,24 +6324,66 @@ private fun PlaybackHintOverlay(
 }
 
 /**
- * A DropdownMenu is its own focused window. Without its own immersive flags the system shows the
- * status bar while the menu is open (and Android 9 then keeps it). Put this inside the menu content
- * while the player is fullscreen so the popup window asks for the bars to stay hidden too.
+ * Fullscreen menu drawn inside the player's own composition.
+ *
+ * A DropdownMenu opens a separate focused window, so the system shows the status bar while it is
+ * open and (Android 9) can leave it showing after it closes. Drawing the menu in-tree means no
+ * extra window and no focus change, so the immersive state of the player window is never touched.
  */
 @Composable
-private fun KeepSystemBarsHiddenInPopup(enabled: Boolean) {
-    if (!enabled) return
-    val view = androidx.compose.ui.platform.LocalView.current
-    DisposableEffect(view) {
-        runCatching {
-            val root = view.rootView
-            @Suppress("DEPRECATION")
-            root.systemUiVisibility = root.systemUiVisibility or
-                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
-                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+private fun FullscreenInlineMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (!expanded) return
+    val latestDismiss by rememberUpdatedState(onDismissRequest)
+    // Without this the fullscreen BackHandler would leave fullscreen instead of closing the menu.
+    BackHandler { latestDismiss() }
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) { detectTapGestures { latestDismiss() } },
+    ) {
+        Surface(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(start = 56.dp)
+                .widthIn(min = 112.dp, max = 280.dp)
+                .heightIn(max = (maxHeight - 16.dp).coerceAtLeast(48.dp))
+                // Taps on the menu itself must not reach the dismiss layer behind it.
+                .pointerInput(Unit) { detectTapGestures { } },
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .width(IntrinsicSize.Max)
+                    .verticalScroll(rememberScrollState()),
+                content = content,
+            )
         }
-        onDispose { }
+    }
+}
+
+@Composable
+private fun FullscreenInlineMenuItem(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(
+            text = text,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.bodyLarge,
+        )
     }
 }
 
@@ -6469,6 +6511,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     var seekRevision by remember(state.key) { mutableStateOf(0) }
     var qualityExpanded by remember { mutableStateOf(false) }
     var speedExpanded by remember { mutableStateOf(false) }
+    // Fullscreen uses an in-tree menu, normal mode a popup; never carry an open menu across modes.
+    LaunchedEffect(isFullscreen) {
+        qualityExpanded = false
+        speedExpanded = false
+    }
     var controlsVisible by remember(state.key) { mutableStateOf(true) }
     var fullscreenCaptionDragging by remember(state.key) { mutableStateOf(false) }
     var fullscreenCaptionAdjusting by remember(state.key) { mutableStateOf(false) }
@@ -6963,13 +7010,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         onClick = { qualityExpanded = true },
                     )
                     DropdownMenu(
-                        expanded = qualityExpanded,
+                        expanded = qualityExpanded && !isFullscreen,
                         onDismissRequest = {
                             if (qualityExpanded) recordInteraction()
                             qualityExpanded = false
                         },
                     ) {
-                        KeepSystemBarsHiddenInPopup(isFullscreen)
                         state.qualityOptions.forEach { quality ->
                             DropdownMenuItem(
                                 text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
@@ -7064,13 +7110,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             )
                         }
                         DropdownMenu(
-                            expanded = speedExpanded,
+                            expanded = speedExpanded && !isFullscreen,
                             onDismissRequest = {
                                 if (speedExpanded) recordInteraction()
                                 speedExpanded = false
                             },
                         ) {
-                            KeepSystemBarsHiddenInPopup(isFullscreen)
                             speedOptions.forEach { value ->
                                 DropdownMenuItem(
                                     text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
@@ -7651,6 +7696,43 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             .background(Color(0xFF5890FF)),
                     )
                 }
+            }
+        }
+
+        FullscreenInlineMenu(
+            expanded = isFullscreen && qualityExpanded,
+            onDismissRequest = {
+                if (qualityExpanded) recordInteraction()
+                qualityExpanded = false
+            },
+        ) {
+            state.qualityOptions.forEach { quality ->
+                FullscreenInlineMenuItem(
+                    text = if (quality == state.selectedQuality) "✓ " + quality else quality,
+                    onClick = {
+                        qualityExpanded = false
+                        recordInteraction()
+                        PlaybackService.instance?.selectQuality(quality)
+                    },
+                )
+            }
+        }
+        FullscreenInlineMenu(
+            expanded = isFullscreen && speedExpanded,
+            onDismissRequest = {
+                if (speedExpanded) recordInteraction()
+                speedExpanded = false
+            },
+        ) {
+            speedOptions.forEach { value ->
+                FullscreenInlineMenuItem(
+                    text = if (value == speed) "✓ " + value + "×" else value.toString() + "×",
+                    onClick = {
+                        PlaybackService.instance?.setSpeed(value)
+                        recordInteraction()
+                        speedExpanded = false
+                    },
+                )
             }
         }
     }
