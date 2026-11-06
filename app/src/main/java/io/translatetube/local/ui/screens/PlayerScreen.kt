@@ -415,8 +415,17 @@ fun PlayerScreen(
     // The State holders remain stable while their values follow the latest service snapshot.
     val subtitleLinesState = rememberUpdatedState(state.lines)
     val subtitleActiveLineState = rememberUpdatedState(state.currentLine)
+    val subtitlePreviewTiming = remember(state.lines, state.currentLine, state.captionOverride) {
+        SubtitlePreviewSegmentPolicy.resolveTiming(
+            lines = state.lines,
+            currentLineIndex = state.currentLine,
+            captionOverride = state.captionOverride,
+        )
+    }
+    val subtitlePreviewResetToken = remember { mutableIntStateOf(0) }
     val subtitleSeekAction: (Long) -> Unit = remember {
         { positionMs: Long ->
+            subtitlePreviewResetToken.intValue += 1
             PlaybackService.instance?.seekAndPlay(positionMs)
             Unit
         }
@@ -1466,7 +1475,12 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         onExitFloat = { exitFloating() },
                         onToggleFullscreen = { isFullscreen = !isFullscreen },
                         onExitFullscreen = { isFullscreen = false },
-                        onTimelineScrubbingChanged = { timelineScrubbing = it },
+                        onTimelineScrubbingChanged = { scrubbing ->
+                            if (timelineScrubbing && !scrubbing) {
+                                subtitlePreviewResetToken.intValue += 1
+                            }
+                            timelineScrubbing = scrubbing
+                        },
                     )
                 }
                 // A compatible history item opens this player immediately. While its media session
@@ -1604,6 +1618,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     sessionKey = state.key,
                     currentLine = state.lines.getOrNull(state.currentLine),
                     captionOverride = state.captionOverride,
+                    previewCueKeyMs = subtitlePreviewTiming.cueKeyMs,
+                    captionDurationMs = subtitlePreviewTiming.durationMs,
+                    isPlaying = state.isPlaying,
+                    previewResetToken = subtitlePreviewResetToken.intValue,
                     // Flush the portrait caption card to both phone edges and keep
                     // the same compact vertical breathing room on both sides.
                     modifier = Modifier.padding(top = 3.dp),
@@ -5394,9 +5412,15 @@ private fun CurrentSubtitleStrip(
     captionOverride: String? = null,
     fullscreen: Boolean = false,
     fullscreenMaxHeight: androidx.compose.ui.unit.Dp? = null,
+    previewCueKeyMs: Long = 0L,
+    captionDurationMs: Long = 2_400L,
+    isPlaying: Boolean = true,
+    previewResetToken: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val textMeasurer = rememberTextMeasurer()
+    val isPlayingState = rememberUpdatedState(isPlaying)
+    var inlineSegmentIndex by remember(sessionKey, fullscreen) { mutableIntStateOf(0) }
     // A merged dubbing cue is displayed as the same continuous Chinese phrase the TTS engine speaks.
     // The normal inline strip remains Chinese-only; fullscreen retains the source-language line.
     val baseChineseText = remember(currentLine?.text, currentLine?.zh) {
@@ -5447,11 +5471,104 @@ private fun CurrentSubtitleStrip(
                 maxWidth - horizontalInset - horizontalInset -
                     if (fullscreen) 20.dp else 16.dp
                 ).coerceAtLeast(120.dp)
-            val captionContentWidthPx = with(LocalDensity.current) {
+            val density = LocalDensity.current
+            val captionContentWidthPx = with(density) {
                 captionContentWidth.roundToPx().coerceAtLeast(1)
+            }
+            val previewChineseStyle = androidx.compose.ui.text.TextStyle(
+                fontSize = 15.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            val initialPreviewUnitLimit = (
+                captionContent.value * 2f / (15f * density.fontScale) * 0.82f
+            ).coerceIn(10f, 40f)
+            val inlineChineseSegments = remember(
+                renderedCaption.first,
+                captionContentWidthPx,
+                density.fontScale,
+                fullscreen,
+            ) {
+                if (fullscreen) {
+                    listOf(renderedCaption.first)
+                } else {
+                    var unitLimit = initialPreviewUnitLimit
+                    var segments = SubtitlePreviewSegmentPolicy.split(
+                        renderedCaption.first,
+                        maxVisibleUnits = unitLimit,
+                    )
+                    var attempts = 0
+                    while (
+                        attempts < 5 &&
+                        segments.any { segment ->
+                            textMeasurer.measure(
+                                text = segment,
+                                style = previewChineseStyle,
+                                constraints = Constraints(maxWidth = captionContentWidthPx),
+                                maxLines = 2,
+                            ).hasVisualOverflow
+                        }
+                    ) {
+                        val smallerLimit = (unitLimit * 0.78f).coerceAtLeast(5f)
+                        if (smallerLimit >= unitLimit) break
+                        unitLimit = smallerLimit
+                        segments = SubtitlePreviewSegmentPolicy.split(
+                            renderedCaption.first,
+                            maxVisibleUnits = unitLimit,
+                        )
+                        attempts++
+                    }
+                    segments
+                }
+            }
+            LaunchedEffect(
+                sessionKey,
+                fullscreen,
+                renderedCaption.first,
+                previewCueKeyMs,
+                captionDurationMs,
+                previewResetToken,
+                inlineChineseSegments.size,
+            ) {
+                inlineSegmentIndex = 0
+                if (fullscreen || inlineChineseSegments.size <= 1) return@LaunchedEffect
+
+                // Divide the exact subtitle time window between the visible fragments.
+                // The cursor advances only while the video is playing and pauses in place.
+                val segmentDurationMs = (
+                    captionDurationMs / inlineChineseSegments.size.toLong()
+                ).coerceIn(250L, 2_400L)
+                var elapsedMs = 0L
+                var previousFrameNanos = 0L
+                while (inlineSegmentIndex < inlineChineseSegments.lastIndex) {
+                    if (!isPlayingState.value) {
+                        snapshotFlow { isPlayingState.value }.first { it }
+                        previousFrameNanos = 0L
+                        continue
+                    }
+                    val frameNanos = withFrameNanos { it }
+                    if (previousFrameNanos != 0L) {
+                        elapsedMs += ((frameNanos - previousFrameNanos).coerceAtLeast(0L)) /
+                            1_000_000L
+                        while (
+                            elapsedMs >= segmentDurationMs &&
+                            inlineSegmentIndex < inlineChineseSegments.lastIndex
+                        ) {
+                            elapsedMs -= segmentDurationMs
+                            inlineSegmentIndex++
+                        }
+                    }
+                    previousFrameNanos = frameNanos
+                }
             }
             val captionContent: @Composable (Pair<String, String>) -> Unit = { item ->
                 val (translated, source) = item
+                val visibleTranslated = if (fullscreen) {
+                    translated
+                } else {
+                    inlineChineseSegments.getOrNull(inlineSegmentIndex) ?: translated
+                }
                 val measuredChineseLines = remember(translated, captionContentWidthPx, fullscreen) {
                     if (!fullscreen || translated.isBlank()) 0
                     else textMeasurer.measure(
@@ -5536,14 +5653,14 @@ private fun CurrentSubtitleStrip(
                 ) {
                     if (translated.isNotBlank()) {
                         Text(
-                            text = translated,
+                            text = visibleTranslated,
                             color = if (fullscreen) Color.White else BrandBright,
                             fontSize = if (fullscreen) fullscreenChineseSize else 15.sp,
                             lineHeight = if (fullscreen) fullscreenChineseLineHeight else 18.sp,
                             fontWeight = FontWeight.Medium,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             maxLines = captionMaxLines,
-                            overflow = TextOverflow.Ellipsis,
+                            overflow = if (fullscreen) TextOverflow.Ellipsis else TextOverflow.Clip,
                             modifier = Modifier
                                 .then(if (fullscreen) Modifier.widthIn(max = captionContentWidth) else Modifier.fillMaxWidth())
                                 .graphicsLayer {
