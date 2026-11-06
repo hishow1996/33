@@ -4126,16 +4126,13 @@ private fun buildTranslationHelixTemplate(
 }
 
 /**
- * Project a real axial helix rotation into the horizontal progress lane.
- * The base curve trigonometry is cached; each frame applies only a phase rotation
- * and updates reusable paths and geometry records.
- */
-/**
- * Build the two helix strands and their connector rungs once after the canvas is measured.
- * Animation frames reuse these paths and move only a small highlight over the measured prefix.
+ * Reproject the double helix around its horizontal longitudinal axis.
+ * Cached sine/cosine samples are combined with the current rotation phase, so
+ * the 360° motion keeps a stable vertical envelope instead of flattening edge-on.
  */
 private fun buildTranslationHelixGeometry(
     template: TranslationHelixTemplate,
+    rotationPhase: Float,
     geometry: TranslationHelixGeometry,
 ) {
     val width = template.width
@@ -4143,14 +4140,21 @@ private fun buildTranslationHelixGeometry(
     val amplitude = template.amplitude
     val sampleXs = template.sampleXs
     val sampleBaseSines = template.sampleBaseSines
+    val sampleBaseCosines = template.sampleBaseCosines
+    val phaseSin = kotlin.math.sin(rotationPhase)
+    val phaseCos = kotlin.math.cos(rotationPhase)
 
     geometry.strandA.reset()
     geometry.strandB.reset()
     for (index in sampleXs.indices) {
         val x = sampleXs[index]
-        val offsetY = amplitude * sampleBaseSines[index]
-        val yA = centerY - offsetY
-        val yB = centerY + offsetY
+        // sin(phase + rotation) is the visible projection of a true axial turn.
+        val rotatedOffset = amplitude * (
+            sampleBaseSines[index] * phaseCos +
+                sampleBaseCosines[index] * phaseSin
+            )
+        val yA = centerY - rotatedOffset
+        val yB = centerY + rotatedOffset
         if (index == 0) {
             geometry.strandA.moveTo(x, yA)
             geometry.strandB.moveTo(x, yB)
@@ -4160,6 +4164,7 @@ private fun buildTranslationHelixGeometry(
         }
     }
 
+    // Rung positions stay fixed along the bar; their endpoints rotate with the strands.
     val phaseStart = template.basePhase
     val firstCrossingNumber = kotlin.math.ceil(
         (phaseStart / kotlin.math.PI.toFloat()).toDouble(),
@@ -4175,11 +4180,13 @@ private fun buildTranslationHelixGeometry(
     var rungIndex = 0
     for (interval in 0 until intervalCount) {
         val leftPhase = (firstCrossingNumber + interval) * kotlin.math.PI.toFloat()
-        for (fraction in floatArrayOf(0.25f, 0.75f)) {
+        repeat(2) { rungPart ->
+            val fraction = if (rungPart == 0) 0.25f else 0.75f
             val phase = leftPhase + kotlin.math.PI.toFloat() * fraction
             val x = ((phase - phaseStart) / template.totalPhase * width)
                 .coerceIn(0f, width)
-            val offsetY = amplitude * kotlin.math.sin(phase)
+            val rotatedPhase = phase + rotationPhase
+            val offsetY = amplitude * kotlin.math.sin(rotatedPhase)
             val rung = geometry.rungs[rungIndex++]
             rung.x = x
             rung.start = Offset(x, centerY - offsetY)
@@ -4279,7 +4286,11 @@ private fun StageProgressVisual(
     val translationHelixGeometry = remember(translationHelixTemplate) {
         translationHelixTemplate?.let { template ->
             TranslationHelixGeometry().also { geometry ->
-                buildTranslationHelixGeometry(template, geometry)
+                buildTranslationHelixGeometry(
+                    template = template,
+                    rotationPhase = 0f,
+                    geometry = geometry,
+                )
             }
         }
     }
@@ -4365,10 +4376,38 @@ private fun StageProgressVisual(
         }
     }
 
-    // Restore only the paired blue/green particles moving along the helix.
-    // Keep their appearance steady: no halo or brightness-pulse animation.
+    // Rotate the helix around its horizontal centre axis while a paired highlight
+    // travels from left to right. The projected cross-section keeps its full height
+    // throughout 0–360°, avoiding the edge-on flattening of a whole-layer 3D flip.
     val translationAnimationActive = stageIndex == 3 && isAnimating &&
         !isPaused && !isFailed && !isCompleted && !isSkipped
+    val translationHelixRotationPhase = remember(stageIndex) {
+        androidx.compose.animation.core.Animatable(0f)
+    }
+    LaunchedEffect(translationAnimationActive, isPaused) {
+        if (translationAnimationActive) {
+            val fullTurn = 2f * kotlin.math.PI.toFloat()
+            while (true) {
+                val remaining = (1f - translationHelixRotationPhase.value / fullTurn)
+                    .coerceIn(0.001f, 1f)
+                translationHelixRotationPhase.animateTo(
+                    targetValue = fullTurn,
+                    animationSpec = tween(
+                        durationMillis = (2400f * remaining).roundToInt().coerceAtLeast(1),
+                        easing = androidx.compose.animation.core.LinearEasing,
+                    ),
+                )
+                // 0 and 2π are the same pose, so each full revolution loops seamlessly.
+                translationHelixRotationPhase.snapTo(0f)
+            }
+        } else if (!isPaused) {
+            // Keep the neutral orientation after the stage stops; preserve the pose on pause.
+            translationHelixRotationPhase.snapTo(0f)
+        }
+    }
+
+    // Keep the paired blue/green particles moving independently of real progress updates.
+    // This gives visible forward motion even while the measured percentage is unchanged.
     val translationFlowActive = translationAnimationActive && !isIndeterminate
     val translationFlowPhase = remember(stageIndex) {
         androidx.compose.animation.core.Animatable(0f)
@@ -4658,6 +4697,12 @@ private fun StageProgressVisual(
             3 -> {
                 val template = translationHelixTemplate ?: return@Canvas
                 val geometry = translationHelixGeometry ?: return@Canvas
+                // Reuse the measured geometry while applying the latest axial rotation.
+                buildTranslationHelixGeometry(
+                    template = template,
+                    rotationPhase = translationHelixRotationPhase.value,
+                    geometry = geometry,
+                )
                 val progressX = size.width * fraction
                 val flowHead = when {
                     !translationAnimationActive -> null
