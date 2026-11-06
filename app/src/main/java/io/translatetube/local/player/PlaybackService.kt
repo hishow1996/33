@@ -11381,7 +11381,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     ),
                 )
             }
-            val translationBatches = pendingIndices.chunked(batchSize)
+            val translationTotalBatches = (pendingIndices.size + batchSize - 1) / batchSize
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     engineName = engineName,
@@ -11391,12 +11391,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     translationPreviewLines = translationPreviewRows.toList(),
                     translatedLineCount = completed.coerceAtMost(updatedLines.size),
                     translationCurrentBatch = 0,
-                    translationTotalBatches = translationBatches.size,
+                    translationTotalBatches = translationTotalBatches,
                     translationRetryCount = 0,
-                    progress = if (translationBatches.isEmpty()) {
+                    progress = if (translationTotalBatches == 0) {
                         "字幕已有可用译文，正在整理结果…"
                     } else {
-                        "准备翻译 ${pendingIndices.size} 条字幕，共 ${translationBatches.size} 批"
+                        "准备翻译 ${pendingIndices.size} 条字幕，共 ${translationTotalBatches} 批"
                     },
                 )
             }
@@ -11404,15 +11404,20 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // Checkpoint the first batch immediately, then every few successful batches and
             // always at the end. This bounds crash recovery loss while avoiding serializing the full
             // subtitle timeline to Room after every 16 translated cues.
-            for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
+            // Walk the pending-index list by bounded views instead of eagerly materializing
+            // thousands of small chunk lists for long subtitle files.
+            for (batchStart in pendingIndices.indices step batchSize) {
+                val batchIndex = batchStart / batchSize
+                val batchEndExclusive = minOf(batchStart + batchSize, pendingIndices.size)
+                val batchIndices = pendingIndices.subList(batchStart, batchEndExclusive)
                 awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)?.let { return it }
                 awaitProcessingResumed(key, pipelineGeneration)
                 updateUiForSession(key, pipelineGeneration) { state ->
                     state.copy(
                         translationCurrentBatch = batchIndex + 1,
-                        translationTotalBatches = translationBatches.size,
+                        translationTotalBatches = translationTotalBatches,
                         translationRetryCount = 0,
-                        progress = "准备第 ${batchIndex + 1}/${translationBatches.size} 批字幕翻译…",
+                        progress = "准备第 ${batchIndex + 1}/${translationTotalBatches} 批字幕翻译…",
                     )
                 }
                 val batchStartedAtNanos = System.nanoTime()
@@ -11474,12 +11479,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     updateUiForSession(key, pipelineGeneration) { state ->
                         state.copy(
                             translationCurrentBatch = batchIndex + 1,
-                            translationTotalBatches = translationBatches.size,
+                            translationTotalBatches = translationTotalBatches,
                             translationRetryCount = attempt,
                             progress = if (attempt == 0) {
-                                "正在请求翻译服务 · 第 ${batchIndex + 1}/${translationBatches.size} 批"
+                                "正在请求翻译服务 · 第 ${batchIndex + 1}/${translationTotalBatches} 批"
                             } else {
-                                "第 ${batchIndex + 1}/${translationBatches.size} 批译文不完整，正在重试第 ${attempt} 次"
+                                "第 ${batchIndex + 1}/${translationTotalBatches} 批译文不完整，正在重试第 ${attempt} 次"
                             },
                         )
                     }
@@ -11549,7 +11554,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "模型 ID" to active?.model.orEmpty().ifBlank { "未提供" },
                                 "源语言代码" to src,
                                 "目标语言代码" to tgt,
-                                "当前批次进度" to "${batchIndex + 1}/${translationBatches.size}",
+                                "当前批次进度" to "${batchIndex + 1}/${translationTotalBatches}",
                                 "请求调用方式" to "translateWithContext",
                                 "本次翻译批次大小" to batch.size.toString(),
                                 "请求总字符数" to batch.sumOf { it.length }.toString(),
@@ -11675,9 +11680,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 translatedLineCount = processedRows,
                                 sourceLang = src,
                                 translationCurrentBatch = batchIndex + 1,
-                                translationTotalBatches = translationBatches.size,
+                                translationTotalBatches = translationTotalBatches,
                                 translationRetryCount = attempt,
-                                progress = "正在处理第 ${batchIndex + 1}/${translationBatches.size} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
+                                progress = "正在处理第 ${batchIndex + 1}/${translationTotalBatches} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
                             )
                         }
                     }
@@ -11696,7 +11701,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
                                     "源语言代码" to src,
                                     "目标语言代码" to tgt,
-                                    "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
+                                    "当前批次" to "${batchIndex + 1}/${translationTotalBatches}",
                                     "请求字幕行数" to batch.size.toString(),
                                     "模型返回行数" to batchTranslations.size.toString(),
                                     "当前已重试次数" to attempt.toString(),
@@ -11754,7 +11759,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
                                 "源语言代码" to src,
                                 "目标语言代码" to tgt,
-                                "当前批次" to "${batchIndex + 1}/${translationBatches.size}",
+                                "当前批次" to "${batchIndex + 1}/${translationTotalBatches}",
                                 "当前批次重试请求次数（含首次）" to attempt.toString(),
                                 "是否曾出现响应数量不匹配" to hadResponseCountMismatch.toString(),
                                 "最后一次请求字幕行数" to lastRequestRowCount.toString(),
@@ -11817,9 +11822,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         translatedLineCount = completed.coerceAtMost(updatedLines.size),
                         sourceLang = src,
                         translationCurrentBatch = batchIndex + 1,
-                        translationTotalBatches = translationBatches.size,
+                        translationTotalBatches = translationTotalBatches,
                         translationRetryCount = 0,
-                        progress = "已完成第 ${batchIndex + 1}/${translationBatches.size} 批 · 已处理 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                        progress = "已完成第 ${batchIndex + 1}/${translationTotalBatches} 批 · 已处理 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                     )
                 }
                 // Unlike the coarser Room cache checkpoint, persist each completed batch so
@@ -11829,7 +11834,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 // Keep structured logs bounded: record the first, final and periodic successful batches.
                 val completedBatchCount = batchIndex + 1
-                if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
+                if (batchIndex == 0 || completedBatchCount == translationTotalBatches || completedBatchCount % 5 == 0) {
                     val batchResolvedCount = resolvedBatch.values.count { it.isNotBlank() }
                     withContext(Dispatchers.IO) {
                         io.translatetube.local.util.AppLogStore.info(
@@ -11841,7 +11846,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "传输/响应/网络重试轨迹" to traceContext.snapshot(2_400),
                                 "翻译引擎名称" to engineName,
                                 "翻译引擎 ID" to (engine?.id ?: "未知"),
-                                "批次进度" to "${completedBatchCount}/${translationBatches.size}",
+                                "批次进度" to "${completedBatchCount}/${translationTotalBatches}",
                                 "本批字幕行数" to batchIndices.size.toString(),
                                 "本批已获得有效译文行数" to batchResolvedCount.toString(),
                                 "本批未通过校验字幕行数" to (batchIndices.size - batchResolvedCount).coerceAtLeast(0).toString(),
@@ -11858,7 +11863,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // The first successful batch and final batch are always checkpointed.
                 if (!io.translatetube.local.translate.TranslationCheckpointPolicy.shouldPersistCheckpoint(
                         completedBatchCount = completedBatchCount,
-                        totalBatches = translationBatches.size,
+                        totalBatches = translationTotalBatches,
                     )
                 ) {
                     continue
@@ -11927,7 +11932,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "字幕总行数" to updatedLines.size.toString(),
                         "已获得非空中文译文行数" to updatedLines.count { !it.zh.isNullOrBlank() }.toString(),
                         "仍缺少中文译文行数" to updatedLines.count { needsSubtitleTranslation(it, src) && it.zh.isNullOrBlank() }.toString(),
-                        "处理批次数" to translationBatches.size.toString(),
+                        "处理批次数" to translationTotalBatches.toString(),
                         "累计耗时 ms" to (((System.nanoTime() - translationStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
                         "本次是否有在线/本地引擎请求" to pendingIndices.isNotEmpty().toString(),
                         "结果已写入字幕缓存的检查方式" to "由调用方根据译文填充率与缓存完整性另行判断",
