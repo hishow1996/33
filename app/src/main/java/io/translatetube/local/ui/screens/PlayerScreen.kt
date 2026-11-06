@@ -2423,26 +2423,6 @@ private fun VideoParsingPage(
         animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
         label = "processingProgress",
     )
-    val topProgressMotionActive = busy &&
-        !state.isProcessingPaused &&
-        !isError &&
-        !isCancelled &&
-        !waitingForTranscriptionEngine &&
-        !waitingForDubbingEngine &&
-        !state.manualTranslationWaiting
-    val topProgressTransition = rememberInfiniteTransition(label = "overallProgressMotion")
-    val topProgressMotionPhase by topProgressTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = if (topProgressMotionActive) 1f else 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = 1250,
-                easing = androidx.compose.animation.core.LinearEasing,
-            ),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "overallProgressMotionPhase",
-    )
 
     Column(
         Modifier
@@ -2925,54 +2905,12 @@ private fun VideoParsingPage(
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    if (fraction != null) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(7.dp)
-                                .clip(CircleShape),
-                        ) {
-                            LinearProgressIndicator(
-                                progress = { animatedFraction },
-                                modifier = Modifier.fillMaxSize(),
-                                color = Color(0xFF3268F5),
-                                trackColor = Color(0xFFE8EDF6),
-                            )
-                            if (topProgressMotionActive && animatedFraction < 1f) {
-                                Canvas(Modifier.fillMaxSize()) {
-                                    val progressX = size.width * animatedFraction.coerceIn(0f, 1f)
-                                    val remainingWidth = (size.width - progressX).coerceAtLeast(0f)
-                                    if (remainingWidth > 0f) {
-                                        val markerWidth = 2.5.dp.toPx().coerceAtMost(remainingWidth)
-                                        val markerLeft = progressX +
-                                            (remainingWidth - markerWidth) * topProgressMotionPhase
-                                        drawRoundRect(
-                                            color = Color(0xFF8FB0FF),
-                                            topLeft = Offset(markerLeft, 0f),
-                                            size = Size(markerWidth, size.height),
-                                            cornerRadius = CornerRadius(
-                                                markerWidth / 2f,
-                                                markerWidth / 2f,
-                                            ),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    } else if (topProgressMotionActive) {
-                        LinearProgressIndicator(
-                            modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
-                            color = Color(0xFF3268F5),
-                            trackColor = Color(0xFFE8EDF6),
-                        )
-                    } else {
-                        LinearProgressIndicator(
-                            progress = { 0f },
-                            modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
-                            color = Color(0xFF3268F5),
-                            trackColor = Color(0xFFE8EDF6),
-                        )
-                    }
+                    LinearProgressIndicator(
+                        progress = { animatedFraction },
+                        modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
+                        color = Color(0xFF3268F5),
+                        trackColor = Color(0xFFE8EDF6),
+                    )
                     Text(
                         if (complete) "${steps.size} / ${steps.size}" else "${(currentStage + 1).coerceAtMost(steps.size)} / ${steps.size}",
                         color = Color(0xFF6B7C98),
