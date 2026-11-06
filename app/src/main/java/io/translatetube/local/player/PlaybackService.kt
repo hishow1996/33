@@ -455,10 +455,10 @@ private object ReadyHistorySessionConfigStore {
         return false
     }
 
-    fun remove(context: Context, videoKey: String) {
+    fun remove(context: Context, videoKey: String): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
-        prefs.edit()
+        val preferencesRemoved = prefs.edit()
             .remove(key)
             .remove("$key-ignore-transcription")
             .remove(key + "-transcription-fingerprint")
@@ -466,13 +466,14 @@ private object ReadyHistorySessionConfigStore {
             .remove(key + "-dubbing-fingerprint")
             .remove(key + "-processing-flow")
             .remove(key + "-youtube-subtitle-mode")
-            .apply()
-        ReadySessionSnapshotStore.remove(context, videoKey)
+            .commit()
+        return preferencesRemoved && ReadySessionSnapshotStore.remove(context, videoKey)
     }
 
-    fun clearAll(context: Context) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
-        ReadySessionSnapshotStore.clearAll(context)
+    fun clearAll(context: Context): Boolean {
+        val preferencesRemoved =
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().commit()
+        return preferencesRemoved && ReadySessionSnapshotStore.clearAll(context)
     }
 
     private fun storageKey(videoKey: String): String {
@@ -1007,11 +1008,20 @@ class PlaybackService : MediaSessionService() {
             )
         }
 
-        fun clearHistorySessionConfig(context: Context, key: String) =
+        fun clearHistorySessionConfig(context: Context, key: String): Boolean =
             ReadyHistorySessionConfigStore.remove(context, key)
 
-        fun clearAllHistorySessionConfig(context: Context) =
+        fun clearAllHistorySessionConfig(context: Context): Boolean =
             ReadyHistorySessionConfigStore.clearAll(context)
+
+        /** Invalidate a deleted history entry in the live service, not only on disk. */
+        fun invalidateDeletedHistorySession(key: String) {
+            instance?.invalidateDeletedHistorySessionState(key)
+        }
+
+        fun invalidateAllDeletedHistorySessions() {
+            instance?.invalidateAllDeletedHistorySessionsState()
+        }
 
         /** Delete one history-owned local PCM cache only when no active ASR reader holds it. */
         fun deleteUnleasedLocalPcmCacheFile(file: File): Boolean {
@@ -4706,6 +4716,60 @@ class PlaybackService : MediaSessionService() {
                 }
             }
         }
+    }
+
+    /**
+     * A history item can be deleted while the paused player service still holds its READY state.
+     * Clear that in-memory shortcut so the same media cannot be restored after it is re-added.
+     */
+    private fun invalidateDeletedHistorySessionState(sessionKey: String) {
+        if (sessionKey.isBlank() ||
+            (videoKey != sessionKey && completedReadySessionKey != sessionKey && ui.value.key != sessionKey)
+        ) return
+
+        processingCheckpointRestoreGeneration.incrementAndGet()
+        beginPipelineGeneration()
+        cancelPendingSeekResume()
+        prepJob?.cancel()
+        subtitleDownloadJob?.cancel()
+        subtitleDownloadJob = null
+        speakerJob?.cancel()
+        speakerJob = null
+        dubCollectJob?.cancel()
+        dubCollectJob = null
+        qualityJob?.cancel()
+        qualityJob = null
+        qualityRecoveryJob?.cancel()
+        qualityRecoveryJob = null
+        enginePreferenceRestartJob?.cancel()
+        retireCurrentDubbing()
+        Handler(Looper.getMainLooper()).post {
+            if (::pm.isInitialized && videoKey.isBlank()) runCatching { pm.pause() }
+        }
+
+        activeProcessingCheckpointIdentityKey = ""
+        completedReadySessionKey = ""
+        completedReadySessionIgnoresTranscription = false
+        completedReadySessionEngineFingerprint = ""
+        videoKey = ""
+        videoId = null
+        localUri = null
+        activeLocalMediaIdentityKey = null
+        remoteMediaUrl = null
+        remoteMediaTitle = ""
+        remoteMediaReferrer = ""
+        remoteMediaUserAgent = ""
+        remoteMediaCookie = null
+        clearSubtitleHighlightTimeline()
+        ui.value = PlayerUiState()
+    }
+
+    private fun invalidateAllDeletedHistorySessionsState() {
+        val currentKey = videoKey.ifBlank { completedReadySessionKey.ifBlank { ui.value.key } }
+        if (currentKey.isNotBlank()) invalidateDeletedHistorySessionState(currentKey)
+        completedReadySessionKey = ""
+        completedReadySessionIgnoresTranscription = false
+        completedReadySessionEngineFingerprint = ""
     }
 
     // ============ 管线入口 ============
@@ -8565,7 +8629,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     audioFile is Uri && localUri != null &&
                     !cacheKeyBase.startsWith("local-media-unverified-v1:")
                 ) {
-                    localAsrPcmCacheFile("$cacheKeyBase|local-asr-pcm16-v1")
+                    localAsrPcmCacheFile("$cacheKeyBase|local-asr-pcm16-v1", sessionKey = key)
                 } else null
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
@@ -8897,7 +8961,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             }
                             if (sharedPcmIdentity != null) {
                                 val prepared = obtainLocalAsrPcmFile(
-                                    cacheFile = localAsrPcmCacheFile(sharedPcmIdentity),
+                                    cacheFile = localAsrPcmCacheFile(sharedPcmIdentity, sessionKey = key),
                                     sessionKey = key,
                                     pipelineGeneration = pipelineGeneration,
                                 ) { decodeDownloadedAudio() }
@@ -12156,9 +12220,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     private fun localAsrPcmCacheDirectory(): File =
         File(cacheDir, "local_asr_pcm16").apply { mkdirs() }
 
-    private fun localAsrPcmCacheFile(identity: String): File {
+    private fun localAsrPcmCacheFile(identity: String, sessionKey: String): File {
+        val scopedIdentity = VideoHistoryCacheIndex.generationScopedIdentity(this@PlaybackService, sessionKey, identity)
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest(identity.toByteArray(Charsets.UTF_8))
+            .digest(scopedIdentity.toByteArray(Charsets.UTF_8))
         val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
         return File(localAsrPcmCacheDirectory(), "$safeId.pcm16")
     }
@@ -12299,10 +12364,18 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     private fun asrAudioCacheDirectory(): File =
         AsrAudioCacheStorage.directory(this@PlaybackService)
 
-    private fun asrAudioCacheFile(identity: String, cacheNamespace: String? = null): File {
-        // YouTube's ASR cache namespace is versioned independently so audio fetched by the old
-        // bitrate-only selector (which could select a dubbed track) is never reused as original.
-        val cacheIdentity = cacheNamespace?.let { "$it|$identity" } ?: identity
+    private fun asrAudioCacheFile(
+        identity: String,
+        cacheNamespace: String? = null,
+        sessionKey: String = videoKey,
+    ): File {
+        // Scope downloaded audio to this history item and its deletion generation. An identical
+        // media URL in another task must not keep this task's cache reusable after deletion.
+        val cacheIdentity = VideoHistoryCacheIndex.generationScopedIdentity(
+            this@PlaybackService,
+            sessionKey,
+            cacheNamespace?.let { "$it|$identity" } ?: identity,
+        )
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(cacheIdentity.toByteArray(Charsets.UTF_8))
         val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
@@ -12323,7 +12396,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     ): File {
         return asrAudioDownloadLocks.withLock(videoId) {
             awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
-            reusableAsrAudioFile(videoId, cacheNamespace = "youtube-original-track-v2")?.let { cached ->
+            reusableAsrAudioFile(videoId, cacheNamespace = "youtube-original-track-v2", sessionKey = sessionKey)?.let { cached ->
                 updateAudioAcquisitionUi(sessionKey, pipelineGeneration, dubbingMutationGeneration, speakerRecognitionOnly) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
@@ -12354,7 +12427,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 } else state
             }
             awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
-            val destination = asrAudioCacheFile(videoId, cacheNamespace = "youtube-original-track-v2")
+            val destination = asrAudioCacheFile(videoId, cacheNamespace = "youtube-original-track-v2", sessionKey = sessionKey)
             VideoHistoryCacheIndex.rememberAudioCacheFile(
                 this@PlaybackService,
                 sessionKey,
@@ -12820,7 +12893,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // different WebView cookie sessions. The raw cookie/media URL is not written to this key.
         val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
         return asrAudioDownloadLocks.withLock(identity) {
-            val cachedAudio = reusableAsrAudioFile(identity)
+            val cachedAudio = reusableAsrAudioFile(identity, sessionKey = sessionKey)
                 ?: reusableHistoryRemoteAudioFile(
                     sessionKey = sessionKey,
                     currentIdentity = identity,
@@ -12848,7 +12921,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     ?.let { put("Referer", it) }
                 cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             }
-            val destination = asrAudioCacheFile(identity)
+            val destination = asrAudioCacheFile(identity, sessionKey = sessionKey)
             VideoHistoryCacheIndex.rememberAudioCacheFile(
                 this@PlaybackService,
                 sessionKey,
@@ -13269,7 +13342,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (sessionKey.isBlank() || !cookie.isNullOrBlank()) return null
 
         val directory = asrAudioCacheDirectory()
-        val currentPath = asrAudioCacheFile(currentIdentity).absolutePath
+        val currentPath = asrAudioCacheFile(currentIdentity, sessionKey = sessionKey).absolutePath
         val now = System.currentTimeMillis()
         val candidates = VideoHistoryCacheIndex.audioCacheFileNames(this, sessionKey)
             .asSequence()
@@ -13338,8 +13411,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     }
 
     /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
-    private fun reusableAsrAudioFile(identity: String, cacheNamespace: String? = null): File? {
-        val file = asrAudioCacheFile(identity, cacheNamespace)
+    private fun reusableAsrAudioFile(
+        identity: String,
+        cacheNamespace: String? = null,
+        sessionKey: String = videoKey,
+    ): File? {
+        val file = asrAudioCacheFile(identity, cacheNamespace, sessionKey)
         val now = System.currentTimeMillis()
         // Protect the candidate before checking its metadata: a concurrent cache pruner must not
         // delete it in the gap between validation and handing the file to its reader.
@@ -15012,7 +15089,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }
                         if (sharedPcmIdentity != null) {
                             val prepared = obtainLocalAsrPcmFile(
-                                cacheFile = localAsrPcmCacheFile(sharedPcmIdentity),
+                                cacheFile = localAsrPcmCacheFile(sharedPcmIdentity, sessionKey = sessionKey),
                                 sessionKey = sessionKey,
                                 pipelineGeneration = pipelineGeneration,
                             ) { decodeFresh() }

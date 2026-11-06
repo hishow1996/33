@@ -92,6 +92,44 @@ class AppCacheStoragePolicyTest {
     }
 
     @Test
+    fun includesAndClearsPersistentProcessingRecoveryDirectories() {
+        val cacheRoot = createTempDir(prefix = "app-cache-recovery")
+        val filesRoot = createTempDir(prefix = "app-files-recovery")
+        try {
+            File(cacheRoot, "local_asr_pcm16/source.pcm16").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(19))
+            }
+            File(filesRoot, "in_progress_processing/progress_old.json").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(23))
+            }
+            File(filesRoot, "ready_session_snapshots/ready_old.json").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(29))
+            }
+            File(filesRoot, "app_logs/keep.log").apply {
+                parentFile?.mkdirs()
+                writeText("keep")
+            }
+
+            assertEquals(
+                19L + 23L + 29L,
+                AppCacheStoragePolicy.sizeBytes(cacheRoot, filesDir = filesRoot),
+            )
+            assertTrue(AppCacheStoragePolicy.clear(cacheRoot, filesDir = filesRoot))
+            assertFalse(File(cacheRoot, "local_asr_pcm16").exists())
+            assertFalse(File(filesRoot, "in_progress_processing").exists())
+            assertFalse(File(filesRoot, "ready_session_snapshots").exists())
+            assertTrue(File(filesRoot, "app_logs/keep.log").isFile)
+            assertEquals(0L, AppCacheStoragePolicy.sizeBytes(cacheRoot, filesDir = filesRoot))
+        } finally {
+            cacheRoot.deleteRecursively()
+            filesRoot.deleteRecursively()
+        }
+    }
+
+    @Test
     fun refusesCacheClearWhenPlaybackOrBackgroundWorkIsActive() {
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = true, isProcessing = false, dubbingIncomplete = false))
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = false, isProcessing = true, dubbingIncomplete = false))

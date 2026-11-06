@@ -4,13 +4,27 @@ import android.content.Context
 import io.translatetube.local.player.AsrAudioCacheStorage
 import io.translatetube.local.player.DubbingCacheStorage
 import io.translatetube.local.player.HlsAudioDownloader
+import io.translatetube.local.player.InProgressProcessingCheckpointStore
+import io.translatetube.local.player.PendingProcessingResumeStore
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.SpeakerRecognitionTaskJournal
 import java.io.File
 import java.io.IOException
 
-/** Deletes a history row only after its video-specific caches have been removed successfully. */
+/** Deletes a history row only after all task-owned files, checkpoints and indexes are gone. */
 internal object VideoHistoryCacheCleaner {
     suspend fun deleteVideo(context: Context, database: AppDatabase, video: VideoEntity) {
+        // First retire the in-memory READY session so it cannot recreate files during cleanup.
+        PlaybackService.invalidateDeletedHistorySession(video.key)
+
+        // Capture indexed artifacts before advancing the generation; keep the index intact if a
+        // later delete fails so the visible history row remains retryable.
+        val audioNames = VideoHistoryCacheIndex.audioCacheFileNames(context, video.key).toMutableSet()
+        val localPcmNames = VideoHistoryCacheIndex.localPcmCacheFileNames(context, video.key)
+        if (!VideoHistoryCacheIndex.advanceGenerationForDeletion(context, video.key)) {
+            throw IOException("缓存代次更新失败，历史记录保留，请重试。")
+        }
+
         val dubbingDirectories = listOf(
             DubbingCacheStorage.videoDirectory(context, video.key),
             DubbingCacheStorage.legacyVideoDirectory(context, video.key),
@@ -20,10 +34,10 @@ internal object VideoHistoryCacheCleaner {
         }
 
         val audioDirectory = AsrAudioCacheStorage.directory(context)
-        val audioNames = VideoHistoryCacheIndex.audioCacheFileNames(context, video.key).toMutableSet()
         val youtubeId = video.videoId
             ?: video.key.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
         youtubeId?.takeIf { it.isNotBlank() }?.let {
+            // Also remove the pre-generation cache name written by older app versions.
             audioNames += VideoHistoryCacheIndex.audioCacheFileNameForIdentity(it)
         }
         for (name in audioNames) {
@@ -41,10 +55,9 @@ internal object VideoHistoryCacheCleaner {
             }
         }
 
-        // Decoded local PCM is indexed separately from downloaded .bin files because it has a
-        // different format and storage budget. Refuse to remove it while an ASR reader holds it.
+        // Decoded PCM has its own index and can be stored under cacheDir.
         val localPcmDirectory = File(context.cacheDir, "local_asr_pcm16")
-        for (name in VideoHistoryCacheIndex.localPcmCacheFileNames(context, video.key)) {
+        for (name in localPcmNames) {
             if (!Regex("^[0-9a-f]{32}\\.pcm16$").matches(name)) continue
             if (
                 VideoHistoryCacheIndex.isLocalPcmCacheFileReferencedByAnotherHistory(
@@ -58,61 +71,76 @@ internal object VideoHistoryCacheCleaner {
             deleteFileIfPresent(File(localPcmDirectory, "$name.part"), "转写 PCM 临时文件")
         }
 
-        database.subtitleCacheDao().deleteForVideo(video.key, "${video.key}|")
-        // Remove the row last: failures above keep it visible so the user can retry the cleanup.
-        database.videoDao().delete(video.key)
-        PlaybackService.clearHistorySessionConfig(context, video.key)
-        VideoHistoryCacheIndex.remove(context, video.key)
-    }
-
-    suspend fun deleteAll(context: Context, database: AppDatabase): Int {
-        if (!AppCacheStoragePolicy.clear(context.cacheDir, context.noBackupFilesDir)) {
-            throw IOException("部分应用缓存仍无法删除；历史记录保留，请停止相关任务后重试。")
+        if (!InProgressProcessingCheckpointStore.deleteForVideo(context, video.key)) {
+            throw IOException("处理中间检查点仍有残留，历史记录保留，请重试。")
         }
-        clearDurableAsrAudioCache(context)
-        database.subtitleCacheDao().clear()
-        val count = database.videoDao().deleteAll()
-        PlaybackService.clearAllHistorySessionConfig(context)
-        VideoHistoryCacheIndex.clearAll(context)
-        return count
+        if (!PendingProcessingResumeStore.clearForVideo(context, video.key)) {
+            throw IOException("首页任务恢复标记删除失败，历史记录保留，请重试。")
+        }
+        if (!SpeakerRecognitionTaskJournal.clearForVideo(context, video.key)) {
+            throw IOException("说话人识别任务记录删除失败，历史记录保留，请重试。")
+        }
+        if (!PlaybackService.clearHistorySessionConfig(context, video.key)) {
+            throw IOException("已完成处理结果或恢复配置仍有残留，历史记录保留，请重试。")
+        }
+
+        database.subtitleCacheDao().deleteForVideo(video.key, "${video.key}|")
+        deleteEmptyDirectoryIfPresent(File(context.noBackupFilesDir, "dub"), "持久配音缓存")
+        deleteEmptyDirectoryIfPresent(File(context.cacheDir, "dub"), "旧版配音缓存")
+        deleteEmptyDirectoryIfPresent(localPcmDirectory, "本地转写 PCM 缓存")
+        deleteEmptyDirectoryIfPresent(audioDirectory, "转写音轨缓存")
+        if (!VideoHistoryCacheIndex.removeForVideo(context, video.key)) {
+            throw IOException("缓存索引删除失败，历史记录保留，请重试。")
+        }
+
+        // Remove the history row last so any failed cleanup remains visible and retryable.
+        database.videoDao().delete(video.key)
     }
 
     /**
-     * Source audio now lives outside cacheDir so Android does not evict it opportunistically.
-     * History-wide deletion still removes it, but active ASR readers/downloaders keep their files.
+     * Clear every generated processing artifact while keeping history rows, original user media,
+     * installed models, API credentials and app settings. Both storage cleanup actions and
+     * delete-all-history use this exact path so their cleanup coverage cannot drift.
      */
-    private suspend fun clearDurableAsrAudioCache(context: Context) {
-        val directory = File(context.noBackupFilesDir, "asr_audio_retry")
-        val entries = directory.listFiles()?.toList().orEmpty()
-        for (entry in entries) {
-            val owner = when {
-                entry.name.endsWith(".bin.part") -> File(directory, entry.name.removeSuffix(".part"))
-                entry.name.endsWith(".segments") -> File(directory, entry.name.removeSuffix(".segments") + ".bin")
-                entry.name.endsWith(".bin") -> entry
-                else -> null
-            }
-            if (owner != null && !PlaybackService.deleteUnleasedAsrAudioCacheFile(owner)) {
-                throw IOException("转写音轨缓存正在使用，暂时无法清理：${owner.name}")
-            }
-            when {
-                entry.name.endsWith(".segments") -> {
-                    if (!HlsAudioDownloader.cleanupSegmentCache(requireNotNull(owner))) {
-                        throw IOException("HLS 音轨分段仍在使用，暂时无法清理：${entry.name}")
-                    }
-                }
-                entry.name.endsWith(".bin.part") -> deleteFileIfPresent(entry, "转写音轨下载临时文件")
-                entry.name.endsWith(".bin") -> deleteFileIfPresent(entry, "转写音轨")
-                else -> deleteDirectoryIfPresent(entry, "转写音轨临时缓存")
-            }
+    suspend fun clearAllProcessingData(context: Context, database: AppDatabase) {
+        PlaybackService.invalidateAllDeletedHistorySessions()
+        if (!AppCacheStoragePolicy.clear(context.cacheDir, context.noBackupFilesDir, context.filesDir)) {
+            throw IOException("部分处理缓存仍无法删除；请停止相关任务后重试。")
         }
-        if (directory.exists() && !directory.deleteRecursively() && directory.exists()) {
-            throw IOException("持久转写音轨缓存目录仍被占用，历史记录保留。")
+        database.subtitleCacheDao().clear()
+        if (!InProgressProcessingCheckpointStore.clearAll(context)) {
+            throw IOException("处理中间检查点仍有残留，请重试。")
         }
+        if (!PlaybackService.clearAllHistorySessionConfig(context)) {
+            throw IOException("已完成处理结果或恢复配置仍有残留，请重试。")
+        }
+        if (!PendingProcessingResumeStore.clearAll(context)) {
+            throw IOException("首页任务恢复记录清理失败，请重试。")
+        }
+        if (!SpeakerRecognitionTaskJournal.clearAll(context)) {
+            throw IOException("说话人识别任务记录清理失败，请重试。")
+        }
+        if (!VideoHistoryCacheIndex.clearAll(context)) {
+            throw IOException("缓存索引清理失败，请重试。")
+        }
+    }
+
+    suspend fun deleteAll(context: Context, database: AppDatabase): Int {
+        clearAllProcessingData(context, database)
+        return database.videoDao().deleteAll()
     }
 
     private fun deleteFileIfPresent(file: File, label: String) {
         if (file.exists() && !file.delete() && file.exists()) {
             throw IOException("$label 删除失败：${file.name}")
+        }
+    }
+
+    private fun deleteEmptyDirectoryIfPresent(directory: File, label: String) {
+        if (!directory.exists()) return
+        val entries = directory.listFiles() ?: throw IOException("$label 目录无法读取")
+        if (entries.isEmpty() && !directory.delete() && directory.exists()) {
+            throw IOException("$label 空目录删除失败")
         }
     }
 

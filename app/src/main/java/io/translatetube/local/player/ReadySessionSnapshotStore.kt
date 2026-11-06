@@ -290,18 +290,78 @@ internal object ReadySessionSnapshotStore {
         return removed
     }
 
-    fun remove(context: Context, videoKey: String) {
-        if (!isSupportedVideoKey(videoKey)) return
+    fun remove(context: Context, videoKey: String): Boolean {
+        if (!isSupportedVideoKey(videoKey)) return false
         val prefix = filePrefix(videoKey)
-        directory(context).listFiles { _, name ->
-            name.startsWith(prefix) && name.endsWith(".json")
-        }?.forEach { file -> runCatching { AtomicFile(file).delete() } }
+        val directories = listOf(
+            File(context.applicationContext.filesDir, DIRECTORY_NAME),
+            File(context.applicationContext.cacheDir, DIRECTORY_NAME),
+        )
+        var succeeded = true
+        directories.forEach { directory ->
+            if (!directory.exists()) return@forEach
+            val entries = directory.listFiles()
+            if (entries == null) {
+                succeeded = false
+                return@forEach
+            }
+            val candidates = entries.filter { entry ->
+                entry.name.startsWith(prefix) &&
+                    (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+            }.map { entry ->
+                File(if (entry.name.endsWith(".bak")) entry.absolutePath.removeSuffix(".bak") else entry.absolutePath)
+            }.distinctBy { it.absolutePath }
+            candidates.forEach { file ->
+                val deleted = runCatching {
+                    AtomicFile(file).delete()
+                    !file.exists() && !File(file.absolutePath + ".bak").exists()
+                }.getOrDefault(false)
+                if (!deleted) succeeded = false
+            }
+            val remaining = directory.listFiles()
+            if (remaining == null || remaining.any { entry ->
+                    entry.name.startsWith(prefix) &&
+                        (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+                }
+            ) succeeded = false
+        }
+        return succeeded
     }
 
-    fun clearAll(context: Context) {
-        directory(context).listFiles { _, name ->
-            name.startsWith("ready_") && name.endsWith(".json")
-        }?.forEach { file -> runCatching { AtomicFile(file).delete() } }
+    fun clearAll(context: Context): Boolean {
+        val directories = listOf(
+            File(context.applicationContext.filesDir, DIRECTORY_NAME),
+            File(context.applicationContext.cacheDir, DIRECTORY_NAME),
+        )
+        var succeeded = true
+        directories.forEach { directory ->
+            if (!directory.exists()) return@forEach
+            val entries = directory.listFiles()
+            if (entries == null) {
+                succeeded = false
+                return@forEach
+            }
+            val candidates = entries.filter { entry ->
+                entry.name.startsWith("ready_") &&
+                    (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+            }.map { entry ->
+                File(if (entry.name.endsWith(".bak")) entry.absolutePath.removeSuffix(".bak") else entry.absolutePath)
+            }.distinctBy { it.absolutePath }
+            candidates.forEach { file ->
+                val deleted = runCatching {
+                    AtomicFile(file).delete()
+                    !file.exists() && !File(file.absolutePath + ".bak").exists()
+                }.getOrDefault(false)
+                if (!deleted) succeeded = false
+            }
+            val remaining = directory.listFiles()
+            if (remaining == null || remaining.any { entry ->
+                    entry.name.startsWith("ready_") &&
+                        (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+                }
+            ) succeeded = false
+        }
+        return succeeded
     }
 
     private fun encodeState(state: PlayerUiState): JSONObject {

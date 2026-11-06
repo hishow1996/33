@@ -62,15 +62,15 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 private enum class StorageCategory(val title: String, val hint: String) {
-    CACHE("临时缓存", "配音音频、转写音频和 HLS 分段"),
-    SUBTITLES("字幕与翻译缓存", "字幕原文、译文和缓存条目"),
+    CACHE("处理缓存", "解析、转写、翻译、配音与恢复缓存"),
+    SUBTITLES("字幕与翻译缓存", "字幕、译文及关联处理缓存"),
     MODELS("已下载模型", "本地转写模型、配音模型与配套文件"),
     HISTORY("视频历史记录", "播放历史与收藏记录"),
     DATABASE("应用数据库", "数据库文件、WAL 和 SHM 文件"),
     LOGS("应用日志", "运行记录、异常详情与故障轨迹"),
 }
 private enum class StorageAction(val title: String) {
-    CACHE("清理临时缓存"), SUBTITLES("清理字幕与翻译缓存"), LOGS("清理应用日志"),
+    CACHE("清理处理缓存"), SUBTITLES("清理字幕与翻译缓存"), LOGS("清理应用日志"),
 }
 
 private data class HistoryDeleteRequest(val keys: List<String>, val clearAll: Boolean = false)
@@ -467,7 +467,7 @@ fun StorageManagementScreen(
                     "开始执行本地数据清理",
                     diagnosticContext = mapOf(
                         "清理类别" to action.title,
-                        "操作前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir) }.getOrDefault(-1L).toString(),
+                        "操作前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir, ctx.filesDir) }.getOrDefault(-1L).toString(),
                         "操作前日志记录条数" to runCatching { AppLogStore.readRecent(ctx, 800).size }.getOrDefault(-1).toString(),
                         "是否播放/处理中" to playbackBusy.toString(),
                         "是否模型下载中" to downloadBusy.toString(),
@@ -476,17 +476,20 @@ fun StorageManagementScreen(
                 runCatching {
                     when (action) {
                         StorageAction.CACHE -> {
-                            val before = AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir).coerceAtLeast(0L)
-                            val ok = AppCacheStoragePolicy.clear(ctx.cacheDir, ctx.noBackupFilesDir)
-                            val after = AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir).coerceAtLeast(0L)
+                            val before = AppCacheStoragePolicy.sizeBytes(
+                                ctx.cacheDir, ctx.noBackupFilesDir, ctx.filesDir,
+                            ).coerceAtLeast(0L)
+                            VideoHistoryCacheCleaner.clearAllProcessingData(ctx, db)
+                            val after = AppCacheStoragePolicy.sizeBytes(
+                                ctx.cacheDir, ctx.noBackupFilesDir, ctx.filesDir,
+                            ).coerceAtLeast(0L)
                             val freed = (before - after).coerceAtLeast(0L)
-                            if (ok) "临时缓存清理完成，实际释放 ${bytesLabel(freed)}。"
-                            else "部分缓存仍被占用，实际释放 ${bytesLabel(freed)}；请停止相关任务后重试。"
+                            "已清理全部视频的处理与恢复缓存，实际释放 ${bytesLabel(freed)}；历史记录和已下载模型保留。"
                         }
                         StorageAction.SUBTITLES -> {
                             val count = db.subtitleCacheDao().countEntries()
-                            db.subtitleCacheDao().clear()
-                            "已清理 $count 条字幕与翻译缓存。历史记录和源视频不受影响；以后可能需要重新获取或翻译字幕。"
+                            VideoHistoryCacheCleaner.clearAllProcessingData(ctx, db)
+                            "已清理 $count 条字幕与翻译缓存，并同步清除关联音频、配音及恢复缓存；历史记录和已下载模型保留。"
                         }
                         StorageAction.LOGS ->
                             if (AppLogStore.clear(ctx)) "应用日志已清理，之后的新日志仍会继续保存。"
@@ -515,7 +518,7 @@ fun StorageManagementScreen(
                     val diagnostic = mapOf(
                         "清理类别" to actionLabel,
                         "操作结果摘要" to summary.take(500),
-                        "当前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir) }.getOrDefault(-1L).toString(),
+                        "当前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir, ctx.noBackupFilesDir, ctx.filesDir) }.getOrDefault(-1L).toString(),
                         "当前日志记录条数" to runCatching { AppLogStore.readRecent(ctx, 800).size }.getOrDefault(-1).toString(),
                         "结果分类" to if (partial) "部分完成或仍有资源占用" else "成功完成",
                     )
@@ -716,8 +719,8 @@ fun StorageManagementScreen(
             title = { Text(action.title + "？", color = OnBg) },
             text = {
                 Text(when (action) {
-                    StorageAction.CACHE -> "只删除应用标记为可清理的配音 PCM、转写临时音频和 HLS 分段缓存，不会删除数据库、字幕缓存或已下载模型。"
-                    StorageAction.SUBTITLES -> "将清空字幕与翻译缓存。视频历史、收藏和原始视频不会删除；以后可能需要重新获取或翻译字幕。"
+                    StorageAction.CACHE -> "删除所有视频的解析、转写、翻译、配音和任务恢复缓存；历史记录、原始视频、已下载模型和应用设置保留。重新打开视频将从头解析并重新获取音频。"
+                    StorageAction.SUBTITLES -> "删除字幕原文、译文及关联的音频、配音和恢复缓存；历史记录、原始视频和已下载模型保留。以后重新打开视频将从头处理。"
                     StorageAction.LOGS -> "将删除保存的日志文件和上次异常详情。建议先到日志页面导出需要保留的记录。"
                 }, color = SubText)
             },
@@ -921,7 +924,7 @@ private fun StorageDetail(
                     when (category) {
                         StorageCategory.CACHE -> {
                             if (busy) NoticeBox("播放、处理或模型下载期间不能清理。", true)
-                            ActionButton(if (actionBusy) "清理中…" else "清理临时缓存", !busy && !actionBusy && !scanning) { onAction(StorageAction.CACHE) }
+                            ActionButton(if (actionBusy) "清理中…" else "清理处理缓存", !busy && !actionBusy && !scanning) { onAction(StorageAction.CACHE) }
                         }
                         StorageCategory.SUBTITLES -> {
                             MetricLine("缓存条目", data?.subtitleCount?.toString() ?: "—")
@@ -1360,7 +1363,7 @@ private suspend fun scanStorage(context: Context, db: AppDatabase): StorageSnaps
     val logBytes = if (logA < 0L || logB < 0L) -1L else addSaturated(logA, logB)
 
     val cache = runCatching {
-        AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir)
+        AppCacheStoragePolicy.sizeBytes(context.cacheDir, context.noBackupFilesDir, context.filesDir)
     }.getOrElse {
         warnings += "临时缓存统计失败：${it.javaClass.simpleName}"; -1L
     }

@@ -28,6 +28,32 @@ internal object PendingProcessingResumeStore {
         return preferences.getLong(KEY_GENERATION, 0L).takeIf { it > 0L }
     }
 
+    /** Remove the Home resume marker only when it belongs to the deleted media key. */
+    fun clearForVideo(context: Context, sessionKey: String): Boolean {
+        if (sessionKey.isBlank()) return false
+        val preferences = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val sourceMatches = preferences.getString(KEY_SOURCE, null) == sessionKey
+        val activeMatches = preferences.getString(KEY_ACTIVE, null) == sessionKey
+        if (!sourceMatches && !activeMatches) return true
+        return preferences.edit()
+            .remove(KEY_SOURCE)
+            .remove(KEY_ACTIVE)
+            .remove(KEY_GENERATION)
+            .remove(KEY_MEDIA_REFERRER)
+            .remove(KEY_MEDIA_USER_AGENT)
+            .remove(KEY_LAST_PHASE)
+            .remove(KEY_LAST_PROGRESS)
+            .remove(KEY_LAST_UPDATED_AT)
+            .commit()
+    }
+
+    /** Clear all durable resume metadata when all processing caches are deleted. */
+    fun clearAll(context: Context): Boolean =
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
+
     fun record(
         context: Context,
         sessionKey: String,

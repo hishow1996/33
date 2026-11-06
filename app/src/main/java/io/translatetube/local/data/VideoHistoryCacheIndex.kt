@@ -108,20 +108,50 @@ internal object VideoHistoryCacheIndex {
             .toSet()
     }
 
-    fun remove(context: Context, videoKey: String) {
-        if (videoKey.isBlank()) return
+    /**
+     * Cache identities are scoped to the history item and its deletion generation. A deleted
+     * history item can therefore never reuse an old media URL/content-addressed file when added
+     * again, even if another row still references an earlier cache.
+     */
+    fun generationScopedIdentity(context: Context, videoKey: String, identity: String): String {
+        if (videoKey.isBlank()) return identity
+        return "$videoKey|history-generation=${cacheGeneration(context, videoKey)}|$identity"
+    }
+
+    fun cacheGeneration(context: Context, videoKey: String): Long {
+        if (videoKey.isBlank()) return 0L
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong(generationStorageKey(videoKey), 0L)
+            .coerceAtLeast(0L)
+    }
+
+    /** Advance the task namespace before file deletion, retaining indexes so failed cleanup can retry. */
+    fun advanceGenerationForDeletion(context: Context, videoKey: String): Boolean {
+        if (videoKey.isBlank()) return false
+        val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val current = preferences.getLong(generationStorageKey(videoKey), 0L).coerceAtLeast(0L)
+        val next = if (current == Long.MAX_VALUE) 1L else current + 1L
+        return preferences.edit().putLong(generationStorageKey(videoKey), next).commit()
+    }
+
+    /** Remove per-history cache-index entries after all associated files were deleted. */
+    fun removeForVideo(context: Context, videoKey: String): Boolean {
+        if (videoKey.isBlank()) return false
         val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val editor = preferences.edit()
             .remove(audioStorageKey(videoKey))
             .remove(localPcmStorageKey(videoKey))
         val identityPrefix = audioSourceIdentityStoragePrefix(videoKey)
         preferences.all.keys.filter { it.startsWith(identityPrefix) }.forEach { editor.remove(it) }
-        editor.apply()
+        return editor.commit()
     }
 
-    fun clearAll(context: Context) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
+    fun remove(context: Context, videoKey: String) {
+        removeForVideo(context, videoKey)
     }
+
+    fun clearAll(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().commit()
 
     fun audioCacheFileNameForIdentity(identity: String): String =
         "${shortDigest(identity)}.bin"
@@ -137,6 +167,9 @@ internal object VideoHistoryCacheIndex {
 
     private fun localPcmStorageKey(videoKey: String): String =
         "history-${shortDigest(videoKey)}-local-pcm"
+
+    private fun generationStorageKey(videoKey: String): String =
+        "history-${shortDigest(videoKey)}-generation"
 
     private fun shortDigest(value: String): String =
         MessageDigest.getInstance("SHA-256")

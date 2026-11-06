@@ -470,6 +470,58 @@ internal object InProgressProcessingCheckpointStore {
         )
     }
 
+    /** Delete every unfinished checkpoint belonging to this video, across all media identities. */
+    @Synchronized
+    fun deleteForVideo(context: Context, videoKey: String): Boolean {
+        if (!isSupportedKey(videoKey)) return false
+        val checkpointDirectory = directory(context)
+        if (!checkpointDirectory.exists()) return true
+        val entries = checkpointDirectory.listFiles() ?: return false
+        val prefix = "progress_" + sha256(videoKey).take(24) + "_"
+        val candidates = entries.filter { entry ->
+            entry.name.startsWith(prefix) &&
+                (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+        }.map { entry ->
+            File(if (entry.name.endsWith(".bak")) entry.absolutePath.removeSuffix(".bak") else entry.absolutePath)
+        }.distinctBy { it.absolutePath }
+        var succeeded = true
+        for (file in candidates) {
+            if (!deleteFile(file)) succeeded = false
+            lastSavedByPath.remove(file.absolutePath)
+        }
+        val remainingEntries = if (checkpointDirectory.exists()) checkpointDirectory.listFiles() ?: return false
+            else emptyArray()
+        return succeeded && remainingEntries.none { entry ->
+            entry.name.startsWith(prefix) &&
+                (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+        }
+    }
+
+    /** Clear all persisted unfinished work while leaving installed models and app settings intact. */
+    @Synchronized
+    fun clearAll(context: Context): Boolean {
+        val checkpointDirectory = directory(context)
+        if (!checkpointDirectory.exists()) return true
+        val entries = checkpointDirectory.listFiles() ?: return false
+        val candidates = entries.filter { entry ->
+            entry.name.startsWith("progress_") &&
+                (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+        }.map { entry ->
+            File(if (entry.name.endsWith(".bak")) entry.absolutePath.removeSuffix(".bak") else entry.absolutePath)
+        }.distinctBy { it.absolutePath }
+        var succeeded = true
+        for (file in candidates) {
+            if (!deleteFile(file)) succeeded = false
+            lastSavedByPath.remove(file.absolutePath)
+        }
+        val remainingEntries = if (checkpointDirectory.exists()) checkpointDirectory.listFiles() ?: return false
+            else emptyArray()
+        return succeeded && remainingEntries.none { entry ->
+            entry.name.startsWith("progress_") &&
+                (entry.name.endsWith(".json") || entry.name.endsWith(".json.bak"))
+        }
+    }
+
     @Synchronized
     fun delete(context: Context, videoKey: String, identityKey: String): Boolean {
         if (!isSupportedKey(videoKey) || identityKey.isBlank()) return false

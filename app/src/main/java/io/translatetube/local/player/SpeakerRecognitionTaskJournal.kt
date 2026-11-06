@@ -145,6 +145,30 @@ internal object SpeakerRecognitionTaskJournal {
         }
     }
 
+    /** Remove all recognition breadcrumbs for one deleted history entry. */
+    @Synchronized
+    fun clearForVideo(context: Context, sessionKey: String): Boolean {
+        if (sessionKey.isBlank()) return false
+        val prefix = sessionPrefix(sessionKey)
+        activeTokensByPrefix.remove(prefix)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val keys = prefs.all.keys.filter { it.startsWith(prefix) }
+        if (keys.isEmpty()) return true
+        val editor = prefs.edit()
+        keys.forEach { editor.remove(it) }
+        return editor.commit()
+    }
+
+    /** Clear all saved recognition breadcrumbs after all task data has been removed. */
+    @Synchronized
+    fun clearAll(context: Context): Boolean {
+        activeTokensByPrefix.clear()
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
+    }
+
     private fun persistActiveState(
         prefs: android.content.SharedPreferences,
         prefix: String,
