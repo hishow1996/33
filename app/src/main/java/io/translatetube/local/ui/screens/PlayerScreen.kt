@@ -269,6 +269,17 @@ fun PlayerScreen(
             }
 
             applyFullscreenWindowMode()
+            // Closing a popup menu hands focus back to the activity; Android may leave the status
+            // bar showing at that moment, so hide the bars again once focus returns.
+            val windowFocusListener = android.view.ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+                if (hasFocus) {
+                    runCatching { insetsController.hide(WindowInsetsCompat.Type.systemBars()) }
+                    decorView.post {
+                        runCatching { insetsController.hide(WindowInsetsCompat.Type.systemBars()) }
+                    }
+                }
+            }
+            decorView.viewTreeObserver.addOnWindowFocusChangeListener(windowFocusListener)
             val fullscreenLifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
                 if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                     applyFullscreenWindowMode()
@@ -277,6 +288,9 @@ fun PlayerScreen(
             fullscreenLifecycleOwner.lifecycle.addObserver(fullscreenLifecycleObserver)
             onDispose {
                 fullscreenLifecycleOwner.lifecycle.removeObserver(fullscreenLifecycleObserver)
+                runCatching {
+                    decorView.viewTreeObserver.removeOnWindowFocusChangeListener(windowFocusListener)
+                }
                 // Every scheduled recovery callback is valid only for this exit transition.
                 // Re-entering fullscreen advances the epoch and makes the old callbacks inert.
                 val restoreEpoch = fullscreenWindowEpoch.incrementAndGet()
@@ -6309,6 +6323,28 @@ private fun PlaybackHintOverlay(
     }
 }
 
+/**
+ * A DropdownMenu is its own focused window. Without its own immersive flags the system shows the
+ * status bar while the menu is open (and Android 9 then keeps it). Put this inside the menu content
+ * while the player is fullscreen so the popup window asks for the bars to stay hidden too.
+ */
+@Composable
+private fun KeepSystemBarsHiddenInPopup(enabled: Boolean) {
+    if (!enabled) return
+    val view = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(view) {
+        runCatching {
+            val root = view.rootView
+            @Suppress("DEPRECATION")
+            root.systemUiVisibility = root.systemUiVisibility or
+                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        }
+        onDispose { }
+    }
+}
+
 @Composable
 
 
@@ -6933,6 +6969,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             qualityExpanded = false
                         },
                     ) {
+                        KeepSystemBarsHiddenInPopup(isFullscreen)
                         state.qualityOptions.forEach { quality ->
                             DropdownMenuItem(
                                 text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
@@ -7033,6 +7070,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                 speedExpanded = false
                             },
                         ) {
+                            KeepSystemBarsHiddenInPopup(isFullscreen)
                             speedOptions.forEach { value ->
                                 DropdownMenuItem(
                                     text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
