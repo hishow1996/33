@@ -115,14 +115,12 @@ internal object SubtitlePreviewSegmentPolicy {
 
     private fun isSentencePunctuation(codePoint: Int): Boolean = when (codePoint) {
         '.'.code, '!'.code, '?'.code, ';'.code,
-        '。'.code, '！'.code, '？'.code, '；'.code,
-        -> true
+        '。'.code, '！'.code, '？'.code, '；'.code -> true
         else -> false
     }
 
     private fun isSoftPunctuation(codePoint: Int): Boolean = when (codePoint) {
-        ','.code, ':'.code, '，'.code, '、'.code, '：'.code,
-        -> true
+        ','.code, ':'.code, '，'.code, '、'.code, '：'.code -> true
         else -> false
     }
 

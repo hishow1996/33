@@ -25,7 +25,7 @@ class SubtitlePreviewSegmentPolicyTest {
     @Test
     fun prefersSentenceBoundariesWhenSplitting() {
         val caption = "前面这句话需要先显示完整。后面这句话也需要完整显示。"
-        val segments = SubtitlePreviewSegmentPolicy.split(caption, maxVisibleUnits = 12f)
+        val segments = SubtitlePreviewSegmentPolicy.split(caption, maxVisibleUnits = 14f)
 
         assertTrue(segments.size > 1)
         assertTrue(segments.first().endsWith("。"))

@@ -5482,7 +5482,7 @@ private fun CurrentSubtitleStrip(
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
             val initialPreviewUnitLimit = (
-                captionContent.value * 2f / (15f * density.fontScale) * 0.82f
+                captionContentWidth.value * 2f / (15f * density.fontScale) * 0.82f
             ).coerceIn(10f, 40f)
             val inlineChineseSegments = remember(
                 renderedCaption.first,
