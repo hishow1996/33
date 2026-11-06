@@ -7396,7 +7396,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         maxHeight < 360.dp -> 128.dp
                         else -> 144.dp
                     }
-                    val captionLaneMaxWidth = (maxWidth * 0.62f)
+                    val captionLaneMaxWidth = (maxWidth * 0.8f)
                         .coerceAtMost((maxWidth - 8.dp).coerceAtLeast(1.dp))
                     val density = LocalDensity.current
                     val containerWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
