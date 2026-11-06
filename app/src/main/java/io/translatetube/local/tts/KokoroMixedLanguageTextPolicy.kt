@@ -11,7 +11,7 @@ internal object KokoroMixedLanguageTextPolicy {
      * Bump this whenever text preparation changes so cached PCM generated from older speech
      * normalization rules is not reused.
      */
-    const val CACHE_VERSION = "zh-en-v2"
+    const val CACHE_VERSION = "zh-en-v3"
 
     internal data class PreparedText(
         val text: String,
