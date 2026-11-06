@@ -65,7 +65,7 @@ internal object KokoroMixedLanguageTextPolicy {
     private val latinBeforeCjk = Regex("""([A-Za-z])([$CJK])""")
 
     fun prepare(text: String): PreparedText {
-        val normalizedWhitespace = text.replace(Regex("""\\s+"""), " ").trim()
+        val normalizedWhitespace = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedWhitespace.isEmpty()) {
             return PreparedText(normalizedWhitespace, 0, 0, 0)
         }
@@ -95,7 +95,7 @@ internal object KokoroMixedLanguageTextPolicy {
         // Do not split the cue into separate languages: Kokoro keeps one voice and one prosody run.
         prepared = cjkBeforeLatin.replace(prepared, "$1 $2")
         prepared = latinBeforeCjk.replace(prepared, "$1 $2")
-        prepared = prepared.replace(Regex("""\\s+"""), " ").trim()
+        prepared = prepared.replace(Regex("""\s+"""), " ").trim()
 
         // Letter spelling and added boundaries must never push a valid subtitle over the existing
         // per-cue limit. In that rare case, retain the original normalized text unchanged.
