@@ -2825,8 +2825,7 @@ private fun VideoParsingPage(
                         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                         modifier = Modifier
                             .padding(start = 1.dp)
-                            .widthIn(max = 68.dp)
-                            
+                            .widthIn(max = 68.dp),
                     ) {
                         val stateColor = when {
                             isError || isCancelled -> Color(0xFFCB3E4D)
