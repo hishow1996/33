@@ -278,6 +278,7 @@ class SherpaOfflineTts(context: Context, private val modelId: String) : TtsEngin
         val lexicon = File(dir, "lexicon.txt")
         val ruleFiles = definition.ruleFstNames.map { File(dir, it) }
         val espeakDir = File(dir, "espeak-ng-data")
+        val vocoder = definition.vocoderFileName?.let { File(dir, it) }
         val details = mapOf(
             "配音服务商" to "${name} / Sherpa-ONNX",
             "失败阶段" to stage,
