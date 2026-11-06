@@ -1,3 +1,4 @@
+# Explicit user-requested APK build trigger for latest main 4360218b (2026-11-06).
 # Retry APK build after aligning Chinese entity-category prompt wording (2026-11-05).
 # Retry APK build after fixing ambiguous Han dubbing, symbol-row output boundaries and prompt wording (2026-11-05).
 # Retry APK build after fixing proper-name, prompt-context and symbol-row regression tests (2026-11-05).
