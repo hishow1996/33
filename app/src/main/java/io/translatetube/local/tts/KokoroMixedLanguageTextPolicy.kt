@@ -8,7 +8,7 @@ import java.util.Locale
  */
 internal object KokoroMixedLanguageTextPolicy {
     /** Bump this whenever speech normalization changes so old PCM is not reused. */
-    const val CACHE_VERSION = "zh-en-v4"
+    const val CACHE_VERSION = "zh-en-v5"
 
     internal data class PreparedText(
         val text: String,
@@ -97,7 +97,7 @@ internal object KokoroMixedLanguageTextPolicy {
         RegexOption.IGNORE_CASE,
     )
     private val urlOrDomainPattern = Regex(
-        """(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)""",
+        """(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!"""(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"""'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})""",
     )
 
     /** Never rewrite an abbreviation or brand inside a URL/domain embedded in subtitle text. */
