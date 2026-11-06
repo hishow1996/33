@@ -385,3 +385,5 @@ jobs:
 # Explicit APK build trigger for latest main source requested on 2026-11-06.
 
 # Explicit user-requested APK build trigger for latest main source (2026-11-07): run JVM tests and produce installable debug/release APK artifacts.
+
+# Explicit user-requested APK rebuild after fixing Piper TTS diagnostic vocoder scope (2026-11-07).
