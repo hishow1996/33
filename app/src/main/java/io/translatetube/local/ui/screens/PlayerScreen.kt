@@ -4365,32 +4365,6 @@ private fun StageProgressVisual(
         }
     }
 
-    // Keep the double-helix geometry static and animate only its lightweight highlight.
-    val translationAnimationActive = stageIndex == 3 && isAnimating &&
-        !isPaused && !isFailed && !isCompleted && !isSkipped
-    // The paired highlight travels across the complete helix track; the blue/green
-    // completed section below remains clipped to the real measured progress.
-    val translationFlowActive = translationAnimationActive && !isIndeterminate
-    val translationFlowPhase = remember(stageIndex) {
-        androidx.compose.animation.core.Animatable(0f)
-    }
-    LaunchedEffect(translationFlowActive, isPaused) {
-        if (translationFlowActive) {
-            while (true) {
-                val remaining = (1f - translationFlowPhase.value).coerceIn(0.001f, 1f)
-                translationFlowPhase.animateTo(
-                    targetValue = 1f,
-                    animationSpec = tween(
-                        durationMillis = (1800f * remaining).roundToInt().coerceAtLeast(1),
-                        easing = androidx.compose.animation.core.LinearEasing,
-                    ),
-                )
-                translationFlowPhase.snapTo(0f)
-            }
-        } else if (!isPaused) {
-            translationFlowPhase.snapTo(0f)
-        }
-    }
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
         isFailed -> Color(0xFFD74655)
@@ -4655,26 +4629,11 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 4. Translation — a cached double helix with a lightweight travelling highlight.
+            // 4. Translation — a static double helix with a real-progress boundary.
             3 -> {
                 val template = translationHelixTemplate ?: return@Canvas
                 val geometry = translationHelixGeometry ?: return@Canvas
                 val progressX = size.width * fraction
-                val motionEnabled = translationAnimationActive
-                val flowHead = when {
-                    !motionEnabled -> null
-                    isIndeterminate -> scanPosition * size.width
-                    else -> translationFlowPhase.value * size.width
-                }
-                val flowIntensity = when {
-                    !motionEnabled -> 0f
-                    isIndeterminate -> kotlin.math.sin(
-                        kotlin.math.PI.toFloat() * scanPosition,
-                    ).coerceIn(0f, 1f)
-                    else -> kotlin.math.sin(
-                        kotlin.math.PI.toFloat() * translationFlowPhase.value,
-                    ).coerceIn(0f, 1f)
-                }
                 val pendingColor = if (isSkipped) Color(0xFFBBC5D2) else Color(0xFFD1DAE5)
                 val blueColor = when {
                     isFailed -> Color(0xFFD74655)
@@ -4746,37 +4705,6 @@ private fun StageProgressVisual(
                         geometry.strandB,
                         color = greenColor.copy(alpha = 0.55f),
                         style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
-                    )
-                }
-
-                // A small paired pulse moves along the cached strands; no path rebuild or
-                // per-crossover masking is needed on animation frames.
-                if (flowHead != null && flowIntensity > 0f && size.width > 0f) {
-                    val headX = flowHead.coerceIn(0f, size.width)
-                    val phase = template.basePhase + template.totalPhase * (headX / size.width)
-                    val offsetY = template.amplitude * kotlin.math.sin(phase)
-                    val centerA = Offset(headX, template.centerY - offsetY)
-                    val centerB = Offset(headX, template.centerY + offsetY)
-                    val haloRadius = 3.6.dp.toPx()
-                    drawCircle(
-                        color = Color.White.copy(alpha = flowIntensity * 0.75f),
-                        radius = haloRadius,
-                        center = centerA,
-                    )
-                    drawCircle(
-                        color = blueColor,
-                        radius = 1.8.dp.toPx(),
-                        center = centerA,
-                    )
-                    drawCircle(
-                        color = Color.White.copy(alpha = flowIntensity * 0.75f),
-                        radius = haloRadius,
-                        center = centerB,
-                    )
-                    drawCircle(
-                        color = greenColor,
-                        radius = 1.8.dp.toPx(),
-                        center = centerB,
                     )
                 }
 
