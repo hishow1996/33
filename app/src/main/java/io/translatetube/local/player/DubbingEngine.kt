@@ -2056,7 +2056,7 @@ class DubbingEngine(
      * 历史越多越慢；放在预检和首句合成之前会让「检测进度」和首句配音一起被拖住。
      * 清理本身对并发写入是安全的（每个删除都在锁内核对文件指纹），所以可以和合成并行。
      */
-    private fun scheduleDeferredCachePrune(generation: Long) {
+    private fun scheduleDeferredCachePrune(generation: Int) {
         pruneJob?.cancel()
         pruneJob = scope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(DEFERRED_CACHE_PRUNE_DELAY_MS)

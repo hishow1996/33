@@ -4725,7 +4725,7 @@ private fun StageProgressVisual(
                             style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
                         )
                     }
-                } else if (isIndeterminate && motionEnabled) {
+                } else if (isIndeterminate && translationAnimationActive) {
                     drawPath(
                         geometry.strandA,
                         color = blueColor.copy(alpha = 0.55f),
