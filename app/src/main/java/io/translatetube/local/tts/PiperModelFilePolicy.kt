@@ -1,6 +1,6 @@
 package io.translatetube.local.tts
 
-/** Filesystem-independent validation for sherpa-onnx Piper model archives. */
+/** Filesystem-independent validation for sherpa-onnx local speech models. */
 internal object PiperModelFilePolicy {
     val CHINESE_RULE_FST_NAMES = listOf("phone.fst", "date.fst", "number.fst")
     const val MIN_ONNX_BYTES = 1L * 1024L * 1024L
@@ -17,27 +17,36 @@ internal object PiperModelFilePolicy {
         requiresChineseAssets = requiresChineseAssets,
     )
 
-    /** Names alone are insufficient: an interrupted download can leave a zero-byte or truncated ONNX. */
     fun isComplete(
         rootFiles: Map<String, Long>,
         hasEspeakData: Boolean,
         requiresChineseAssets: Boolean,
+        modelFileName: String? = null,
+        vocoderFileName: String? = null,
+        requiresEspeakDataForChinese: Boolean = false,
+        ruleFstNames: List<String> = CHINESE_RULE_FST_NAMES,
     ): Boolean {
-        if (rootFiles.none { (name, bytes) ->
+        val modelIsValid = if (modelFileName.isNullOrBlank()) {
+            rootFiles.any { (name, bytes) ->
                 name.endsWith(".onnx", ignoreCase = true) && bytes >= MIN_ONNX_BYTES
             }
+        } else {
+            (rootFiles[modelFileName] ?: 0L) >= MIN_ONNX_BYTES
+        }
+        if (!modelIsValid || (rootFiles["tokens.txt"] ?: 0L) <= 0L) return false
+        if (!vocoderFileName.isNullOrBlank() &&
+            (rootFiles[vocoderFileName] ?: 0L) < MIN_ONNX_BYTES
         ) return false
-        if ((rootFiles["tokens.txt"] ?: 0L) <= 0L) return false
 
         return if (requiresChineseAssets) {
             (rootFiles["lexicon.txt"] ?: 0L) > 0L &&
-                CHINESE_RULE_FST_NAMES.all { (rootFiles[it] ?: 0L) > 0L }
+                ruleFstNames.all { (rootFiles[it] ?: 0L) > 0L } &&
+                (!requiresEspeakDataForChinese || hasEspeakData)
         } else {
             hasEspeakData
         }
     }
 
-    /** Return the path inside a single-root archive, or null for unsafe or foreign-root entries. */
     fun normalizeArchiveEntryName(entryName: String, expectedRootName: String): String? {
         val normalized = entryName.replace('\\', '/')
         if (normalized.startsWith('/') || '\u0000' in normalized || expectedRootName.isBlank()) return null
