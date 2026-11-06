@@ -3022,7 +3022,7 @@ private fun VideoParsingPage(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp)
-                .height(12.dp),
+                .height(8.dp),
         ) {
             val dashLength = 3.dp.toPx()
             val dashGap = 4.dp.toPx()
