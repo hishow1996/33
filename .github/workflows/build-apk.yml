@@ -389,3 +389,5 @@ jobs:
 # Explicit user-requested APK rebuild after fixing Piper TTS diagnostic vocoder scope (2026-11-07).
 
 # Explicit user-requested APK rebuild after correcting Kokoro numeric-version detection and Piper recovery guidance (2026-11-07).
+
+# Explicit user-requested APK rebuild after repairing Kokoro URL matcher string syntax (2026-11-07).
