@@ -2431,9 +2431,12 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         val audioPrefs = getSharedPreferences("settings", MODE_PRIVATE)
         val storedTtsEngine = audioPrefs.getString("tts_engine", "edge")
-        val normalizedTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(storedTtsEngine)
+        val normalizedTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(
+            storedTtsEngine,
+            audioPrefs.getString("piper_model", null),
+        )
         if (normalizedTtsEngine != storedTtsEngine) {
-            // Migrate removed/invalid legacy TTS IDs before any processing task reads them.
+            // Migrate removed and former Piper-submodel engine IDs before any processing task reads them.
             audioPrefs.edit().putString("tts_engine", normalizedTtsEngine).apply()
         }
         val savedOriginalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 1f).coerceIn(0f, 1f)

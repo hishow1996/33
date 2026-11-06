@@ -87,9 +87,9 @@ fun SettingsScreen(
     }
     var ttsEngine by remember {
         val storedEngine = prefs.getString("tts_engine", "edge")
-        // Retire the removed Web TTS option for existing installs; use the current online default.
+        // Migrate users who previously selected Melo/Matcha as a model under the Piper engine.
         val supportedEngine = io.translatetube.local.player.DubbingConfigPreferencePolicy
-            .normalizeEngineId(storedEngine)
+            .normalizeEngineId(storedEngine, prefs.getString("piper_model", null))
         if (supportedEngine != storedEngine) {
             prefs.edit().putString("tts_engine", supportedEngine).apply()
         }

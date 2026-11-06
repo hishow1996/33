@@ -14,6 +14,10 @@ class DubbingConfigPreferencePolicyTest {
         assertEquals("edge", DubbingConfigPreferencePolicy.normalizeEngineId(" "))
         assertEquals("google", DubbingConfigPreferencePolicy.normalizeEngineId("Google"))
         assertEquals("kokoro", DubbingConfigPreferencePolicy.normalizeEngineId("kokoro"))
+        assertEquals("melo", DubbingConfigPreferencePolicy.normalizeEngineId("piper", "melo_zh_en"))
+        assertEquals("matcha", DubbingConfigPreferencePolicy.normalizeEngineId("piper", "matcha_zh_en"))
+        assertEquals("piper", DubbingConfigPreferencePolicy.normalizeEngineId("piper", "zh_cn_chaowen_medium"))
+        assertEquals("piper", DubbingConfigPreferencePolicy.normalizeEngineId("piper", null))
     }
 
     @Test

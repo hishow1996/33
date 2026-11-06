@@ -9,9 +9,17 @@ internal object DubbingConfigPreferencePolicy {
      * Normalize stored engine IDs before the playback pipeline uses them.
      * "web" was a removed legacy provider; existing installations should fall back to Edge TTS.
      */
-    fun normalizeEngineId(selectedTtsEngine: String?): String {
+    fun normalizeEngineId(
+        selectedTtsEngine: String?,
+        legacyPiperModelId: String? = null,
+    ): String {
         val engine = selectedTtsEngine?.trim()?.lowercase().orEmpty().ifBlank { "edge" }
-        return if (engine == "web") "edge" else engine
+        return when {
+            engine == "web" -> "edge"
+            engine == "piper" && legacyPiperModelId == "melo_zh_en" -> "melo"
+            engine == "piper" && legacyPiperModelId == "matcha_zh_en" -> "matcha"
+            else -> engine
+        }
     }
 
     fun isDubbingPreferenceKey(key: String): Boolean =
