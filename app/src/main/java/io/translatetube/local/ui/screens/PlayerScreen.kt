@@ -4365,6 +4365,31 @@ private fun StageProgressVisual(
         }
     }
 
+    // Restore only the paired blue/green particles moving along the helix.
+    // Keep their appearance steady: no halo or brightness-pulse animation.
+    val translationAnimationActive = stageIndex == 3 && isAnimating &&
+        !isPaused && !isFailed && !isCompleted && !isSkipped
+    val translationFlowActive = translationAnimationActive && !isIndeterminate
+    val translationFlowPhase = remember(stageIndex) {
+        androidx.compose.animation.core.Animatable(0f)
+    }
+    LaunchedEffect(translationFlowActive, isPaused) {
+        if (translationFlowActive) {
+            while (true) {
+                val remaining = (1f - translationFlowPhase.value).coerceIn(0.001f, 1f)
+                translationFlowPhase.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(
+                        durationMillis = (1800f * remaining).roundToInt().coerceAtLeast(1),
+                        easing = androidx.compose.animation.core.LinearEasing,
+                    ),
+                )
+                translationFlowPhase.snapTo(0f)
+            }
+        } else if (!isPaused) {
+            translationFlowPhase.snapTo(0f)
+        }
+    }
     val primaryColor = when {
         isSkipped -> Color(0xFFB8C1CE)
         isFailed -> Color(0xFFD74655)
@@ -4629,11 +4654,16 @@ private fun StageProgressVisual(
                 }
             }
 
-            // 4. Translation — a static double helix with a real-progress boundary.
+            // 4. Translation — a double helix with two steadily moving particles.
             3 -> {
                 val template = translationHelixTemplate ?: return@Canvas
                 val geometry = translationHelixGeometry ?: return@Canvas
                 val progressX = size.width * fraction
+                val flowHead = when {
+                    !translationAnimationActive -> null
+                    isIndeterminate -> scanPosition * size.width
+                    else -> translationFlowPhase.value * size.width
+                }
                 val pendingColor = if (isSkipped) Color(0xFFBBC5D2) else Color(0xFFD1DAE5)
                 val blueColor = when {
                     isFailed -> Color(0xFFD74655)
@@ -4705,6 +4735,24 @@ private fun StageProgressVisual(
                         geometry.strandB,
                         color = greenColor.copy(alpha = 0.55f),
                         style = Stroke(width = curveStroke, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                    )
+                }
+
+                // Two solid particles travel together along opposite helix strands.
+                // Their size and brightness stay constant; the true progress marker is unchanged.
+                if (flowHead != null && size.width > 0f) {
+                    val headX = flowHead.coerceIn(0f, size.width)
+                    val phase = template.basePhase + template.totalPhase * (headX / size.width)
+                    val offsetY = template.amplitude * kotlin.math.sin(phase)
+                    drawCircle(
+                        color = blueColor,
+                        radius = 1.8.dp.toPx(),
+                        center = Offset(headX, template.centerY - offsetY),
+                    )
+                    drawCircle(
+                        color = greenColor,
+                        radius = 1.8.dp.toPx(),
+                        center = Offset(headX, template.centerY + offsetY),
                     )
                 }
 
