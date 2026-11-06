@@ -6647,8 +6647,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    LaunchedEffect(lifecycleResumed) {
-        if (lifecycleResumed) {
+    LaunchedEffect(lifecycleResumed, fullscreenInteractionLocked) {
+        if (lifecycleResumed && !fullscreenInteractionLocked) {
             controlsVisible = true
             recordInteraction()
         }
@@ -6665,8 +6665,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         fullscreenCaptionDragging,
         interactionVersion,
         lifecycleResumed,
+        fullscreenInteractionLocked,
     ) {
         if (
+            fullscreenInteractionLocked ||
             !lifecycleResumed ||
             !state.isPlaying ||
             !controlsVisible ||
@@ -6692,8 +6694,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             controlsVisible = false
         }
     }
-    LaunchedEffect(state.key, state.isPlaying) {
-        if (!state.isPlaying) controlsVisible = true
+    LaunchedEffect(state.key, state.isPlaying, fullscreenInteractionLocked) {
+        if (!state.isPlaying && !fullscreenInteractionLocked) controlsVisible = true
     }
 
     // Refresh immediately on reveal/seek/resume. While hidden or paused, do not poll every frame.
@@ -6756,6 +6758,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 audioManager,
                 maxMusicVolume,
                 isFullscreen,
+                fullscreenInteractionLocked,
             ) {
                 awaitEachGesture {
                     val down = awaitFirstDown(
@@ -6884,7 +6887,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     }
                 }
             }
-            .pointerInput(state.key) {
+            .pointerInput(state.key, fullscreenInteractionLocked) {
                 detectTapGestures {
                     if (latestFullscreenInteractionLocked) return@detectTapGestures
                     fullscreenCaptionAdjusting = false
@@ -7252,8 +7255,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     // Keep the visual track at the same bottom coordinate while providing a
                     // taller touch target for accurate taps and drags.
                     .height(48.dp)
-                    .pointerInput(controlsVisible, state.key, state.durationMs) {
-                        if (!controlsVisible) return@pointerInput
+                    .pointerInput(controlsVisible, fullscreenInteractionLocked, state.key, state.durationMs) {
+                        if (!controlsVisible || fullscreenInteractionLocked) return@pointerInput
                         detectTapGestures { offset ->
                             val duration = (PlaybackService.instance?.duration() ?: 0L)
                                 .takeIf { it > 0L } ?: state.durationMs
@@ -7268,8 +7271,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             }
                         }
                     }
-                    .pointerInput(controlsVisible, state.key, state.durationMs) {
-                        if (!controlsVisible) return@pointerInput
+                    .pointerInput(controlsVisible, fullscreenInteractionLocked, state.key, state.durationMs) {
+                        if (!controlsVisible || fullscreenInteractionLocked) return@pointerInput
                         detectDragGestures(
                             onDragStart = { offset ->
                                 recordInteraction()
