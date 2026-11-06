@@ -298,6 +298,13 @@ fun WebVideoScreen(
         address = value
         addressFieldValue = TextFieldValue(text = value, selection = TextRange(value.length))
     }
+    LaunchedEffect(addressFieldHasFocus) {
+        if (addressFieldHasFocus) {
+            addressFieldValue = addressFieldValue.copy(
+                selection = TextRange(0, addressFieldValue.text.length),
+            )
+        }
+    }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
     var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(8f) } // 默认完全收起，只在屏幕底边显示把手
@@ -1689,16 +1696,7 @@ fun WebVideoScreen(
                         .weight(1f)
                         .height(52.dp)
                         .onFocusChanged { focusState ->
-                            if (focusState.isFocused) {
-                                if (!addressFieldHasFocus) {
-                                    addressFieldHasFocus = true
-                                    addressFieldValue = addressFieldValue.copy(
-                                        selection = TextRange(0, addressFieldValue.text.length),
-                                    )
-                                }
-                            } else {
-                                addressFieldHasFocus = false
-                            }
+                            addressFieldHasFocus = focusState.isFocused
                         },
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
