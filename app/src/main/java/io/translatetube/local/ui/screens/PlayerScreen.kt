@@ -153,6 +153,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -168,6 +169,23 @@ private fun edgeVoiceDisplayName(voiceName: String): String = when (voiceName) {
     "zh-CN-XiaomengNeural" -> "晓梦"
     else -> voiceName
 }
+
+/**
+ * The player UI does not display service-internal cache cursors or playback diagnostics.
+ * Keeping these fields at their defaults lets the StateFlow projection ignore changes to them.
+ */
+private fun PlayerUiState.forPlayerScreen(): PlayerUiState = copy(
+    audioTrackLanguage = "",
+    audioMetadataSourceIdentity = "",
+    thumbUrl = null,
+    activeDubbingLine = -1,
+    preparedUntil = 0,
+    muteOriginal = true,
+    translationCacheKey = "",
+    isBuffering = false,
+    playBlockedHint = null,
+    loadRetryCount = 0,
+)
 
 @Composable
 fun PlayerScreen(
@@ -427,7 +445,14 @@ fun PlayerScreen(
         }
     }
     val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "google" && voiceOptions.size > 1
-    val state by PlaybackService.ui.collectAsState()
+    // This screen never reads the service-only diagnostics below. Project them out before
+    // collecting so internal queue/cache changes cannot trigger a full player-page recomposition.
+    val screenStateFlow = remember {
+        PlaybackService.ui.map(PlayerUiState::forPlayerScreen).distinctUntilChanged()
+    }
+    val state by screenStateFlow.collectAsState(
+        initial = PlaybackService.ui.value.forPlayerScreen(),
+    )
     val serviceGeneration by PlaybackService.serviceGeneration.collectAsState()
     val playbackHint by PlaybackService.playbackHint.collectAsState()
     // Keep the expensive subtitle list independent from unrelated playback UI updates.
@@ -3009,7 +3034,7 @@ private fun VideoParsingPage(
 
 
         ProcessingStageCards(
-            state = state.toProcessingStageCardState(translationProgressSummary(state)),
+            state = rememberProcessingStageCardState(state),
             source = source,
             flow = flow,
             complete = complete,
@@ -3220,6 +3245,56 @@ private fun PlayerUiState.toProcessingStageCardState(translationProgressSummary:
         totalLines = totalLines,
         ttsEngineName = ttsEngineName,
     )
+}
+
+/**
+ * Preview rows are a small but allocation-heavy projection of the subtitle timeline.
+ * Reuse them when only unrelated playback controls or page state change.
+ */
+@Composable
+private fun rememberProcessingStageCardState(state: PlayerUiState): ProcessingStageCardState {
+    val progressSummary = translationProgressSummary(state)
+    return remember(
+        state.key,
+        state.progress,
+        state.failedProgress,
+        state.error,
+        state.title,
+        state.channel,
+        state.durationMs,
+        state.selectedQuality,
+        state.subtitleTrackStatus,
+        state.availableSubtitleTracks.size,
+        state.audioTrackChannelCount,
+        state.audioTrackCodecLabel,
+        state.audioTrackDurationMs,
+        state.audioTrackMimeType,
+        state.audioTrackSampleRateHz,
+        state.audioTrackSourceType,
+        state.videoResolution,
+        state.transcriptionEngineName,
+        state.transcriptionProgressPercent,
+        state.transcriptionCompletedSegments,
+        state.transcriptionTotalSegments,
+        state.lines,
+        state.transcriptionPreviewLines,
+        state.translationPreviewLines,
+        progressSummary,
+        state.translationCurrentBatch,
+        state.translationTotalBatches,
+        state.translationRetryCount,
+        state.manualTranslationModeEnabled,
+        state.manualTranslationWaiting,
+        state.engineName,
+        state.dubbingStatus,
+        state.isProcessingPaused,
+        state.preparedCount,
+        state.sourceLang,
+        state.totalLines,
+        state.ttsEngineName,
+    ) {
+        state.toProcessingStageCardState(progressSummary)
+    }
 }
 
 @Composable
