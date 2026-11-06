@@ -6,21 +6,25 @@ import org.junit.Test
 
 class KokoroMixedLanguageTextPolicyTest {
     @Test
-    fun insertsLanguageBoundariesWithoutChangingChineseOrEnglishWords() {
+    fun insertsLanguageBoundariesWithoutChangingOrdinaryEnglishWords() {
         val prepared = KokoroMixedLanguageTextPolicy.prepare("使用YouTube播放ChatGPT生成的内容")
 
         assertEquals("使用 You Tube 播放 Chat gee pee tee 生成的内容", prepared.text)
         assertEquals(2, prepared.englishWordCount)
-        assertEquals(0, prepared.expandedInitialismCount)
         assertEquals(2, prepared.expandedProperNameCount)
     }
 
     @Test
-    fun expandsKnownStandaloneInitialismsAsEnglishLetterNames() {
-        val prepared = KokoroMixedLanguageTextPolicy.prepare("AI调用API，并检查GPU和CPU")
+    fun expandsKnownStandaloneInitialismsButDoesNotGuessAmbiguousOnes() {
+        val prepared = KokoroMixedLanguageTextPolicy.prepare(
+            "AI调用API，并检查GPU、CPU、ASR和TTS，SQL与JSON保留原样",
+        )
 
-        assertEquals("ay eye 调用 ay pee eye，并检查 gee pee you 和 see pee you", prepared.text)
-        assertEquals(4, prepared.expandedInitialismCount)
+        assertEquals(
+            "ay eye 调用 ay pee eye，并检查 gee pee you、 see pee you、 ay ess ar 和 tee tee ess， SQL 与 JSON 保留原样",
+            prepared.text,
+        )
+        assertEquals(6, prepared.expandedInitialismCount)
     }
 
     @Test
@@ -38,18 +42,46 @@ class KokoroMixedLanguageTextPolicyTest {
     }
 
     @Test
-    fun leavesUnlistedAndAmbiguousEnglishTermsUntouched() {
+    fun expandsCommonTechnologyAndProductNames() {
         val prepared = KokoroMixedLanguageTextPolicy.prepare(
-            "使用Android、Python、Kokoro、Sherpa-ONNX以及SQL",
+            "使用GitHub、GitLab、TikTok、JavaScript和SenseVoice",
         )
 
-        assertEquals("使用 Android、 Python、 Kokoro、 Sherpa-ONNX 以及 SQL", prepared.text)
-        assertEquals(0, prepared.expandedInitialismCount)
-        assertEquals(0, prepared.expandedProperNameCount)
+        assertEquals(
+            "使用 Git Hub、 Git Lab、 Tick Tock、 Java Script 和 Sense Voice",
+            prepared.text,
+        )
+        assertEquals(5, prepared.expandedProperNameCount)
     }
 
     @Test
-    fun doesNotExpandInitialismsWhenTheSpeechPayloadWouldExceedTheCueLimit() {
+    fun readsCommonModelVersionsAndDeviceIdentifiersAsEnglish() {
+        val prepared = KokoroMixedLanguageTextPolicy.prepare(
+            "GPT-4、GPT-4.1、GPT-4o、Wi-Fi 6、USB-C、H.264和IPv6",
+        )
+
+        assertEquals(
+            "gee pee tee four、 gee pee tee four point one、 gee pee tee four oh、 why fie six、 you ess bee see、 aitch two six four 和 eye pee vee six",
+            prepared.text,
+        )
+        assertEquals(7, prepared.expandedModelIdentifierCount)
+    }
+
+    @Test
+    fun readsPythonAndroidAndGraphicsCardVersions() {
+        val prepared = KokoroMixedLanguageTextPolicy.prepare(
+            "Python 3.12、Android 14、RTX 4090 Ti",
+        )
+
+        assertEquals(
+            "Python three point twelve、 Android fourteen、 ar tee ex forty ninety tie",
+            prepared.text,
+        )
+        assertEquals(3, prepared.expandedModelIdentifierCount)
+    }
+
+    @Test
+    fun doesNotExpandInitialismsWhenSpeechPayloadWouldExceedCueLimit() {
         val original = "AI".repeat(400)
         val prepared = KokoroMixedLanguageTextPolicy.prepare(original)
 
