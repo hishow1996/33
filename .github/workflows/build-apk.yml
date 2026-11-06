@@ -382,3 +382,4 @@ jobs:
 # User-requested APK build trigger for latest main source (2026-11-06 17:52 +08:00).
 
 # Retry APK build after fixing DubbingEngine cache-generation types and translation helix motion reference (2026-11-06).
+# Explicit APK build trigger for latest main source requested on 2026-11-06.
