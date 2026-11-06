@@ -97,7 +97,7 @@ internal object KokoroMixedLanguageTextPolicy {
         RegexOption.IGNORE_CASE,
     )
     private val urlOrDomainPattern = Regex(
-        """(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!"""(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"""'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})""",
+        """(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})""",
     )
 
     /** Never rewrite an abbreviation or brand inside a URL/domain embedded in subtitle text. */
