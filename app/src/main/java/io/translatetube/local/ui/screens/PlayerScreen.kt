@@ -1,6 +1,9 @@
 package io.translatetube.local.ui.screens
 
 import io.translatetube.local.player.SubtitlePreviewSegmentPolicy
+import io.translatetube.local.performance.DevicePerformanceManager
+import io.translatetube.local.performance.DevicePerformancePolicy
+import io.translatetube.local.performance.DevicePerformanceTier
 
 import java.io.OutputStreamWriter
 
@@ -3987,8 +3990,12 @@ private fun buildTranslationHelixTemplate(
     width: Float,
     height: Float,
     density: Float,
+    sampleSpacingDp: Float,
+    minimumSamples: Int,
 ): TranslationHelixTemplate {
-    val sampleCount = (width / (1.5f * density)).toInt().coerceAtLeast(160)
+    val sampleCount = (width / (sampleSpacingDp * density))
+        .toInt()
+        .coerceAtLeast(minimumSamples)
     val basePhase = -kotlin.math.PI.toFloat() / 2f
     val totalPhase = 8f * kotlin.math.PI.toFloat()
     val sampleXs = FloatArray(sampleCount + 1) { index ->
@@ -4166,16 +4173,33 @@ private fun StageProgressVisual(
 ) {
     var translationCanvasSize by remember(stageIndex) { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current.density
-    val transcriptionStaticHeightFactors = remember(stageIndex) {
-        FloatArray(64) { index ->
+    val context = LocalContext.current
+    val performanceTier = remember(context) {
+        DevicePerformancePolicy.tier(DevicePerformanceManager.snapshot(context))
+    }
+    val transcriptionBarCount = when (performanceTier) {
+        DevicePerformanceTier.LOW -> 32
+        DevicePerformanceTier.BALANCED -> 48
+        DevicePerformanceTier.HIGH -> 64
+    }
+    val waveDensityScale = when (performanceTier) {
+        DevicePerformanceTier.LOW -> 1.35f
+        DevicePerformanceTier.BALANCED -> 1.10f
+        DevicePerformanceTier.HIGH -> 1.0f
+    }
+    val transcriptionStaticHeightFactors = remember(stageIndex, transcriptionBarCount) {
+        FloatArray(if (stageIndex == 2) transcriptionBarCount else 0) { index ->
             val broad = (kotlin.math.sin(index * 0.31f + 0.4f) + 1f) / 2f
             val detail = (kotlin.math.sin(index * 0.79f + 1.7f) + 1f) / 2f
             broad * 0.58f + detail * 0.42f
         }
     }
-    val dubbingWaveBarSpecs = remember(stageIndex, density) {
-        ArrayList<DubbingWaveBarSpec>(256).apply {
-            repeat(256) { index ->
+    val dubbingWaveBarSpecs = remember(stageIndex, density, waveDensityScale) {
+        if (stageIndex != 4) {
+            emptyList()
+        } else {
+            ArrayList<DubbingWaveBarSpec>(256).apply {
+                repeat(256) { index ->
                 val heightA = kotlin.math.abs(kotlin.math.sin(index * 2.17f)) * 0.34f
                 val heightB = kotlin.math.abs(kotlin.math.sin(index * 0.71f + 1.4f)) * 0.36f
                 val baseHeight = (0.20f + heightA + heightB).coerceIn(0.18f, 0.94f)
@@ -4183,22 +4207,33 @@ private fun StageProgressVisual(
                 val gapFactor = (kotlin.math.sin(index * 2.43f + 0.8f) + 1f) / 2f
                 add(
                     DubbingWaveBarSpec(
-                        widthPx = (1.35f + widthFactor * 0.95f) * density,
-                        gapPx = (1.0f + gapFactor * 1.15f) * density,
+                        widthPx = (1.35f + widthFactor * 0.95f) * waveDensityScale * density,
+                        gapPx = (1.0f + gapFactor * 1.15f) * waveDensityScale * density,
                         baseHeightFactor = baseHeight,
                         phaseA = index * 0.52f,
                         phaseB = index * 0.91f,
                     ),
                 )
+                }
             }
         }
     }
-    val translationHelixTemplate = remember(stageIndex, translationCanvasSize, density) {
+    val translationHelixTemplate = remember(stageIndex, translationCanvasSize, density, performanceTier) {
         if (stageIndex == 3 && translationCanvasSize.width > 0 && translationCanvasSize.height > 0) {
             buildTranslationHelixTemplate(
                 width = translationCanvasSize.width.toFloat(),
                 height = translationCanvasSize.height.toFloat(),
                 density = density,
+                sampleSpacingDp = when (performanceTier) {
+                    DevicePerformanceTier.LOW -> 2.8f
+                    DevicePerformanceTier.BALANCED -> 2.1f
+                    DevicePerformanceTier.HIGH -> 1.5f
+                },
+                minimumSamples = when (performanceTier) {
+                    DevicePerformanceTier.LOW -> 96
+                    DevicePerformanceTier.BALANCED -> 128
+                    DevicePerformanceTier.HIGH -> 160
+                },
             )
         } else {
             null
@@ -4449,7 +4484,7 @@ private fun StageProgressVisual(
             // 3. Transcription — a full-width music equalizer with independently bouncing bars.
             2 -> {
                 val rhythmPhase = transcriptionRhythm.value
-                val barCount = 64
+                val barCount = transcriptionBarCount
                 val barGap = 3.2.dp.toPx()
                 val availableBarWidth = (size.width - barGap * (barCount - 1)).coerceAtLeast(0f)
                 val barWidth = (availableBarWidth / barCount).coerceAtLeast(0.8.dp.toPx())
