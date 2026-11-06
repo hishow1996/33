@@ -1,5 +1,7 @@
 package io.translatetube.local.ui.screens
 
+import io.translatetube.local.player.SubtitlePreviewSegmentPolicy
+
 import java.io.OutputStreamWriter
 
 import android.media.AudioManager
