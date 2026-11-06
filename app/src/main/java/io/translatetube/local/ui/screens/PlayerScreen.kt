@@ -7680,8 +7680,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     contentDescription = "媒体音量",
                     tint = Color.White,
                     modifier = Modifier
-                        .size(26.dp)
-                        .shadow(2.dp, CircleShape, clip = false),
+                        .size(26.dp),
                 )
                 Box(
                     modifier = Modifier
