@@ -58,6 +58,8 @@ internal object KokoroMixedLanguageTextPolicy {
     private val properNameAliases = listOf(
         Regex("""(?<![A-Za-z0-9])OpenAI(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Open A I",
         Regex("""(?<![A-Za-z0-9])ChatGPT(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Chat G P T",
+        Regex("""(?<![A-Za-z0-9])YouTube(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "You Tube",
+        Regex("""(?<![A-Za-z0-9])GitHub(?![A-Za-z0-9])""", RegexOption.IGNORE_CASE) to "Git Hub",
     )
 
     private val latinWordPattern = Regex("""[A-Za-z]+(?:['’][A-Za-z]+)*""")
