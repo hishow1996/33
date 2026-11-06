@@ -3157,9 +3157,9 @@ private fun PlayerUiState.toProcessingStageCardState(): ProcessingStageCardState
             },
         )
 
-    val activeTranscription = transcriptionPreviewLines.takeLast(2).map(::previewLine)
+    val activeTranscription = transcriptionPreviewLines.takeLast(2).map { previewLine(it) }
     val completedTranscription = activeTranscription.ifEmpty {
-        lines.takeLast(2).map(::previewLine)
+        lines.takeLast(2).map { previewLine(it) }
     }
     val activeTranslation = translationPreviewLines
         .mapNotNull { line ->
