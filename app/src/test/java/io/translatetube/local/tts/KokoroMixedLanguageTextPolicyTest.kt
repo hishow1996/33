@@ -81,6 +81,34 @@ class KokoroMixedLanguageTextPolicyTest {
     }
 
     @Test
+    fun leavesUnknownNamesAndAmbiguousAcronymsForTheEnglishFrontend() {
+        val prepared = KokoroMixedLanguageTextPolicy.prepare(
+            "Android、Python、Kokoro、Sherpa-ONNX、SQL、JSON、RAM",
+        )
+
+        assertEquals(
+            "Android、 Python、 Kokoro、 Sherpa-ONNX、 SQL、 JSON、 RAM",
+            prepared.text,
+        )
+        assertEquals(0, prepared.expandedInitialismCount)
+        assertEquals(0, prepared.expandedProperNameCount)
+    }
+
+    @Test
+    fun neverRewritesUrlsOrDomainsEmbeddedInSubtitles() {
+        val prepared = KokoroMixedLanguageTextPolicy.prepare(
+            "网址https://github.com/OpenAI，域名openai.com，API",
+        )
+
+        assertEquals(
+            "网址https://github.com/OpenAI，域名openai.com， ay pee eye",
+            prepared.text,
+        )
+        assertEquals(0, prepared.expandedProperNameCount)
+        assertEquals(1, prepared.expandedInitialismCount)
+    }
+
+    @Test
     fun doesNotExpandInitialismsWhenSpeechPayloadWouldExceedCueLimit() {
         val original = "AI".repeat(400)
         val prepared = KokoroMixedLanguageTextPolicy.prepare(original)
