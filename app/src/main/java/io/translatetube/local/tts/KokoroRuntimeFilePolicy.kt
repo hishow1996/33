@@ -12,6 +12,7 @@ internal object KokoroRuntimeFilePolicy {
         "model.int8.onnx" to MIN_CORE_BYTES,
         "voices.bin" to MIN_CORE_BYTES,
         "tokens.txt" to 512L,
+        "lexicon-us-en.txt" to 1L * 1024 * 1024,
         "lexicon-zh.txt" to 1L * 1024 * 1024,
         "phone-zh.fst" to 32L * 1024,
         "date-zh.fst" to 20L * 1024,
