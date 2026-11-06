@@ -7027,8 +7027,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     )
                 }
             } else {
-            // In normal playback, lower only the quality/fullscreen buttons by 4.dp.
-            // Fullscreen keeps its existing offset; the upper speed/floating controls stay put.
+            // Preserve the left-side offset while keeping the fullscreen right column evenly spaced.
             val lowerSideControlOffset = if (isFullscreen) 20.dp else 12.dp
             val seekThumbRadius = if (scrubbing) 8.dp else 6.dp
             val seekThumbRadiusPx = with(LocalDensity.current) { seekThumbRadius.toPx() }
@@ -7195,7 +7194,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 }
             }
 
-            // Right column mirrors the left column and shares its size, center line and spacing.
+            // Right column uses the same icon size; fullscreen adds the lock control between actions.
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -7209,7 +7208,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 ) {
                     floatingControl()
                     if (isFullscreen) fullscreenLockControl()
-                    Box(modifier = Modifier.offset(y = lowerSideControlOffset)) {
+                    Box(
+                        modifier = Modifier.offset(
+                            y = if (isFullscreen) 0.dp else lowerSideControlOffset,
+                        ),
+                    ) {
                         fullscreenControl()
                     }
                 }
