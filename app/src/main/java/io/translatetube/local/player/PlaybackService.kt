@@ -11432,7 +11432,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // this batch become available to later missing cues instead of reusing stale context.
                 // Retry missing rows up to twice after the initial request. A failed cue is isolated
                 // so successful rows are retained and only the unresolved rows are requested again.
-                var unresolvedIndices = batchIndices
+                var unresolvedIndices: List<Int> = batchIndices
                 val resolvedBatch = linkedMapOf<Int, String>()
                 var attempt = 0
                 var lastRejectedRows = emptyList<io.translatetube.local.translate.TranslationRowRejection>()
