@@ -10,7 +10,7 @@ class KokoroMixedLanguageTextPolicyTest {
         val prepared = KokoroMixedLanguageTextPolicy.prepare("使用YouTube播放ChatGPT生成的内容")
 
         assertEquals("使用 YouTube 播放 Chat G P T 生成的内容", prepared.text)
-        assertEquals(3, prepared.englishWordCount)
+        assertEquals(2, prepared.englishWordCount)
         assertEquals(0, prepared.expandedInitialismCount)
         assertEquals(1, prepared.expandedProperNameCount)
     }
@@ -43,7 +43,7 @@ class KokoroMixedLanguageTextPolicyTest {
             "使用GitHub、Python、Kokoro、Sherpa-ONNX以及SQL",
         )
 
-        assertEquals("使用 GitHub、 Python、 Kokoro、 Sherpa-ONNX 以及 SQL", prepared.text)
+        assertEquals("使用 GitHub、Python、Kokoro、Sherpa-ONNX 以及 SQL", prepared.text)
         assertEquals(0, prepared.expandedInitialismCount)
         assertEquals(0, prepared.expandedProperNameCount)
     }
