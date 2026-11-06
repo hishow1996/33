@@ -8,8 +8,9 @@ internal object TtsSpeakerCapabilityPolicy {
     ): Boolean = when (engineId) {
         "kokoro", "edge", "gemini" -> true
         "system" -> systemChineseVoiceCount > 1
-        // The Piper models in the current catalog are single-speaker; PiperTts deliberately
-        // fixes the native speaker id to zero.
+        // All three sherpa VITS/Matcha catalog engines are single-speaker and render sid=0.
+        "piper", "melo", "matcha" -> false
+        // Unknown engines also default to no distinct-speaker capability.
         else -> false
     }
 }

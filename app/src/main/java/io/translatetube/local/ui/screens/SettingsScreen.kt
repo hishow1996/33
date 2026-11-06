@@ -312,6 +312,8 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             "google" -> "谷歌在线语音"
             "gemini" -> "Gemini TTS 配音"
             "kokoro" -> "Kokoro 神经网络"
+            "melo" -> "MeloTTS（本地）"
+            "matcha" -> "Matcha TTS（本地）"
             else -> "未知配音引擎"
         }
         val asrLabel = when (asrEngine) {
@@ -758,13 +760,23 @@ Section(
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            EngineOption("piper", "本地多语种模型", ttsEngine) { e ->
+            EngineOption("piper", "Piper · 本地多语种", ttsEngine) { e ->
                 if (e != ttsEngine) {
-                    io.translatetube.local.util.AppLogStore.info(
-                        ctx,
-                        "Settings",
-                        "切换配音引擎：$ttsEngine -> $e",
-                    )
+                    io.translatetube.local.util.AppLogStore.info(ctx, "Settings", "切换配音引擎：$ttsEngine -> $e")
+                }
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
+            }
+            EngineOption("melo", "MeloTTS · 本地中英", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(ctx, "Settings", "切换配音引擎：$ttsEngine -> $e")
+                }
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
+            }
+            EngineOption("matcha", "Matcha TTS · 本地中英", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(ctx, "Settings", "切换配音引擎：$ttsEngine -> $e")
                 }
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
@@ -1050,6 +1062,12 @@ Section(
             if (ttsEngine == "piper") {
                 PiperModelSection()
             }
+            if (ttsEngine == "melo") {
+                SherpaSingleModelSection("melo_zh_en")
+            }
+            if (ttsEngine == "matcha") {
+                SherpaSingleModelSection("matcha_zh_en")
+            }
         }
 
 Section("视频源（yt-dlp）") {
@@ -1262,15 +1280,18 @@ android.util.Log.w("SettingsScreen", "音色试听失败", e)
     }
 }
 
-/** Piper 多语种模型管理：下载状态 + 语种清单 + 使用中标记。 */
+/** Piper 模型管理：保留 Piper 自己的语种选择。 */
 @Composable
 private fun PiperModelSection() {
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
+    val piperModels = io.translatetube.local.tts.PiperModels.catalog.filter {
+        it.supportsChineseOutput && it.engineName == "Piper"
+    }
     var selected by remember {
         mutableStateOf(
             prefs.getString("piper_model", null)
-                ?.takeIf { io.translatetube.local.tts.PiperModels.byId(it)?.supportsChineseOutput == true }
+                ?.takeIf { id -> piperModels.any { it.id == id } }
                 ?: "zh_cn_chaowen_medium"
         )
     }
@@ -1284,100 +1305,153 @@ private fun PiperModelSection() {
     }
 
     Spacer(Modifier.height(6.dp))
-    io.translatetube.local.tts.PiperModels.catalog.filter { it.supportsChineseOutput }.forEach { def ->
+    piperModels.forEach { def ->
         val isInstalled = installed.contains(def.id)
-        val modelState = downloadStates[def.id]
+        val state = downloadStates[def.id]
             ?: io.translatetube.local.tts.PiperModelDownloadState(
                 status = if (isInstalled) io.translatetube.local.tts.PiperModelDownloadStatus.READY
                     else io.translatetube.local.tts.PiperModelDownloadStatus.NOT_DOWNLOADED,
                 progress = if (isInstalled) 100 else 0,
                 stageMessage = if (isInstalled) "Piper 模型已就绪" else null,
             )
-        val isBusy = modelState.isActive
-        Row(
-            Modifier.fillMaxWidth()
-                .clickable(enabled = def.supportsChineseOutput) {
-                    selected = def.id
-                    prefs.edit().putString("piper_model", def.id).apply()
-                }
-                .padding(vertical = 6.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        SherpaModelDownloadRow(
+            definition = def,
+            isInstalled = isInstalled,
+            state = state,
+            selectable = true,
+            selected = selected == def.id,
+            onSelect = {
+                selected = def.id
+                prefs.edit().putString("piper_model", def.id).apply()
+            },
+        )
+    }
+}
+
+/** MeloTTS / Matcha 复用相同的下载、安装、校验和进度组件，各自作为独立引擎。 */
+@Composable
+private fun SherpaSingleModelSection(modelId: String) {
+    val ctx = LocalContext.current
+    val definition = remember(modelId) { io.translatetube.local.tts.PiperModels.byId(modelId) } ?: return
+    val installed by io.translatetube.local.tts.PiperModels.installed.collectAsState()
+    val downloadStates by io.translatetube.local.tts.PiperModels.downloadStates.collectAsState()
+    LaunchedEffect(modelId) {
+        io.translatetube.local.tts.PiperModels.refreshInstalled(ctx.applicationContext)
+    }
+    val isInstalled = installed.contains(modelId)
+    val state = downloadStates[modelId]
+        ?: io.translatetube.local.tts.PiperModelDownloadState(
+            status = if (isInstalled) io.translatetube.local.tts.PiperModelDownloadStatus.READY
+                else io.translatetube.local.tts.PiperModelDownloadStatus.NOT_DOWNLOADED,
+            progress = if (isInstalled) 100 else 0,
+            stageMessage = if (isInstalled) "${definition.engineName} 模型已就绪" else null,
+        )
+    Spacer(Modifier.height(6.dp))
+    SherpaModelDownloadRow(
+        definition = definition,
+        isInstalled = isInstalled,
+        state = state,
+        selectable = false,
+        selected = true,
+        onSelect = {},
+    )
+}
+
+/** Piper、MeloTTS 和 Matcha TTS 共用同一套紧凑下载行。 */
+@Composable
+private fun SherpaModelDownloadRow(
+    definition: io.translatetube.local.tts.PiperModelDef,
+    isInstalled: Boolean,
+    state: io.translatetube.local.tts.PiperModelDownloadState,
+    selectable: Boolean,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val isBusy = state.isActive
+    Row(
+        Modifier.fillMaxWidth()
+            .clickable(enabled = selectable && definition.supportsChineseOutput) { onSelect() }
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (selectable) {
             RadioButton(
-                selected = selected == def.id,
-                onClick = {
-                    if (def.supportsChineseOutput) {
-                        selected = def.id
-                        prefs.edit().putString("piper_model", def.id).apply()
-                    }
-                },
-                enabled = def.supportsChineseOutput,
+                selected = selected,
+                onClick = onSelect,
+                enabled = definition.supportsChineseOutput,
                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
             )
-            Column(Modifier.weight(1f)) {
-                Text("${def.langLabel} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                when {
-                    isBusy -> {
-                        if (modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING) {
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
-                                color = BrandBright,
-                            )
-                        } else {
-                            LinearProgressIndicator(
-                                progress = { (modelState.progress / 100f).coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
-                                color = BrandBright,
-                            )
-                        }
-                        Text(
-                            if (modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING) {
-                                modelState.stageMessage ?: "下载已完成，正在解压并安装模型…"
-                            } else {
-                                "${modelState.progress.coerceIn(0, 100)}% · ${modelState.stageMessage ?: "正在准备下载…"}"
-                            },
-                            color = SubText,
-                            style = MaterialTheme.typography.labelSmall,
+        } else {
+            Spacer(Modifier.width(48.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                "${definition.langLabel} · ${definition.voiceLabel} · 约 ${definition.sizeMB}MB",
+                color = OnBg,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            when {
+                isBusy -> {
+                    if (state.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                            color = BrandBright,
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                            color = BrandBright,
                         )
                     }
-                    isInstalled -> Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelSmall)
-                    modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.FAILED ||
-                        modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.CANCELLED ->
-                        Text(
-                            modelState.error ?: "下载未完成，可重试",
-                            color = Color(0xFFC0392B),
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    else -> Text("未下载", color = SubText, style = MaterialTheme.typography.labelSmall)
-                }
-            }
-            if (isBusy) {
-                TextButton(onClick = { io.translatetube.local.tts.PiperModels.cancelDownload(def.id) }) {
-                    Text("取消")
-                }
-            } else if (!isInstalled) {
-                TextButton(onClick = {
-                    val app = ctx.applicationContext as io.translatetube.local.TranslateTubeApp
-                    if (app.modelDownload.isPaused) {
-                        io.translatetube.local.tts.PiperModels.setPaused(true)
-                    }
-                    io.translatetube.local.tts.PiperModels.startDownload(
-                        ctx.applicationContext,
-                        def.id,
-                        app.appScope,
-                    )
-                }) {
                     Text(
-                        if (
-                            modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.FAILED ||
-                            modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.CANCELLED
-                        ) "重试" else "下载"
+                        if (state.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING) {
+                            state.stageMessage ?: "下载已完成，正在解压并安装模型…"
+                        } else {
+                            "${state.progress.coerceIn(0, 100)}% · ${state.stageMessage ?: "正在准备下载…"}"
+                        },
+                        color = SubText,
+                        style = MaterialTheme.typography.labelSmall,
                     )
                 }
+                isInstalled -> Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelSmall)
+                state.status == io.translatetube.local.tts.PiperModelDownloadStatus.FAILED ||
+                    state.status == io.translatetube.local.tts.PiperModelDownloadStatus.CANCELLED ->
+                    Text(
+                        state.error ?: "下载未完成，可重试",
+                        color = Color(0xFFC0392B),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                else -> Text("未下载", color = SubText, style = MaterialTheme.typography.labelSmall)
             }
         }
-        HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
+        if (isBusy) {
+            TextButton(onClick = { io.translatetube.local.tts.PiperModels.cancelDownload(definition.id) }) {
+                Text("取消")
+            }
+        } else if (!isInstalled) {
+            TextButton(onClick = {
+                val app = ctx.applicationContext as io.translatetube.local.TranslateTubeApp
+                if (app.modelDownload.isPaused) {
+                    io.translatetube.local.tts.PiperModels.setPaused(true)
+                }
+                io.translatetube.local.tts.PiperModels.startDownload(
+                    ctx.applicationContext,
+                    definition.id,
+                    app.appScope,
+                )
+            }) {
+                Text(
+                    if (
+                        state.status == io.translatetube.local.tts.PiperModelDownloadStatus.FAILED ||
+                        state.status == io.translatetube.local.tts.PiperModelDownloadStatus.CANCELLED
+                    ) "重试" else "下载"
+                )
+            }
+        }
     }
+    HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
 }
 
 /** yt-dlp 解析规则版本管理：简化重复状态文案，聚焦版本、操作和真实进度。 */

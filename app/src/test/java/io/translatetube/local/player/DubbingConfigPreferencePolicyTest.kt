@@ -18,7 +18,7 @@ class DubbingConfigPreferencePolicyTest {
 
     @Test
     fun engineSelectorIsAlwaysRelevant() {
-        listOf("edge", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
+        listOf("edge", "system", "kokoro", "piper", "melo", "matcha", "google", "gemini").forEach { engine ->
             assertTrue(
                 DubbingConfigPreferencePolicy.isRelevantForActiveEngine("tts_engine", engine),
             )
@@ -30,6 +30,20 @@ class DubbingConfigPreferencePolicyTest {
         assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("piper_model", "piper"))
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("piper_model", "edge"))
         assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("piper_model", "system"))
+    }
+
+    @Test
+    fun dedicatedMeloAndMatchaSettingsAreScopedToTheirOwnEngines() {
+        assertTrue(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("melo_voice"))
+        assertTrue(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("matcha_voice"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("melo_voice", "melo"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("melo_voice", "matcha"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("matcha_voice", "matcha"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("matcha_voice", "melo"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("local_tts_speed", "melo"))
+        assertTrue(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("local_tts_speed", "matcha"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("piper_model", "melo"))
+        assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("piper_model", "matcha"))
     }
 
     @Test
@@ -74,7 +88,7 @@ class DubbingConfigPreferencePolicyTest {
     @Test
     fun translationGeminiKeyNeverInvalidatesDubbingConfiguration() {
         assertFalse(DubbingConfigPreferencePolicy.isDubbingPreferenceKey("free_gemini_key"))
-        listOf("edge", "system", "kokoro", "piper", "google", "gemini").forEach { engine ->
+        listOf("edge", "system", "kokoro", "piper", "melo", "matcha", "google", "gemini").forEach { engine ->
             assertFalse(DubbingConfigPreferencePolicy.isRelevantForActiveEngine("free_gemini_key", engine))
         }
     }

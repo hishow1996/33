@@ -7132,6 +7132,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 val importEngineReady = when (selectedImportTts) {
                     "kokoro" -> kokoroRuntimeReady()
                     "piper" -> piperModelReadyForChinese()
+                    "melo", "matcha" -> localSherpaModelReadyForChinese(selectedImportTts)
                     "edge" -> true
                     "google" -> true
                     "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
@@ -7180,6 +7181,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                     else -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
                                 }
                             }
+                            "melo", "matcha" -> localSherpaModelUnavailableHint(selectedImportTts)
                             "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key。"
                             else -> "所选配音引擎「$unavailableEngineName」尚未就绪，请先检查设置和引擎配置。"
                         }
@@ -10535,6 +10537,7 @@ updateUiForSession(key, pipelineGeneration) {
                         "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
                         "kokoro" -> kokoroRuntimeReady()
                         "piper" -> piperModelReadyForChinese()
+                        "melo", "matcha" -> localSherpaModelReadyForChinese(selectedTts)
                         else -> false
                     }
                     // Chinese source material still respects the explicitly selected TTS engine.
@@ -10646,7 +10649,12 @@ updateUiForSession(key, pipelineGeneration) {
                                     "配音引擎 ID" to selectedTts,
                                     "配音引擎名称" to selectedTtsName,
                                     "系统 TTS 合成模式" to getSharedPreferences("settings", MODE_PRIVATE).getString("system_tts_mode", "generated").orEmpty(),
-                                    "Piper 模型 ID" to getSharedPreferences("settings", MODE_PRIVATE).getString("piper_model", "未选择").orEmpty(),
+                                    "本地模型 ID" to when (selectedTts) {
+                                        "piper" -> getSharedPreferences("settings", MODE_PRIVATE)
+                                            .getString("piper_model", "未选择").orEmpty()
+                                        "melo", "matcha" -> localSherpaModelId(selectedTts).orEmpty()
+                                        else -> "不适用"
+                                    },
                                     "当前处理阶段" to failureState.phase.name,
                                     "当前处理进度" to failureState.progress.take(180),
                                     "字幕总数" to failureState.totalLines.toString(),
@@ -10663,6 +10671,7 @@ updateUiForSession(key, pipelineGeneration) {
                                     noModelHint = when (selectedTts) {
                                         "system" -> "系统 TTS 初始化失败，请检查手机的文字转语音服务、中文语音数据和可用音色后重试。"
                                         "piper" -> "Piper 中文配音初始化失败，请检查是否已选择并下载中文 Piper 模型。"
+                                        "melo", "matcha" -> localSherpaModelInitializationFailureHint(selectedTts)
                                         "edge" -> "微软 Edge TTS 初始化失败，请检查网络连接后重试。"
                                         "google" -> "谷歌在线语音初始化失败，请检查网络连接后重试。"
                                         "gemini" -> "Gemini TTS 初始化失败，请检查 API 配置和网络连接后重试。"
@@ -10691,6 +10700,7 @@ updateUiForSession(key, pipelineGeneration) {
                                     else -> "Piper 中文配音初始化失败，请检查模型文件后重试。"
                                 }
                             }
+                            "melo", "matcha" -> localSherpaModelUnavailableHint(selectedTts)
                             "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key 后再试。"
                             else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择配音引擎。应用不会擅自切换引擎。"
                         }
@@ -13950,6 +13960,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         "google" -> "谷歌在线语音"
         "gemini" -> "Gemini TTS"
         "kokoro" -> "Kokoro"
+        "melo" -> "MeloTTS"
+        "matcha" -> "Matcha TTS"
         "piper" -> {
             val prefs = getSharedPreferences("settings", MODE_PRIVATE)
             val id = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
@@ -13968,7 +13980,45 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val id = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
         val definition = io.translatetube.local.tts.PiperModels.byId(id) ?: return false
         return definition.supportsChineseOutput &&
+            definition.engineName == "Piper" &&
             io.translatetube.local.tts.PiperModels.modelReady(this, id)
+    }
+
+    private fun localSherpaModelId(engineId: String): String? = when (engineId) {
+        "melo" -> "melo_zh_en"
+        "matcha" -> "matcha_zh_en"
+        else -> null
+    }
+
+    private fun localSherpaModelReadyForChinese(engineId: String): Boolean {
+        val id = localSherpaModelId(engineId) ?: return false
+        val definition = io.translatetube.local.tts.PiperModels.byId(id) ?: return false
+        return definition.supportsChineseOutput &&
+            io.translatetube.local.tts.PiperModels.modelReady(this, id)
+    }
+
+    private fun localSherpaModelUnavailableHint(engineId: String): String {
+        val name = ttsDisplayName(engineId)
+        return "已选择$name，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载模型。"
+    }
+
+    private fun localSherpaModelInitializationFailureHint(engineId: String): String {
+        val name = ttsDisplayName(engineId)
+        return "$name 模型加载失败，请检查模型文件和运行库后重试。"
+    }
+
+    private fun makeDedicatedSherpaTts(engineId: String): TtsEngine {
+        val id = localSherpaModelId(engineId)
+            ?: throw IllegalArgumentException("未知本地语音引擎：$engineId")
+        val definition = io.translatetube.local.tts.PiperModels.byId(id)
+            ?: throw IllegalStateException("本地语音模型定义不存在：$id")
+        if (!definition.supportsChineseOutput) {
+            throw IllegalStateException("${definition.engineName} 当前不支持中文配音")
+        }
+        if (!io.translatetube.local.tts.PiperModels.modelReady(this, id)) {
+            throw IllegalStateException(localSherpaModelUnavailableHint(engineId))
+        }
+        return io.translatetube.local.tts.SherpaOfflineTts(this, id)
     }
 
     private fun makeTts(engineId: String? = null): TtsEngine {
@@ -13999,8 +14049,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (!io.translatetube.local.tts.PiperModels.modelReady(this, modelId)) {
                     throw IllegalStateException("已选择 Piper 中文配音，但模型尚未下载或文件不完整，请在设置中下载中文 Piper 模型")
                 }
-                io.translatetube.local.tts.PiperTts(this, modelId)
+                io.translatetube.local.tts.SherpaOfflineTts(this, modelId)
             }
+            "melo", "matcha" -> makeDedicatedSherpaTts(selected)
             "edge" -> io.translatetube.local.tts.EdgeTts(this)
             "google" -> io.translatetube.local.tts.GoogleTts(this)
             "gemini" -> io.translatetube.local.tts.GeminiTts(this)
@@ -15875,6 +15926,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     val message = when (selectedTts) {
                         "piper" ->
                             "当前 Piper 中文模型为单人音色，人物音色未更改。若要多人物使用不同声音，请切换到 Kokoro 或支持多种中文音色的系统 TTS。"
+                        "melo", "matcha" ->
+                            "当前本地模型为单人音色，人物音色未更改。若要多人物使用不同声音，请切换到 Kokoro 或支持多种中文音色的系统 TTS。"
                         "system" ->
                             "手机系统 TTS 只提供一个可用中文音色，当前人物音色未更改；普通系统配音仍可使用。"
                         else -> "当前选择的配音引擎不支持多人物音色分配，人物音色未更改。"
@@ -16137,7 +16190,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         engineId: String,
     ): SpeakerAssignmentSnapshot {
         return when (engineId) {
-            "piper" -> SpeakerAssignmentSnapshot()
+            "piper", "melo", "matcha" -> SpeakerAssignmentSnapshot()
             "system" -> {
                 val names = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
                     getSharedPreferences("settings", MODE_PRIVATE).getString(

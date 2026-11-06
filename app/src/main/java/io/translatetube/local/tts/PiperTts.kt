@@ -45,7 +45,7 @@ import java.util.concurrent.TimeUnit
  * 目录布局：
  *   model.onnx / tokens.txt / espeak-ng-data/
  */
-class PiperTts(context: Context, private val modelId: String) : TtsEngine, LocalCpuBoundTtsEngine {
+class SherpaOfflineTts(context: Context, private val modelId: String) : TtsEngine, LocalCpuBoundTtsEngine {
     private val appCtx = context.applicationContext
     private val dir: File = PiperModels.modelDir(appCtx, modelId)
     private val definition: PiperModelDef = PiperModels.byId(modelId)
@@ -89,7 +89,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
     }
 
     override val cacheKey: String get() = modelCacheKey
-    // PiperTts currently passes sid=0 to sherpa-onnx for every synthesis request.
+    // SherpaOfflineTts currently passes sid=0 to sherpa-onnx for every synthesis request.
     // Speaker labels therefore do not alter its output and must not fragment the PCM cache.
     override val speakerIdAffectsOutput: Boolean = false
 
@@ -98,7 +98,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
 
     init {
         if (!NativeTtsRuntimeGate.awaitDeferredReleases()) {
-            android.util.Log.w("PiperTts", "Timed out waiting for retired native TTS releases")
+            android.util.Log.w("SherpaOfflineTts", "Timed out waiting for retired native TTS releases")
         }
         val tokens = File(dir, "tokens.txt")
         val dataDir = File(dir, "espeak-ng-data")
@@ -152,7 +152,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine, Local
                     tokens = tokens.absolutePath,
                     dataDir = dataDir.absolutePath,
                 ) else OfflineTtsMatchaModelConfig(),
-                numThreads = this@PiperTts.numThreads,
+                numThreads = this@SherpaOfflineTts.numThreads,
                 debug = false,
                 provider = "cpu",
             ),
@@ -549,9 +549,18 @@ object PiperModels {
             check(!downloadActive) { "该 Piper 模型正在下载或安装，暂不能卸载" }
 
             val prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
-            val isSelected = prefs.getString("tts_engine", "edge") == "piper" &&
-                (prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium") == id
-            check(!isSelected) { "该音色仍是当前选中的配音模型，请先切换配音引擎或选择其他音色" }
+            val selectedEngine = prefs.getString("tts_engine", "edge").orEmpty()
+            val selectedModelId = when (selectedEngine) {
+                "piper" -> prefs.getString("piper_model", "zh_cn_chaowen_medium")
+                    ?: "zh_cn_chaowen_medium"
+                "melo" -> "melo_zh_en"
+                "matcha" -> "matcha_zh_en"
+                else -> null
+            }
+            val isSelected = selectedModelId == id
+            check(!isSelected) {
+                "该${definition.engineName}模型仍是当前选中的配音引擎，请先切换配音引擎后再卸载"
+            }
 
             val root = piperRoot(ctx).canonicalFile
             val target = modelDir(ctx, id).canonicalFile

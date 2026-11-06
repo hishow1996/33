@@ -24,8 +24,10 @@ class TtsSpeakerCapabilityPolicyTest {
     }
 
     @Test
-    fun singleSpeakerPiperDoesNotClaimToSupportDistinctVoices() {
+    fun singleSpeakerLocalModelsDoNotClaimToSupportDistinctVoices() {
         assertFalse(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("piper"))
+        assertFalse(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("melo"))
+        assertFalse(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("matcha"))
         assertFalse(TtsSpeakerCapabilityPolicy.supportsDistinctVoices("unknown"))
     }
 }

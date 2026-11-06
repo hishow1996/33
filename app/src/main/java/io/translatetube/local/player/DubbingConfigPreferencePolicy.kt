@@ -23,6 +23,8 @@ internal object DubbingConfigPreferencePolicy {
             key.startsWith("cloud_tts_") ||
             key.startsWith("local_tts_") ||
             key.startsWith("piper_") ||
+            key.startsWith("melo_") ||
+            key.startsWith("matcha_") ||
             key.startsWith("kokoro_") ||
             key.startsWith("system_tts_")
 
@@ -37,6 +39,8 @@ internal object DubbingConfigPreferencePolicy {
             key.startsWith("web_tts_") -> false
             key.startsWith("system_tts_") -> engine == "system"
             key.startsWith("piper_") -> engine == "piper"
+            key.startsWith("melo_") -> engine == "melo"
+            key.startsWith("matcha_") -> engine == "matcha"
             key.startsWith("kokoro_") -> engine == "kokoro"
             key.startsWith("edge_tts_") -> engine == "edge"
             key.startsWith("google_tts_") -> engine == "google"
@@ -45,7 +49,9 @@ internal object DubbingConfigPreferencePolicy {
             // Legacy online/cloud preferences now belong only to Edge TTS.
             key.startsWith("online_tts_") -> engine == "edge"
             key.startsWith("cloud_tts_") -> engine == "edge"
-            key.startsWith("local_tts_") -> engine == "system" || engine == "piper" || engine == "kokoro"
+            key.startsWith("local_tts_") ->
+                engine == "system" || engine == "piper" || engine == "kokoro" ||
+                    engine == "melo" || engine == "matcha"
             // Generic TTS options and unclassified legacy preferences may affect more than one engine.
             else -> true
         }
