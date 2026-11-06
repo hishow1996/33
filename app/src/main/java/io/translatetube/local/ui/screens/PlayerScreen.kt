@@ -2392,23 +2392,26 @@ private fun VideoParsingPage(
             Phase.ERROR -> "处理失败"
         }
     }
+    // Counted once per subtitle-list change on a background thread and shared by every
+    // reader below, so a finished translation batch never blocks the UI thread.
+    val validTranslatedCount = rememberValidTranslatedLineCount(state)
     val detail = when {
         isCancelled -> "已停止"
         isError -> "查看下方错误提示"
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         waitingForTranscriptionEngine -> "等待转写引擎"
         waitingForDubbingEngine -> "等待配音引擎"
-        state.isProcessingPaused -> structuredProcessingProgress(state, displayPhase)
+        state.isProcessingPaused -> structuredProcessingProgress(state, displayPhase, validTranslatedCount)
             .ifBlank { "等待继续" }
         displayPhase == Phase.TRANSLATING && !state.manualTranslationModeEnabled &&
             !state.manualTranslationWaiting && state.totalLines > 0 ->
-            translationProgressSummary(state)
+            translationProgressSummary(state, validTranslatedCount)
         displayPhase == Phase.SYNTHESIZING && state.totalLines > 0 ->
             "已处理 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" +
                 if (state.audioReadyCount > 0) " · 已有可用配音 ${state.audioReadyCount.coerceIn(0, state.totalLines)} 行" else ""
         state.progress.isNotBlank() || state.audioProgress != null ||
             state.transcriptionProgressPercent != null || state.transcriptionTotalSegments > 0 ->
-            structuredProcessingProgress(state, displayPhase)
+            structuredProcessingProgress(state, displayPhase, validTranslatedCount)
         else -> compactPhaseFallback(source, displayPhase)
     }
 
@@ -3043,7 +3046,7 @@ private fun VideoParsingPage(
         }
 
         ProcessingStageCards(
-            state = rememberProcessingStageCardState(state),
+            state = rememberProcessingStageCardState(state, validTranslatedCount),
             source = source,
             flow = flow,
             complete = complete,
@@ -3261,8 +3264,11 @@ private fun PlayerUiState.toProcessingStageCardState(translationProgressSummary:
  * Reuse them when only unrelated playback controls or page state change.
  */
 @Composable
-private fun rememberProcessingStageCardState(state: PlayerUiState): ProcessingStageCardState {
-    val progressSummary = translationProgressSummary(state)
+private fun rememberProcessingStageCardState(
+    state: PlayerUiState,
+    validTranslatedCount: Int,
+): ProcessingStageCardState {
+    val progressSummary = translationProgressSummary(state, validTranslatedCount)
     return remember(
         state.key,
         state.progress,
@@ -8463,7 +8469,11 @@ private fun progressRatio(progress: String): Float? {
 
 
 
-private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): String {
+private fun structuredProcessingProgress(
+    state: PlayerUiState,
+    phase: Phase,
+    validTranslatedCount: Int,
+): String {
     return when (phase) {
         Phase.DOWNLOADING_AUDIO -> {
             val audio = state.audioProgress ?: return compactProcessingProgress(state.progress, phase)
@@ -8484,7 +8494,7 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
         }
         Phase.TRANSLATING -> {
             if (state.totalLines > 0 && !state.manualTranslationWaiting && !state.manualTranslationModeEnabled) {
-                "中文译文 ${countValidTranslatedLines(state)}/${state.totalLines.coerceAtLeast(0)}"
+                translationProgressSummary(state, validTranslatedCount)
             } else {
                 compactProcessingProgress(state.progress, phase)
             }
@@ -8500,8 +8510,8 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
     }
 }
 
-private fun countValidTranslatedLines(state: PlayerUiState): Int =
-    state.lines.count { line ->
+private fun countValidTranslatedLines(lines: List<SubLine>, sourceLang: String): Int =
+    lines.count { line ->
         val translated = SubtitleParsers.cleanTranslatedText(line.zh)
         if (
             line.text.isBlank() ||
@@ -8510,11 +8520,11 @@ private fun countValidTranslatedLines(state: PlayerUiState): Int =
             false
         } else {
             val sourceLanguage = if (
-                io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(state.sourceLang)
+                io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(sourceLang)
             ) {
                 io.translatetube.local.subs.SubtitleLanguageDetector.detect(line.text)
             } else {
-                state.sourceLang
+                sourceLang
             }
             io.translatetube.local.translate.SourceLanguagePolicy.isChinese(sourceLanguage) ||
                 (
@@ -8526,14 +8536,30 @@ private fun countValidTranslatedLines(state: PlayerUiState): Int =
         }
     }
 
+/**
+ * Valid-translation count for the stage cards. The per-line language and echo checks scale
+ * with the subtitle count, so they run on a background thread: doing them during composition
+ * froze the progress animation every time a translation batch landed. Until the first result
+ * arrives (and while a newer one is computing) the last known value stays on screen.
+ */
 @Composable
-private fun translationProgressSummary(state: PlayerUiState): String {
-    val total = state.totalLines.coerceAtLeast(0)
-    val valid = remember(state.lines, state.sourceLang) {
-        countValidTranslatedLines(state)
-    }
-    return "中文译文 $valid/$total"
+private fun rememberValidTranslatedLineCount(state: PlayerUiState): Int {
+    val lines = state.lines
+    val sourceLang = state.sourceLang
+    return produceState(
+        initialValue = state.translatedLineCount.coerceAtLeast(0),
+        lines,
+        sourceLang,
+    ) {
+        value = withContext(Dispatchers.Default) {
+            countValidTranslatedLines(lines, sourceLang)
+        }
+    }.value
 }
+
+private fun translationProgressSummary(state: PlayerUiState, validTranslatedCount: Int): String =
+    "中文译文 $validTranslatedCount/${state.totalLines.coerceAtLeast(0)}"
+
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
     val raw = progress.trim()
     if (raw.isBlank()) return ""
