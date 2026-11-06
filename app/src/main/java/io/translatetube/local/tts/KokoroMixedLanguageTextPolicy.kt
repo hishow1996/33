@@ -96,6 +96,25 @@ internal object KokoroMixedLanguageTextPolicy {
         """(?<![A-Za-z0-9])IPv([46])(?![A-Za-z0-9])""",
         RegexOption.IGNORE_CASE,
     )
+    private val urlOrDomainPattern = Regex(
+        """(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!    private val ipVersionPattern = Regex(
+        """(?<![A-Za-z0-9])IPv([46])(?![A-Za-z0-9])""",
+        RegexOption.IGNORE_CASE,
+    )
+'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)""",
+    )
+
+    /** Never rewrite an abbreviation or brand inside a URL/domain embedded in subtitle text. */
+    private fun replaceOutsideUrls(
+        input: String,
+        pattern: Regex,
+        replacement: (MatchResult) -> String,
+    ): String {
+        val protectedRanges = urlOrDomainPattern.findAll(input).map { it.range }.toList()
+        return pattern.replace(input) { match ->
+            if (protectedRanges.any { match.range.first in it }) match.value else replacement(match)
+        }
+    }
 
     private val latinWordPattern = Regex("""[A-Za-z]+(?:['’][A-Za-z]+)*""")
     private val cjkBeforeLatin = Regex("""([$CJK])([A-Za-z])""")
@@ -128,7 +147,7 @@ internal object KokoroMixedLanguageTextPolicy {
     ): String {
         var result = input
 
-        result = gptVersionPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, gptVersionPattern) { match ->
             onExpanded()
             val major = numberToEnglish(match.groupValues[1].toInt())
             val minor = match.groupValues[2]
@@ -144,17 +163,17 @@ internal object KokoroMixedLanguageTextPolicy {
             }
         }
 
-        result = pythonVersionPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, pythonVersionPattern) { match ->
             onExpanded()
             "Python ${numberToEnglish(match.groupValues[1].toInt())} point ${numberToEnglish(match.groupValues[2].toInt())}"
         }
 
-        result = androidVersionPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, androidVersionPattern) { match ->
             onExpanded()
             "Android ${numberToEnglish(match.groupValues[1].toInt())}"
         }
 
-        result = rtxModelPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, rtxModelPattern) { match ->
             onExpanded()
             val digits = match.groupValues[1]
             val ti = match.groupValues[2]
@@ -162,13 +181,13 @@ internal object KokoroMixedLanguageTextPolicy {
             if (ti.isNotEmpty()) "ar tee ex $spoken tie" else "ar tee ex $spoken"
         }
 
-        result = wifiPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, wifiPattern) { match ->
             onExpanded()
             val generation = match.groupValues[1]
             if (generation.isEmpty()) "why fie" else "why fie ${smallNumberWords[generation.toInt()]}"
         }
 
-        result = usbPortPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, usbPortPattern) { match ->
             onExpanded()
             if (match.groupValues[1].equals("A", ignoreCase = true)) {
                 "you ess bee ay"
@@ -177,12 +196,12 @@ internal object KokoroMixedLanguageTextPolicy {
             }
         }
 
-        result = videoCodecPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, videoCodecPattern) { match ->
             onExpanded()
             "aitch ${digitSequenceToEnglish(match.groupValues[1])}"
         }
 
-        result = ipVersionPattern.replace(result) { match ->
+        result = replaceOutsideUrls(result, ipVersionPattern) { match ->
             onExpanded()
             "eye pee vee ${smallNumberWords[match.groupValues[1].toInt()]}"
         }
@@ -202,14 +221,14 @@ internal object KokoroMixedLanguageTextPolicy {
 
         var properNameCount = 0
         for ((pattern, spokenAlias) in properNameAliases) {
-            prepared = pattern.replace(prepared) {
+            prepared = replaceOutsideUrls(prepared, pattern) {
                 properNameCount++
                 spokenAlias
             }
         }
 
         var initialismCount = 0
-        prepared = initialismPattern.replace(prepared) { match ->
+        prepared = replaceOutsideUrls(prepared, initialismPattern) { match ->
             val spelling = initialismSpellings[match.value.uppercase(Locale.ROOT)]
             if (spelling == null) match.value else {
                 initialismCount++
