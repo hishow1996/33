@@ -3008,7 +3008,7 @@ private fun VideoParsingPage(
 
 
         ProcessingStageCards(
-            state = state,
+            state = state.toProcessingStageCardState(),
             source = source,
             flow = flow,
             complete = complete,
@@ -3092,9 +3092,138 @@ private fun VideoParsingPage(
 }
 
 
+
+@Immutable
+private data class ProcessingStagePreviewLine(
+    val startMs: Long,
+    val endMs: Long,
+    val sourceText: String,
+    val translatedText: String? = null,
+)
+
+@Immutable
+private data class ProcessingStageCardState(
+    val key: String,
+    val progress: String,
+    val failedProgress: String,
+    val error: String?,
+    val title: String,
+    val channel: String,
+    val durationMs: Long,
+    val selectedQuality: String,
+    val subtitleTrackStatus: String,
+    val availableSubtitleTrackCount: Int,
+    val audioTrackChannelCount: Int,
+    val audioTrackCodecLabel: String,
+    val audioTrackDurationMs: Long,
+    val audioTrackMimeType: String,
+    val audioTrackSampleRateHz: Int,
+    val audioTrackSourceType: String,
+    val videoResolution: String,
+    val transcriptionEngineName: String,
+    val transcriptionProgressPercent: Int?,
+    val transcriptionCompletedSegments: Int,
+    val transcriptionTotalSegments: Int,
+    val lineCount: Int,
+    val transcriptionPreviewLines: List<ProcessingStagePreviewLine>,
+    val completedTranscriptionPreviewLines: List<ProcessingStagePreviewLine>,
+    val translationPreviewLines: List<ProcessingStagePreviewLine>,
+    val completedTranslationPreviewLines: List<ProcessingStagePreviewLine>,
+    val translatedLineCount: Int,
+    val translationCurrentBatch: Int,
+    val translationTotalBatches: Int,
+    val translationRetryCount: Int,
+    val manualTranslationModeEnabled: Boolean,
+    val manualTranslationWaiting: Boolean,
+    val engineName: String,
+    val dubbingStatus: String,
+    val isProcessingPaused: Boolean,
+    val preparedCount: Int,
+    val sourceLang: String,
+    val totalLines: Int,
+    val ttsEngineName: String,
+)
+
+private fun PlayerUiState.toProcessingStageCardState(): ProcessingStageCardState {
+    fun previewLine(line: SubLine, includeTranslation: Boolean = false) =
+        ProcessingStagePreviewLine(
+            startMs = line.startMs,
+            endMs = line.endMs,
+            sourceText = line.text,
+            translatedText = if (includeTranslation) {
+                SubtitleParsers.preferredTranslationText(line)
+            } else {
+                null
+            },
+        )
+
+    val activeTranscription = transcriptionPreviewLines.takeLast(2).map(::previewLine)
+    val completedTranscription = activeTranscription.ifEmpty {
+        lines.takeLast(2).map(::previewLine)
+    }
+    val activeTranslation = translationPreviewLines
+        .mapNotNull { line ->
+            SubtitleParsers.preferredTranslationText(line)?.let {
+                previewLine(line, includeTranslation = true)
+            }
+        }
+        .takeLast(2)
+    val completedTranslation = activeTranslation.ifEmpty {
+        lines.takeLast(12)
+            .mapNotNull { line ->
+                SubtitleParsers.preferredTranslationText(line)?.let {
+                    previewLine(line, includeTranslation = true)
+                }
+            }
+            .takeLast(2)
+    }
+
+    return ProcessingStageCardState(
+        key = key,
+        progress = progress,
+        failedProgress = failedProgress,
+        error = error,
+        title = title,
+        channel = channel,
+        durationMs = durationMs,
+        selectedQuality = selectedQuality,
+        subtitleTrackStatus = subtitleTrackStatus,
+        availableSubtitleTrackCount = availableSubtitleTracks.size,
+        audioTrackChannelCount = audioTrackChannelCount,
+        audioTrackCodecLabel = audioTrackCodecLabel,
+        audioTrackDurationMs = audioTrackDurationMs,
+        audioTrackMimeType = audioTrackMimeType,
+        audioTrackSampleRateHz = audioTrackSampleRateHz,
+        audioTrackSourceType = audioTrackSourceType,
+        videoResolution = videoResolution,
+        transcriptionEngineName = transcriptionEngineName,
+        transcriptionProgressPercent = transcriptionProgressPercent,
+        transcriptionCompletedSegments = transcriptionCompletedSegments,
+        transcriptionTotalSegments = transcriptionTotalSegments,
+        lineCount = lines.size,
+        transcriptionPreviewLines = activeTranscription,
+        completedTranscriptionPreviewLines = completedTranscription,
+        translationPreviewLines = activeTranslation,
+        completedTranslationPreviewLines = completedTranslation,
+        translatedLineCount = translatedLineCount,
+        translationCurrentBatch = translationCurrentBatch,
+        translationTotalBatches = translationTotalBatches,
+        translationRetryCount = translationRetryCount,
+        manualTranslationModeEnabled = manualTranslationModeEnabled,
+        manualTranslationWaiting = manualTranslationWaiting,
+        engineName = engineName,
+        dubbingStatus = dubbingStatus,
+        isProcessingPaused = isProcessingPaused,
+        preparedCount = preparedCount,
+        sourceLang = sourceLang,
+        totalLines = totalLines,
+        ttsEngineName = ttsEngineName,
+    )
+}
+
 @Composable
 private fun ProcessingStageCards(
-    state: PlayerUiState,
+    state: ProcessingStageCardState,
     source: VideoSourceKind,
     flow: ProcessingFlow,
     complete: Boolean,
@@ -3119,14 +3248,8 @@ private fun ProcessingStageCards(
     }
     // Restored sessions created before result-preview fields existed can still render
     // their last source/translated cues from the playable subtitle timeline.
-    val completedTranscriptionPreview = state.transcriptionPreviewLines.ifEmpty {
-        state.lines.takeLast(2)
-    }
-    val completedTranslationPreview = state.translationPreviewLines.ifEmpty {
-        state.lines.takeLast(12).mapNotNull { line ->
-            SubtitleParsers.preferredTranslationText(line)?.let { line.copy(zh = it) }
-        }.takeLast(2)
-    }
+    val completedTranscriptionPreview = state.completedTranscriptionPreviewLines
+    val completedTranslationPreview = state.completedTranslationPreviewLines
 
         // Five consistent, independently expandable cards. The active stage opens by default.
         Column(
@@ -3244,7 +3367,7 @@ private fun ProcessingStageCards(
                                     VideoProcessingFlowPolicy.youtubeSubtitleDetail(
                                         progress = progressText,
                                         subtitleTrackStatus = state.subtitleTrackStatus,
-                                        availableTrackCount = state.availableSubtitleTracks.size,
+                                        availableTrackCount = state.availableSubtitleTrackCount,
                                     )?.let { add("字幕检测" to it) }
                                 }
                                 add("当前状态" to when {
@@ -3344,7 +3467,7 @@ private fun ProcessingStageCards(
                                         add("处理进度" to "$it%")
                                     }
                                 }
-                                if (state.lines.isNotEmpty()) add("已识别字幕" to state.lines.size.toString() + " 条")
+                                if (state.lineCount > 0) add("已识别字幕" to state.lineCount.toString() + " 条")
                             }
                             3 -> {
                                 if (!state.manualTranslationModeEnabled && !state.manualTranslationWaiting) {
@@ -3747,7 +3870,7 @@ private fun ProcessingStageCards(
                                     isFailed = failed,
                                     isCompleted = done,
                                     isSkipped = stageSkipped,
-                                    sourceSubtitlesReady = state.lines.isNotEmpty(),
+                                    sourceSubtitlesReady = state.lineCount > 0,
                                 )
                             }
 
@@ -4953,7 +5076,7 @@ private fun CompactStageMetadataLine(
 
 @Composable
 private fun TranscriptionStageResultPreview(
-    lines: List<SubLine>,
+    lines: List<ProcessingStagePreviewLine>,
     emptyText: String,
 ) {
     val preview = lines.takeLast(2)
@@ -5021,7 +5144,7 @@ private fun TranscriptionStageResultPreview(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    line.text,
+                                    line.sourceText,
                                     modifier = Modifier.weight(1f),
                                     color = Color(0xFF39485B),
                                     style = MaterialTheme.typography.bodySmall.copy(
@@ -5050,12 +5173,10 @@ private fun TranscriptionStageResultPreview(
 
 @Composable
 private fun TranslationStageResultPreview(
-    lines: List<SubLine>,
+    lines: List<ProcessingStagePreviewLine>,
     emptyText: String,
 ) {
-    val preview = lines.mapNotNull { line ->
-        SubtitleParsers.preferredTranslationText(line)?.let { translated -> line to translated }
-    }.takeLast(2)
+    val preview = lines.filter { !it.translatedText.isNullOrBlank() }.takeLast(2)
 
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
@@ -5086,7 +5207,7 @@ private fun TranslationStageResultPreview(
                     overflow = TextOverflow.Ellipsis,
                 )
             } else {
-                preview.forEachIndexed { index, (line, translated) ->
+                preview.forEachIndexed { index, line ->
                     if (index > 0) HorizontalDivider(color = Color(0xFFE7ECF2))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -5115,7 +5236,7 @@ private fun TranslationStageResultPreview(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
-                                translated,
+                                line.translatedText.orEmpty(),
                                 color = Color(0xFF344457),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontSize = 11.sp,
@@ -8509,32 +8630,8 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
 
 private fun translationProgressSummary(state: PlayerUiState): String {
     val total = state.totalLines.coerceAtLeast(0)
-    val rows = state.lines
-    val valid = rows.count { line ->
-        val translated = SubtitleParsers.cleanTranslatedText(line.zh)
-        if (
-            line.text.isBlank() ||
-            translated.isNullOrBlank()
-        ) {
-            false
-        } else {
-            val sourceLanguage = if (
-                io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(state.sourceLang)
-            ) {
-                io.translatetube.local.subs.SubtitleLanguageDetector.detect(line.text)
-            } else {
-                state.sourceLang
-            }
-            io.translatetube.local.translate.SourceLanguagePolicy.isChinese(sourceLanguage) ||
-                (
-                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
-                        .isSourceEcho(line.text, translated, sourceLanguage) &&
-                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
-                        .isTargetLanguageMismatch(line.text, translated, sourceLanguage, "zh")
-                )
-        }
-    }
-    return "中文译文 $valid/$total"
+    val translated = state.translatedLineCount.coerceIn(0, total)
+    return "中文译文 $translated/$total"
 }
 
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
