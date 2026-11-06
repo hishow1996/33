@@ -378,3 +378,5 @@ jobs:
 
 # Explicit user-requested APK build trigger (2026-11-06 14:48 +08:00): build latest main.
 # Explicit user-requested APK build retry after fixing PlaybackService unresolvedIndices type (2026-11-06 14:55 +08:00).
+
+# User-requested APK build trigger for latest main source (2026-11-06 17:52 +08:00).
