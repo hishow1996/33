@@ -67,6 +67,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
@@ -6638,10 +6639,12 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 }
                 dubCollectJob = scope.launch {
                     kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .conflate()
                         .collect { (prefix, readyCount, audioReadyCount) ->
                             updateUiForCurrentDubbingEngine(d, sessionKey) {
                                 it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                             }
+                            delay(120L)
                         }
                 }
                 lastLineIdx = Int.MIN_VALUE
@@ -7177,10 +7180,12 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 }
                 dubCollectJob = scope.launch {
                     kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .conflate()
                         .collect { (prefix, readyCount, audioReadyCount) ->
                             updateUiForCurrentDubbingEngine(d, sessionKey) {
                                 it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                             }
+                            delay(120L)
                         }
                 }
 
@@ -10521,11 +10526,21 @@ updateUiForSession(key, pipelineGeneration) {
                             }
                             dubCollectJob = scope.launch {
                                 kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                                    .conflate()
                                     .collect { (prefix, readyCount, audioReadyCount) ->
                                         updateUiForCurrentDubbingEngine(d, key) {
                                             it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                                         }
-                                        clearInProgressCheckpointAfterDubbing(key, pipelineGeneration)
+                                        val currentState = ui.value
+                                        if (
+                                            currentState.key == key &&
+                                            currentState.phase == Phase.READY &&
+                                            currentState.totalLines > 0 &&
+                                            readyCount >= currentState.totalLines
+                                        ) {
+                                            clearInProgressCheckpointAfterDubbing(key, pipelineGeneration)
+                                        }
+                                        delay(120L)
                                     }
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -15277,12 +15292,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
                     kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                        .conflate()
                         .collect { (prefix, readyCount, audioReadyCount) ->
                             updateUiForCurrentDubbingEngine(d, sessionKey) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
                                 } else state
                             }
+                            delay(120L)
                         }
                 }
                 var cacheableTranslationCount = 0
