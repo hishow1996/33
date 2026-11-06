@@ -89,6 +89,71 @@ class PiperModelFilePolicyTest {
     }
 
     @Test
+    fun acceptsMeloChineseEnglishVitsAssetsWithoutEspeakData() {
+        assertTrue(
+            PiperModelFilePolicy.isComplete(
+                rootFiles = mapOf(
+                    "model.onnx" to 163L * 1024L * 1024L,
+                    "tokens.txt" to 655L,
+                    "lexicon.txt" to 6L * 1024L * 1024L,
+                    "phone.fst" to 87L * 1024L,
+                    "date.fst" to 58L * 1024L,
+                    "number.fst" to 63L * 1024L,
+                ),
+                hasEspeakData = false,
+                requiresChineseAssets = true,
+                modelFileName = "model.onnx",
+            )
+        )
+    }
+
+    @Test
+    fun matchaRequiresAcousticModelVocoderEspeakLexiconAndRuleFiles() {
+        val assets = mapOf(
+            "model-steps-3.onnx" to 72L * 1024L * 1024L,
+            "vocos-16khz-univ.onnx" to 53L * 1024L * 1024L,
+            "tokens.txt" to 21L * 1024L,
+            "lexicon.txt" to 1300L * 1024L,
+            "phone-zh.fst" to 87L * 1024L,
+            "date-zh.fst" to 58L * 1024L,
+            "number-zh.fst" to 63L * 1024L,
+        )
+        assertTrue(
+            PiperModelFilePolicy.isComplete(
+                rootFiles = assets,
+                hasEspeakData = true,
+                requiresChineseAssets = true,
+                modelFileName = "model-steps-3.onnx",
+                vocoderFileName = "vocos-16khz-univ.onnx",
+                requiresEspeakDataForChinese = true,
+                ruleFstNames = listOf("phone-zh.fst", "date-zh.fst", "number-zh.fst"),
+            )
+        )
+        assertFalse(
+            PiperModelFilePolicy.isComplete(
+                rootFiles = assets - "vocos-16khz-univ.onnx",
+                hasEspeakData = true,
+                requiresChineseAssets = true,
+                modelFileName = "model-steps-3.onnx",
+                vocoderFileName = "vocos-16khz-univ.onnx",
+                requiresEspeakDataForChinese = true,
+                ruleFstNames = listOf("phone-zh.fst", "date-zh.fst", "number-zh.fst"),
+            )
+        )
+        assertFalse(
+            PiperModelFilePolicy.isComplete(
+                rootFiles = assets,
+                hasEspeakData = false,
+                requiresChineseAssets = true,
+                modelFileName = "model-steps-3.onnx",
+                vocoderFileName = "vocos-16khz-univ.onnx",
+                requiresEspeakDataForChinese = true,
+                ruleFstNames = listOf("phone-zh.fst", "date-zh.fst", "number-zh.fst"),
+            )
+        )
+    }
+
+    @Test
     fun rejectsArchivePathTraversalAbsolutePathsAndForeignRoots() {
         assertEquals("model.onnx", PiperModelFilePolicy.normalizeArchiveEntryName(
             "piper-root/model.onnx", "piper-root"
