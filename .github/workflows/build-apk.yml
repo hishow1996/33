@@ -387,3 +387,5 @@ jobs:
 # Explicit user-requested APK build trigger for latest main source (2026-11-07): run JVM tests and produce installable debug/release APK artifacts.
 
 # Explicit user-requested APK rebuild after fixing Piper TTS diagnostic vocoder scope (2026-11-07).
+
+# Explicit user-requested APK rebuild after correcting Kokoro numeric-version detection and Piper recovery guidance (2026-11-07).
