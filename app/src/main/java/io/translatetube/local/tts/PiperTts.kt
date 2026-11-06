@@ -806,7 +806,7 @@ object PiperModels {
         checkActive: () -> Unit = {},
         onStage: (String) -> Unit = {},
     ) {
-        val def = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：$id")
+        val def = byId(id) ?: throw IllegalArgumentException("未知本地配音模型：$id")
         val callingJob = currentCoroutineContext()[Job]
         val guardedCheck: () -> Unit = {
             awaitDownloadsResumedBlocking(callingJob)
