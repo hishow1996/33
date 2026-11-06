@@ -13954,7 +13954,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val prefs = getSharedPreferences("settings", MODE_PRIVATE)
             val id = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
             val def = io.translatetube.local.tts.PiperModels.byId(id)
-            if (def == null) "Piper" else "Piper · ${def.voiceLabel}"
+            when {
+                def == null -> "本地多语种模型"
+                def.engineName == "Piper" -> "Piper · ${def.voiceLabel}"
+                else -> def.engineName
+            }
         }
         else -> "未知配音引擎"
     }
