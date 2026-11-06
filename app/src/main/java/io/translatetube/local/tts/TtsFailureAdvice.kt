@@ -16,8 +16,8 @@ internal object TtsFailureAdvice {
                 "请检查手机的文字转语音引擎、中文语音数据和该音色是否需要网络；系统 TTS 直接使用手机语音服务，不依赖 Kokoro 配音模型。"
             normalized.contains("kokoro") ->
                 "请检查 Kokoro 配音模型文件是否完整，必要时在设置中重新准备模型。"
-            normalized.contains("piper") ->
-                "请确认设置中选择了中文 Piper 模型，并检查模型、词典和发音规则文件是否完整。"
+            normalized.contains("piper") || normalized.contains("melotts") || normalized.contains("matchatts") ->
+                "请检查设置中所选本地语音模型是否完整，并确认词典、发音规则和声码器文件通过校验。"
             normalized.contains("gemini") ->
                 "请检查网络连接，以及设置中的 Gemini API Key 是否有效、额度是否充足。"
             normalized.contains("google") || normalized.contains("谷歌") ->
