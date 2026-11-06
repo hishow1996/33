@@ -1,3 +1,4 @@
+# User-requested APK build trigger marker (2026-11-07 07:14 +08:00): build current main and publish debug/release APKs.
 # Explicit APK build retry after PlayerScreen subtitle preview policy import repair (2026-11-06).
 # Explicit user-requested APK build trigger for latest main source (2026-11-06 12:58 +08:00).
 # Explicit user-requested APK build trigger for latest main 4360218b (2026-11-06).
