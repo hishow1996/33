@@ -33,6 +33,7 @@ import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.SelectedWebMediaMetadata
 import io.translatetube.local.player.Phase
 import io.translatetube.local.player.PendingMediaResumeContextPolicy
+import io.translatetube.local.data.PendingVideoHistoryDeletionStore
 import io.translatetube.local.yt.NewPipeRepo
 import io.translatetube.local.web.SharedLinkTextParser
 
@@ -86,6 +87,10 @@ class MainActivity : ComponentActivity() {
         val sourceKey = resumePrefs.getString(KEY_SOURCE, null)?.takeIf { it.isNotBlank() }
             ?: return null
         val activeKey = resumePrefs.getString(KEY_ACTIVE, null)?.takeIf { it.isNotBlank() } ?: sourceKey
+        if (
+            PendingVideoHistoryDeletionStore.blocksPlayback(applicationContext, sourceKey) ||
+            PendingVideoHistoryDeletionStore.blocksPlayback(applicationContext, activeKey)
+        ) return null
         val generation = resumePrefs.getLong(KEY_GENERATION, 1L).coerceAtLeast(1L)
         return PendingResumeTask(
             sourceKey = sourceKey,

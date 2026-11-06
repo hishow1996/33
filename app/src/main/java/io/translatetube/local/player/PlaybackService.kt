@@ -35,6 +35,7 @@ import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.SourceType
 import io.translatetube.local.data.VideoEntity
 import io.translatetube.local.data.VideoHistoryCacheIndex
+import io.translatetube.local.data.PendingVideoHistoryDeletionStore
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.subs.SubtitleFileDecoder
@@ -4797,6 +4798,14 @@ class PlaybackService : MediaSessionService() {
         localIdentityResolutionToken: Long? = null,
         skipInProgressCheckpointRestore: Boolean = false,
     ) {
+        if (PendingVideoHistoryDeletionStore.blocksPlayback(this@PlaybackService, key)) {
+            ui.value = PlayerUiState(
+                phase = Phase.ERROR,
+                key = key,
+                error = "该视频关联数据正在清理，完成后请重新打开。",
+            )
+            return
+        }
         activePendingResumeTaskGeneration =
             PendingProcessingResumeStore.activeGeneration(this, key) ?: 0L
         val verifiedSelectedWebMediaMetadata = selectedWebMediaMetadata?.takeIf { metadata ->
@@ -8872,10 +8881,21 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                     }
                                 },
                                 encodedAudio = encodedInput,
-                                checkpointIdentity = sourceSubtitleCacheKey,
-                                checkpointDirectory = cacheDir,
+                                checkpointIdentity = VideoHistoryCacheIndex.generationScopedIdentity(
+                                    this@PlaybackService,
+                                    key,
+                                    sourceSubtitleCacheKey,
+                                ),
+                                checkpointDirectory = File(
+                                    cacheDir,
+                                    VideoHistoryCacheIndex.asrCheckpointDirectoryName(key),
+                                ),
                                 allowUncertainRetry = allowCloudAsrResubmission,
-                                submissionGuardIdentity = cacheKeyBase,
+                                submissionGuardIdentity = VideoHistoryCacheIndex.generationScopedIdentity(
+                                    this@PlaybackService,
+                                    key,
+                                    cacheKeyBase,
+                                ),
                                 logContext = this@PlaybackService,
                                 diagnosticContext = currentStageDiagnostics.toMap() + mapOf(
                                     "云端请求阶段" to "上传编码音轨并提交转写任务",

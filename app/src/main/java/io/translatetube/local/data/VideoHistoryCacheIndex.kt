@@ -118,6 +118,12 @@ internal object VideoHistoryCacheIndex {
         return "$videoKey|history-generation=${cacheGeneration(context, videoKey)}|$identity"
     }
 
+    /** Safe cache directory name for provider checkpoints owned by one history item. */
+    fun asrCheckpointDirectoryName(videoKey: String): String {
+        require(videoKey.isNotBlank()) { "视频任务身份不能为空" }
+        return "history_asr_${shortDigest(videoKey)}"
+    }
+
     fun cacheGeneration(context: Context, videoKey: String): Long {
         if (videoKey.isBlank()) return 0L
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

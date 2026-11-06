@@ -130,6 +130,44 @@ class AppCacheStoragePolicyTest {
     }
 
     @Test
+    fun includesAndClearsScopedAndLegacyCloudAsrCheckpoints() {
+        val root = createTempDir(prefix = "app-cache-cloud-checkpoints")
+        try {
+            File(root, "cloud_asr_response_checkpoints/cloud-asr-elevenlabs-legacy.bin").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(7))
+            }
+            File(root, "kawa_asr_checkpoints/kawa-legacy.json").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(11))
+            }
+            val scoped = File(root, "history_asr_${"a".repeat(32)}")
+            File(scoped, "cloud_asr_response_checkpoints/cloud-asr-cartesia-current.bin").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(13))
+            }
+            File(scoped, "kawa_asr_checkpoints/kawa-current.json").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(17))
+            }
+            val keep = File(root, "history_asr_not-a-hash/keep.bin").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(19))
+            }
+
+            assertEquals(7L + 11L + 13L + 17L, AppCacheStoragePolicy.sizeBytes(root))
+            assertTrue(AppCacheStoragePolicy.clear(root))
+            assertFalse(File(root, "cloud_asr_response_checkpoints").exists())
+            assertFalse(File(root, "kawa_asr_checkpoints").exists())
+            assertFalse(scoped.exists())
+            assertTrue(keep.isFile)
+            assertEquals(19L, AppCacheStoragePolicy.sizeBytes(root))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun refusesCacheClearWhenPlaybackOrBackgroundWorkIsActive() {
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = true, isProcessing = false, dubbingIncomplete = false))
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = false, isProcessing = true, dubbingIncomplete = false))

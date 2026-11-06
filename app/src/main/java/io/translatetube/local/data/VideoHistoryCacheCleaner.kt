@@ -10,10 +10,18 @@ import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.SpeakerRecognitionTaskJournal
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 
-/** Deletes a history row only after all task-owned files, checkpoints and indexes are gone. */
+/**
+ * Deletes a history row only after all task-owned files, checkpoints and indexes are gone.
+ * Durable tombstones make every destructive operation retryable after process death.
+ */
 internal object VideoHistoryCacheCleaner {
     suspend fun deleteVideo(context: Context, database: AppDatabase, video: VideoEntity) {
+        if (!PendingVideoHistoryDeletionStore.markVideoPending(context, video.key)) {
+            throw IOException("删除任务标记写入失败，历史记录未删除，请重试。")
+        }
+
         // First retire the in-memory READY session so it cannot recreate files during cleanup.
         PlaybackService.invalidateDeletedHistorySession(video.key)
 
@@ -24,6 +32,12 @@ internal object VideoHistoryCacheCleaner {
         if (!VideoHistoryCacheIndex.advanceGenerationForDeletion(context, video.key)) {
             throw IOException("缓存代次更新失败，历史记录保留，请重试。")
         }
+
+        // Provider checkpoints are isolated by history key and deletion generation.
+        deleteDirectoryIfPresent(
+            File(context.cacheDir, VideoHistoryCacheIndex.asrCheckpointDirectoryName(video.key)),
+            "云端转写检查点",
+        )
 
         val dubbingDirectories = listOf(
             DubbingCacheStorage.videoDirectory(context, video.key),
@@ -55,7 +69,6 @@ internal object VideoHistoryCacheCleaner {
             }
         }
 
-        // Decoded PCM has its own index and can be stored under cacheDir.
         val localPcmDirectory = File(context.cacheDir, "local_asr_pcm16")
         for (name in localPcmNames) {
             if (!Regex("^[0-9a-f]{32}\\.pcm16$").matches(name)) continue
@@ -95,14 +108,69 @@ internal object VideoHistoryCacheCleaner {
 
         // Remove the history row last so any failed cleanup remains visible and retryable.
         database.videoDao().delete(video.key)
+        if (!PendingVideoHistoryDeletionStore.clearVideoPending(context, video.key)) {
+            // The row is already gone and all task files are removed. Startup recovery recognizes
+            // the missing row and safely drops this final tombstone.
+            throw IOException("删除完成标记写入失败，应用下次启动将自动核对清理状态。")
+        }
+    }
+
+    /** Retry interrupted single-item, cache-only and delete-all operations on app startup. */
+    suspend fun recoverPendingDeletions(context: Context, database: AppDatabase): Int {
+        if (PendingVideoHistoryDeletionStore.isDeleteAllHistoryPending(context)) {
+            deleteAll(context, database)
+            return 1
+        }
+
+        var recovered = 0
+        if (PendingVideoHistoryDeletionStore.isProcessingClearPending(context)) {
+            clearAllProcessingData(context, database)
+            recovered++
+        }
+
+        val pendingHashes = PendingVideoHistoryDeletionStore.pendingVideoHashes(context)
+        if (pendingHashes.isEmpty()) return recovered
+
+        val videosByHash = database.videoDao().allForCleanup()
+            .associateBy { PendingVideoHistoryDeletionStore.videoKeyHash(it.key) }
+        val failures = mutableListOf<Exception>()
+        for (hash in pendingHashes) {
+            val video = videosByHash[hash]
+            if (video == null) {
+                // The history row is deleted only after every artifact has been removed.
+                if (PendingVideoHistoryDeletionStore.clearVideoPendingHash(context, hash)) {
+                    recovered++
+                } else {
+                    failures += IOException("已删除历史记录的最终清理标记仍无法移除。")
+                }
+                continue
+            }
+            try {
+                deleteVideo(context, database, video)
+                recovered++
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                failures += failure
+            }
+        }
+        if (failures.isNotEmpty()) {
+            throw IOException(
+                "启动时仍有 ${failures.size} 条视频删除任务未完成；已保留清理标记，后续启动会继续重试。",
+                failures.first(),
+            )
+        }
+        return recovered
     }
 
     /**
      * Clear every generated processing artifact while keeping history rows, original user media,
-     * installed models, API credentials and app settings. Both storage cleanup actions and
-     * delete-all-history use this exact path so their cleanup coverage cannot drift.
+     * installed models, API credentials and app settings.
      */
     suspend fun clearAllProcessingData(context: Context, database: AppDatabase) {
+        if (!PendingVideoHistoryDeletionStore.markProcessingClearPending(context)) {
+            throw IOException("全量缓存清理标记写入失败，尚未开始清理。")
+        }
         PlaybackService.invalidateAllDeletedHistorySessions()
         if (!AppCacheStoragePolicy.clear(context.cacheDir, context.noBackupFilesDir, context.filesDir)) {
             throw IOException("部分处理缓存仍无法删除；请停止相关任务后重试。")
@@ -123,11 +191,21 @@ internal object VideoHistoryCacheCleaner {
         if (!VideoHistoryCacheIndex.clearAll(context)) {
             throw IOException("缓存索引清理失败，请重试。")
         }
+        if (!PendingVideoHistoryDeletionStore.clearProcessingClearPending(context)) {
+            throw IOException("缓存已清理，但无法确认清理完成；应用下次启动将再次核对。")
+        }
     }
 
     suspend fun deleteAll(context: Context, database: AppDatabase): Int {
+        if (!PendingVideoHistoryDeletionStore.markDeleteAllHistoryPending(context)) {
+            throw IOException("批量删除标记写入失败，历史记录未删除。")
+        }
         clearAllProcessingData(context, database)
-        return database.videoDao().deleteAll()
+        val removed = database.videoDao().deleteAll()
+        if (!PendingVideoHistoryDeletionStore.completeDeleteAll(context)) {
+            throw IOException("历史记录已删除，但最终清理标记无法移除；应用下次启动将自动核对。")
+        }
+        return removed
     }
 
     private fun deleteFileIfPresent(file: File, label: String) {

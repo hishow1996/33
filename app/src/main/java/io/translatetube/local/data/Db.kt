@@ -39,6 +39,10 @@ interface VideoDao {
     @Query("SELECT * FROM videos ORDER BY lastPlayedAt DESC")
     fun all(): Flow<List<VideoEntity>>
 
+    /** Startup recovery for deletion operations interrupted by process death. */
+    @Query("SELECT * FROM videos ORDER BY lastPlayedAt DESC")
+    suspend fun allForCleanup(): List<VideoEntity>
+
     @Query("SELECT * FROM videos WHERE isFavorite = 1 ORDER BY lastPlayedAt DESC")
     fun favorites(): Flow<List<VideoEntity>>
 

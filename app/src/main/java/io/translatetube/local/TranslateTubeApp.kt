@@ -7,6 +7,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import io.translatetube.local.util.CrashGuard
 import io.translatetube.local.data.AppDatabase
+import io.translatetube.local.data.PendingVideoHistoryDeletionStore
+import io.translatetube.local.data.VideoHistoryCacheCleaner
+import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.translate.Crypto
 import io.translatetube.local.tts.GeminiTtsVoices
 
@@ -46,6 +49,36 @@ class TranslateTubeApp : Application() {
         registerActivityLifecycleCallbacks(lifecycleTracker)
         CrashGuard.install(this)
         super.onCreate()
+
+        // A force-stop can interrupt a multi-file delete. Retry its durable tombstones before the
+        // player is allowed to restore the affected task or any globally cleared processing cache.
+        if (PendingVideoHistoryDeletionStore.hasPendingOperations(this)) {
+            appScope.launch {
+                try {
+                    val recovered = VideoHistoryCacheCleaner.recoverPendingDeletions(
+                        this@TranslateTubeApp,
+                        AppDatabase.get(this@TranslateTubeApp),
+                    )
+                    if (recovered > 0) {
+                        AppLogStore.info(
+                            this@TranslateTubeApp,
+                            "VideoHistoryCleanup",
+                            "已在启动时恢复未完成的视频数据清理",
+                            diagnosticContext = mapOf("恢复清理任务数" to recovered.toString()),
+                        )
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    AppLogStore.error(
+                        this@TranslateTubeApp,
+                        "VideoHistoryCleanup",
+                        "启动时恢复未完成的视频数据清理失败，相关任务仍被保护",
+                        failure,
+                    )
+                }
+            }
+        }
 
         // 旧版本将 Gemini 翻译密钥同时用于配音；升级时只迁移一次，之后两项配置独立保存。
         val ttsKeyPrefs = getSharedPreferences("settings", MODE_PRIVATE)

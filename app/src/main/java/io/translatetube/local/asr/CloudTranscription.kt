@@ -547,6 +547,7 @@ object CloudTranscription {
                     ownerJob = ownerJob,
                     onProgress = ::publishProgress,
                     checkpointIdentity = checkpointIdentity?.takeIf { it.isNotBlank() },
+                    checkpointRootDirectory = checkpointDirectory,
                 )
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -928,6 +929,7 @@ object CloudTranscription {
         ownerJob: Job?,
         onProgress: (String) -> Unit,
         checkpointIdentity: String?,
+        checkpointRootDirectory: File?,
     ): Result {
         val pcmBytes = wavFile.length() - 44L
         if (pcmBytes <= 0L || pcmBytes % 2L != 0L) {
@@ -938,8 +940,9 @@ object CloudTranscription {
         val cues = ArrayList<Triple<Long, Long, String>>()
         var detectedLanguage = language
         val checkpointDirectory = checkpointIdentity?.let {
-            File(wavFile.parentFile ?: wavFile.absoluteFile.parentFile, "kawa_asr_checkpoints")
-                .apply { mkdirs() }
+            val root = checkpointRootDirectory ?: wavFile.absoluteFile.parentFile
+                ?: throw IOException("Kawa 转写检查点目录无效")
+            File(root, "kawa_asr_checkpoints").apply { mkdirs() }
         }
         if (checkpointDirectory != null) {
             KawaAsrCheckpointStore.cleanupStale(

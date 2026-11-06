@@ -10,11 +10,15 @@ internal object AppCacheStoragePolicy {
         "asr_audio_retry",
         "local_asr_pcm16",
         "ready_session_snapshots",
+        // Legacy shared provider checkpoints from versions before per-video isolation.
+        "cloud_asr_response_checkpoints",
+        "kawa_asr_checkpoints",
     )
     private val managedFilesDirectories = listOf(
         "in_progress_processing",
         "ready_session_snapshots",
     )
+    private val managedTaskCheckpointDirectoryName = Regex("^history_asr_[0-9a-f]{32}$")
     private val managedTopLevelPrefixes = listOf(
         "asr_audio_",
         "translate-pcm-",
@@ -42,8 +46,8 @@ internal object AppCacheStoragePolicy {
         filesDir: File? = null,
     ): Long {
         var total = 0L
-        managedCacheDirectories.forEach { name ->
-            total = addDirectoryBytesSaturated(total, File(cacheDir, name))
+        managedCacheDirectoryTargets(cacheDir).forEach { directory ->
+            total = addDirectoryBytesSaturated(total, directory)
         }
         cacheDir.listFiles()
             ?.filter { file ->
@@ -75,8 +79,7 @@ internal object AppCacheStoragePolicy {
         filesDir: File? = null,
     ): Boolean {
         var succeeded = true
-        managedCacheDirectories.forEach { name ->
-            val directory = File(cacheDir, name)
+        managedCacheDirectoryTargets(cacheDir).forEach { directory ->
             if (directory.exists() && !directory.deleteRecursively() && directory.exists()) {
                 succeeded = false
             }
@@ -111,6 +114,16 @@ internal object AppCacheStoragePolicy {
             succeeded = false
         }
         return succeeded
+    }
+
+    private fun managedCacheDirectoryTargets(cacheDir: File): List<File> {
+        val named = managedCacheDirectories.map { File(cacheDir, it) }
+        val taskScoped = cacheDir.listFiles().orEmpty().filter { file ->
+            file.isDirectory && managedTaskCheckpointDirectoryName.matches(file.name)
+        }
+        return (named + taskScoped).distinctBy { file ->
+            runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+        }
     }
 
     private fun addDirectoryBytesSaturated(initial: Long, directory: File): Long {
