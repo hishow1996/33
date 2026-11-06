@@ -349,6 +349,7 @@ class KokoroTts(
                     "识别到的英文单词数" to (speechPreparation?.englishWordCount?.toString() ?: "未知"),
                     "展开的英文缩写数" to (speechPreparation?.expandedInitialismCount?.toString() ?: "未知"),
                     "处理的英文专有名称数" to (speechPreparation?.expandedProperNameCount?.toString() ?: "未知"),
+                    "处理的英文型号/数字标识数" to (speechPreparation?.expandedModelIdentifierCount?.toString() ?: "未知"),
                     "是否使用原文兜底" to usedOriginalTextFallback.toString(),
                     "当前字幕正文是否写入日志" to "否",
                     "模型目录是否存在" to dir.isDirectory.toString(),
