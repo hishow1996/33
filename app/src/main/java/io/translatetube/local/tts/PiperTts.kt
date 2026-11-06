@@ -610,7 +610,7 @@ object PiperModels {
     }
 
     fun startDownload(ctx: Context, id: String, scope: CoroutineScope): Boolean {
-        val definition = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：$id")
+        val definition = byId(id) ?: throw IllegalArgumentException("未知本地配音模型：$id")
         if (modelReady(ctx, id)) {
             refreshInstalled(ctx)
             updateDownloadState(id) {
@@ -1011,7 +1011,7 @@ object PiperModels {
             return@withContext
         }
         if (archive.exists() && !archive.delete()) {
-            throw java.io.IOException("无法清理校验失败的 Piper 模型压缩包")
+            throw java.io.IOException("无法清理校验失败的${definition.engineName}模型压缩包")
         }
 
         var lastError: Exception? = null
