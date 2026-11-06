@@ -95,7 +95,7 @@ class KokoroTts(
         io.translatetube.local.data.ModelFiles.ttsCacheSignature(ctx)
     }
     override val cacheKey: String
-        get() = "$name-default-${speakerId.coerceIn(0, 53)}-$runtimeSignature"
+        get() = "$name-${KokoroMixedLanguageTextPolicy.CACHE_VERSION}-default-${speakerId.coerceIn(0, 53)}-$runtimeSignature"
     private val tts: OfflineTts
     private val guard: NativeResourceGuard
 
@@ -140,8 +140,10 @@ class KokoroTts(
         checkActive()
         if (text.isBlank()) return TtsAudio(FloatArray(0), 24000)
         TtsTextPolicy.validate(text)
-        val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
+        val preparedText = KokoroMixedLanguageTextPolicy.prepare(text)
+        val normalizedText = preparedText.text
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
+        TtsTextPolicy.validate(normalizedText)
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val startedAtMs = android.os.SystemClock.elapsedRealtime()
@@ -158,6 +160,7 @@ class KokoroTts(
                 selectedSpeaker,
                 safeSpeed,
                 android.os.SystemClock.elapsedRealtime() - startedAtMs,
+                speechPreparation = preparedText,
             )
             throw failure
         }
@@ -177,6 +180,7 @@ class KokoroTts(
                 android.os.SystemClock.elapsedRealtime() - startedAtMs,
                 sampleRate,
                 rawSamples,
+                speechPreparation = preparedText,
             )
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
@@ -198,6 +202,7 @@ class KokoroTts(
                 android.os.SystemClock.elapsedRealtime() - startedAtMs,
                 sampleRate,
                 rawSamples,
+                speechPreparation = preparedText,
             )
             throw failure
         }
@@ -215,6 +220,7 @@ class KokoroTts(
                 sampleRate,
                 rawSamples,
                 trimmed.size,
+                speechPreparation = preparedText,
             )
         }
         return TtsAudio(trimmed, sampleRate)
@@ -231,6 +237,7 @@ class KokoroTts(
         sampleRate: Int? = null,
         sampleCount: Int? = null,
         outputSampleCount: Int? = null,
+        speechPreparation: KokoroMixedLanguageTextPolicy.PreparedText? = null,
     ) {
         val dir = io.translatetube.local.data.ModelFiles.ttsDir(appCtx)
         val requiredFiles = listOf(
@@ -258,6 +265,10 @@ class KokoroTts(
                     "推理设备" to "CPU",
                     "当前语速" to speed.toString(),
                     "当前文本字符数" to textLength.toString(),
+                    "中英文处理版本" to KokoroMixedLanguageTextPolicy.CACHE_VERSION,
+                    "识别到的英文单词数" to (speechPreparation?.englishWordCount?.toString() ?: "未知"),
+                    "展开的英文缩写数" to (speechPreparation?.expandedInitialismCount?.toString() ?: "未知"),
+                    "处理的英文专有名称数" to (speechPreparation?.expandedProperNameCount?.toString() ?: "未知"),
                     "当前字幕正文是否写入日志" to "否",
                     "模型目录是否存在" to dir.isDirectory.toString(),
                     "模型必需文件状态" to requiredFiles.joinToString(",") { name ->
