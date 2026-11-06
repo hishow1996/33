@@ -6522,6 +6522,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     }
     var controlsVisible by remember(state.key) { mutableStateOf(true) }
     var fullscreenControlsLocked by remember(state.key) { mutableStateOf(false) }
+    val fullscreenInteractionLocked = isFullscreen && fullscreenControlsLocked
     var fullscreenCaptionDragging by remember(state.key) { mutableStateOf(false) }
     var fullscreenCaptionAdjusting by remember(state.key) { mutableStateOf(false) }
     var fullscreenCaptionSize by remember(state.key) { mutableStateOf(IntSize.Zero) }
@@ -6576,7 +6577,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     val latestFullscreenCaptionSize by rememberUpdatedState(fullscreenCaptionSize)
     // Gesture handlers read current UI state without restarting an active pointer coroutine.
     val latestControlsVisible by rememberUpdatedState(controlsVisible)
-    val latestFullscreenControlsLocked by rememberUpdatedState(fullscreenControlsLocked)
+    val latestFullscreenInteractionLocked by rememberUpdatedState(fullscreenInteractionLocked)
     val latestQualityExpanded by rememberUpdatedState(qualityExpanded)
     val latestSpeedExpanded by rememberUpdatedState(speedExpanded)
     val latestScrubbing by rememberUpdatedState(scrubbing)
@@ -6790,7 +6791,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         }
                     )
                     if (
-                        latestFullscreenControlsLocked ||
+                        latestFullscreenInteractionLocked ||
                         down.position.x < size.width * 0.62f ||
                         startsInsideRightControls ||
                         startsInsideFullscreenCaption ||
@@ -6821,6 +6822,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     try {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (latestFullscreenInteractionLocked) break
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             val deltaX = change.position.x - startX
                             val deltaY = change.position.y - startY
@@ -6844,6 +6846,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             }
 
                             if (claimedVolumeGesture) {
+                                if (latestFullscreenInteractionLocked) break
                                 change.consume()
                                 val nextVolume = (
                                     initialVolume.toFloat() -
@@ -6883,7 +6886,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
             .pointerInput(state.key) {
                 detectTapGestures {
-                    if (latestFullscreenControlsLocked) return@detectTapGestures
+                    if (latestFullscreenInteractionLocked) return@detectTapGestures
                     fullscreenCaptionAdjusting = false
                     recordInteraction()
                     controlsVisible = if (!latestIsPlaying) true else !latestControlsVisible
@@ -6893,7 +6896,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
 
     // Keep transport controls steady during a brief buffer; a persistent loading hint
     // replaces the center control only after the buffering delay has elapsed.
-    val showCenterPlaybackControl = !fullscreenControlsLocked && playbackHint == null &&
+    val showCenterPlaybackControl = !fullscreenInteractionLocked && playbackHint == null &&
         (!state.isPlaying || controlsVisible)
     AnimatedVisibility(
         visible = showCenterPlaybackControl,
@@ -6968,7 +6971,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     }
 
     AnimatedVisibility(
-        visible = controlsVisible || (isFullscreen && fullscreenControlsLocked),
+        visible = controlsVisible || fullscreenInteractionLocked,
         enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
         exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
         modifier = Modifier
@@ -7005,7 +7008,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             val preferredControlGap = if (isFullscreen) 20.dp else 14.dp
             val controlVerticalGap = preferredControlGap.coerceAtMost(freeControlGap)
 
-            if (fullscreenControlsLocked && isFullscreen) {
+            if (fullscreenInteractionLocked) {
                 // Keep the unlock target in the exact middle slot of the normal three-icon column.
                 Box(
                     modifier = Modifier
@@ -7411,7 +7414,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     contentAlignment = Alignment.TopCenter,
                 ) {
                     AnimatedVisibility(
-                        visible = controlsVisible && !fullscreenControlsLocked,
+                        visible = controlsVisible && !fullscreenInteractionLocked,
                         enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)),
                         exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
                     ) {
@@ -7579,8 +7582,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     fullscreenCaptionSize = measuredSize
                                 }
                             }
-                            .pointerInput(state.key, fullscreenControlsLocked) {
-                                if (fullscreenControlsLocked) return@pointerInput
+                            .pointerInput(state.key, fullscreenInteractionLocked) {
+                                if (fullscreenInteractionLocked) return@pointerInput
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = {
                                         fullscreenCaptionDragTravelY = 0f
@@ -7705,7 +7708,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
 
         // Keep fullscreen back navigation available even after the playback controls auto-hide.
-        if (isFullscreen && !fullscreenControlsLocked) {
+        if (isFullscreen && !fullscreenInteractionLocked) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
