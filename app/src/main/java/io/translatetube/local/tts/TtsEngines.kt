@@ -140,6 +140,7 @@ class KokoroTts(
         checkActive()
         if (text.isBlank()) return TtsAudio(FloatArray(0), 24000)
         TtsTextPolicy.validate(text)
+        val originalNormalizedText = text.replace(Regex("""\s+"""), " ").trim()
         val preparedText = KokoroMixedLanguageTextPolicy.prepare(text)
         val normalizedText = preparedText.text
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
@@ -147,26 +148,91 @@ class KokoroTts(
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val startedAtMs = android.os.SystemClock.elapsedRealtime()
-        val audio = try {
-            guard.use { tts.generate(normalizedText, selectedSpeaker, safeSpeed) }
+        var usedOriginalTextFallback = false
+        fun generateSpeech(input: String) =
+            guard.use { tts.generate(input, selectedSpeaker, safeSpeed) }
+
+        var audio = try {
+            generateSpeech(normalizedText)
         } catch (cancelled: java.util.concurrent.CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            logKokoroFailure(
-                "Kokoro 本地神经 TTS 推理失败",
-                failure,
-                "Sherpa-ONNX Kokoro 原生推理",
-                normalizedText.length,
-                selectedSpeaker,
-                safeSpeed,
-                android.os.SystemClock.elapsedRealtime() - startedAtMs,
-                speechPreparation = preparedText,
-            )
-            throw failure
+            if (normalizedText == originalNormalizedText) {
+                logKokoroFailure(
+                    "Kokoro 本地神经 TTS 推理失败",
+                    failure,
+                    "Sherpa-ONNX Kokoro 原生推理",
+                    normalizedText.length,
+                    selectedSpeaker,
+                    safeSpeed,
+                    android.os.SystemClock.elapsedRealtime() - startedAtMs,
+                    speechPreparation = preparedText,
+                )
+                throw failure
+            }
+            checkActive()
+            try {
+                val fallbackAudio = generateSpeech(originalNormalizedText)
+                checkActive()
+                usedOriginalTextFallback = true
+                android.util.Log.w(
+                    "KokoroTts",
+                    "Mixed-language normalization failed; original subtitle text fallback succeeded",
+                    failure,
+                )
+                fallbackAudio
+            } catch (cancelled: java.util.concurrent.CancellationException) {
+                throw cancelled
+            } catch (fallbackFailure: Exception) {
+                failure.addSuppressed(fallbackFailure)
+                logKokoroFailure(
+                    "Kokoro 本地神经 TTS 推理失败，原始字幕文本兜底也失败",
+                    failure,
+                    "Sherpa-ONNX Kokoro 原生推理与原文兜底",
+                    normalizedText.length,
+                    selectedSpeaker,
+                    safeSpeed,
+                    android.os.SystemClock.elapsedRealtime() - startedAtMs,
+                    speechPreparation = preparedText,
+                )
+                throw failure
+            }
         }
         checkActive()
-        val sampleRate = audio.sampleRate
-        val rawSamples = audio.samples.size
+        var sampleRate = audio.sampleRate
+        var rawSamples = audio.samples.size
+
+        // If preprocessing returns empty/invalid PCM without throwing, retry the untouched
+        // subtitle text once. Both attempts retain the same Kokoro model and speaker ID.
+        if ((sampleRate !in 8_000..192_000 || rawSamples == 0) &&
+            !usedOriginalTextFallback &&
+            normalizedText != originalNormalizedText
+        ) {
+            checkActive()
+            try {
+                val fallbackAudio = generateSpeech(originalNormalizedText)
+                checkActive()
+                if (fallbackAudio.sampleRate in 8_000..192_000 && fallbackAudio.samples.isNotEmpty()) {
+                    audio = fallbackAudio
+                    sampleRate = fallbackAudio.sampleRate
+                    rawSamples = fallbackAudio.samples.size
+                    usedOriginalTextFallback = true
+                    android.util.Log.w(
+                        "KokoroTts",
+                        "Mixed-language normalization returned invalid PCM; original subtitle text fallback succeeded",
+                    )
+                }
+            } catch (cancelled: java.util.concurrent.CancellationException) {
+                throw cancelled
+            } catch (fallbackFailure: Exception) {
+                android.util.Log.w(
+                    "KokoroTts",
+                    "Original subtitle text fallback failed after invalid mixed-language PCM",
+                    fallbackFailure,
+                )
+            }
+        }
+
         if (sampleRate !in 8_000..192_000 || rawSamples == 0) {
             val failure = IllegalStateException("Kokoro 模型返回无效音频：采样率=$sampleRate Hz，样本数=$rawSamples")
             android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=$rawSamples")
@@ -181,6 +247,7 @@ class KokoroTts(
                 sampleRate,
                 rawSamples,
                 speechPreparation = preparedText,
+                usedOriginalTextFallback = usedOriginalTextFallback,
             )
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
@@ -203,6 +270,7 @@ class KokoroTts(
                 sampleRate,
                 rawSamples,
                 speechPreparation = preparedText,
+                usedOriginalTextFallback = usedOriginalTextFallback,
             )
             throw failure
         }
@@ -221,6 +289,7 @@ class KokoroTts(
                 rawSamples,
                 trimmed.size,
                 speechPreparation = preparedText,
+                usedOriginalTextFallback = usedOriginalTextFallback,
             )
         }
         return TtsAudio(trimmed, sampleRate)
@@ -238,6 +307,7 @@ class KokoroTts(
         sampleCount: Int? = null,
         outputSampleCount: Int? = null,
         speechPreparation: KokoroMixedLanguageTextPolicy.PreparedText? = null,
+        usedOriginalTextFallback: Boolean = false,
     ) {
         val dir = io.translatetube.local.data.ModelFiles.ttsDir(appCtx)
         val requiredFiles = listOf(
@@ -269,6 +339,7 @@ class KokoroTts(
                     "识别到的英文单词数" to (speechPreparation?.englishWordCount?.toString() ?: "未知"),
                     "展开的英文缩写数" to (speechPreparation?.expandedInitialismCount?.toString() ?: "未知"),
                     "处理的英文专有名称数" to (speechPreparation?.expandedProperNameCount?.toString() ?: "未知"),
+                    "是否使用原文兜底" to usedOriginalTextFallback.toString(),
                     "当前字幕正文是否写入日志" to "否",
                     "模型目录是否存在" to dir.isDirectory.toString(),
                     "模型必需文件状态" to requiredFiles.joinToString(",") { name ->
