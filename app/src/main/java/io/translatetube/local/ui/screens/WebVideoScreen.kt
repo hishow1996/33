@@ -68,10 +68,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -287,6 +290,14 @@ fun WebVideoScreen(
     val appCtx = LocalContext.current.applicationContext
     val backgroundScope = remember(appCtx) { (appCtx as TranslateTubeApp).appScope }
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
+    var addressFieldValue by remember(initialUrl) {
+        mutableStateOf(TextFieldValue(text = initialUrl, selection = TextRange(initialUrl.length)))
+    }
+    var addressFieldHasFocus by remember(initialUrl) { mutableStateOf(false) }
+    fun setAddress(value: String) {
+        address = value
+        addressFieldValue = TextFieldValue(text = value, selection = TextRange(value.length))
+    }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
     var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(8f) } // 默认完全收起，只在屏幕底边显示把手
@@ -969,7 +980,7 @@ fun WebVideoScreen(
         pikpakBusy = false
         pikpakNotice = null
         currentPage = target
-        address = target
+        setAddress(target)
         pageTitle = ""
         status = "正在打开网页并检测 HTML5 视频…"
         io.translatetube.local.util.AppLogStore.info(
@@ -1668,15 +1679,32 @@ fun WebVideoScreen(
                     )
                 }
                 OutlinedTextField(
-                    value = address,
-                    onValueChange = { address = it },
-                    // 略微压缩地址栏的垂直高度，同时保留网址和提示文字的居中显示。
-                    modifier = Modifier.weight(1f).height(52.dp),
+                    value = addressFieldValue,
+                    onValueChange = { value ->
+                        addressFieldValue = value
+                        address = value.text
+                    },
+                    // 保持紧凑高度；输入内容和光标在地址栏内垂直居中且完整显示。
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp)
+                        .onFocusChanged { focusState ->
+                            if (focusState.isFocused) {
+                                if (!addressFieldHasFocus) {
+                                    addressFieldHasFocus = true
+                                    addressFieldValue = addressFieldValue.copy(
+                                        selection = TextRange(0, addressFieldValue.text.length),
+                                    )
+                                }
+                            } else {
+                                addressFieldHasFocus = false
+                            }
+                        },
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = 13.sp,
                         lineHeight = 18.sp,
-                        textAlign = TextAlign.Center,
+                        textAlign = TextAlign.Start,
                     ),
                     shape = RoundedCornerShape(14.dp),
                     placeholder = {
@@ -1685,7 +1713,7 @@ fun WebVideoScreen(
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontSize = 13.sp,
                                 lineHeight = 18.sp,
-                                textAlign = TextAlign.Center,
+                                textAlign = TextAlign.Start,
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -1904,7 +1932,7 @@ fun WebVideoScreen(
                                 if (BilibiliDeepLinkPolicy.isVideoPageUrl(originalUrl)) {
                                     mainHandler.post {
                                         if (!screenActive.get()) return@post
-                                        address = originalUrl
+                                        setAddress(originalUrl)
                                         status = "已识别 B 站视频页，正在直连解析…"
                                     }
                                     tryBilibiliNative(originalUrl)
@@ -1918,7 +1946,7 @@ fun WebVideoScreen(
 
                                 mainHandler.post {
                                     if (!screenActive.get()) return@post
-                                    address = safeUrl
+                                    setAddress(safeUrl)
                                     status = "已识别 B 站分享链接，正在打开视频网页…"
                                     io.translatetube.local.util.AppLogStore.info(
                                         context = appCtx,
@@ -1954,7 +1982,7 @@ fun WebVideoScreen(
                                         // sources are already visible. Do not clear candidates or restart detection.
                                         applyPikpakUserAgent(url)
                                         currentPage = url
-                                        address = url
+                                        setAddress(url)
                                         Log.d(TAG_WEB, "Ignoring repeated navigation callback for detected Bilibili video")
                                     }
                                     navigationInProgress.compareAndSet(false, true) -> {
@@ -1968,7 +1996,7 @@ fun WebVideoScreen(
                                         // Do not clear candidates or reinitialize the detection generation.
                                         applyPikpakUserAgent(url)
                                         currentPage = url
-                                        address = url
+                                        setAddress(url)
                                     }
                                 }
                                 // 普通视频站仍尽早挂 hook；PikPak 分享页先让官方 SPA 完成初始化，
@@ -1993,7 +2021,7 @@ fun WebVideoScreen(
                                     // Do not reset the status or restart the recurring JS probe for
                                     // the same already-finished Bilibili video.
                                     navigationInProgress.set(false)
-                                    address = url
+                                    setAddress(url)
                                     Log.d(TAG_WEB, "Ignoring repeated finish callback for completed Bilibili video")
                                     return
                                 }
@@ -2002,7 +2030,7 @@ fun WebVideoScreen(
                                 canGoBack = view.canGoBack()
                                 lastCompletedNavigationUrl.set(url)
                                 lastCompletedNavigationGeneration.set(completedGeneration)
-                                address = url
+                                setAddress(url)
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
                                 io.translatetube.local.util.AppLogStore.info(
