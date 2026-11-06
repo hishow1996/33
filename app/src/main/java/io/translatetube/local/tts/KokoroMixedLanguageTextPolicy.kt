@@ -97,7 +97,7 @@ internal object KokoroMixedLanguageTextPolicy {
         RegexOption.IGNORE_CASE,
     )
     private val urlOrDomainPattern = Regex(
-        """(?i)(?:(?:https?://|ftp://|www\\.)[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+)""",
+        """(?i)(?:(?:https?://|ftp://|www\.)[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)""",
     )
 
     /** Never rewrite an abbreviation or brand inside a URL/domain embedded in subtitle text. */
@@ -108,7 +108,7 @@ internal object KokoroMixedLanguageTextPolicy {
     ): String {
         val protectedRanges = urlOrDomainPattern.findAll(input).map { it.range }.toList()
         return pattern.replace(input) { match ->
-            if (protectedRanges.any { match.range.first in it }) match.value else replacement(match)
+            if (protectedRanges.any { protected -> match.range.any { it in protected } }) match.value else replacement(match)
         }
     }
 
