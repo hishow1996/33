@@ -8448,7 +8448,7 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
         }
         Phase.TRANSLATING -> {
             if (state.totalLines > 0 && !state.manualTranslationWaiting && !state.manualTranslationModeEnabled) {
-                translationProgressSummary(state)
+                "中文译文 ${countValidTranslatedLines(state)}/${state.totalLines.coerceAtLeast(0)}"
             } else {
                 compactProcessingProgress(state.progress, phase)
             }
@@ -8464,38 +8464,40 @@ private fun structuredProcessingProgress(state: PlayerUiState, phase: Phase): St
     }
 }
 
+private fun countValidTranslatedLines(state: PlayerUiState): Int =
+    state.lines.count { line ->
+        val translated = SubtitleParsers.cleanTranslatedText(line.zh)
+        if (
+            line.text.isBlank() ||
+            translated.isNullOrBlank()
+        ) {
+            false
+        } else {
+            val sourceLanguage = if (
+                io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(state.sourceLang)
+            ) {
+                io.translatetube.local.subs.SubtitleLanguageDetector.detect(line.text)
+            } else {
+                state.sourceLang
+            }
+            io.translatetube.local.translate.SourceLanguagePolicy.isChinese(sourceLanguage) ||
+                (
+                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                        .isSourceEcho(line.text, translated, sourceLanguage) &&
+                    !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                        .isTargetLanguageMismatch(line.text, translated, sourceLanguage, "zh")
+                )
+        }
+    }
+
 @Composable
 private fun translationProgressSummary(state: PlayerUiState): String {
     val total = state.totalLines.coerceAtLeast(0)
     val valid = remember(state.lines, state.sourceLang) {
-        state.lines.count { line ->
-            val translated = SubtitleParsers.cleanTranslatedText(line.zh)
-            if (
-                line.text.isBlank() ||
-                translated.isNullOrBlank()
-            ) {
-                false
-            } else {
-                val sourceLanguage = if (
-                    io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(state.sourceLang)
-                ) {
-                    io.translatetube.local.subs.SubtitleLanguageDetector.detect(line.text)
-                } else {
-                    state.sourceLang
-                }
-                io.translatetube.local.translate.SourceLanguagePolicy.isChinese(sourceLanguage) ||
-                    (
-                        !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
-                            .isSourceEcho(line.text, translated, sourceLanguage) &&
-                        !io.translatetube.local.translate.SubtitleTranslationQualityPolicy
-                            .isTargetLanguageMismatch(line.text, translated, sourceLanguage, "zh")
-                    )
-            }
-        }
+        countValidTranslatedLines(state)
     }
     return "中文译文 $valid/$total"
 }
-
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
     val raw = progress.trim()
     if (raw.isBlank()) return ""
