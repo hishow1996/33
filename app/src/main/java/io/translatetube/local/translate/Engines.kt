@@ -531,44 +531,19 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         )
     }
 
-    if (lines.size < MIN_TRANSLATION_RECOVERY_BATCH_ROWS * 2) {
-        runCatching {
-            android.util.Log.w(
-                "TranslationAPI",
-                "Adaptive subtitle recovery stopped: rows=${lines.size}, " +
-                    "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
-            )
-        }
-        throw IllegalStateException(
-            "翻译服务响应格式不完整；当前批次仅${lines.size}条，已达到最小恢复批次" +
-                "${MIN_TRANSLATION_RECOVERY_BATCH_ROWS}条，停止继续拆分。"
-        )
-    }
-    val splitAt = (lines.size - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
-        .coerceAtLeast(MIN_TRANSLATION_RECOVERY_BATCH_ROWS)
-    budget.recordSplit()
-    runCatching {
-        android.util.Log.w(
-            "TranslationAPI",
-            "Adaptive subtitle batch reduction: rows=${lines.size}, nextRows=$splitAt, " +
-                "tailRows=${lines.size - splitAt}, stepRows=$TRANSLATION_RECOVERY_BATCH_STEP_ROWS, " +
-                "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
-        )
-    }
-    val leftSource = lines.subList(0, splitAt)
-    val rightSource = lines.subList(splitAt, lines.size)
-    val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        leftSource, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
-        deferInvalidRowsToCaller, retryMalformedBatch, translate, budget,
+    // Batch sizing is fixed. A malformed or truncated response must never silently
+    // reduce the next request from 30 rows to 25/20/...; retry the same batch once above,
+    // then fail with the original alignment evidence intact.
+    android.util.Log.w(
+        "TranslationAPI",
+        "Fixed-size subtitle batch recovery stopped: rows=${lines.size}, " +
+            "sameBatchRetryAttempted=$sameBatchFormatRetryAttempted, reason=$recoveryReason",
     )
-    val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
-    val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
-    val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
-    val rightTranslation = translateBatchWithAdaptiveRecoveryInternal(
-        rightSource, rightContext, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
-        deferInvalidRowsToCaller, retryMalformedBatch, translate, budget,
+    throw IllegalStateException(
+        "翻译服务响应格式不完整；固定批次 ${lines.size} 条在同批重试后仍无法可靠对齐，" +
+            "已停止，不会自动缩小后续批次。请检查模型输出或更换模型。"
     )
-    return leftTranslation + rightTranslation
+
 }
 
 /**
