@@ -31,4 +31,22 @@ class TranslationRetryPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun transientHttpFailuresAreNotClassifiedAsBatchCapacityFailures() {
+        for (status in listOf(408, 425, 429, 500, 502, 503, 504)) {
+            assertFalse(
+                "HTTP $status must not shrink the model batch profile",
+                isRecoverableTranslationFormatError(IllegalStateException("HTTP $status: temporary failure")),
+            )
+        }
+        assertTrue(isRecoverableTranslationFormatError(IllegalStateException("HTTP 413: request too large")))
+    }
+
+    @Test
+    fun recoveryAttemptLimitIsTerminalRatherThanAnotherSplitTrigger() {
+        val error = IllegalStateException("拆分恢复已达到单批请求上限 64 次")
+        assertFalse(isRecoverableTranslationFormatError(error))
+        assertTrue(isTranslationRecoveryAttemptLimit(error))
+    }
 }

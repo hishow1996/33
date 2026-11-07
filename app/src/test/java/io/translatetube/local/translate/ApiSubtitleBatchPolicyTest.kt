@@ -137,4 +137,14 @@ class ApiSubtitleBatchPolicyTest {
         assertTrue(long > short)
         assertTrue(calibrated > short)
     }
+
+    @Test
+    fun slowSuccessfulOriginalBatchesDoNotGrowTheGlobalLimit() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        repeat(2) {
+            learning.recordUsage(4_000, 1_200, 4_000, 1_200, 12_000)
+            learning.recordOriginalBatchSuccess(30, recoveredBySplitting = false)
+        }
+        assertEquals(30, learning.snapshot().maxRows)
+    }
 }
