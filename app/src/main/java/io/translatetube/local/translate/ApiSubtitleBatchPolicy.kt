@@ -1,7 +1,7 @@
 package io.translatetube.local.translate
 
-import kotlin.math.ceil
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.ceil
 
 internal data class ApiModelCapability(
     val contextWindowTokens: Int,
@@ -61,22 +61,9 @@ internal object ApiSubtitleBatchPolicy {
             id.contains("glm-4-flash-250414") -> ApiModelCapability(
                 131_072, 16_384, 50, 90, 24_000, 8_192,
             )
-            id.contains("gemini-2.5-flash") || id.contains("gemini-2.5-pro") -> ApiModelCapability(
+            id.contains("gemini-3.8-flash") || id.contains("gemini-2.5-flash") ||
+                id.contains("gemini-2.5-pro") -> ApiModelCapability(
                 1_048_576, 65_536, 80, 160, 48_000, 16_384,
-            )
-            id.contains("qwen3.8-max") || id.contains("qwen3.8-flash") -> ApiModelCapability(
-                1_000_000, 131_072, 80, 160, 48_000, 16_384,
-            )
-            id.contains("qwen3.7") || id.contains("qwen3.6") ||
-                id.contains("qwen3.5-plus") || id.contains("qwen3.5-flash") -> ApiModelCapability(
-                1_000_000, 65_536, 80, 160, 48_000, 16_384,
-            )
-            id.contains("deepseek-v4") -> ApiModelCapability(
-                1_000_000, 384_000, 80, 160, 48_000, 16_384,
-            )
-            id.contains("glm-5.3") || id.contains("glm-5.2") ||
-                id.contains("kimi-k3") || id.contains("glm-4-long") -> ApiModelCapability(
-                1_000_000, 8_192, 80, 160, 48_000, 16_384,
             )
             id.contains("1m") -> ApiModelCapability(
                 1_000_000, 8_192, 80, 160, 48_000, 16_384,

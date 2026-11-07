@@ -98,4 +98,30 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(lines.size, nextIndex)
         assertEquals(lines.size, totalRows)
     }
+
+    @Test
+    fun providerPublishedMillionTokenLimitsOverrideOnlyTheirOwnProvider() {
+        val model = "custom-provider/long-context-model"
+        ApiSubtitleBatchPolicy.registerProviderLimits(
+            model = model,
+            contextWindowTokens = 1_000_000,
+            maxOutputTokens = 8_192,
+            maxInputTokens = 300_000,
+            providerKey = "https://provider-a.example/v1",
+        )
+        val discovered = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-a.example/v1")
+        val otherProvider = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-b.example/v1")
+        assertEquals(1_000_000, discovered.contextWindowTokens)
+        assertEquals(80, discovered.initialRows)
+        assertEquals(48_000, discovered.inputBudgetTokens)
+        assertEquals(32_768, otherProvider.contextWindowTokens)
+        assertEquals(30, otherProvider.initialRows)
+    }
+
+    @Test
+    fun geminiThreePointEightFlashUsesItsPublishedTokenLimits() {
+        val capability = ApiSubtitleBatchPolicy.capabilityForModel("gemini-3.8-flash")
+        assertEquals(1_048_576, capability.contextWindowTokens)
+        assertEquals(65_536, capability.maxOutputTokens)
+    }
 }
