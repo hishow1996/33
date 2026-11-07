@@ -182,11 +182,15 @@ internal object ApiSubtitleBatchPolicy {
     }
 
     /** Estimate the complete serialized prompt, not just the subtitle rows. */
-    fun estimatePromptTokens(systemPrompt: String, userPrompt: String): Int {
+    fun estimatePromptTokens(
+        systemPrompt: String,
+        userPrompt: String,
+        tokenMultiplier: Double = 1.0,
+    ): Int {
         val textTokens = estimateTextTokens(systemPrompt, "", outputText = false) +
             estimateTextTokens(userPrompt, "", outputText = false)
         // Message framing, role labels and separators are small but non-zero.
-        return (textTokens + 24).coerceAtLeast(1)
+        return ceil((textTokens + 24).coerceAtLeast(1) * tokenMultiplier.coerceIn(0.75, 3.0)).toInt()
     }
 
     fun estimateInputTokens(lines: List<String>): Int {

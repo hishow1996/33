@@ -148,10 +148,14 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
             "incomplete response due to length",
             "api_input_budget_exceeded",
             "prompt token budget exceeded",
-            "拆分恢复已达到单批请求上限",
         ).any(normalized::contains)
     return requestTooLarge
 }
+
+internal fun isTranslationRecoveryAttemptLimit(error: Throwable): Boolean =
+    generateSequence(error) { it.cause }
+        .take(8)
+        .any { it.message.orEmpty().contains("拆分恢复已达到单批请求上限") }
 
 /**
  * Upper bound shared by every retry/split derived from one original subtitle batch.
@@ -1745,7 +1749,9 @@ class OpenAiCompatEngine(
                     )
                 }
             } catch (error: Exception) {
-                if (error is IllegalStateException && isRecoverableTranslationFormatError(error)) {
+                if (error is IllegalStateException &&
+                    (isRecoverableTranslationFormatError(error) || isTranslationRecoveryAttemptLimit(error))
+                ) {
                     batchLearning.recordOriginalBatchFailure(batch.size)
                     android.util.Log.w(
                         "TranslationAPI",
@@ -1814,7 +1820,9 @@ class OpenAiCompatEngine(
         val user = buildContextUserPrompt(context, numbered, lookaheadSource)
             ?: numbered
         val learningSnapshot = batchLearning.snapshot()
-        val estimatedInputTokens = ApiSubtitleBatchPolicy.estimatePromptTokens(sys, user)
+        val estimatedInputTokens = ApiSubtitleBatchPolicy.estimatePromptTokens(
+            sys, user, learningSnapshot.inputTokenMultiplier,
+        )
         if (estimatedInputTokens > learningSnapshot.inputBudgetTokens) {
             throw IllegalStateException(
                 "API_INPUT_BUDGET_EXCEEDED: estimatedPromptTokens=$estimatedInputTokens, " +
@@ -2008,7 +2016,9 @@ class GeminiEngine(
                     )
                 }
             } catch (error: Exception) {
-                if (error is IllegalStateException && isRecoverableTranslationFormatError(error)) {
+                if (error is IllegalStateException &&
+                    (isRecoverableTranslationFormatError(error) || isTranslationRecoveryAttemptLimit(error))
+                ) {
                     batchLearning.recordOriginalBatchFailure(batch.size)
                     android.util.Log.w(
                         "GeminiEngine",
@@ -2079,7 +2089,9 @@ class GeminiEngine(
             JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$user"))))
         )
         val learningSnapshot = batchLearning.snapshot()
-        val estimatedInputTokens = ApiSubtitleBatchPolicy.estimatePromptTokens(sys, user)
+        val estimatedInputTokens = ApiSubtitleBatchPolicy.estimatePromptTokens(
+            sys, user, learningSnapshot.inputTokenMultiplier,
+        )
         if (estimatedInputTokens > learningSnapshot.inputBudgetTokens) {
             throw IllegalStateException(
                 "API_INPUT_BUDGET_EXCEEDED: estimatedPromptTokens=$estimatedInputTokens, " +

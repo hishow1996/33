@@ -123,4 +123,18 @@ class ApiSubtitleBatchPolicyTest {
         )
         assertTrue(long > short)
     }
+
+    @Test
+    fun promptEstimateIncludesSystemContextAndCalibration() {
+        val short = ApiSubtitleBatchPolicy.estimatePromptTokens("Translate.", "1|Hello")
+        val long = ApiSubtitleBatchPolicy.estimatePromptTokens(
+            "Translate. ".repeat(200),
+            "previous reference cues: [{\"source\":\"hello\",\"translation\":\"你好\"}] current cues: 1|Hello",
+        )
+        val calibrated = ApiSubtitleBatchPolicy.estimatePromptTokens(
+            "Translate.", "1|Hello", tokenMultiplier = 2.0,
+        )
+        assertTrue(long > short)
+        assertTrue(calibrated > short)
+    }
 }
