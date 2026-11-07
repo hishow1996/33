@@ -64,9 +64,12 @@ class ApiSubtitleBatchLearningStore(
         }
     }
 
-    internal fun loadLearning(model: String, capability: ApiModelCapability): ApiSubtitleBatchLearningRecord? =
-        runCatching {
-            val json = preferences.getString(key("learning", model), null)
+    internal fun loadLearning(
+        model: String,
+        capability: ApiModelCapability,
+        learningScope: String = "",
+    ): ApiSubtitleBatchLearningRecord? = runCatching {
+            val json = preferences.getString(key("learning", model, learningScope), null)
                 ?.let(::JSONObject) ?: return null
             // Discard profiles from earlier recovery policies: their row ceilings and token
             // budgets may have been clamped together by split-leaf outcomes.
@@ -87,7 +90,11 @@ class ApiSubtitleBatchLearningStore(
             )
         }.getOrNull()
 
-    internal fun saveLearning(model: String, record: ApiSubtitleBatchLearningRecord) {
+    internal fun saveLearning(
+        model: String,
+        record: ApiSubtitleBatchLearningRecord,
+        learningScope: String = "",
+    ) {
         runCatching {
             val json = JSONObject()
                 .put("maxRows", record.maxRows)
@@ -97,12 +104,20 @@ class ApiSubtitleBatchLearningStore(
                 .put("outputBudgetTokens", record.outputBudgetTokens)
                 .put("averageLatencyMs", record.averageLatencyMs)
                 .put("recoveryPolicyVersion", RECOVERY_POLICY_VERSION)
-            preferences.edit().putString(key("learning", model), json.toString()).apply()
+            preferences.edit().putString(key("learning", model, learningScope), json.toString()).apply()
         }
     }
 
-    private fun key(kind: String, model: String): String =
-        "$kind:${sha256("$providerFingerprint|${model.trim().lowercase(Locale.ROOT)}")}"
+    private fun key(kind: String, model: String, learningScope: String = ""): String {
+        val normalizedModel = model.trim().lowercase(Locale.ROOT)
+        val normalizedScope = learningScope.trim().lowercase(Locale.ROOT)
+        val identity = if (normalizedScope.isBlank()) {
+            "$providerFingerprint|$normalizedModel"
+        } else {
+            "$providerFingerprint|$normalizedModel|$normalizedScope"
+        }
+        return "$kind:${sha256(identity)}"
+    }
 
     private fun safeProviderIdentity(raw: String): String =
         ApiSubtitleBatchPolicy.normalizeProviderKey(raw)
@@ -114,7 +129,7 @@ class ApiSubtitleBatchLearningStore(
 
     private companion object {
         const val PREFS_NAME = "api_translation_batch_learning"
-        const val RECOVERY_POLICY_VERSION = 4
+        const val RECOVERY_POLICY_VERSION = 5
         const val CAPABILITY_SCHEMA_VERSION = 2
     }
 }
