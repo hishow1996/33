@@ -10,7 +10,7 @@ internal data class ChatSamplingParams(
 /**
  * 按模型能力、当前批次的预计译文长度和推理特征决定请求参数。
  * 输出上限不会超过已知模型规格；未知模型采用保守预算，推理模型保留至少 8192 tokens 的历史额度。
- * OpenAI 的 o 系列/gpt-5 不接受自定义 temperature，一律不传；
+ * OpenAI 的 o 系列、GPT-5 与 GPT-6 推理模型不接受自定义 temperature，一律不传；
  *   OpenAI 官方接口还要求用 max_completion_tokens 代替 max_tokens，其他网关保持 max_tokens 以免不认识新参数。
  */
 internal object ChatCompletionParamsPolicy {
@@ -32,7 +32,7 @@ internal object ChatCompletionParamsPolicy {
             normalizedModel.contains("gpt-6.1-sol") ||
             thinkingWordRegex.containsMatchIn(normalizedModel)
 
-    /** OpenAI 的推理模型：o1/o3/o4 与 gpt-5（含 gpt-5.x）。 */
+    /** OpenAI 的推理模型：o1/o3/o4，以及 GPT-5/GPT-6 系列。 */
     fun isOpenAiReasoningModel(normalizedModel: String): Boolean =
         openAiReasoningRegex.containsMatchIn(normalizedModel) ||
             normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5") ||
