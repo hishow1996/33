@@ -61,7 +61,13 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(30, learning.snapshot().maxRows)
         repeat(2) {
             learning.recordUsage(4_000, 1_200, 4_000, 1_200, 1_000)
-            learning.recordOriginalBatchSuccess(30, recoveredBySplitting = false)
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
         }
         assertEquals(35, learning.snapshot().maxRows)
     }
@@ -70,7 +76,13 @@ class ApiSubtitleBatchPolicyTest {
     fun successfulSplitRecoveryDoesNotGrowTheGlobalLimit() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         repeat(3) {
-            learning.recordOriginalBatchSuccess(30, recoveredBySplitting = true)
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = true,
+                recoveredBySplitting = true,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
         }
         assertEquals(30, learning.snapshot().maxRows)
     }
@@ -78,7 +90,10 @@ class ApiSubtitleBatchPolicyTest {
     @Test
     fun onlyFinalOriginalBatchFailureReducesTheNextLimitByFiveRows() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
-        learning.recordOriginalBatchFailure(true, setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT))
+        learning.recordOriginalBatchFailure(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
+        )
         assertEquals(25, learning.snapshot().maxRows)
     }
 
@@ -95,8 +110,11 @@ class ApiSubtitleBatchPolicyTest {
     fun singleCueRecoveryCannotLowerTheModelWideBatchLimit() {
         val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
         learning.recordOriginalBatchSuccess(
-            batchRows = 50,
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            hadRecoverableFailure = true,
             recoveredBySplitting = true,
+            failureKinds = emptySet(),
+            allRowsAccepted = true,
         )
         assertEquals(50, learning.snapshot().maxRows)
     }
@@ -218,7 +236,13 @@ class ApiSubtitleBatchPolicyTest {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         repeat(2) {
             learning.recordUsage(4_000, 1_200, 4_000, 1_200, 12_000)
-            learning.recordOriginalBatchSuccess(30, recoveredBySplitting = false)
+            learning.recordOriginalBatchSuccess(
+                    limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                    hadRecoverableFailure = false,
+                    recoveredBySplitting = false,
+                    failureKinds = emptySet(),
+                    allRowsAccepted = true,
+                )
         }
         assertTrue(learning.snapshot().maxRows > 30)
     }
@@ -237,6 +261,8 @@ class ApiSubtitleBatchPolicyTest {
         )
         assertEquals(20, selection.endExclusive)
         assertEquals(24_000, selection.estimatedInputTokens)
+        assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
+        assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT !in selection.limitingReasons)
     }
 
     @Test
@@ -252,6 +278,7 @@ class ApiSubtitleBatchPolicyTest {
         )
         assertEquals(1, selection.endExclusive)
         assertTrue(selection.singleCueExceedsInputBudget)
+        assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
     }
 
     @Test
@@ -266,14 +293,18 @@ class ApiSubtitleBatchPolicyTest {
         )
         assertEquals(1, selection.endExclusive)
         assertTrue(selection.singleCueExceedsOutputBudget)
+        assertTrue(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in selection.limitingReasons)
     }
 
     @Test
     fun successfulSplitDoesNotClampGlobalRowCapToTheLargestLeaf() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         learning.recordOriginalBatchSuccess(
-            batchRows = 30,
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            hadRecoverableFailure = true,
             recoveredBySplitting = true,
+            failureKinds = emptySet(),
+            allRowsAccepted = true,
         )
         assertEquals(30, learning.snapshot().maxRows)
     }
@@ -283,7 +314,7 @@ class ApiSubtitleBatchPolicyTest {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         val before = learning.snapshot()
         learning.recordOriginalBatchFailure(
-            rowCapWasBinding = true,
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
         val after = learning.snapshot()
@@ -297,7 +328,7 @@ class ApiSubtitleBatchPolicyTest {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         val before = learning.snapshot()
         learning.recordOriginalBatchFailure(
-            rowCapWasBinding = false,
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.INPUT_BUDGET),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.INPUT_CAPACITY),
         )
         val after = learning.snapshot()
@@ -311,7 +342,7 @@ class ApiSubtitleBatchPolicyTest {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         val before = learning.snapshot()
         learning.recordOriginalBatchFailure(
-            rowCapWasBinding = false,
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY),
         )
         val after = learning.snapshot()
@@ -335,4 +366,145 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(240_000, capability.maxInputBudgetTokens)
         assertEquals(48_000, capability.inputBudgetTokens)
     }
+    @Test
+    fun cleanSuccessOnlyGrowsTheConstraintThatStoppedTheBatch() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        val before = learning.snapshot()
+        repeat(2) {
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.INPUT_BUDGET),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+        val after = learning.snapshot()
+        assertEquals(before.maxRows, after.maxRows)
+        assertTrue(after.inputBudgetTokens > before.inputBudgetTokens)
+        assertEquals(before.outputBudgetTokens, after.outputBudgetTokens)
+    }
+
+    @Test
+    fun outputBudgetFailureDoesNotReduceTheRowLimitEvenWhenItWasAlsoReached() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        val before = learning.snapshot()
+        learning.recordOriginalBatchFailure(
+            limitingReasons = setOf(
+                ApiSubtitleBatchLimitReason.ROW_LIMIT,
+                ApiSubtitleBatchLimitReason.OUTPUT_BUDGET,
+            ),
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY),
+        )
+        val after = learning.snapshot()
+        assertEquals(before.maxRows, after.maxRows)
+        assertEquals(before.inputBudgetTokens, after.inputBudgetTokens)
+        assertTrue(after.outputBudgetTokens < before.outputBudgetTokens)
+    }
+
+    @Test
+    fun recoveredOutputCapacityFailureTrainsTheNextOriginalBatch() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        val before = learning.snapshot()
+        learning.recordOriginalBatchSuccess(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET),
+            hadRecoverableFailure = true,
+            recoveredBySplitting = true,
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY),
+            allRowsAccepted = true,
+        )
+        val after = learning.snapshot()
+        assertEquals(before.maxRows, after.maxRows)
+        assertEquals(before.inputBudgetTokens, after.inputBudgetTokens)
+        assertTrue(after.outputBudgetTokens < before.outputBudgetTokens)
+    }
+
+    @Test
+    fun responseFormatFailureDoesNotReduceRowsWhenTokenBudgetStoppedTheBatch() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        val before = learning.snapshot()
+        learning.recordOriginalBatchFailure(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.INPUT_BUDGET),
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
+        )
+        assertEquals(before.maxRows, learning.snapshot().maxRows)
+    }
+
+    @Test
+    fun languagePairsKeepIndependentLearningProfiles() {
+        val enToZh = ApiSubtitleBatchLearningState(
+            "custom-provider/unknown-model",
+            learningScope = "en->zh-CN",
+        )
+        val enToJa = ApiSubtitleBatchLearningState(
+            "custom-provider/unknown-model",
+            learningScope = "en->ja",
+        )
+        val beforeJa = enToJa.snapshot()
+        repeat(2) {
+            enToZh.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+        assertEquals(35, enToZh.snapshot().maxRows)
+        assertEquals(beforeJa.maxRows, enToJa.snapshot().maxRows)
+        assertEquals(beforeJa.inputBudgetTokens, enToJa.snapshot().inputBudgetTokens)
+    }
+
+    @Test
+    fun usageCalibrationAppliesObservedRatioToTheAlreadyAdjustedEstimate() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        learning.recordUsage(
+            estimatedInputTokens = 1_000,
+            estimatedOutputTokens = 1_000,
+            actualInputTokens = 1_500,
+            actualOutputTokens = 1_500,
+            latencyMs = 500,
+        )
+        assertEquals(1.1, learning.snapshot().inputTokenMultiplier, 0.0001)
+        assertEquals(1.1, learning.snapshot().outputTokenMultiplier, 0.0001)
+    }
+
+    @Test
+    fun rowCapIsReportedOnlyWhenMoreSourceCuesRemain() {
+        val model = "custom-provider/unknown-model"
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = List(100) { "Short subtitle" },
+            startIndex = 0,
+            model = model,
+            targetLanguage = "zh-CN",
+            learning = snapshot(model),
+        )
+        assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT in selection.limitingReasons)
+
+        val finalSelection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = List(10) { "Short subtitle" },
+            startIndex = 0,
+            model = model,
+            targetLanguage = "zh-CN",
+            learning = snapshot(model),
+        )
+        assertTrue(ApiSubtitleBatchLimitReason.END_OF_INPUT in finalSelection.limitingReasons)
+        assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT !in finalSelection.limitingReasons)
+    }
+
+    @Test
+    fun outputBudgetStopIsReportedSeparatelyFromInputAndRowLimits() {
+        val model = "GLM-4-Flash-250414"
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = List(80) { "中".repeat(300) },
+            startIndex = 0,
+            model = model,
+            targetLanguage = "zh-CN",
+            learning = snapshot(model),
+        )
+        assertTrue(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in selection.limitingReasons)
+        assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET !in selection.limitingReasons)
+        assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT !in selection.limitingReasons)
+    }
+
 }
