@@ -94,10 +94,15 @@ internal object ApiSubtitleBatchPolicy {
             capabilityForModel(id).contextWindowTokens >= 131_072
     }
 
-    fun estimateOutputTokens(lines: List<String>, targetLanguage: String): Int {
+    fun estimateOutputTokens(
+        lines: List<String>,
+        targetLanguage: String,
+        tokenMultiplier: Double = 1.0,
+    ): Int {
         if (lines.isEmpty()) return 1
-        return lines.sumOf { estimateTextTokens(it, targetLanguage, outputText = true) }
-            .let { ceil(it * 1.25).toInt().coerceAtLeast(1) }
+        return lines.sumOf { line ->
+            ceil(estimateTextTokens(line, targetLanguage, outputText = true) * 1.25 * tokenMultiplier).toInt()
+        }.coerceAtLeast(1)
     }
 
     fun estimateInputTokens(lines: List<String>): Int {
@@ -195,6 +200,10 @@ internal class ApiSubtitleBatchLearningState(model: String) {
         inputTokenMultiplier = inputMultiplier,
         outputTokenMultiplier = outputMultiplier,
     )
+
+    @Synchronized
+    fun adjustedOutputEstimate(lines: List<String>, targetLanguage: String): Int =
+        ApiSubtitleBatchPolicy.estimateOutputTokens(lines, targetLanguage, outputMultiplier)
 
     @Synchronized
     fun recordSuccess(

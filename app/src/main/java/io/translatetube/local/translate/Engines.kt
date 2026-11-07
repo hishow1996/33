@@ -1734,7 +1734,7 @@ class OpenAiCompatEngine(
         }
         val user = buildContextUserPrompt(context, numbered, lookaheadSource)
             ?: numbered
-        val estimatedOutputTokens = ApiSubtitleBatchPolicy.estimateOutputTokens(lines, tgtLang)
+        val estimatedOutputTokens = batchLearning.adjustedOutputEstimate(lines, tgtLang)
         val params = ChatCompletionParamsPolicy.forModel(baseUrl, model, estimatedOutputTokens)
         val payload = JSONObject()
             .put("model", model)
@@ -1960,7 +1960,7 @@ class GeminiEngine(
             "contents",
             JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$user"))))
         )
-        val estimatedOutputTokens = ApiSubtitleBatchPolicy.estimateOutputTokens(lines, tgtLang)
+        val estimatedOutputTokens = batchLearning.adjustedOutputEstimate(lines, tgtLang)
         applyGeminiTranslationThinkingConfig(payload, configuredModel)
         applyGeminiTranslationOutputLimit(payload, configuredModel, estimatedOutputTokens)
         val body = try {
