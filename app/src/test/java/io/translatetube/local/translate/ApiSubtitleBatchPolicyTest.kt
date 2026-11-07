@@ -513,4 +513,32 @@ class ApiSubtitleBatchPolicyTest {
         assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT !in selection.limitingReasons)
     }
 
+    @Test
+    fun performanceMetricsTrackP90LatencyAndRowsPerMinute() {
+        val learning = ApiSubtitleBatchLearningState(
+            "custom-provider/unknown-model",
+            learningScope = "en->zh",
+        )
+        learning.recordUsage(
+            estimatedInputTokens = 1_000,
+            estimatedOutputTokens = 500,
+            actualInputTokens = 1_000,
+            actualOutputTokens = 500,
+            latencyMs = 1_000,
+            batchRows = 20,
+        )
+        learning.recordUsage(
+            estimatedInputTokens = 1_000,
+            estimatedOutputTokens = 500,
+            actualInputTokens = 1_000,
+            actualOutputTokens = 500,
+            latencyMs = 2_000,
+            batchRows = 10,
+        )
+        val performance = learning.performanceSnapshot()
+        assertEquals(2_000L, performance.p90LatencyMs)
+        assertEquals(750.0, performance.averageRowsPerMinute, 0.0001)
+        assertTrue(performance.averageLatencyMs > 0L)
+    }
+
 }
