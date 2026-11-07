@@ -1191,7 +1191,8 @@ internal fun thinkingControlOrder(baseUrl: String, model: String): List<Thinking
             normalizedModel.contains("thinking") ||
             normalizedModel.contains("qwq") ||
             Regex("""(^|[-_/])(r1|r2|o1|o3|o4)([-_/]|$)""").containsMatchIn(normalizedModel) ||
-            normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5") ->
+            normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5") ||
+            normalizedModel.contains("gpt-6") ->
             ThinkingControlStyle.REASONING_EFFORT
         else -> ThinkingControlStyle.PLAIN
     }
