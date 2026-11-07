@@ -2395,6 +2395,21 @@ private fun VideoParsingPage(
     // Counted once per subtitle-list change on a background thread and shared by every
     // reader below, so a finished translation batch never blocks the UI thread.
     val validTranslatedCount = rememberValidTranslatedLineCount(state)
+    // Keep the top-level progress display unchanged; the translation stage card uses the
+    // exact same valid-row count as its "中文译文 A/总数" label.
+    val stageFraction = if (
+        stagePhase == Phase.TRANSLATING &&
+        !state.manualTranslationModeEnabled &&
+        !state.manualTranslationWaiting &&
+        state.totalLines > 0
+    ) {
+        VideoProcessingFlowPolicy.translationProgressRatio(
+            completed = validTranslatedCount,
+            total = state.totalLines,
+        )
+    } else {
+        fraction
+    }
     val detail = when {
         isCancelled -> "已停止"
         isError -> "查看下方错误提示"
@@ -3060,7 +3075,7 @@ private fun VideoParsingPage(
             selectedTtsEngineName = selectedTtsEngineName,
             dubbingVoiceDisplay = dubbingVoiceDisplay,
             sourceLanguageDisplay = sourceLanguageDisplay,
-            fraction = fraction,
+            fraction = stageFraction,
         )
 
         if (state.phase == Phase.ERROR) {
@@ -8557,8 +8572,11 @@ private fun rememberValidTranslatedLineCount(state: PlayerUiState): Int {
     }.value
 }
 
-private fun translationProgressSummary(state: PlayerUiState, validTranslatedCount: Int): String =
-    "中文译文 $validTranslatedCount/${state.totalLines.coerceAtLeast(0)}"
+private fun translationProgressSummary(state: PlayerUiState, validTranslatedCount: Int): String {
+    val total = state.totalLines.coerceAtLeast(0)
+    val completed = validTranslatedCount.coerceIn(0, total)
+    return "中文译文 $completed/$total"
+}
 
 private fun compactProcessingProgress(progress: String, phase: Phase): String {
     val raw = progress.trim()
