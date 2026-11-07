@@ -67,6 +67,9 @@ class ApiSubtitleBatchLearningStore(
         runCatching {
             val json = preferences.getString(key("learning", model), null)
                 ?.let(::JSONObject) ?: return null
+            // Discard profiles written by the old halving policy so a persisted low cap (e.g. 16)
+            // cannot survive the five-row recovery migration.
+            if (json.optInt("recoveryPolicyVersion", 0) != RECOVERY_POLICY_VERSION) return null
             ApiSubtitleBatchLearningRecord(
                 maxRows = json.optInt("maxRows", capability.initialRows)
                     .coerceIn(1, capability.maxRows),
@@ -92,6 +95,7 @@ class ApiSubtitleBatchLearningStore(
                 .put("inputBudgetTokens", record.inputBudgetTokens)
                 .put("outputBudgetTokens", record.outputBudgetTokens)
                 .put("averageLatencyMs", record.averageLatencyMs)
+                .put("recoveryPolicyVersion", RECOVERY_POLICY_VERSION)
             preferences.edit().putString(key("learning", model), json.toString()).apply()
         }
     }
@@ -121,5 +125,6 @@ class ApiSubtitleBatchLearningStore(
 
     private companion object {
         const val PREFS_NAME = "api_translation_batch_learning"
+        const val RECOVERY_POLICY_VERSION = 2
     }
 }
