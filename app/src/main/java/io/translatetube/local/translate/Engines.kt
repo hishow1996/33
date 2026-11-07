@@ -1712,8 +1712,8 @@ private fun parseOpenAiCompatibleModelCatalog(body: String): List<JSONObject> {
         for (index in 0 until array.length()) {
             when (val item = array.opt(index)) {
                 is JSONObject -> models += item
-                is String -> item.takeIf(String::isNotBlank)?.let {
-                    models += JSONObject().put("id", it)
+                is String -> if (item.isNotBlank()) {
+                    models += JSONObject().put("id", item)
                 }
             }
         }
@@ -1733,6 +1733,8 @@ private fun parseOpenAiCompatibleModelCatalog(body: String): List<JSONObject> {
         rootObject.optJSONArray("data"),
         rootObject.optJSONArray("models"),
         rootObject.optJSONArray("items"),
+        rootObject.optJSONArray("result"),
+        rootObject.optJSONArray("model_list"),
         data?.optJSONArray("models"),
         data?.optJSONArray("data"),
         models?.optJSONArray("data"),
