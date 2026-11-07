@@ -215,6 +215,22 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
+    fun conflictingCatalogLimitsStayInsideTheCombinedContextWindow() {
+        val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
+            model = "vendor/custom-model",
+            contextWindowTokens = 64_000,
+            maxOutputTokens = 80_000,
+            maxInputTokens = 60_000,
+            providerKey = "https://catalog-conflict.example/v1",
+        )
+        assertTrue(
+            capability.maxInputBudgetTokens +
+                capability.maxOutputBudgetTokens + 800 <= capability.contextWindowTokens,
+        )
+        assertTrue(capability.maxOutputBudgetTokens < capability.maxOutputTokens)
+    }
+
+    @Test
     fun providerEndpointNormalizationIgnoresCredentialsQueryAndTrailingSlash() {
         assertEquals(
             "https://relay.example/v1",
