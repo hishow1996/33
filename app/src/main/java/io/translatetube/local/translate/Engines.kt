@@ -171,12 +171,29 @@ internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 64
  */
 internal const val MAX_ISOLATED_CUE_FAILURES_PER_BATCH = 2
 
+internal data class TranslationRecoverySummary(
+    val recoveredBySplitting: Boolean,
+    val smallestSuccessfulBatchRows: Int?,
+    val attempts: Int,
+)
+
 private class TranslationRecoveryBudget {
     private var attempts = 0
     private var isolatedCueFailures = 0
+    private var smallestSuccessfulBatchRows: Int? = null
 
     /** Shared by every split/retry: malformed response alignment must not be treated as a completed translation. */
     var hadUnalignedResponse: Boolean = false
+
+    fun recordSuccessfulBatch(rows: Int) {
+        if (rows > 0) smallestSuccessfulBatchRows = minOf(smallestSuccessfulBatchRows ?: rows, rows)
+    }
+
+    fun summary(): TranslationRecoverySummary = TranslationRecoverySummary(
+        recoveredBySplitting = hadUnalignedResponse,
+        smallestSuccessfulBatchRows = smallestSuccessfulBatchRows,
+        attempts = attempts,
+    )
 
     /** True while this batch may still hand an unusable single cue back to the caller. */
     fun tolerateIsolatedCueFailure(): Boolean {
@@ -213,7 +230,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)? = null,
     acceptAfterRecovery: ((source: String, translation: String) -> Boolean)? = null,
     deferInvalidRowsToCaller: Boolean = false,
-    onRecoverySummary: ((recoveredBySplitting: Boolean) -> Unit)? = null,
+    onRecoverySummary: ((summary: TranslationRecoverySummary) -> Unit)? = null,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
@@ -224,10 +241,10 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
             deferInvalidRowsToCaller, translate, budget,
         )
     } catch (error: Exception) {
-        if (budget.hadUnalignedResponse) onRecoverySummary?.invoke(true)
+        onRecoverySummary?.invoke(budget.summary())
         throw error
     }
-    onRecoverySummary?.invoke(budget.hadUnalignedResponse)
+    onRecoverySummary?.invoke(budget.summary())
     if (!deferInvalidRowsToCaller && budget.hadUnalignedResponse && lines.indices.any { index ->
             val candidate = result.getOrNull(index).orEmpty()
             lines[index].isNotBlank() &&
@@ -279,7 +296,10 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         val complete = lines.indices.all { index ->
             lines[index].isBlank() || output[index].isNotBlank()
         }
-        if (complete) return output
+        if (complete) {
+            budget.recordSuccessfulBatch(lines.size)
+            return output
+        }
         // Return the original rejected text, not an empty placeholder, so the caller can
         // preserve the exact row-level quality reason in diagnostics and retry only that row.
         if (deferInvalidRowsToCaller) {
@@ -367,6 +387,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                 // retry has nothing left to translate; it must not abort the whole batch.
                 acceptAfterRecovery?.invoke(lines.single(), retryCandidate) == true)
         ) {
+            budget.recordSuccessfulBatch(1)
             return listOf(retryCandidate)
         }
         if (budget.tolerateIsolatedCueFailure()) {
@@ -1476,6 +1497,47 @@ private data class OpenAiTranslationResponse(
 )
 
 /** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
+private data class ApiSubtitlePrompts(val system: String, val user: String)
+
+private fun buildOpenAiSubtitlePrompts(
+    lines: List<String>,
+    srcLang: String,
+    tgtLang: String,
+    context: Pair<List<String>, List<String>>?,
+    lookaheadSource: List<String>,
+    videoTitle: String?,
+    forceTranslate: Boolean,
+): ApiSubtitlePrompts {
+            val src = LangMap.display(srcLang)
+            val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
+            val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
+            val sys = buildString {
+                append("You are a professional subtitle translator. These numbered lines are consecutive subtitle cues from one video. ")
+                append("Translate each numbered line from $src to $tgt. ")
+                append("Reply with the exact same `index|translation` format, one per line, nothing else. ")
+                append("Include every input index exactly once; never return progress/status text. ")
+                append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
+                append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
+                if (forceTranslate) {
+                    append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
+                }
+                append("Translate as coherent dialogue: keep pronouns, references and tone consistent across lines. ")
+                append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
+                append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
+                append("Render the same person, place or recurring term identically every time it appears. ")
+                append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
+                append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
+                videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
+                    append("Video title (for topic and terminology only): $title. ")
+                }
+                append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
+                append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
+            }
+            val user = buildContextUserPrompt(context, numbered, lookaheadSource)
+                ?: numbered
+    return ApiSubtitlePrompts(sys, user)
+}
+
 class OpenAiCompatEngine(
     private val baseUrl: String,
     private val apiKey: String,
@@ -1705,13 +1767,36 @@ class OpenAiCompatEngine(
         val coroutineContext = currentCoroutineContext()
         var i = 0
         while (i < lines.size) {
+            val learningSnapshot = batchLearning.snapshot()
+            fun contextForBatch(candidateLines: List<String>): Pair<List<String>, List<String>>? =
+                TranslationContextPolicy.contextForBatchWithTermContinuity(
+                    initialContext = initialContext,
+                    completedSources = lines.subList(0, i),
+                    completedTranslations = out,
+                    currentSourceCues = candidateLines,
+                    sourceLanguage = srcLang,
+                    checkActive = { coroutineContext.ensureActive() },
+                    isUsable = { source, translation ->
+                        usableContextRow(source, translation) ||
+                            usableRecoveredNameRow(source, translation)
+                    },
+                )
             val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
                 lines = lines,
                 startIndex = i,
                 model = model,
                 targetLanguage = tgtLang,
-                learning = batchLearning.snapshot(),
+                learning = learningSnapshot,
                 providerKey = baseUrl,
+                inputTokenEstimator = { candidateLines ->
+                    val prompt = buildOpenAiSubtitlePrompts(
+                        candidateLines, srcLang, tgtLang, contextForBatch(candidateLines),
+                        lookaheadSource, videoTitle, forceTranslate = false,
+                    )
+                    ApiSubtitleBatchPolicy.estimatePromptTokens(
+                        prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
+                    )
+                },
             )
             val batch = lines.subList(i, batchSelection.endExclusive)
             android.util.Log.d(
@@ -1720,19 +1805,15 @@ class OpenAiCompatEngine(
                     "rows=${batch.size}, estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
                     "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, maxOutputTokens=${batchSelection.maxOutputTokens}",
             )
-            val batchContext = TranslationContextPolicy.contextForBatchWithTermContinuity(
-                initialContext = initialContext,
-                completedSources = lines.subList(0, i),
-                completedTranslations = out,
-                currentSourceCues = batch,
-                sourceLanguage = srcLang,
-                checkActive = { coroutineContext.ensureActive() },
-                isUsable = { source, translation ->
-                    usableContextRow(source, translation) ||
-                        usableRecoveredNameRow(source, translation)
-                },
-            )
-            var recoveredBySplitting = false
+            if (batchSelection.singleCueExceedsInputBudget) {
+                throw IllegalStateException(
+                    "单条字幕超过当前模型输入预算，未发送 API 请求；请缩短该字幕或选择输入上限更高的模型。" +
+                        " estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
+                        "budgetTokens=${learningSnapshot.inputBudgetTokens}, row=${i + 1}"
+                )
+            }
+            val batchContext = contextForBatch(batch)
+            var recoverySummary = TranslationRecoverySummary(false, null, 0)
             val translated = try {
                 translateBatchWithAdaptiveRecovery(
                     lines = batch,
@@ -1740,7 +1821,7 @@ class OpenAiCompatEngine(
                     isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                     acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                     deferInvalidRowsToCaller = true,
-                    onRecoverySummary = { recoveredBySplitting = it },
+                    onRecoverySummary = { recoverySummary = it },
                 ) { rows, cueContext ->
                     translateBatch(
                         rows, srcLang, tgtLang, cueContext,
@@ -1752,7 +1833,9 @@ class OpenAiCompatEngine(
                 if (error is IllegalStateException &&
                     (isRecoverableTranslationFormatError(error) || isTranslationRecoveryAttemptLimit(error))
                 ) {
-                    batchLearning.recordOriginalBatchFailure(batch.size)
+                    batchLearning.recordOriginalBatchFailure(
+                        batch.size, recoverySummary.smallestSuccessfulBatchRows,
+                    )
                     android.util.Log.w(
                         "TranslationAPI",
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
@@ -1772,7 +1855,8 @@ class OpenAiCompatEngine(
             }
             batchLearning.recordOriginalBatchSuccess(
                 batchRows = batch.size,
-                recoveredBySplitting = recoveredBySplitting || !allRowsAccepted,
+                recoveredBySplitting = recoverySummary.recoveredBySplitting || !allRowsAccepted,
+                smallestSuccessfulBatchRows = recoverySummary.smallestSuccessfulBatchRows,
             )
             out += translated
             i = batchSelection.endExclusive
@@ -1792,33 +1876,11 @@ class OpenAiCompatEngine(
         if (apiKey.isBlank()) {
             throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
         }
-        val src = LangMap.display(srcLang)
-        val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
-        val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
-        val sys = buildString {
-            append("You are a professional subtitle translator. These numbered lines are consecutive subtitle cues from one video. ")
-            append("Translate each numbered line from $src to $tgt. ")
-            append("Reply with the exact same `index|translation` format, one per line, nothing else. ")
-            append("Include every input index exactly once; never return progress/status text. ")
-            append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
-            append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
-            if (forceTranslate) {
-                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
-            }
-            append("Translate as coherent dialogue: keep pronouns, references and tone consistent across lines. ")
-            append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
-            append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
-            append("Render the same person, place or recurring term identically every time it appears. ")
-            append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
-            append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
-            videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
-                append("Video title (for topic and terminology only): $title. ")
-            }
-            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
-            append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
-        }
-        val user = buildContextUserPrompt(context, numbered, lookaheadSource)
-            ?: numbered
+        val prompts = buildOpenAiSubtitlePrompts(
+            lines, srcLang, tgtLang, context, lookaheadSource, videoTitle, forceTranslate,
+        )
+        val sys = prompts.system
+        val user = prompts.user
         val learningSnapshot = batchLearning.snapshot()
         val estimatedInputTokens = ApiSubtitleBatchPolicy.estimatePromptTokens(
             sys, user, learningSnapshot.inputTokenMultiplier,
@@ -1908,6 +1970,42 @@ internal fun shouldFallbackToCurrentGeminiModel(configuredModel: String, error: 
 }
 
 /** Google Gemini */
+private fun buildGeminiSubtitlePrompts(
+    lines: List<String>,
+    srcLang: String,
+    tgtLang: String,
+    context: Pair<List<String>, List<String>>?,
+    lookaheadSource: List<String>,
+    videoTitle: String?,
+    forceTranslate: Boolean,
+): ApiSubtitlePrompts {
+            val src = LangMap.display(srcLang)
+            val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
+            val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
+            val sys = buildString {
+                append("Translate each numbered subtitle line from $src to $tgt. ")
+                append("Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. ")
+                append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
+                append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
+                if (forceTranslate) {
+                    append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
+                }
+                append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines. ")
+                append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
+                append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
+                append("Render the same person, place or recurring term identically every time it appears. ")
+                append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
+                videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
+                    append("Video title (for topic and terminology only): $title. ")
+                }
+                append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
+                append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
+            }
+            val user = buildContextUserPrompt(context, numbered, lookaheadSource)
+                ?: numbered
+    return ApiSubtitlePrompts(sys, user)
+}
+
 class GeminiEngine(
     private val apiKey: String,
     private val model: String,
@@ -1941,7 +2039,7 @@ class GeminiEngine(
                 if (inputLimit != null || outputLimit != null) {
                     val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
                         model = modelId,
-                        contextWindowTokens = inputLimit,
+                        contextWindowTokens = null,
                         maxOutputTokens = outputLimit,
                         maxInputTokens = inputLimit,
                         providerKey = endpointBase,
@@ -1971,13 +2069,36 @@ class GeminiEngine(
         val coroutineContext = currentCoroutineContext()
         var i = 0
         while (i < lines.size) {
+            val learningSnapshot = batchLearning.snapshot()
+            fun contextForBatch(candidateLines: List<String>): Pair<List<String>, List<String>>? =
+                TranslationContextPolicy.contextForBatchWithTermContinuity(
+                    initialContext = initialContext,
+                    completedSources = lines.subList(0, i),
+                    completedTranslations = out,
+                    currentSourceCues = candidateLines,
+                    sourceLanguage = srcLang,
+                    checkActive = { coroutineContext.ensureActive() },
+                    isUsable = { source, translation ->
+                        usableContextRow(source, translation) ||
+                            usableRecoveredNameRow(source, translation)
+                    },
+                )
             val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
                 lines = lines,
                 startIndex = i,
                 model = model,
                 targetLanguage = tgtLang,
-                learning = batchLearning.snapshot(),
+                learning = learningSnapshot,
                 providerKey = endpointBase,
+                inputTokenEstimator = { candidateLines ->
+                    val prompt = buildGeminiSubtitlePrompts(
+                        candidateLines, srcLang, tgtLang, contextForBatch(candidateLines),
+                        lookaheadSource, videoTitle, forceTranslate = false,
+                    )
+                    ApiSubtitleBatchPolicy.estimatePromptTokens(
+                        prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
+                    )
+                },
             )
             val batch = lines.subList(i, batchSelection.endExclusive)
             android.util.Log.d(
@@ -1987,19 +2108,15 @@ class GeminiEngine(
                     "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                     "maxOutputTokens=${batchSelection.maxOutputTokens}",
             )
-            val batchContext = TranslationContextPolicy.contextForBatchWithTermContinuity(
-                initialContext = initialContext,
-                completedSources = lines.subList(0, i),
-                completedTranslations = out,
-                currentSourceCues = batch,
-                sourceLanguage = srcLang,
-                checkActive = { coroutineContext.ensureActive() },
-                isUsable = { source, translation ->
-                    usableContextRow(source, translation) ||
-                        usableRecoveredNameRow(source, translation)
-                },
-            )
-            var recoveredBySplitting = false
+            if (batchSelection.singleCueExceedsInputBudget) {
+                throw IllegalStateException(
+                    "单条字幕超过当前模型输入预算，未发送 API 请求；请缩短该字幕或选择输入上限更高的模型。" +
+                        " estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
+                        "budgetTokens=${learningSnapshot.inputBudgetTokens}, row=${i + 1}"
+                )
+            }
+            val batchContext = contextForBatch(batch)
+            var recoverySummary = TranslationRecoverySummary(false, null, 0)
             val translated = try {
                 translateBatchWithAdaptiveRecovery(
                     lines = batch,
@@ -2007,7 +2124,7 @@ class GeminiEngine(
                     isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                     acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                     deferInvalidRowsToCaller = true,
-                    onRecoverySummary = { recoveredBySplitting = it },
+                    onRecoverySummary = { recoverySummary = it },
                 ) { rows, cueContext ->
                     translateBatch(
                         rows, srcLang, tgtLang, cueContext,
@@ -2019,7 +2136,9 @@ class GeminiEngine(
                 if (error is IllegalStateException &&
                     (isRecoverableTranslationFormatError(error) || isTranslationRecoveryAttemptLimit(error))
                 ) {
-                    batchLearning.recordOriginalBatchFailure(batch.size)
+                    batchLearning.recordOriginalBatchFailure(
+                        batch.size, recoverySummary.smallestSuccessfulBatchRows,
+                    )
                     android.util.Log.w(
                         "GeminiEngine",
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
@@ -2039,7 +2158,8 @@ class GeminiEngine(
             }
             batchLearning.recordOriginalBatchSuccess(
                 batchRows = batch.size,
-                recoveredBySplitting = recoveredBySplitting || !allRowsAccepted,
+                recoveredBySplitting = recoverySummary.recoveredBySplitting || !allRowsAccepted,
+                smallestSuccessfulBatchRows = recoverySummary.smallestSuccessfulBatchRows,
             )
             out += translated
             i = batchSelection.endExclusive
@@ -2059,30 +2179,11 @@ class GeminiEngine(
         if (normalizedApiKey.isBlank()) {
             throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
         }
-        val src = LangMap.display(srcLang)
-        val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
-        val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
-        val sys = buildString {
-            append("Translate each numbered subtitle line from $src to $tgt. ")
-            append("Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. ")
-            append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
-            append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
-            if (forceTranslate) {
-                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
-            }
-            append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines. ")
-            append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
-            append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
-            append("Render the same person, place or recurring term identically every time it appears. ")
-            append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
-            videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
-                append("Video title (for topic and terminology only): $title. ")
-            }
-            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
-            append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
-        }
-        val user = buildContextUserPrompt(context, numbered, lookaheadSource)
-            ?: numbered
+        val prompts = buildGeminiSubtitlePrompts(
+            lines, srcLang, tgtLang, context, lookaheadSource, videoTitle, forceTranslate,
+        )
+        val sys = prompts.system
+        val user = prompts.user
         val configuredModel = model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }
         val payload = JSONObject().put(
             "contents",
