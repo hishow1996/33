@@ -71,10 +71,12 @@ internal data class ApiSubtitleBatchPerformanceSnapshot(
     val failedBatchCount: Int = 0,
 )
 
+internal const val FIXED_API_TRANSLATION_BATCH_ROWS = 30
+
 internal object ApiSubtitleBatchPolicy {
     private const val UNKNOWN_CONTEXT_TOKENS = 32_768
     private const val UNKNOWN_OUTPUT_TOKENS = 8_192
-    private const val DEFAULT_INITIAL_ROWS = 30
+    private const val DEFAULT_INITIAL_ROWS = FIXED_API_TRANSLATION_BATCH_ROWS
     private const val DEFAULT_MAX_ROWS = 80
     private const val PROMPT_OVERHEAD_TOKENS = 1_600
     private const val CONTEXT_RESERVE_TOKENS = 800
@@ -329,82 +331,41 @@ internal object ApiSubtitleBatchPolicy {
         inputTokenEstimator: ((List<String>) -> Int)? = null,
     ): ApiSubtitleBatchSelection {
         require(startIndex in 0 until lines.size) { "startIndex must point to an existing subtitle cue" }
-        val capability = capabilityForModel(model, providerKey)
-        val rowLimit = learning.maxRows.coerceIn(1, capability.maxRows)
-        val inputBudget = learning.inputBudgetTokens.coerceIn(512, capability.maxInputBudgetTokens)
-        val outputBudget = learning.outputBudgetTokens.coerceIn(512, capability.maxOutputBudgetTokens)
-        var endExclusive = startIndex
-        var estimatedInput = PROMPT_OVERHEAD_TOKENS + CONTEXT_RESERVE_TOKENS
-        var estimatedOutput = 0
-        var singleCueExceedsInputBudget = false
-        var singleCueExceedsOutputBudget = false
-        var stoppedByInputBudget = false
-        var stoppedByOutputBudget = false
-
-        while (endExclusive < lines.size && endExclusive - startIndex < rowLimit) {
-            val cueInput = estimateTextTokens(lines[endExclusive], "", outputText = false) + 3
-            val cueOutput = estimateTextTokens(lines[endExclusive], targetLanguage, outputText = true)
-            val adjustedInput = ceil(cueInput * learning.inputTokenMultiplier).toInt()
-            val adjustedOutput = ceil(cueOutput * 1.25 * learning.outputTokenMultiplier).toInt()
-            val candidateEnd = endExclusive + 1
-            val candidateInput = inputTokenEstimator?.invoke(lines.subList(startIndex, candidateEnd))
-                ?: (estimatedInput + adjustedInput)
-            val candidateOutput = estimatedOutput + adjustedOutput
-            val exceedsInput = candidateInput > inputBudget
-            val exceedsOutput = candidateOutput > outputBudget
-
-            if (endExclusive > startIndex && (exceedsInput || exceedsOutput)) {
-                stoppedByInputBudget = exceedsInput
-                stoppedByOutputBudget = exceedsOutput
-                break
+        val endExclusive = minOf(lines.size, startIndex + FIXED_API_TRANSLATION_BATCH_ROWS)
+        val batch = lines.subList(startIndex, endExclusive)
+        val estimatedInput = inputTokenEstimator?.invoke(batch)
+            ?: estimateInputTokens(batch).let {
+                ceil(it * learning.inputTokenMultiplier).toInt()
             }
-            if (endExclusive == startIndex && (exceedsInput || exceedsOutput)) {
-                singleCueExceedsInputBudget = exceedsInput
-                singleCueExceedsOutputBudget = exceedsOutput
-                stoppedByInputBudget = exceedsInput
-                stoppedByOutputBudget = exceedsOutput
-                estimatedInput = candidateInput
-                estimatedOutput = candidateOutput
-                endExclusive = candidateEnd
-                break
-            }
-            estimatedInput = candidateInput
-            estimatedOutput = candidateOutput
-            endExclusive = candidateEnd
+        val estimatedOutput = estimateOutputTokens(
+            batch,
+            targetLanguage,
+            learning.outputTokenMultiplier,
+        )
+        val inputBudget = learning.inputBudgetTokens
+            .coerceIn(512, capabilityForModel(model, providerKey).maxInputBudgetTokens)
+        val outputBudget = learning.outputBudgetTokens
+            .coerceIn(512, capabilityForModel(model, providerKey).maxOutputBudgetTokens)
+        val exceedsInput = estimatedInput > inputBudget
+        val exceedsOutput = estimatedOutput > outputBudget
+        val reasons = linkedSetOf<ApiSubtitleBatchLimitReason>()
+        if (endExclusive == lines.size) {
+            reasons += ApiSubtitleBatchLimitReason.END_OF_INPUT
+        } else {
+            reasons += ApiSubtitleBatchLimitReason.ROW_LIMIT
         }
-
-        val limitingReasons = linkedSetOf<ApiSubtitleBatchLimitReason>()
-        if (endExclusive >= lines.size) {
-            limitingReasons += ApiSubtitleBatchLimitReason.END_OF_INPUT
-        } else if (endExclusive - startIndex >= rowLimit) {
-            limitingReasons += ApiSubtitleBatchLimitReason.ROW_LIMIT
-            // A row cap can hide a second, tighter constraint. Check the next cue so learning
-            // does not grow token budgets when they would already have stopped this batch.
-            val nextInput = inputTokenEstimator?.invoke(lines.subList(startIndex, endExclusive + 1))
-                ?: run {
-                    val nextCueInput =
-                        estimateTextTokens(lines[endExclusive], "", outputText = false) + 3
-                    estimatedInput + ceil(nextCueInput * learning.inputTokenMultiplier).toInt()
-                }
-            val nextCueOutput = ceil(
-                estimateTextTokens(lines[endExclusive], targetLanguage, outputText = true) *
-                    1.25 * learning.outputTokenMultiplier
-            ).toInt()
-            if (nextInput > inputBudget) stoppedByInputBudget = true
-            if (estimatedOutput + nextCueOutput > outputBudget) stoppedByOutputBudget = true
-        }
-        if (stoppedByInputBudget) limitingReasons += ApiSubtitleBatchLimitReason.INPUT_BUDGET
-        if (stoppedByOutputBudget) limitingReasons += ApiSubtitleBatchLimitReason.OUTPUT_BUDGET
-
-        val outputLimit = outputLimitForModel(model, estimatedOutput, providerKey, outputBudget)
+        if (exceedsInput) reasons += ApiSubtitleBatchLimitReason.INPUT_BUDGET
+        if (exceedsOutput) reasons += ApiSubtitleBatchLimitReason.OUTPUT_BUDGET
         return ApiSubtitleBatchSelection(
             endExclusive = endExclusive,
             estimatedInputTokens = estimatedInput,
             estimatedOutputTokens = estimatedOutput.coerceAtLeast(1),
-            maxOutputTokens = outputLimit,
-            singleCueExceedsInputBudget = singleCueExceedsInputBudget,
-            singleCueExceedsOutputBudget = singleCueExceedsOutputBudget,
-            limitingReasons = limitingReasons,
+            maxOutputTokens = outputLimitForModel(model, estimatedOutput, providerKey, outputBudget),
+            // These flags now mean the fixed batch exceeds a hard model budget; callers must
+            // fail before sending rather than silently changing the configured row count.
+            singleCueExceedsInputBudget = exceedsInput,
+            singleCueExceedsOutputBudget = exceedsOutput,
+            limitingReasons = reasons,
         )
     }
 
