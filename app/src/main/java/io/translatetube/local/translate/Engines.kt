@@ -264,7 +264,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
         }
     ) {
         throw IllegalStateException(
-            "翻译服务响应曾出现行数不匹配或编号/格式不完整；拆分重试后仍有字幕未通过校验，翻译失败。"
+            "翻译服务响应曾出现行数不匹配或编号/格式不完整；同批次重试或单条修复后仍有字幕未通过校验，翻译失败。"
         )
     }
     return result
@@ -526,11 +526,13 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     // Batch sizing is fixed. A malformed or truncated response must never silently
     // reduce the next request from 30 rows to 25/20/...; retry the same batch once above,
     // then fail with the original alignment evidence intact.
-    android.util.Log.w(
-        "TranslationAPI",
-        "Fixed-size subtitle batch recovery stopped: rows=${lines.size}, " +
-            "sameBatchRetryAttempted=$sameBatchFormatRetryAttempted, reason=$recoveryReason",
-    )
+    runCatching {
+        android.util.Log.w(
+            "TranslationAPI",
+            "Fixed-size subtitle batch recovery stopped: rows=${lines.size}, " +
+                "sameBatchRetryAttempted=$sameBatchFormatRetryAttempted, reason=$recoveryReason",
+        )
+    }
     throw IllegalStateException(
         "翻译服务响应格式不完整；固定批次 ${lines.size} 条在同批重试后仍无法可靠对齐，" +
             "已停止，不会自动缩小后续批次。请检查模型输出或更换模型。"
