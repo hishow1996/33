@@ -77,7 +77,7 @@ class ApiSubtitleBatchLearningStore(
             if (json.optInt("recoveryPolicyVersion", 0) != RECOVERY_POLICY_VERSION) return null
             val latencySamples = json.optJSONArray("latencySamplesMs")?.let { array ->
                 (0 until array.length()).mapNotNull { index ->
-                    (array.opt(index) as? Number)?.toLong()?.takeIf { it in 1..300_000 }
+                    (array.opt(index) as? Number)?.toLong()?.takeIf { it in 1L..300_000L }
                 }.takeLast(24)
             }.orEmpty()
             val throughputSamples = json.optJSONArray("rowsPerMinuteSamples")?.let { array ->
@@ -120,11 +120,11 @@ class ApiSubtitleBatchLearningStore(
                 .put("averageLatencyMs", record.averageLatencyMs)
                 .put(
                     "latencySamplesMs",
-                    JSONArray().apply { record.latencySamplesMs.takeLast(24).forEach(::put) },
+                    JSONArray().apply { record.latencySamplesMs.takeLast(24).forEach { put(it) } },
                 )
                 .put(
                     "rowsPerMinuteSamples",
-                    JSONArray().apply { record.rowsPerMinuteSamples.takeLast(24).forEach(::put) },
+                    JSONArray().apply { record.rowsPerMinuteSamples.takeLast(24).forEach { put(it) } },
                 )
                 .put("recoveryPolicyVersion", RECOVERY_POLICY_VERSION)
             preferences.edit().putString(key("learning", model, learningScope), json.toString()).apply()
