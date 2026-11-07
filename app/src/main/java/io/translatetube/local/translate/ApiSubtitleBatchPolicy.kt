@@ -417,7 +417,6 @@ internal class ApiSubtitleBatchLearningState(
     private val learningScope: String = "",
 ) {
     private val capability: ApiModelCapability
-    private var currentRows: Int
     private var inputMultiplier: Double
     private var outputMultiplier: Double
     private var currentInputBudgetTokens: Int
@@ -433,7 +432,6 @@ internal class ApiSubtitleBatchLearningState(
         store?.restoreCapability(model, providerKey)
         capability = ApiSubtitleBatchPolicy.capabilityForModel(model, providerKey)
         val saved = store?.loadLearning(model, capability, learningScope)
-        currentRows = saved?.maxRows ?: capability.initialRows
         inputMultiplier = saved?.inputTokenMultiplier ?: 1.0
         outputMultiplier = saved?.outputTokenMultiplier ?: 1.0
         currentInputBudgetTokens = saved?.inputBudgetTokens ?: capability.inputBudgetTokens
@@ -452,7 +450,7 @@ internal class ApiSubtitleBatchLearningState(
 
     @Synchronized
     fun snapshot(): ApiSubtitleBatchLearningSnapshot = ApiSubtitleBatchLearningSnapshot(
-        maxRows = currentRows.coerceIn(1, capability.maxRows),
+        maxRows = FIXED_API_TRANSLATION_BATCH_ROWS,
         inputTokenMultiplier = inputMultiplier.coerceIn(0.75, 3.0),
         outputTokenMultiplier = outputMultiplier.coerceIn(0.75, 3.0),
         inputBudgetTokens = currentInputBudgetTokens.coerceIn(512, capability.maxInputBudgetTokens),
@@ -612,12 +610,6 @@ internal class ApiSubtitleBatchLearningState(
         if (consecutiveSuccessfulBatches >= 2) {
             val allowGrowth = performanceAllowsGrowth()
             if (allowGrowth &&
-                ApiSubtitleBatchLimitReason.ROW_LIMIT in successfulLimitingReasons
-            ) {
-                currentRows = (currentRows + TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
-                    .coerceAtMost(capability.maxRows)
-            }
-            if (allowGrowth &&
                 ApiSubtitleBatchLimitReason.INPUT_BUDGET in successfulLimitingReasons
             ) {
                 currentInputBudgetTokens = growBudget(
@@ -656,14 +648,6 @@ internal class ApiSubtitleBatchLearningState(
         limitingReasons: Set<ApiSubtitleBatchLimitReason>,
         failureKinds: Set<ApiSubtitleBatchFailureKind>,
     ) {
-        val minimumRows = minOf(MIN_TRANSLATION_RECOVERY_BATCH_ROWS, capability.maxRows)
-        if (ApiSubtitleBatchFailureKind.RESPONSE_FORMAT in failureKinds &&
-            ApiSubtitleBatchLimitReason.ROW_LIMIT in limitingReasons &&
-            currentRows > minimumRows
-        ) {
-            currentRows = (currentRows - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
-                .coerceAtLeast(minimumRows)
-        }
         if (ApiSubtitleBatchFailureKind.INPUT_CAPACITY in failureKinds) {
             currentInputBudgetTokens = shrinkBudget(
                 currentInputBudgetTokens,
@@ -707,7 +691,7 @@ internal class ApiSubtitleBatchLearningState(
             model = model,
             learningScope = learningScope,
             record = ApiSubtitleBatchLearningRecord(
-                maxRows = currentRows,
+                maxRows = FIXED_API_TRANSLATION_BATCH_ROWS,
                 inputTokenMultiplier = inputMultiplier,
                 outputTokenMultiplier = outputMultiplier,
                 inputBudgetTokens = currentInputBudgetTokens,
