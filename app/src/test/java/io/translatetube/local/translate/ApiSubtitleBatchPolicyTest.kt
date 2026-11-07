@@ -78,16 +78,16 @@ class ApiSubtitleBatchPolicyTest {
     @Test
     fun onlyFinalOriginalBatchFailureReducesTheNextLimitByFiveRows() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
-        learning.recordOriginalBatchFailure(30)
+        learning.recordOriginalBatchFailure(true, setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT))
         assertEquals(25, learning.snapshot().maxRows)
     }
 
     @Test
     fun glmFailureReducesTheNextBatchByFiveRowsAtATime() {
         val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
-        learning.recordOriginalBatchFailure(50)
+        learning.recordOriginalBatchFailure(true, setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT))
         assertEquals(45, learning.snapshot().maxRows)
-        learning.recordOriginalBatchFailure(45)
+        learning.recordOriginalBatchFailure(true, setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT))
         assertEquals(40, learning.snapshot().maxRows)
     }
 
@@ -216,21 +216,56 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun splitRecoveryUsesLargestVerifiedLeafAsTheNextBatchCeiling() {
+    fun successfulSplitDoesNotClampGlobalRowCapToTheLargestLeaf() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         learning.recordOriginalBatchSuccess(
             batchRows = 30,
             recoveredBySplitting = true,
-            largestSuccessfulBatchRows = 8,
+            largestSuccessfulBatchRows = 5,
         )
-        assertEquals(8, learning.snapshot().maxRows)
+        assertEquals(30, learning.snapshot().maxRows)
     }
 
     @Test
-    fun finalSplitFailureUsesLargestVerifiedLeafAndHalfAttemptCeiling() {
+    fun formatFailureReducesTheBindingRowCapByFiveWithoutChangingTokenBudgets() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
-        learning.recordOriginalBatchFailure(30, largestSuccessfulBatchRows = 8)
-        assertEquals(8, learning.snapshot().maxRows)
+        val before = learning.snapshot()
+        learning.recordOriginalBatchFailure(
+            rowCapWasBinding = true,
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
+        )
+        val after = learning.snapshot()
+        assertEquals(25, after.maxRows)
+        assertEquals(before.inputBudgetTokens, after.inputBudgetTokens)
+        assertEquals(before.outputBudgetTokens, after.outputBudgetTokens)
+    }
+
+    @Test
+    fun inputCapacityFailureChangesOnlyInputBudgetWhenRowCapWasNotBinding() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        val before = learning.snapshot()
+        learning.recordOriginalBatchFailure(
+            rowCapWasBinding = false,
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.INPUT_CAPACITY),
+        )
+        val after = learning.snapshot()
+        assertEquals(before.maxRows, after.maxRows)
+        assertTrue(after.inputBudgetTokens < before.inputBudgetTokens)
+        assertEquals(before.outputBudgetTokens, after.outputBudgetTokens)
+    }
+
+    @Test
+    fun outputCapacityFailureChangesOnlyOutputBudgetWhenRowCapWasNotBinding() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        val before = learning.snapshot()
+        learning.recordOriginalBatchFailure(
+            rowCapWasBinding = false,
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY),
+        )
+        val after = learning.snapshot()
+        assertEquals(before.maxRows, after.maxRows)
+        assertEquals(before.inputBudgetTokens, after.inputBudgetTokens)
+        assertTrue(after.outputBudgetTokens < before.outputBudgetTokens)
     }
 
     @Test
