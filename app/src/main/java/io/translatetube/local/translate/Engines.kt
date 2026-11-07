@@ -2103,7 +2103,7 @@ class OpenAiCompatEngine(
                 )
             // Build bounded history once per outer batch; preflight and send reuse it.
             val contextForSelection = contextForBatch(
-                lines.subList(i, minOf(lines.size, i + learningSnapshot.maxRows))
+                lines.subList(i, minOf(lines.size, i + FIXED_API_TRANSLATION_BATCH_ROWS))
             )
             val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
                 lines = lines,
@@ -2126,7 +2126,7 @@ class OpenAiCompatEngine(
             android.util.Log.d(
                 "TranslationAPI",
                 "Subtitle batch selected: model=${model.take(100)}, startRow=${i + 1}, " +
-                    "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                    "rows=${batch.size}, rowCap=$FIXED_API_TRANSLATION_BATCH_ROWS, " +
                     "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
                     "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
                     "estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
@@ -2142,7 +2142,7 @@ class OpenAiCompatEngine(
                     "输出 Token 预算不足"
                 }
                 throw IllegalStateException(
-                    "单条字幕超出当前模型能力（$budgetDetail），未发送 API 请求；请缩短字幕或更换模型。" +
+                    "固定 30 条批次超出当前模型 Token 容量（$budgetDetail），未发送 API 请求；请缩短字幕或更换模型。" +
                         " estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
                         "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                         "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
@@ -2195,7 +2195,7 @@ class OpenAiCompatEngine(
                     android.util.Log.w(
                         "TranslationAPI",
                         "Original subtitle batch failed: model=${model.take(100)}, " +
-                            "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                            "rows=${batch.size}, rowCap=$FIXED_API_TRANSLATION_BATCH_ROWS, " +
                             "adaptiveRecovery=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
                             "failureKinds=$failureKinds, " +
                             "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
@@ -2286,7 +2286,7 @@ class OpenAiCompatEngine(
         val performance = batchLearning.performanceSnapshot()
         if (ChatCompletionParamsPolicy.isLengthTruncation(apiResponse.usage.finishReason)) {
             throw IllegalStateException(
-                "finish_reason=length；模型输出达到本批 token 上限，已交由自适应分批机制缩小批次"
+                "finish_reason=length；模型输出达到本批 token 上限，固定批次达到模型输出 Token 上限；不会自动改变后续批次条数"
             )
         }
         val content = apiResponse.content
@@ -2480,7 +2480,7 @@ class GeminiEngine(
                 )
             // Build bounded history once per outer batch; preflight and send reuse it.
             val contextForSelection = contextForBatch(
-                lines.subList(i, minOf(lines.size, i + learningSnapshot.maxRows))
+                lines.subList(i, minOf(lines.size, i + FIXED_API_TRANSLATION_BATCH_ROWS))
             )
             val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
                 lines = lines,
@@ -2503,7 +2503,7 @@ class GeminiEngine(
             android.util.Log.d(
                 "GeminiEngine",
                 "Subtitle batch selected: model=${model.take(100)}, startRow=${i + 1}, " +
-                    "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                    "rows=${batch.size}, rowCap=$FIXED_API_TRANSLATION_BATCH_ROWS, " +
                     "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
                     "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
                     "estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
@@ -2519,7 +2519,7 @@ class GeminiEngine(
                     "输出 Token 预算不足"
                 }
                 throw IllegalStateException(
-                    "单条字幕超出当前模型能力（$budgetDetail），未发送 API 请求；请缩短字幕或更换模型。" +
+                    "固定 30 条批次超出当前模型 Token 容量（$budgetDetail），未发送 API 请求；请缩短字幕或更换模型。" +
                         " estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
                         "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                         "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
@@ -2572,7 +2572,7 @@ class GeminiEngine(
                     android.util.Log.w(
                         "GeminiEngine",
                         "Original subtitle batch failed: model=${model.take(100)}, " +
-                            "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                            "rows=${batch.size}, rowCap=$FIXED_API_TRANSLATION_BATCH_ROWS, " +
                             "adaptiveRecovery=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
                             "failureKinds=$failureKinds, " +
                             "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
@@ -2693,7 +2693,7 @@ class GeminiEngine(
         val performance = batchLearning.performanceSnapshot()
         if (finishReason.equals("MAX_TOKENS", ignoreCase = true)) {
             throw IllegalStateException(
-                "finish_reason=length；Gemini 输出达到本批 token 上限，已交由自适应分批机制缩小批次"
+                "finish_reason=length；Gemini 输出达到本批 token 上限，固定批次达到模型输出 Token 上限；不会自动改变后续批次条数"
             )
         }
         val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
