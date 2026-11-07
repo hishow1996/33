@@ -34,8 +34,8 @@ internal data class ApiSubtitleBatchSelection(
     val estimatedInputTokens: Int,
     val estimatedOutputTokens: Int,
     val maxOutputTokens: Int,
-    val singleCueExceedsInputBudget: Boolean = false,
-    val singleCueExceedsOutputBudget: Boolean = false,
+    val batchExceedsInputBudget: Boolean = false,
+    val batchExceedsOutputBudget: Boolean = false,
     val limitingReasons: Set<ApiSubtitleBatchLimitReason> = emptySet(),
 )
 
@@ -76,8 +76,6 @@ internal const val FIXED_API_TRANSLATION_BATCH_ROWS = 30
 internal object ApiSubtitleBatchPolicy {
     private const val UNKNOWN_CONTEXT_TOKENS = 32_768
     private const val UNKNOWN_OUTPUT_TOKENS = 8_192
-    private const val DEFAULT_INITIAL_ROWS = FIXED_API_TRANSLATION_BATCH_ROWS
-    private const val DEFAULT_MAX_ROWS = 80
     private const val PROMPT_OVERHEAD_TOKENS = 1_600
     private const val CONTEXT_RESERVE_TOKENS = 800
 
@@ -122,7 +120,8 @@ internal object ApiSubtitleBatchPolicy {
         normalizeProviderKey(providerKey) + "|" + normalized(model)
 
     fun capabilityForModel(model: String, providerKey: String = ""): ApiModelCapability =
-        providerCapabilities[providerModelKey(model, providerKey)] ?: knownCapabilityForModel(normalized(model))
+        providerCapabilities[providerModelKey(model, providerKey)]
+            ?: sanitizeCapability(knownCapabilityForModel(normalized(model)))
 
     fun registerProviderCapability(
         model: String,
@@ -130,7 +129,7 @@ internal object ApiSubtitleBatchPolicy {
         providerKey: String = "",
     ) {
         providerCapabilities[providerModelKey(model, providerKey)] =
-            sanitizeCapability(capabilityWithModelSafetyBounds(model, capability))
+            sanitizeCapability(capability)
     }
 
     private fun sanitizeCapability(value: ApiModelCapability): ApiModelCapability {
@@ -140,14 +139,13 @@ internal object ApiSubtitleBatchPolicy {
         val maxInput = value.maxInputBudgetTokens.coerceIn(512, 2_000_000)
         val advertisedInput = value.maxInputTokens?.takeIf { it > 0 }?.coerceIn(512, 2_000_000)
         val maxOutputBudget = value.maxOutputBudgetTokens.coerceIn(512, output)
-        val maxRows = value.maxRows.coerceIn(1, 400)
-        val initialRows = value.initialRows.coerceIn(1, maxRows)
         return value.copy(
             contextWindowTokens = context,
             maxOutputTokens = output,
             maxInputTokens = advertisedInput,
-            initialRows = initialRows,
-            maxRows = maxRows,
+            // Retained only for persisted-schema compatibility; API row count is fixed.
+            initialRows = FIXED_API_TRANSLATION_BATCH_ROWS,
+            maxRows = FIXED_API_TRANSLATION_BATCH_ROWS,
             inputBudgetTokens = value.inputBudgetTokens.coerceIn(512, maxInput),
             outputBudgetTokens = value.outputBudgetTokens.coerceIn(512, maxOutputBudget),
             maxInputBudgetTokens = maxInput,
@@ -167,23 +165,6 @@ internal object ApiSubtitleBatchPolicy {
         return families.any { name ->
             baseName == name || baseName.startsWith("$name-") || baseName.startsWith("$name:")
         }
-    }
-
-    /** Conservative first-batch size for models with a known response-integrity issue. */
-    internal fun conservativeInitialRowsForModel(model: String): Int? =
-        if (modelFamilyMatches(normalized(model), "glm-4-flash-250414")) 16 else null
-
-    private fun capabilityWithModelSafetyBounds(
-        model: String,
-        capability: ApiModelCapability,
-    ): ApiModelCapability {
-        val conservativeRows = conservativeInitialRowsForModel(model) ?: return capability
-        // GLM starts with the proven 16-row size, then the existing learning policy may grow it
-        // after clean original batches. Keep its independent model ceiling at 100 rows.
-        return capability.copy(
-            initialRows = minOf(capability.initialRows, conservativeRows),
-            maxRows = minOf(capability.maxRows, 100),
-        )
     }
 
     private fun knownCapabilityForModel(id: String): ApiModelCapability {
@@ -215,7 +196,8 @@ internal object ApiSubtitleBatchPolicy {
                 )
             else -> ApiModelCapability(
                 UNKNOWN_CONTEXT_TOKENS, UNKNOWN_OUTPUT_TOKENS,
-                DEFAULT_INITIAL_ROWS, DEFAULT_MAX_ROWS, 8_000, 4_096, 16_000, 8_192,
+                FIXED_API_TRANSLATION_BATCH_ROWS, FIXED_API_TRANSLATION_BATCH_ROWS,
+                8_000, 4_096, 16_000, 8_192,
             )
         }
     }
@@ -240,15 +222,10 @@ internal object ApiSubtitleBatchPolicy {
         val output = maxOutputTokens?.takeIf { it > 0 } ?: known.maxOutputTokens
         val tierBasis = explicitContext ?: explicitInput ?: known.contextWindowTokens
         val tier = when {
-            tierBasis >= 1_000_000 -> ModelBudgetTier(80, 200, 48_000, 16_384)
-            tierBasis >= 256_000 -> ModelBudgetTier(60, 150, 32_000, 8_192)
-            tierBasis >= 128_000 -> ModelBudgetTier(50, 120, 24_000, 8_192)
-            else -> ModelBudgetTier(30, 80, 8_000, 4_096)
-        }
-        val rows = when {
-            modelFamilyMatches(id, "glm-4-flash-250414") -> 16 to 100
-            modelFamilyMatches(id, "qwen2.5-7b-instruct") && tierBasis < 1_000_000 -> 35 to 80
-            else -> tier.initialRows to tier.maxRows
+            tierBasis >= 1_000_000 -> ModelBudgetTier(48_000, 16_384)
+            tierBasis >= 256_000 -> ModelBudgetTier(32_000, 8_192)
+            tierBasis >= 128_000 -> ModelBudgetTier(24_000, 8_192)
+            else -> ModelBudgetTier(8_000, 4_096)
         }
         // Keep startup budgets conservative, but let successful learning grow up to the actual
         // catalog limits instead of an unrelated fixed tier ceiling. When catalog fields conflict,
@@ -272,8 +249,8 @@ internal object ApiSubtitleBatchPolicy {
             ApiModelCapability(
                 contextWindowTokens = context,
                 maxOutputTokens = output,
-                initialRows = rows.first.coerceAtMost(rows.second),
-                maxRows = rows.second,
+                initialRows = FIXED_API_TRANSLATION_BATCH_ROWS,
+                maxRows = FIXED_API_TRANSLATION_BATCH_ROWS,
                 inputBudgetTokens = initialInputBudget,
                 outputBudgetTokens = initialOutputBudget,
                 maxInputBudgetTokens = maxInputBudget,
@@ -286,8 +263,6 @@ internal object ApiSubtitleBatchPolicy {
     }
 
     private data class ModelBudgetTier(
-        val initialRows: Int,
-        val maxRows: Int,
         val initialInputBudget: Int,
         val initialOutputBudget: Int,
     )
@@ -363,8 +338,8 @@ internal object ApiSubtitleBatchPolicy {
             maxOutputTokens = outputLimitForModel(model, estimatedOutput, providerKey, outputBudget),
             // These flags now mean the fixed batch exceeds a hard model budget; callers must
             // fail before sending rather than silently changing the configured row count.
-            singleCueExceedsInputBudget = exceedsInput,
-            singleCueExceedsOutputBudget = exceedsOutput,
+            batchExceedsInputBudget = exceedsInput,
+            batchExceedsOutputBudget = exceedsOutput,
             limitingReasons = reasons,
         )
     }
