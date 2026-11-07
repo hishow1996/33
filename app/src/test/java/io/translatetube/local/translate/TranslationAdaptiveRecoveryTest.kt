@@ -7,49 +7,46 @@ import org.junit.Test
 
 class TranslationAdaptiveRecoveryTest {
     @Test
-    fun splitsLargeRequestsInFiveRowStepsWhenTheModelReturnsIncompleteRows() = runBlocking {
+    fun incompleteRowsNeverCauseTheOriginalBatchToBeResized() = runBlocking {
         val calls = mutableListOf<Int>()
         val sources = (0 until 20).map { "source-$it" }
-        val result = translateBatchWithAdaptiveRecovery(lines = sources) { rows, _ ->
-            calls += rows.size
-            if (rows.size > 10) {
+        val failure = runCatching {
+            translateBatchWithAdaptiveRecovery(lines = sources) { rows, _ ->
+                calls += rows.size
                 List(rows.size) { "" }
-            } else {
-                rows.map { "中文：$it" }
             }
-        }
+        }.exceptionOrNull()
 
-        assertEquals(sources.map { "中文：$it" }, result)
-        assertTrue(calls.contains(20))
-        assertTrue(calls.contains(15))
-        assertTrue(calls.contains(10))
-        assertTrue(calls.count { it == 5 } >= 2)
-        assertTrue(calls.all { it >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS })
+        assertTrue(failure is IllegalStateException)
+        assertEquals(listOf(20), calls)
+        assertTrue(failure?.message.orEmpty().contains("固定批次 20 条"))
+        assertTrue(failure?.message.orEmpty().contains("不会自动缩小后续批次"))
     }
 
     @Test
-    fun passesPriorContextAndCarriesFreshlyTranslatedLeftHalfForward() = runBlocking {
+    fun malformedResponseRetriesTheSameRowsWithTheSameContext() = runBlocking {
+        val requestSizes = mutableListOf<Int>()
         val contexts = mutableListOf<Pair<List<String>, List<String>>?>()
         val sources = List(10) { ('a' + it).toString() }
+        val initialContext = listOf("previous") to listOf("此前译文")
         val result = translateBatchWithAdaptiveRecovery(
             lines = sources,
-            context = listOf("previous") to listOf("此前译文"),
-        ) { rows, context ->
-            contexts += context
-            if (rows.size > MIN_TRANSLATION_RECOVERY_BATCH_ROWS) {
-                List(rows.size) { "" }
-            } else {
+            context = initialContext,
+            retryMalformedBatch = { rows, context ->
+                requestSizes += rows.size
+                contexts += context
                 rows.map { "译:$it" }
-            }
-        }
+            },
+            translate = { rows, context ->
+                requestSizes += rows.size
+                contexts += context
+                throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
+            },
+        )
 
         assertEquals(sources.map { "译:$it" }, result)
-        assertTrue(contexts.any { it?.first?.contains("previous") == true })
-        assertTrue(contexts.any {
-            it != null &&
-                it.first.takeLast(5) == listOf("a", "b", "c", "d", "e") &&
-                it.second.takeLast(5) == listOf("译:a", "译:b", "译:c", "译:d", "译:e")
-        })
+        assertEquals(listOf(10, 10), requestSizes)
+        assertEquals(listOf(initialContext, initialContext), contexts)
     }
 
     @Test
@@ -78,21 +75,29 @@ class TranslationAdaptiveRecoveryTest {
     }
 
     @Test
-    fun splitsOnlyRecognizedIncompleteNumberedOutputErrors() = runBlocking {
-        val sizes = mutableListOf<Int>()
+    fun repeatedNumberingFailureStopsAfterOneRetryWithoutShrinkingTheBatch() = runBlocking {
+        val requestSizes = mutableListOf<Int>()
         val sources = List(10) { "cue-$it" }
-        val result = translateBatchWithAdaptiveRecovery(sources) { rows, _ ->
-            sizes += rows.size
-            if (rows.size > MIN_TRANSLATION_RECOVERY_BATCH_ROWS) {
-                throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
-            }
-            rows.map { "中:$it" }
-        }
+        val failure = runCatching {
+            translateBatchWithAdaptiveRecovery(
+                lines = sources,
+                retryMalformedBatch = { rows, _ ->
+                    requestSizes += rows.size
+                    throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
+                },
+                translate = { rows, _ ->
+                    requestSizes += rows.size
+                    throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
+                },
+            )
+        }.exceptionOrNull()
 
-        assertEquals(sources.map { "中:$it" }, result)
-        assertTrue(sizes.contains(10))
-        assertTrue(sizes.count { it == MIN_TRANSLATION_RECOVERY_BATCH_ROWS } >= 2)
+        assertTrue(failure is IllegalStateException)
+        assertEquals(listOf(10, 10), requestSizes)
+        assertTrue(failure?.message.orEmpty().contains("固定批次 10 条"))
+        assertTrue(failure?.message.orEmpty().contains("不会自动缩小后续批次"))
     }
+
     @Test
     fun retriesOnlyMissingRowsAndKeepsAlreadyTranslatedRows() = runBlocking {
         val calls = mutableListOf<List<String>>()
@@ -262,7 +267,7 @@ class TranslationAdaptiveRecoveryTest {
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("最小恢复批次"))
+        assertTrue(error?.message.orEmpty().contains("固定批次 3 条"))
     }
 
     @Test
