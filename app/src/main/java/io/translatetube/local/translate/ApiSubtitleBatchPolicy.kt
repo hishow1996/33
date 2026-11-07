@@ -571,11 +571,9 @@ internal class ApiSubtitleBatchLearningState(
      * is not evidence of a token or context limit.
      */
     private fun performanceAllowsGrowth(): Boolean {
-        if (recentBatchOutcomeSamples.size < MIN_GROWTH_PERFORMANCE_SAMPLES ||
-            recentRowsPerMinuteSamples.size < MIN_GROWTH_PERFORMANCE_SAMPLES
-        ) return true
-
         val outcomes = recentBatchOutcomeSamples
+        if (outcomes.size < MIN_GROWTH_PERFORMANCE_SAMPLES) return true
+
         val successful = outcomes.count { it in OUTCOME_CLEAN_SUCCESS..OUTCOME_SPLIT_SUCCESS }
         val successRate = successful.toDouble() / outcomes.size
         val splitRate = outcomes.count { it == OUTCOME_SPLIT_SUCCESS }.toDouble() / outcomes.size
@@ -584,6 +582,7 @@ internal class ApiSubtitleBatchLearningState(
         }
 
         val throughput = recentRowsPerMinuteSamples
+        if (throughput.size < MIN_GROWTH_PERFORMANCE_SAMPLES) return true
         val midpoint = throughput.size / 2
         if (midpoint <= 0 || throughput.size - midpoint <= 0) return true
         val earlierAverage = throughput.subList(0, midpoint).average()
