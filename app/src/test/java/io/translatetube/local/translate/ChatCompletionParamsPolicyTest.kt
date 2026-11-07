@@ -152,9 +152,23 @@ class ChatCompletionParamsPolicyTest {
 
 
     @Test
-    fun namedLargeSubtitleModelsReceiveAnExpandedOutputBudget() {
-        assertEquals(4_096L, ChatCompletionParamsPolicy.forModel(gateway, "GLM-4-Flash-250414").maxTokens.toLong())
-        assertEquals(4_096L, ChatCompletionParamsPolicy.forModel(gateway, "Qwen/Qwen2.5-7B-Instruct").maxTokens.toLong())
-        assertEquals(2_048L, ChatCompletionParamsPolicy.forModel(gateway, "qwen-plus").maxTokens.toLong())
+    fun outputBudgetScalesWithEstimatedResponseSize() {
+        val small = ChatCompletionParamsPolicy.forModel(
+            gateway, "qwen-plus", estimatedOutputTokens = 300,
+        )
+        val large = ChatCompletionParamsPolicy.forModel(
+            gateway, "GLM-4-Flash-250414", estimatedOutputTokens = 4_000,
+        )
+        assertEquals(2_048L, small.maxTokens.toLong())
+        assertTrue(large.maxTokens > small.maxTokens)
+        assertTrue(large.maxTokens <= 8_192)
+    }
+
+    @Test
+    fun oneMillionTokenContextNeverBecomesOneMillionOutputTokens() {
+        val params = ChatCompletionParamsPolicy.forModel(
+            gateway, "Qwen/Qwen2.5-7B-Instruct-1M", estimatedOutputTokens = 20_000,
+        )
+        assertEquals(8_192L, params.maxTokens.toLong())
     }
 }

@@ -39,21 +39,31 @@ internal object ChatCompletionParamsPolicy {
     fun isLengthTruncation(finishReason: String?): Boolean =
         finishReason?.trim()?.lowercase(java.util.Locale.ROOT) in setOf("length", "max_tokens", "max_output_tokens")
 
-    fun forModel(baseUrl: String, model: String): ChatSamplingParams {
+    fun forModel(
+        baseUrl: String,
+        model: String,
+        estimatedOutputTokens: Int = 0,
+    ): ChatSamplingParams {
         val normalizedModel = model.trim().lowercase(java.util.Locale.ROOT)
         val normalizedBase = baseUrl.trim().lowercase(java.util.Locale.ROOT)
         val openAiReasoning = isOpenAiReasoningModel(normalizedModel)
         val thinkingOnly = isThinkingOnlyModel(normalizedModel)
         val officialOpenAi = normalizedBase.contains("api.openai.com") ||
             normalizedBase.contains(".openai.azure.com")
+        val capability = ApiSubtitleBatchPolicy.capabilityForModel(normalizedModel)
+        val dynamicLimit = ApiSubtitleBatchPolicy.outputLimitForModel(
+            normalizedModel,
+            estimatedOutputTokens.coerceAtLeast(1),
+        )
+        val reasoningFloor = if (openAiReasoning || thinkingOnly) {
+            minOf(REASONING_MAX_TOKENS, capability.maxOutputTokens)
+        } else {
+            0
+        }
         return ChatSamplingParams(
             temperature = if (openAiReasoning) null else NORMAL_TEMPERATURE,
-            maxTokens = when {
-                openAiReasoning || thinkingOnly -> REASONING_MAX_TOKENS
-                ApiSubtitleBatchPolicy.requiresExpandedOutputBudget(normalizedModel) ->
-                    ApiSubtitleBatchPolicy.EXPANDED_MAX_OUTPUT_TOKENS
-                else -> NORMAL_MAX_TOKENS
-            },
+            maxTokens = maxOf(dynamicLimit, reasoningFloor)
+                .coerceAtMost(capability.maxOutputTokens),
             useMaxCompletionTokens = openAiReasoning && officialOpenAi,
         )
     }

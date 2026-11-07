@@ -1449,6 +1449,17 @@ internal fun openAiCompatEndpoint(baseUrl: String, path: String): String {
     }
 }
 
+private data class TranslationApiUsage(
+    val promptTokens: Int? = null,
+    val outputTokens: Int? = null,
+    val finishReason: String? = null,
+)
+
+private data class OpenAiTranslationResponse(
+    val content: String,
+    val usage: TranslationApiUsage,
+)
+
 /** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
 class OpenAiCompatEngine(
     private val baseUrl: String,
@@ -1457,6 +1468,7 @@ class OpenAiCompatEngine(
 ) : TranslationEngine {
     override val id = "openai"
     override val displayName = model.ifEmpty { "OpenAI 兼容" }
+    private val batchLearning = ApiSubtitleBatchLearningState(model)
 
     private fun payloadWithThinkingControl(
         original: JSONObject,
@@ -1485,7 +1497,7 @@ class OpenAiCompatEngine(
     private suspend fun requestTranslationContent(
         payload: JSONObject,
         outputBudgetRaised: Boolean = false,
-    ): String {
+    ): OpenAiTranslationResponse {
         var lastReasoningOnly: ReasoningOnlyResponseException? = null
         var lastRejectedControl: Throwable? = null
         val ownerJob = currentCoroutineContext()[Job]
@@ -1525,7 +1537,20 @@ class OpenAiCompatEngine(
                     )
                     continue
                 }
-                return content
+                val root = JSONObject(responseBody)
+                val usage = root.optJSONObject("usage")
+                val finishReason = root.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optString("finish_reason")
+                    ?.takeIf { it.isNotBlank() && it != "null" }
+                return OpenAiTranslationResponse(
+                    content = content,
+                    usage = TranslationApiUsage(
+                        promptTokens = usage?.optInt("prompt_tokens")?.takeIf { it > 0 },
+                        outputTokens = usage?.optInt("completion_tokens")?.takeIf { it > 0 },
+                        finishReason = finishReason,
+                    ),
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -1625,12 +1650,14 @@ class OpenAiCompatEngine(
                 startIndex = i,
                 model = model,
                 targetLanguage = tgtLang,
+                learning = batchLearning.snapshot(),
             )
             val batch = lines.subList(i, batchSelection.endExclusive)
             android.util.Log.d(
                 "TranslationAPI",
                 "Subtitle batch selected: model=${model.take(100)}, startRow=${i + 1}, " +
-                    "rows=${batch.size}, estimatedOutputTokens=${batchSelection.estimatedOutputTokens}",
+                    "rows=${batch.size}, estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
+                    "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, maxOutputTokens=${batchSelection.maxOutputTokens}",
             )
             val batchContext = TranslationContextPolicy.contextForBatchWithTermContinuity(
                 initialContext = initialContext,
@@ -1702,7 +1729,8 @@ class OpenAiCompatEngine(
         }
         val user = buildContextUserPrompt(context, numbered, lookaheadSource)
             ?: numbered
-        val params = ChatCompletionParamsPolicy.forModel(baseUrl, model)
+        val estimatedOutputTokens = ApiSubtitleBatchPolicy.estimateOutputTokens(lines, tgtLang)
+        val params = ChatCompletionParamsPolicy.forModel(baseUrl, model, estimatedOutputTokens)
         val payload = JSONObject()
             .put("model", model)
             .put(
@@ -1712,10 +1740,27 @@ class OpenAiCompatEngine(
             )
         params.temperature?.let { payload.put("temperature", it) }
         payload.put(if (params.useMaxCompletionTokens) "max_completion_tokens" else "max_tokens", params.maxTokens)
-        val content = requestTranslationContent(payload)
+        val apiResponse = try {
+            requestTranslationContent(payload)
+        } catch (error: Exception) {
+            if (error is IllegalStateException && isRecoverableTranslationFormatError(error)) {
+                batchLearning.recordFailure(lines.size)
+            }
+            throw error
+        }
+        if (ChatCompletionParamsPolicy.isLengthTruncation(apiResponse.usage.finishReason)) {
+            batchLearning.recordFailure(lines.size)
+            throw IllegalStateException(
+                "finish_reason=length；模型输出达到本批 token 上限，已交由自适应分批机制缩小批次"
+            )
+        }
+        val content = apiResponse.content
         val translated = try {
             parseNumbered(content, lines.size)
         } catch (error: Exception) {
+            if (error is IllegalStateException && isRecoverableTranslationFormatError(error)) {
+                batchLearning.recordFailure(lines.size)
+            }
             android.util.Log.w(
                 "TranslationAPI",
                 "Subtitle response parse failed: model=${model.take(100)}, expectedRows=${lines.size}, " +
@@ -1734,6 +1779,26 @@ class OpenAiCompatEngine(
             "Subtitle response parsed: model=${model.take(100)}, expectedRows=${lines.size}, " +
                 "parsedRows=${translated.size}, nonBlankRows=$nonBlankRows, sourceEchoRows=$echoedRows",
         )
+        if (translated.size == lines.size &&
+            translated.indices.all { index -> lines[index].isBlank() || translated[index].isNotBlank() }
+        ) {
+            batchLearning.recordSuccess(
+                batchRows = lines.size,
+                estimatedInputTokens = ApiSubtitleBatchPolicy.estimateInputTokens(lines),
+                estimatedOutputTokens = estimatedOutputTokens,
+                actualInputTokens = apiResponse.usage.promptTokens,
+                actualOutputTokens = apiResponse.usage.outputTokens,
+                maxOutputTokens = params.maxTokens,
+                finishReason = apiResponse.usage.finishReason,
+            )
+            android.util.Log.d(
+                "TranslationAPI",
+                "Batch calibration: model=${model.take(100)}, rows=${lines.size}, " +
+                    "actualPromptTokens=${apiResponse.usage.promptTokens ?: -1}, " +
+                    "actualOutputTokens=${apiResponse.usage.outputTokens ?: -1}, " +
+                    "nextRowLimit=${batchLearning.snapshot().maxRows}",
+            )
+        }
         return translated
     }
 
@@ -1766,6 +1831,7 @@ class GeminiEngine(
     private val endpointBase = baseUrl.trimEnd('/')
     override val id = "gemini"
     override val displayName = model.ifEmpty { "Gemini" }
+    private val batchLearning = ApiSubtitleBatchLearningState(model)
 
     // AQ.-format Gemini authorization keys are still passed as API keys via x-goog-api-key.
     // Trim pasted whitespace/newlines so a copied key is not accidentally sent with extra characters.
@@ -1802,7 +1868,21 @@ class GeminiEngine(
         val coroutineContext = currentCoroutineContext()
         var i = 0
         while (i < lines.size) {
-            val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
+            val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
+                lines = lines,
+                startIndex = i,
+                model = model,
+                targetLanguage = tgtLang,
+                learning = batchLearning.snapshot(),
+            )
+            val batch = lines.subList(i, batchSelection.endExclusive)
+            android.util.Log.d(
+                "GeminiEngine",
+                "Subtitle batch selected: model=${model.take(100)}, startRow=${i + 1}, " +
+                    "rows=${batch.size}, estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
+                    "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
+                    "maxOutputTokens=${batchSelection.maxOutputTokens}",
+            )
             val batchContext = TranslationContextPolicy.contextForBatchWithTermContinuity(
                 initialContext = initialContext,
                 completedSources = lines.subList(0, i),
@@ -1829,7 +1909,7 @@ class GeminiEngine(
                 )
             }
             out += translated
-            i += 30
+            i = batchSelection.endExclusive
         }
         return out
     }
@@ -1875,13 +1955,20 @@ class GeminiEngine(
             "contents",
             JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$user"))))
         )
+        val estimatedOutputTokens = ApiSubtitleBatchPolicy.estimateOutputTokens(lines, tgtLang)
         applyGeminiTranslationThinkingConfig(payload, configuredModel)
+        applyGeminiTranslationOutputLimit(payload, configuredModel, estimatedOutputTokens)
         val body = try {
             generateContent(configuredModel, payload.toString())
         } catch (error: Exception) {
             currentCoroutineContext().ensureActive()
             val configured = configuredModel
-            if (!shouldFallbackToCurrentGeminiModel(configured, error)) throw error
+            if (!shouldFallbackToCurrentGeminiModel(configured, error)) {
+                if (error is IllegalStateException && isRecoverableTranslationFormatError(error)) {
+                    batchLearning.recordFailure(lines.size)
+                }
+                throw error
+            }
             android.util.Log.w(
                 "GeminiEngine",
                 "Configured Gemini model $configured is no longer available; retrying with ${FreeModelDefaults.GEMINI_MODEL}",
@@ -1891,8 +1978,16 @@ class GeminiEngine(
             val fallbackPayload = JSONObject(payload.toString()).also {
                 it.remove("generationConfig")
                 applyGeminiTranslationThinkingConfig(it, fallbackModel)
+                applyGeminiTranslationOutputLimit(it, fallbackModel, estimatedOutputTokens)
             }
-            generateContent(fallbackModel, fallbackPayload.toString())
+            try {
+                generateContent(fallbackModel, fallbackPayload.toString())
+            } catch (fallbackError: Exception) {
+                if (fallbackError is IllegalStateException && isRecoverableTranslationFormatError(fallbackError)) {
+                    batchLearning.recordFailure(lines.size)
+                }
+                throw fallbackError
+            }
         }
         val response = JSONObject(body)
         val candidates = response.optJSONArray("candidates")
@@ -1917,7 +2012,36 @@ class GeminiEngine(
                 "Gemini 已响应，但没有返回可用文本（结束原因：${candidate.optString("finishReason", "未知")}）"
             )
         }
-        return parseNumbered(text, lines.size)
+        val finishReason = candidate.optString("finishReason")
+        if (finishReason.equals("MAX_TOKENS", ignoreCase = true)) {
+            batchLearning.recordFailure(lines.size)
+            throw IllegalStateException(
+                "finish_reason=length；Gemini 输出达到本批 token 上限，已交由自适应分批机制缩小批次"
+            )
+        }
+        val usage = response.optJSONObject("usageMetadata")
+        val translated = try {
+            parseNumbered(text, lines.size)
+        } catch (error: Exception) {
+            if (error is IllegalStateException && isRecoverableTranslationFormatError(error)) {
+                batchLearning.recordFailure(lines.size)
+            }
+            throw error
+        }
+        if (translated.size == lines.size &&
+            translated.indices.all { index -> lines[index].isBlank() || translated[index].isNotBlank() }
+        ) {
+            batchLearning.recordSuccess(
+                batchRows = lines.size,
+                estimatedInputTokens = ApiSubtitleBatchPolicy.estimateInputTokens(lines),
+                estimatedOutputTokens = estimatedOutputTokens,
+                actualInputTokens = usage?.optInt("promptTokenCount")?.takeIf { it > 0 },
+                actualOutputTokens = usage?.optInt("candidatesTokenCount")?.takeIf { it > 0 },
+                maxOutputTokens = ApiSubtitleBatchPolicy.outputLimitForModel(configuredModel, estimatedOutputTokens),
+                finishReason = finishReason,
+            )
+        }
+        return translated
     }
 
     /**
@@ -1925,6 +2049,19 @@ class GeminiEngine(
      * Gemini 2.5 Flash/Lite can disable thinking via budget 0; 2.5 Pro cannot, so use its
      * minimum supported budget. Gemini 3+ uses thinkingLevel rather than thinkingBudget.
      */
+    private fun applyGeminiTranslationOutputLimit(
+        payload: JSONObject,
+        modelId: String,
+        estimatedOutputTokens: Int,
+    ) {
+        val config = payload.optJSONObject("generationConfig") ?: JSONObject()
+        config.put(
+            "maxOutputTokens",
+            ApiSubtitleBatchPolicy.outputLimitForModel(modelId, estimatedOutputTokens),
+        )
+        payload.put("generationConfig", config)
+    }
+
     private fun applyGeminiTranslationThinkingConfig(payload: JSONObject, modelId: String) {
         val normalized = modelId.lowercase(java.util.Locale.ROOT)
         val thinkingConfig = when {
