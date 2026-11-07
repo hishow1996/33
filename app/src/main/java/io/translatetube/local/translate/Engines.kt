@@ -1785,10 +1785,6 @@ class OpenAiCompatEngine(
             val contextForSelection = contextForBatch(
                 lines.subList(i, minOf(lines.size, i + learningSnapshot.maxRows))
             )
-            // Build bounded history once per outer batch; preflight and send reuse it.
-            val contextForSelection = contextForBatch(
-                lines.subList(i, minOf(lines.size, i + learningSnapshot.maxRows))
-            )
             val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
                 lines = lines,
                 startIndex = i,
@@ -2100,6 +2096,10 @@ class GeminiEngine(
                             usableRecoveredNameRow(source, translation)
                     },
                 )
+            // Build bounded history once per outer batch; preflight and send reuse it.
+            val contextForSelection = contextForBatch(
+                lines.subList(i, minOf(lines.size, i + learningSnapshot.maxRows))
+            )
             val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
                 lines = lines,
                 startIndex = i,
