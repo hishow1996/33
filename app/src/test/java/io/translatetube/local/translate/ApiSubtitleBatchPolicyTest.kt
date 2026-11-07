@@ -29,10 +29,13 @@ class ApiSubtitleBatchPolicyTest {
             return sizes
         }
 
-        assertEquals(listOf(30, 1), batchSizes(31))
+        val rows = FIXED_API_TRANSLATION_BATCH_ROWS
+        assertEquals(listOf(rows, 15), batchSizes(rows + 15))
         val largeVideoBatches = batchSizes(1_291)
-        assertEquals(44, largeVideoBatches.size)
-        assertEquals(List(43) { 30 } + 1, largeVideoBatches)
+        val fullBatches = 1_291 / rows
+        val remainder = 1_291 % rows
+        assertEquals(fullBatches + if (remainder > 0) 1 else 0, largeVideoBatches.size)
+        assertEquals(List(fullBatches) { rows } + listOfNotNull(remainder.takeIf { it > 0 }), largeVideoBatches)
     }
 
     @Test
@@ -44,14 +47,14 @@ class ApiSubtitleBatchPolicyTest {
         val qwen = ApiSubtitleBatchPolicy.selectBatch(
             lines, 0, "Qwen/Qwen2.5-7B-Instruct", "zh-CN", snapshot("Qwen/Qwen2.5-7B-Instruct"),
         )
-        assertEquals(30, glm.endExclusive)
-        assertEquals(30, qwen.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, glm.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, qwen.endExclusive)
     }
 
     @Test
     fun successfulBatchesNeverChangeTheFixedThirtyRowSize() {
         val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
 
         repeat(2) {
             learning.recordOriginalBatchSuccess(
@@ -63,7 +66,7 @@ class ApiSubtitleBatchPolicyTest {
             )
         }
 
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -76,11 +79,11 @@ class ApiSubtitleBatchPolicyTest {
             maxOutputTokens = 16_384,
             providerKey = provider,
         )
-        assertEquals(30, capability.initialRows)
-        assertEquals(30, capability.maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, capability.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, capability.maxRows)
 
         val learning = ApiSubtitleBatchLearningState(model, provider)
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -88,7 +91,7 @@ class ApiSubtitleBatchPolicyTest {
         val lines = List(200) { "A short subtitle." }
         val model = "Qwen/Qwen2.5-7B-Instruct-1M"
         val selection = ApiSubtitleBatchPolicy.selectBatch(lines, 0, model, "zh-CN", snapshot(model))
-        assertEquals(30, selection.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, selection.endExclusive)
         assertEquals(1_010_000, ApiSubtitleBatchPolicy.capabilityForModel(model).contextWindowTokens)
         // The output allowance is estimated independently from the fixed row count.
         assertTrue(selection.maxOutputTokens >= selection.estimatedOutputTokens)
@@ -114,14 +117,14 @@ class ApiSubtitleBatchPolicyTest {
         val qwen = ApiSubtitleBatchPolicy.selectBatch(
             lines, 0, "Qwen/Qwen2.5-7B-Instruct", "zh-CN", snapshot("Qwen/Qwen2.5-7B-Instruct"),
         )
-        assertEquals(30, glm.endExclusive)
-        assertEquals(30, qwen.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, glm.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, qwen.endExclusive)
     }
 
     @Test
     fun unknownModelsKeepThirtyRowsAfterCleanOriginalBatches() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
         repeat(2) {
             learning.recordUsage(4_000, 1_200, 4_000, 1_200, 1_000)
             learning.recordOriginalBatchSuccess(
@@ -132,7 +135,7 @@ class ApiSubtitleBatchPolicyTest {
                 allRowsAccepted = true,
             )
         }
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -147,7 +150,7 @@ class ApiSubtitleBatchPolicyTest {
                 allRowsAccepted = true,
             )
         }
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -157,7 +160,7 @@ class ApiSubtitleBatchPolicyTest {
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -167,12 +170,12 @@ class ApiSubtitleBatchPolicyTest {
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
         learning.recordOriginalBatchFailure(
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -185,7 +188,7 @@ class ApiSubtitleBatchPolicyTest {
             failureKinds = emptySet(),
             allRowsAccepted = true,
         )
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -225,17 +228,17 @@ class ApiSubtitleBatchPolicyTest {
         val discovered = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-a.example/v1")
         val other = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-b.example/v1")
         assertEquals(1_000_000, discovered.contextWindowTokens)
-        assertEquals(30, discovered.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, discovered.initialRows)
         assertEquals(48_000, discovered.inputBudgetTokens)
         assertEquals(32_768, other.contextWindowTokens)
-        assertEquals(30, other.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, other.initialRows)
     }
 
     @Test
     fun unknownNamesContainingOneMillionMarkerAreNotTrustedWithoutMetadata() {
         val capability = ApiSubtitleBatchPolicy.capabilityForModel("vendor/custom-1m-edition")
         assertEquals(32_768, capability.contextWindowTokens)
-        assertEquals(30, capability.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, capability.initialRows)
     }
 
     @Test
@@ -252,7 +255,7 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(1_048_576, official.contextWindowTokens)
         assertEquals(32_768, spoofed.contextWindowTokens)
         assertEquals(32_768, genericMarker.contextWindowTokens)
-        assertEquals(30, genericMarker.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, genericMarker.initialRows)
     }
 
     @Test
@@ -332,8 +335,8 @@ class ApiSubtitleBatchPolicyTest {
         )
         assertEquals(1_048_576, capability.contextWindowTokens)
         assertEquals(393_216, capability.maxOutputTokens)
-        assertEquals(30, capability.initialRows)
-        assertEquals(30, capability.maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, capability.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, capability.maxRows)
     }
 
     @Test
@@ -343,8 +346,8 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(1_048_576, kimi.contextWindowTokens)
         assertEquals(1_050_000, gpt6.contextWindowTokens)
         assertEquals(128_000, gpt6.maxOutputTokens)
-        assertEquals(30, kimi.initialRows)
-        assertEquals(30, gpt6.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, kimi.initialRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, gpt6.initialRows)
     }
 
     @Test
@@ -384,7 +387,7 @@ class ApiSubtitleBatchPolicyTest {
                     allRowsAccepted = true,
                 )
         }
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -397,10 +400,10 @@ class ApiSubtitleBatchPolicyTest {
             model = model,
             targetLanguage = "zh-CN",
             learning = snapshot(model),
-            inputTokenEstimator = { candidate -> 18_000 + candidate.size * 300 },
+            inputTokenEstimator = { candidate -> 20_000 + candidate.size * 300 },
         )
-        assertEquals(30, selection.endExclusive)
-        assertEquals(27_000, selection.estimatedInputTokens)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, selection.endExclusive)
+        assertEquals(20_000 + FIXED_API_TRANSLATION_BATCH_ROWS * 300, selection.estimatedInputTokens)
         assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
         assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT in selection.limitingReasons)
     }
@@ -416,7 +419,7 @@ class ApiSubtitleBatchPolicyTest {
             learning = snapshot(model),
             inputTokenEstimator = { 100_000 },
         )
-        assertEquals(30, selection.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, selection.endExclusive)
         assertTrue(selection.batchExceedsInputBudget)
         assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
     }
@@ -431,7 +434,7 @@ class ApiSubtitleBatchPolicyTest {
             targetLanguage = "zh-CN",
             learning = snapshot(model).copy(outputBudgetTokens = 512),
         )
-        assertEquals(30, selection.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, selection.endExclusive)
         assertTrue(selection.batchExceedsOutputBudget)
         assertTrue(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in selection.limitingReasons)
     }
@@ -451,7 +454,7 @@ class ApiSubtitleBatchPolicyTest {
             inputTokenEstimator = { 100_000 },
         )
 
-        assertEquals(30, selection.endExclusive)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, selection.endExclusive)
         assertTrue(selection.batchExceedsInputBudget)
         assertTrue(selection.batchExceedsOutputBudget)
         assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
@@ -468,7 +471,7 @@ class ApiSubtitleBatchPolicyTest {
             failureKinds = emptySet(),
             allRowsAccepted = true,
         )
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
     }
 
     @Test
@@ -480,7 +483,7 @@ class ApiSubtitleBatchPolicyTest {
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
         val after = learning.snapshot()
-        assertEquals(30, after.maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, after.maxRows)
         assertEquals(before.inputBudgetTokens, after.inputBudgetTokens)
         assertEquals(before.outputBudgetTokens, after.outputBudgetTokens)
     }
@@ -612,7 +615,7 @@ class ApiSubtitleBatchPolicyTest {
                 allRowsAccepted = true,
             )
         }
-        assertEquals(30, enToZh.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, enToZh.snapshot().maxRows)
         assertEquals(beforeJa.maxRows, enToJa.snapshot().maxRows)
         assertEquals(beforeJa.inputBudgetTokens, enToJa.snapshot().inputBudgetTokens)
     }
@@ -658,7 +661,7 @@ class ApiSubtitleBatchPolicyTest {
     fun outputBudgetFailureDoesNotChangeTheFixedRowCount() {
         val model = "GLM-4-Flash-250414"
         val selection = ApiSubtitleBatchPolicy.selectBatch(
-            lines = List(80) { "中".repeat(300) },
+            lines = List(80) { "中".repeat(600) },
             startIndex = 0,
             model = model,
             targetLanguage = "zh-CN",
@@ -718,7 +721,7 @@ class ApiSubtitleBatchPolicyTest {
                 allRowsAccepted = true,
             )
         }
-        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, learning.snapshot().maxRows)
         assertEquals(25.0, learning.performanceSnapshot().successRatePercent, 0.001)
     }
 
@@ -764,7 +767,7 @@ class ApiSubtitleBatchPolicyTest {
             )
         }
         val beforeSlowWindow = learning.snapshot().maxRows
-        assertEquals(30, beforeSlowWindow)
+        assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, beforeSlowWindow)
         repeat(2) {
             learning.recordUsage(1_000, 500, 1_000, 500, 120_000, batchRows = 20)
             learning.recordOriginalBatchSuccess(

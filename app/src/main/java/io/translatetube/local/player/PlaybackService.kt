@@ -11446,11 +11446,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
             }
             val sourceLanguageForUi = src.ifBlank { srcLang }
-            // All remote/API translation engines use fixed 30-row batches; local on-device engines retain 16.
-            val batchSize = if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeId)) 16 else 30
+            // All remote/API translation engines use the fixed API batch size; local on-device engines use 16.
+            val batchSize = if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeId)) {
+                16
+            } else {
+                io.translatetube.local.translate.FIXED_API_TRANSLATION_BATCH_ROWS
+            }
             val translationVideoTitle = ui.value.takeIf { it.key == key }
                 ?.title?.trim()?.take(120)?.takeIf { it.isNotBlank() }
-            // API requests are always 30 rows; on-device engines remain at 16. Only the final
+            // API requests always use the fixed API row count; on-device engines use 16. Only the final
             // request may contain fewer rows.
             fun rowsForBatchAt(position: Int): Int =
                 minOf(batchSize, pendingIndices.size - position).coerceAtLeast(1)

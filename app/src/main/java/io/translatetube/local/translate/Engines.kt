@@ -524,7 +524,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     }
 
     // Batch sizing is fixed. A malformed or truncated response must never silently
-    // reduce the next request from 30 rows to 25/20/...; retry the same batch once above,
+    // reduce the next request to a smaller row count; retry the same batch once above,
     // then fail with the original alignment evidence intact.
     runCatching {
         android.util.Log.w(
@@ -533,9 +533,11 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                 "sameBatchRetryAttempted=$sameBatchFormatRetryAttempted, reason=$recoveryReason",
         )
     }
+    val attemptBrief = diagnostics?.recoveryAttemptBrief().orEmpty()
     throw IllegalStateException(
         "翻译服务响应格式不完整；固定批次 ${lines.size} 条在同批重试后仍无法可靠对齐，" +
-            "已停止，不会自动缩小后续批次。请检查模型输出或更换模型。"
+            "已停止，不会自动缩小后续批次。请检查模型输出或更换模型。" +
+            (if (attemptBrief.isNotBlank()) "尝试记录：$attemptBrief" else "")
     )
 
 }
@@ -703,7 +705,8 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         if (unexpectedLines.isNotEmpty()) {
             recordParser("REJECTED_UNNUMBERED_CONTENT", "expectedRows=$size; indexedRows=${indexed.size}; unnumberedRows=${unexpectedLines.size}")
             throw IllegalStateException(
-                "翻译服务在编号译文中混入未编号内容，已拒绝可能错位的译文"
+                "翻译服务在编号译文中混入未编号内容（${unexpectedLines.size} 行未带编号，" +
+                    "已解析 ${indexed.size}/$size 条），已拒绝可能错位的译文"
             )
         }
         if (duplicateIndex) {
@@ -730,7 +733,12 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         if ((0 until size).any { (it + base) !in indexed.keys }) {
             val missing = (0 until size).map { it + base }.filterNot(indexed::containsKey)
             recordParser("REJECTED_MISSING_INDEX", "expectedRows=$size; missingIndexes=${missing.joinToString(",")}")
-            throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
+            throw IllegalStateException(
+                "翻译服务返回的字幕编号不完整（期望 $size 条，缺少编号 " +
+                    missing.take(12).joinToString(",") +
+                    (if (missing.size > 12) " 等共 ${missing.size} 个" else "") +
+                    "），已拒绝可能错位的译文"
+            )
         }
         val parsed = List(size) { i -> indexed.getValue(i + base) }
         recordParser("PARSED_INDEXED_LINES", "expectedRows=$size; outputRows=${parsed.size}; indexBase=$base")
@@ -2132,7 +2140,7 @@ class OpenAiCompatEngine(
                     else -> "输出 Token 预算不足"
                 }
                 throw IllegalStateException(
-                    "固定 30 条批次超出当前模型 Token 预算（$budgetDetail），未发送 API 请求；不会自动减少批次条数。" +
+                    "固定 ${FIXED_API_TRANSLATION_BATCH_ROWS} 条批次超出当前模型 Token 预算（$budgetDetail），未发送 API 请求；不会自动减少批次条数。" +
                         " batchRows=${batch.size}, startRow=${i + 1}, " +
                         "estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
                         "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
@@ -2503,7 +2511,7 @@ class GeminiEngine(
                     else -> "输出 Token 预算不足"
                 }
                 throw IllegalStateException(
-                    "固定 30 条批次超出当前模型 Token 预算（$budgetDetail），未发送 API 请求；不会自动减少批次条数。" +
+                    "固定 ${FIXED_API_TRANSLATION_BATCH_ROWS} 条批次超出当前模型 Token 预算（$budgetDetail），未发送 API 请求；不会自动减少批次条数。" +
                         " batchRows=${batch.size}, startRow=${i + 1}, " +
                         "estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
                         "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +

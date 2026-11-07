@@ -80,6 +80,17 @@ internal class TranslationDiagnosticContext(
         return "共记录 ${all.size} 次批次请求；行数顺序：$sizes\n" + all.takeLast(20).joinToString("\n")
     }
 
+    /**
+     * Short one-line form of the most recent batch attempts, safe to append to an exception
+     * message. Exported reports truncate the long diagnostic sections, but never the root cause
+     * message, so the reason each attempt failed has to travel there.
+     */
+    fun recoveryAttemptBrief(maxAttempts: Int = 3, maxChars: Int = 420): String {
+        val recent = recoveryAttempts.toList().takeLast(maxAttempts)
+        if (recent.isEmpty()) return ""
+        return recent.joinToString("；").take(maxChars)
+    }
+
     fun snapshot(maxChars: Int = 6_000): String {
         if (events.isEmpty()) return "本次没有记录到 HTTP 响应或网络重试事件（可能是本地引擎、预检阶段失败，或请求在连接前终止）"
         val limit = maxChars.coerceIn(500, 12_000)
