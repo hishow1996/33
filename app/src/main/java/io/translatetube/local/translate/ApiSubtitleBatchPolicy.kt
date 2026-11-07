@@ -56,12 +56,19 @@ internal data class ApiSubtitleBatchLearningRecord(
     val averageLatencyMs: Double = 0.0,
     val latencySamplesMs: List<Long> = emptyList(),
     val rowsPerMinuteSamples: List<Double> = emptyList(),
+    val batchOutcomeSamples: List<Int> = emptyList(),
 )
 
 internal data class ApiSubtitleBatchPerformanceSnapshot(
     val averageLatencyMs: Long,
     val p90LatencyMs: Long,
     val averageRowsPerMinute: Double,
+    val sampledBatchCount: Int = 0,
+    val successfulBatchCount: Int = 0,
+    val successRatePercent: Double = 0.0,
+    val recoveredBatchCount: Int = 0,
+    val splitRecoveryCount: Int = 0,
+    val failedBatchCount: Int = 0,
 )
 
 internal object ApiSubtitleBatchPolicy {
@@ -145,41 +152,45 @@ internal object ApiSubtitleBatchPolicy {
         )
     }
 
+    /**
+     * Only trust capabilities for recognized model families. The model basename is used so
+     * official publisher prefixes (for example, Qwen/ or deepseek-ai/) remain compatible, while
+     * arbitrary names that merely contain a familiar token cannot claim a larger context window.
+     * Generic "128k"/"256k" suffixes are deliberately not treated as proof of capacity; a provider
+     * catalog must advertise those limits explicitly.
+     */
     private fun knownCapabilityForModel(id: String): ApiModelCapability {
+        val baseName = id.substringAfterLast('/').trim()
+        fun family(vararg names: String): Boolean = names.any { name ->
+            baseName == name || baseName.startsWith("$name-") || baseName.startsWith("$name:")
+        }
+
         return when {
-            id.contains("deepseek-v4-pro") || id.contains("deepseek-flash") ->
+            family("deepseek-v4-pro", "deepseek-flash", "deepseek-v4-flash") ->
                 ApiModelCapability(
                     1_048_576, 393_216, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
-            id.contains("kimi-k3.1-pro") || id.contains("kimi-k3") ->
+            family("kimi-k3.1-pro", "kimi-k3") ->
                 ApiModelCapability(
                     1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
-            id.contains("gpt-6-astra") || id.contains("gpt-6.1-sol") ||
-                id.contains("gpt-6.1-terra") || id.contains("gpt-6-luna") ->
+            family("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna") ->
                 ApiModelCapability(
                     1_050_000, 128_000, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
-            id.contains("qwen2.5-7b-instruct-1m") -> ApiModelCapability(
+            family("qwen2.5-7b-instruct-1m") -> ApiModelCapability(
                 1_010_000, 8_192, 80, 160, 48_000, 8_192, 240_000, 8_192,
             )
-            id.contains("qwen2.5-7b-instruct") -> ApiModelCapability(
+            family("qwen2.5-7b-instruct") -> ApiModelCapability(
                 131_072, 8_192, 35, 80, 24_000, 8_192, 64_000, 8_192,
             )
-            id.contains("glm-4-flash-250414") -> ApiModelCapability(
+            family("glm-4-flash-250414") -> ApiModelCapability(
                 131_072, 16_384, 50, 100, 24_000, 8_192, 64_000, 16_384,
             )
-            id.contains("gemini-3.8-flash") ||
-                id.contains("gemini-2.5-flash") ||
-                id.contains("gemini-2.5-pro") -> ApiModelCapability(
-                1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
-            )
-            id.contains("256k") -> ApiModelCapability(
-                262_144, 8_192, 60, 150, 32_000, 8_192, 96_000, 24_576,
-            )
-            id.contains("128k") -> ApiModelCapability(
-                131_072, 8_192, 50, 120, 24_000, 8_192, 64_000, 16_384,
-            )
+            family("gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro") ->
+                ApiModelCapability(
+                    1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                )
             else -> ApiModelCapability(
                 UNKNOWN_CONTEXT_TOKENS, UNKNOWN_OUTPUT_TOKENS,
                 DEFAULT_INITIAL_ROWS, DEFAULT_MAX_ROWS, 8_000, 4_096, 16_000, 8_192,
@@ -430,6 +441,7 @@ internal class ApiSubtitleBatchLearningState(
     private var averageLatencyMs = 0.0
     private val recentLatencySamplesMs = mutableListOf<Long>()
     private val recentRowsPerMinuteSamples = mutableListOf<Double>()
+    private val recentBatchOutcomeSamples = mutableListOf<Int>()
 
     init {
         store?.restoreCapability(model, providerKey)
@@ -444,6 +456,11 @@ internal class ApiSubtitleBatchLearningState(
         recentLatencySamplesMs.addAll(saved?.latencySamplesMs.orEmpty().takeLast(MAX_PERFORMANCE_SAMPLES))
         recentRowsPerMinuteSamples.addAll(
             saved?.rowsPerMinuteSamples.orEmpty().takeLast(MAX_PERFORMANCE_SAMPLES)
+        )
+        recentBatchOutcomeSamples.addAll(
+            saved?.batchOutcomeSamples.orEmpty()
+                .filter { it in OUTCOME_FAILED..OUTCOME_REJECTED }
+                .takeLast(MAX_PERFORMANCE_SAMPLES)
         )
     }
 
@@ -511,12 +528,60 @@ internal class ApiSubtitleBatchLearningState(
         } else {
             (ceil(sortedLatencies.size * 0.9).toInt() - 1).coerceIn(0, sortedLatencies.lastIndex)
         }
+        val outcomes = recentBatchOutcomeSamples
+        val sampled = outcomes.size
+        val successful = outcomes.count { it in OUTCOME_CLEAN_SUCCESS..OUTCOME_SPLIT_SUCCESS }
+        val recovered = outcomes.count {
+            it == OUTCOME_RECOVERED_SUCCESS || it == OUTCOME_SPLIT_SUCCESS
+        }
+        val splitRecoveries = outcomes.count { it == OUTCOME_SPLIT_SUCCESS }
+        val failed = outcomes.count { it == OUTCOME_FAILED || it == OUTCOME_REJECTED }
         return ApiSubtitleBatchPerformanceSnapshot(
             averageLatencyMs = averageLatencyMs.toLong().coerceAtLeast(0L),
             p90LatencyMs = sortedLatencies.getOrNull(p90Index) ?: averageLatencyMs.toLong().coerceAtLeast(0L),
             averageRowsPerMinute = if (recentRowsPerMinuteSamples.isEmpty()) 0.0
             else recentRowsPerMinuteSamples.average(),
+            sampledBatchCount = sampled,
+            successfulBatchCount = successful,
+            successRatePercent = if (sampled == 0) 0.0 else successful * 100.0 / sampled,
+            recoveredBatchCount = recovered,
+            splitRecoveryCount = splitRecoveries,
+            failedBatchCount = failed,
         )
+    }
+
+    private fun recordBatchOutcome(outcome: Int) {
+        recentBatchOutcomeSamples += outcome
+        while (recentBatchOutcomeSamples.size > MAX_PERFORMANCE_SAMPLES) {
+            recentBatchOutcomeSamples.removeAt(0)
+        }
+    }
+
+    /**
+     * Avoid expanding a profile whose recent original batches are unstable. Once there are enough
+     * observations, require a high accepted-row rate, few split recoveries, and no material
+     * throughput regression. Latency alone never reduces provider capacity because network delay
+     * is not evidence of a token or context limit.
+     */
+    private fun performanceAllowsGrowth(): Boolean {
+        if (recentBatchOutcomeSamples.size < MIN_GROWTH_PERFORMANCE_SAMPLES ||
+            recentRowsPerMinuteSamples.size < MIN_GROWTH_PERFORMANCE_SAMPLES
+        ) return true
+
+        val outcomes = recentBatchOutcomeSamples
+        val successful = outcomes.count { it in OUTCOME_CLEAN_SUCCESS..OUTCOME_SPLIT_SUCCESS }
+        val successRate = successful.toDouble() / outcomes.size
+        val splitRate = outcomes.count { it == OUTCOME_SPLIT_SUCCESS }.toDouble() / outcomes.size
+        if (successRate < MIN_GROWTH_SUCCESS_RATE || splitRate > MAX_GROWTH_SPLIT_RATE) {
+            return false
+        }
+
+        val throughput = recentRowsPerMinuteSamples
+        val midpoint = throughput.size / 2
+        if (midpoint <= 0 || throughput.size - midpoint <= 0) return true
+        val earlierAverage = throughput.subList(0, midpoint).average()
+        val recentAverage = throughput.subList(midpoint, throughput.size).average()
+        return earlierAverage <= 0.0 || recentAverage >= earlierAverage * MIN_THROUGHPUT_RETENTION
     }
 
     /** Called exactly once after the outer/original subtitle batch has completed. */
@@ -528,6 +593,14 @@ internal class ApiSubtitleBatchLearningState(
         failureKinds: Set<ApiSubtitleBatchFailureKind>,
         allRowsAccepted: Boolean,
     ) {
+        recordBatchOutcome(
+            when {
+                !allRowsAccepted -> OUTCOME_REJECTED
+                recoveredBySplitting -> OUTCOME_SPLIT_SUCCESS
+                hadRecoverableFailure -> OUTCOME_RECOVERED_SUCCESS
+                else -> OUTCOME_CLEAN_SUCCESS
+            }
+        )
         if (recoveredBySplitting || hadRecoverableFailure) {
             // Feed recoverable failures back into the matching constraint even when a single
             // cue cannot be split. Only a real split is evidence for reducing the global row cap.
@@ -552,17 +625,24 @@ internal class ApiSubtitleBatchLearningState(
         consecutiveSuccessfulBatches++
         successfulLimitingReasons += limitingReasons
         if (consecutiveSuccessfulBatches >= 2) {
-            if (ApiSubtitleBatchLimitReason.ROW_LIMIT in successfulLimitingReasons) {
+            val allowGrowth = performanceAllowsGrowth()
+            if (allowGrowth &&
+                ApiSubtitleBatchLimitReason.ROW_LIMIT in successfulLimitingReasons
+            ) {
                 currentRows = (currentRows + TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
                     .coerceAtMost(capability.maxRows)
             }
-            if (ApiSubtitleBatchLimitReason.INPUT_BUDGET in successfulLimitingReasons) {
+            if (allowGrowth &&
+                ApiSubtitleBatchLimitReason.INPUT_BUDGET in successfulLimitingReasons
+            ) {
                 currentInputBudgetTokens = growBudget(
                     currentInputBudgetTokens,
                     capability.maxInputBudgetTokens,
                 )
             }
-            if (ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in successfulLimitingReasons) {
+            if (allowGrowth &&
+                ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in successfulLimitingReasons
+            ) {
                 currentOutputBudgetTokens = growBudget(
                     currentOutputBudgetTokens,
                     capability.maxOutputBudgetTokens,
@@ -580,6 +660,7 @@ internal class ApiSubtitleBatchLearningState(
         limitingReasons: Set<ApiSubtitleBatchLimitReason>,
         failureKinds: Set<ApiSubtitleBatchFailureKind>,
     ) {
+        recordBatchOutcome(OUTCOME_FAILED)
         applyFailureAdjustments(limitingReasons, failureKinds)
         consecutiveSuccessfulBatches = 0
         successfulLimitingReasons.clear()
@@ -625,7 +706,13 @@ internal class ApiSubtitleBatchLearningState(
      */
     private fun calibrateMultiplier(current: Double, estimated: Int, actual: Int): Double {
         if (estimated <= 0 || actual <= 0) return current
-        val observedRatio = (actual.toDouble() / estimated).coerceIn(0.75, 1.5)
+        val rawRatio = actual.toDouble() / estimated
+        // Token usage can occasionally be missing, provider-specific, or wildly inconsistent.
+        // Ignore extreme observations instead of allowing one bad sample to poison future batches.
+        if (!rawRatio.isFinite() || rawRatio !in MIN_CALIBRATION_RATIO..MAX_CALIBRATION_RATIO) {
+            return current
+        }
+        val observedRatio = rawRatio.coerceIn(0.75, 1.5)
         val correctedTarget = current * observedRatio
         return (current * 0.8 + correctedTarget * 0.2).coerceIn(0.75, 3.0)
     }
@@ -643,6 +730,7 @@ internal class ApiSubtitleBatchLearningState(
                 averageLatencyMs = averageLatencyMs,
                 latencySamplesMs = recentLatencySamplesMs.toList(),
                 rowsPerMinuteSamples = recentRowsPerMinuteSamples.toList(),
+                batchOutcomeSamples = recentBatchOutcomeSamples.toList(),
             ),
         )
     }
@@ -650,5 +738,16 @@ internal class ApiSubtitleBatchLearningState(
     private companion object {
         const val MAX_PERFORMANCE_SAMPLES = 24
         const val MAX_ROWS_PER_MINUTE_SAMPLE = 1_000_000.0
+        const val MIN_GROWTH_PERFORMANCE_SAMPLES = 8
+        const val MIN_GROWTH_SUCCESS_RATE = 0.90
+        const val MAX_GROWTH_SPLIT_RATE = 0.125
+        const val MIN_THROUGHPUT_RETENTION = 0.85
+        const val MIN_CALIBRATION_RATIO = 0.5
+        const val MAX_CALIBRATION_RATIO = 2.0
+        const val OUTCOME_FAILED = 0
+        const val OUTCOME_CLEAN_SUCCESS = 1
+        const val OUTCOME_RECOVERED_SUCCESS = 2
+        const val OUTCOME_SPLIT_SUCCESS = 3
+        const val OUTCOME_REJECTED = 4
     }
 }
