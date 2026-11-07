@@ -111,46 +111,41 @@ internal fun isEmptyAssistantContentResponse(error: Throwable): Boolean {
  * Recognize only parser/alignment failures that can improve by lowering the LLM request size.
  * Authentication, quota, transport and server errors must keep their normal error path.
  */
-internal fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean {
-    // A wrapped socket/HTTP failure must never be mistaken for recoverable model formatting.
-    // Let the request retry policy handle transport and temporary provider failures instead.
-    if (isRetryableTranslationFailure(error)) return false
+internal fun translationBatchFailureKind(
+    error: IllegalStateException,
+): ApiSubtitleBatchFailureKind? {
+    if (isRetryableTranslationFailure(error)) return null
+    val detail = generateSequence(error) { it.cause }
+        .take(8)
+        .joinToString(" ") { it.message.orEmpty() }
+    val normalized = detail.lowercase(java.util.Locale.ROOT)
 
-    val message = error.message.orEmpty()
-    val normalized = message.lowercase(java.util.Locale.ROOT)
-    val malformedTranslation = message.contains("重复返回字幕编号") ||
-        message.contains("超出本批范围的字幕编号") ||
-        message.contains("混入未编号内容") ||
-        message.contains("编号不完整") ||
-        message.contains("格式不完整") ||
-        message.contains("无法解析为字幕行")
-    if (malformedTranslation) return true
+    val outputCapacityFailure = listOf(
+        "finish_reason=length", "finish_reason: length", "finish reason length",
+        "finishreason=max_tokens", "finish_reason=max_tokens", "maximum output tokens",
+        "max output tokens", "output token limit", "incomplete response due to length",
+    ).any(normalized::contains)
+    if (outputCapacityFailure) return ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY
 
-    // A batch that exceeds context/request limits may succeed when split. Do not include generic
-    // token/max-token errors, authentication failures, rate limits, or temporary server errors.
-    val requestTooLarge = normalized.contains("http 413") ||
-        normalized.contains("finish_reason=length") ||
-        normalized.contains("finish_reason: length") ||
-        normalized.contains("finish reason length") ||
-        listOf(
-            "context length exceeded",
-            "maximum context length",
-            "context_length_exceeded",
-            "too many tokens",
-            "maximum number of tokens",
-            "input is too long",
-            "prompt is too long",
-            "request too large",
-            "request entity too large",
-            "payload too large",
-            "request body too large",
-            "maximum context window",
-            "incomplete response due to length",
-            "api_input_budget_exceeded",
-            "prompt token budget exceeded",
-        ).any(normalized::contains)
-    return requestTooLarge
+    val inputCapacityFailure = listOf(
+        "http 413", "context length exceeded", "maximum context length",
+        "context_length_exceeded", "too many tokens", "maximum number of tokens",
+        "input is too long", "prompt is too long", "request too large",
+        "request entity too large", "payload too large", "request body too large",
+        "maximum context window", "api_input_budget_exceeded",
+        "prompt token budget exceeded",
+    ).any(normalized::contains)
+    if (inputCapacityFailure) return ApiSubtitleBatchFailureKind.INPUT_CAPACITY
+
+    val malformedTranslation = listOf(
+        "重复返回字幕编号", "超出本批范围的字幕编号", "混入未编号内容",
+        "编号不完整", "格式不完整", "无法解析为字幕行",
+    ).any(detail::contains)
+    return if (malformedTranslation) ApiSubtitleBatchFailureKind.RESPONSE_FORMAT else null
 }
+
+internal fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean =
+    translationBatchFailureKind(error) != null
 
 internal fun isTranslationRecoveryAttemptLimit(error: Throwable): Boolean =
     generateSequence(error) { it.cause }
@@ -179,15 +174,21 @@ internal data class TranslationRecoverySummary(
     val recoveredBySplitting: Boolean,
     val largestSuccessfulBatchRows: Int?,
     val attempts: Int,
+    val failureKinds: Set<ApiSubtitleBatchFailureKind> = emptySet(),
 )
 
 private class TranslationRecoveryBudget {
     private var attempts = 0
     private var isolatedCueFailures = 0
     private var largestSuccessfulBatchRows: Int? = null
+    private val failureKinds = linkedSetOf<ApiSubtitleBatchFailureKind>()
 
     /** Shared by every split/retry: malformed response alignment must not be treated as a completed translation. */
     var hadUnalignedResponse: Boolean = false
+
+    fun recordFailureKind(kind: ApiSubtitleBatchFailureKind) {
+        failureKinds += kind
+    }
 
     fun recordSuccessfulBatch(rows: Int) {
         // Single-cue quality retries must never lower the model-wide batch ceiling.
@@ -200,6 +201,7 @@ private class TranslationRecoveryBudget {
         recoveredBySplitting = hadUnalignedResponse,
         largestSuccessfulBatchRows = largestSuccessfulBatchRows,
         attempts = attempts,
+        failureKinds = failureKinds.toSet(),
     )
 
     /** True while this batch may still hand an unusable single cue back to the caller. */
@@ -238,6 +240,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)? = null,
     acceptAfterRecovery: ((source: String, translation: String) -> Boolean)? = null,
     deferInvalidRowsToCaller: Boolean = false,
+    retryMalformedBatch: (suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>)? = null,
     onRecoverySummary: ((summary: TranslationRecoverySummary) -> Unit)? = null,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
@@ -246,7 +249,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     val result = try {
         translateBatchWithAdaptiveRecoveryInternal(
             lines, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
-            deferInvalidRowsToCaller, translate, budget,
+            deferInvalidRowsToCaller, retryMalformedBatch, translate, budget,
         )
     } catch (error: Exception) {
         onRecoverySummary?.invoke(budget.summary())
@@ -274,24 +277,52 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     retrySingle: (suspend (String, Pair<List<String>, List<String>>?) -> String?)?,
     acceptAfterRecovery: ((source: String, translation: String) -> Boolean)?,
     deferInvalidRowsToCaller: Boolean,
+    retryMalformedBatch: (suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>)?,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
     budget: TranslationRecoveryBudget,
 ): List<String> {
     var recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH"
-    val response = try {
+    var response: List<String>? = null
+    var shouldRetrySameBatchForFormat = false
+    try {
         budget.consumeAttempt()
-        translate(lines, context)
+        response = translate(lines, context)
     } catch (error: IllegalStateException) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
-        if (!isRecoverableTranslationFormatError(error)) throw error
+        val failureKind = translationBatchFailureKind(error) ?: throw error
+        budget.recordFailureKind(failureKind)
         budget.hadUnalignedResponse = true
         recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
-        null
+        shouldRetrySameBatchForFormat = failureKind == ApiSubtitleBatchFailureKind.RESPONSE_FORMAT
     }
 
     if (response != null && response.size != lines.size) {
+        budget.recordFailureKind(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT)
         budget.hadUnalignedResponse = true
         recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH"
+        shouldRetrySameBatchForFormat = true
+    }
+
+    if (shouldRetrySameBatchForFormat && retryMalformedBatch != null) {
+        android.util.Log.w(
+            "TranslationAPI",
+            "Retrying malformed subtitle response once at same batch size: rows=${lines.size}",
+        )
+        response = try {
+            budget.consumeAttempt()
+            retryMalformedBatch(lines, context)
+        } catch (error: IllegalStateException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val failureKind = translationBatchFailureKind(error) ?: throw error
+            budget.recordFailureKind(failureKind)
+            recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
+            null
+        }
+        if (response != null && response.size != lines.size) {
+            budget.recordFailureKind(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT)
+            recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH_AFTER_FORMAT_RETRY"
+            response = null
+        }
     }
 
     if (response != null && response.size == lines.size) {
@@ -362,6 +393,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                     retrySingle,
                     acceptAfterRecovery,
                     deferInvalidRowsToCaller,
+                    retryMalformedBatch,
                     translate,
                     budget,
                 )
@@ -489,14 +521,14 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     val rightSource = lines.subList(splitAt, lines.size)
     val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
         leftSource, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
-        deferInvalidRowsToCaller, translate, budget,
+        deferInvalidRowsToCaller, retryMalformedBatch, translate, budget,
     )
     val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
     val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
     val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
     val rightTranslation = translateBatchWithAdaptiveRecoveryInternal(
         rightSource, rightContext, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
-        deferInvalidRowsToCaller, translate, budget,
+        deferInvalidRowsToCaller, retryMalformedBatch, translate, budget,
     )
     return leftTranslation + rightTranslation
 }
