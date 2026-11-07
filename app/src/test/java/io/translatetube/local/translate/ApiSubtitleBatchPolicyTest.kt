@@ -136,6 +136,60 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
+    fun providerEndpointNormalizationIgnoresCredentialsQueryAndTrailingSlash() {
+        assertEquals(
+            "https://relay.example/v1",
+            ApiSubtitleBatchPolicy.normalizeProviderKey(
+                "https://user:secret@Relay.Example:443/v1/?token=private#fragment",
+            ),
+        )
+        assertEquals(
+            ApiSubtitleBatchPolicy.normalizeProviderKey("https://relay.example/v1"),
+            ApiSubtitleBatchPolicy.normalizeProviderKey("https://RELAY.example:443/v1/"),
+        )
+    }
+
+    @Test
+    fun providerEndpointPathRemainsPartOfTheLearningIdentity() {
+        val model = "vendor/shared-model"
+        ApiSubtitleBatchPolicy.registerProviderLimits(
+            model = model,
+            contextWindowTokens = 1_048_576,
+            maxOutputTokens = 16_384,
+            providerKey = "https://relay.example/api/v1",
+        )
+        val sameEndpoint = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://relay.example/api/v1/")
+        val differentEndpoint = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://relay.example/v1")
+        assertEquals(1_048_576, sameEndpoint.contextWindowTokens)
+        assertEquals(32_768, differentEndpoint.contextWindowTokens)
+    }
+
+    @Test
+    fun deepSeekV4UsesItsPublishedMillionTokenCatalogLimits() {
+        val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
+            model = "deepseek-v4-pro",
+            contextWindowTokens = 1_048_576,
+            maxOutputTokens = 393_216,
+            providerKey = "https://api.deepseek.com",
+        )
+        assertEquals(1_048_576, capability.contextWindowTokens)
+        assertEquals(393_216, capability.maxOutputTokens)
+        assertEquals(80, capability.initialRows)
+        assertEquals(200, capability.maxRows)
+    }
+
+    @Test
+    fun knownKimiAndGpt6ModelsDoNotFallBackToUnknownModelLimits() {
+        val kimi = ApiSubtitleBatchPolicy.capabilityForModel("kimi-k3.1-pro")
+        val gpt6 = ApiSubtitleBatchPolicy.capabilityForModel("gpt-6-astra")
+        assertEquals(1_048_576, kimi.contextWindowTokens)
+        assertEquals(1_050_000, gpt6.contextWindowTokens)
+        assertEquals(128_000, gpt6.maxOutputTokens)
+        assertEquals(80, kimi.initialRows)
+        assertEquals(80, gpt6.initialRows)
+    }
+
+    @Test
     fun promptEstimateIncludesSystemAndContextText() {
         val short = ApiSubtitleBatchPolicy.estimatePromptTokens("Translate.", "1|Hello")
         val long = ApiSubtitleBatchPolicy.estimatePromptTokens(
