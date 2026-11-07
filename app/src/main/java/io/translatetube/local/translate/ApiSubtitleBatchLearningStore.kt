@@ -2,7 +2,6 @@ package io.translatetube.local.translate
 
 import android.content.Context
 import org.json.JSONObject
-import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
 
@@ -24,6 +23,7 @@ class ApiSubtitleBatchLearningStore(
         runCatching {
             val json = preferences.getString(key("capability", model), null)
                 ?.let(::JSONObject) ?: return
+            if (json.optInt("capabilitySchemaVersion", 0) != CAPABILITY_SCHEMA_VERSION) return
             val contextTokens = json.optInt("contextWindowTokens").coerceAtLeast(0)
             val maxOutputTokens = json.optInt("maxOutputTokens").takeIf { it > 0 } ?: return
             val capability = ApiModelCapability(
@@ -50,6 +50,7 @@ class ApiSubtitleBatchLearningStore(
     internal fun saveCapability(model: String, capability: ApiModelCapability) {
         runCatching {
             val json = JSONObject()
+                .put("capabilitySchemaVersion", CAPABILITY_SCHEMA_VERSION)
                 .put("contextWindowTokens", capability.contextWindowTokens)
                 .put("maxOutputTokens", capability.maxOutputTokens)
                 .put("initialRows", capability.initialRows)
@@ -103,20 +104,8 @@ class ApiSubtitleBatchLearningStore(
     private fun key(kind: String, model: String): String =
         "$kind:${sha256("$providerFingerprint|${model.trim().lowercase(Locale.ROOT)}")}"
 
-    private fun safeProviderIdentity(raw: String): String {
-        val value = raw.trim()
-        if (value.isBlank()) return "unknown-provider"
-        return runCatching {
-            val uri = URI(value)
-            val scheme = uri.scheme.orEmpty().lowercase(Locale.ROOT)
-            val host = uri.host.orEmpty().lowercase(Locale.ROOT)
-            val port = if (uri.port > 0) ":${uri.port}" else ""
-            val path = uri.rawPath.orEmpty().trimEnd('/')
-            "$scheme://$host$port$path"
-        }.getOrElse {
-            value.substringBefore('?').substringBefore('#').substringAfterLast('@').trimEnd('/')
-        }
-    }
+    private fun safeProviderIdentity(raw: String): String =
+        ApiSubtitleBatchPolicy.normalizeProviderKey(raw)
 
     private fun sha256(value: String): String =
         MessageDigest.getInstance("SHA-256")
@@ -125,6 +114,7 @@ class ApiSubtitleBatchLearningStore(
 
     private companion object {
         const val PREFS_NAME = "api_translation_batch_learning"
-        const val RECOVERY_POLICY_VERSION = 3
+        const val RECOVERY_POLICY_VERSION = 4
+        const val CAPABILITY_SCHEMA_VERSION = 2
     }
 }
