@@ -2070,27 +2070,7 @@ class OpenAiCompatEngine(
         srcLang: String,
         tgtLang: String,
         videoTitle: String?,
-    ): Int {
-        val learningSnapshot = batchLearningFor(srcLang, tgtLang).snapshot()
-        val selection = ApiSubtitleBatchPolicy.selectBatch(
-            lines = lines,
-            startIndex = startIndex,
-            model = model,
-            targetLanguage = tgtLang,
-            learning = learningSnapshot,
-            providerKey = baseUrl,
-            inputTokenEstimator = { candidateLines ->
-                val prompt = buildOpenAiSubtitlePrompts(
-                    candidateLines, srcLang, tgtLang, null, emptyList(), videoTitle,
-                    forceTranslate = false,
-                )
-                ApiSubtitleBatchPolicy.estimatePromptTokens(
-                    prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
-                )
-            },
-        )
-        return (selection.endExclusive - startIndex).coerceAtLeast(1)
-    }
+    ): Int = minOf(FIXED_API_TRANSLATION_BATCH_ROWS, lines.size - startIndex).coerceAtLeast(1)
 
     override suspend fun translateWithContext(
         lines: List<String>,
@@ -2467,27 +2447,7 @@ class GeminiEngine(
         srcLang: String,
         tgtLang: String,
         videoTitle: String?,
-    ): Int {
-        val learningSnapshot = batchLearningFor(srcLang, tgtLang).snapshot()
-        val selection = ApiSubtitleBatchPolicy.selectBatch(
-            lines = lines,
-            startIndex = startIndex,
-            model = model,
-            targetLanguage = tgtLang,
-            learning = learningSnapshot,
-            providerKey = endpointBase,
-            inputTokenEstimator = { candidateLines ->
-                val prompt = buildGeminiSubtitlePrompts(
-                    candidateLines, srcLang, tgtLang, null, emptyList(), videoTitle,
-                    forceTranslate = false,
-                )
-                ApiSubtitleBatchPolicy.estimatePromptTokens(
-                    prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
-                )
-            },
-        )
-        return (selection.endExclusive - startIndex).coerceAtLeast(1)
-    }
+    ): Int = minOf(FIXED_API_TRANSLATION_BATCH_ROWS, lines.size - startIndex).coerceAtLeast(1)
 
     override suspend fun translateWithContext(
         lines: List<String>,
