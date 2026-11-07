@@ -379,16 +379,20 @@ internal class ApiSubtitleBatchLearningState(
         largestSuccessfulBatchRows: Int? = null,
     ) {
         if (recoveredBySplitting) {
-            largestSuccessfulBatchRows?.takeIf { it > 0 }?.let { safeRows ->
-                currentRows = minOf(currentRows, safeRows.coerceAtMost(capability.maxRows))
-            }
+            largestSuccessfulBatchRows
+                ?.takeIf { it >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS }
+                ?.let { safeRows ->
+                    currentRows = minOf(currentRows, safeRows.coerceAtMost(capability.maxRows))
+                        .coerceAtLeast(MIN_TRANSLATION_RECOVERY_BATCH_ROWS)
+                }
             consecutiveSuccessfulBatches = 0
             persist()
             return
         }
         consecutiveSuccessfulBatches++
-        val notSlow = averageLatencyMs <= 8_000.0
-        if (notSlow && consecutiveSuccessfulBatches >= 2 && batchRows >= (currentRows * 0.6).toInt()) {
+        // Response latency is not evidence of a batch-capacity failure; clean successes may grow
+        // the batch even on slower providers, while actual usage and provider errors guide limits.
+        if (consecutiveSuccessfulBatches >= 2 && batchRows >= (currentRows * 0.6).toInt()) {
             currentRows = (currentRows + maxOf(2, currentRows / 5)).coerceAtMost(capability.maxRows)
             currentInputBudgetTokens = minOf(
                 capability.maxInputBudgetTokens,
@@ -406,10 +410,15 @@ internal class ApiSubtitleBatchLearningState(
     /** Only the final failure of the original batch reduces the next batch. */
     @Synchronized
     fun recordOriginalBatchFailure(attemptedRows: Int, largestSuccessfulBatchRows: Int? = null) {
-        val halfAttempt = (attemptedRows / 2).coerceAtLeast(1)
-        val safeCeiling = largestSuccessfulBatchRows?.takeIf { it > 0 }
-            ?.let { minOf(halfAttempt, it) } ?: halfAttempt
-        currentRows = minOf(currentRows, safeCeiling).coerceAtLeast(1)
+        val minimumRows = minOf(MIN_TRANSLATION_RECOVERY_BATCH_ROWS, capability.maxRows)
+        if (attemptedRows > minimumRows) {
+            val stepwiseCeiling = (attemptedRows - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
+                .coerceAtLeast(minimumRows)
+            val safeCeiling = largestSuccessfulBatchRows
+                ?.takeIf { it >= minimumRows }
+                ?.let { minOf(stepwiseCeiling, it) } ?: stepwiseCeiling
+            currentRows = minOf(currentRows, safeCeiling).coerceAtLeast(minimumRows)
+        }
         currentInputBudgetTokens = maxOf(
             minOf(capability.inputBudgetTokens, 512),
             (currentInputBudgetTokens * 0.8).toInt(),
