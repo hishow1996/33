@@ -144,19 +144,19 @@ internal fun translationBatchFailureKind(
     return if (malformedTranslation) ApiSubtitleBatchFailureKind.RESPONSE_FORMAT else null
 }
 
-internal fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean =
+internal fun isClassifiedTranslationBatchFailure(error: IllegalStateException): Boolean =
     translationBatchFailureKind(error) != null
 
 internal fun isTranslationRecoveryAttemptLimit(error: Throwable): Boolean =
     generateSequence(error) { it.cause }
         .take(8)
-        .any { it.message.orEmpty().contains("拆分恢复已达到单批请求上限") }
+        .any { it.message.orEmpty().contains("单批字幕修复已达到请求上限") }
 
 /**
  * Upper bound shared by same-batch and row-level repairs for one original subtitle batch.
  * This prevents malformed output from triggering an unbounded number of paid requests.
  */
-internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 64
+internal const val MAX_TRANSLATION_REPAIR_ATTEMPTS_PER_BATCH = 64
 
 /**
  * How many single cues per original batch may still come back unusable (unchanged or blank)
@@ -218,10 +218,10 @@ private class TranslationRecoveryBudget {
     }
 
     fun consumeAttempt() {
-        if (attempts >= MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH) {
+        if (attempts >= MAX_TRANSLATION_REPAIR_ATTEMPTS_PER_BATCH) {
             throw IllegalStateException(
-                "翻译响应反复异常，拆分恢复已达到单批请求上限 " +
-                    MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH +
+                "翻译响应反复异常，单批字幕修复已达到请求上限 " +
+                    MAX_TRANSLATION_REPAIR_ATTEMPTS_PER_BATCH +
                     " 次，已停止以避免过多 API 请求；请稍后重试或更换模型"
             )
         }
@@ -452,7 +452,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                     retrySingle(source, retryContext)
                 } catch (error: IllegalStateException) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    if (!isRecoverableTranslationFormatError(error)) throw error
+                    if (!isClassifiedTranslationBatchFailure(error)) throw error
                     null
                 }?.trim().orEmpty()
                 if (retryCandidate.isNotBlank() &&
@@ -499,7 +499,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
             }
         } catch (error: IllegalStateException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (!isRecoverableTranslationFormatError(error)) throw error
+            if (!isClassifiedTranslationBatchFailure(error)) throw error
             null
         }?.trim()
         if (lines.single().isBlank()) return listOf("")
@@ -2179,7 +2179,7 @@ class OpenAiCompatEngine(
                 if (error !is CancellationException) {
                     val adaptiveFailure = (error as? IllegalStateException)?.let { failure ->
                         translationBatchFailureKind(failure) != null ||
-                            isRecoverableTranslationFormatError(failure) ||
+                            isClassifiedTranslationBatchFailure(failure) ||
                             isTranslationRecoveryAttemptLimit(failure)
                     } == true
                     val failureKinds = if (adaptiveFailure) {
@@ -2197,7 +2197,7 @@ class OpenAiCompatEngine(
                         "TranslationAPI",
                         "Original subtitle batch failed: model=${model.take(100)}, " +
                             "rows=${batch.size}, rowCap=$FIXED_API_TRANSLATION_BATCH_ROWS, " +
-                            "adaptiveRecovery=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
+                            "boundedRepair=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
                             "failureKinds=$failureKinds, " +
                             "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
                             "recoveryAttempts=${recoverySummary.attempts}, " +
@@ -2558,7 +2558,7 @@ class GeminiEngine(
                 if (error !is CancellationException) {
                     val adaptiveFailure = (error as? IllegalStateException)?.let { failure ->
                         translationBatchFailureKind(failure) != null ||
-                            isRecoverableTranslationFormatError(failure) ||
+                            isClassifiedTranslationBatchFailure(failure) ||
                             isTranslationRecoveryAttemptLimit(failure)
                     } == true
                     val failureKinds = if (adaptiveFailure) {
@@ -2576,7 +2576,7 @@ class GeminiEngine(
                         "GeminiEngine",
                         "Original subtitle batch failed: model=${model.take(100)}, " +
                             "rows=${batch.size}, rowCap=$FIXED_API_TRANSLATION_BATCH_ROWS, " +
-                            "adaptiveRecovery=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
+                            "boundedRepair=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
                             "failureKinds=$failureKinds, " +
                             "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
                             "recoveryAttempts=${recoverySummary.attempts}, " +
