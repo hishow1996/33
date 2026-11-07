@@ -277,6 +277,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
     budget: TranslationRecoveryBudget,
 ): List<String> {
+    var recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH"
     val response = try {
         budget.consumeAttempt()
         translate(lines, context)
@@ -284,11 +285,13 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         if (!isRecoverableTranslationFormatError(error)) throw error
         budget.hadUnalignedResponse = true
+        recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
         null
     }
 
     if (response != null && response.size != lines.size) {
         budget.hadUnalignedResponse = true
+        recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH"
     }
 
     if (response != null && response.size == lines.size) {
@@ -463,6 +466,11 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     }
 
     if (lines.size < MIN_TRANSLATION_RECOVERY_BATCH_ROWS * 2) {
+        android.util.Log.w(
+            "TranslationAPI",
+            "Adaptive subtitle recovery stopped: rows=${lines.size}, " +
+                "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
+        )
         throw IllegalStateException(
             "翻译服务响应格式不完整；当前批次仅${lines.size}条，已达到最小恢复批次" +
                 "${MIN_TRANSLATION_RECOVERY_BATCH_ROWS}条，停止继续拆分。"
@@ -470,6 +478,12 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     }
     val splitAt = (lines.size - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
         .coerceAtLeast(MIN_TRANSLATION_RECOVERY_BATCH_ROWS)
+    android.util.Log.w(
+        "TranslationAPI",
+        "Adaptive subtitle batch reduction: rows=${lines.size}, nextRows=$splitAt, " +
+            "tailRows=${lines.size - splitAt}, stepRows=$TRANSLATION_RECOVERY_BATCH_STEP_ROWS, " +
+            "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
+    )
     val leftSource = lines.subList(0, splitAt)
     val rightSource = lines.subList(splitAt, lines.size)
     val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
@@ -1870,8 +1884,12 @@ class OpenAiCompatEngine(
             android.util.Log.d(
                 "TranslationAPI",
                 "Subtitle batch selected: model=${model.take(100)}, startRow=${i + 1}, " +
-                    "rows=${batch.size}, estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
-                    "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, maxOutputTokens=${batchSelection.maxOutputTokens}",
+                    "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                    "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
+                    "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
+                    "estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
+                    "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
+                    "maxOutputTokens=${batchSelection.maxOutputTokens}",
             )
             if (batchSelection.singleCueExceedsInputBudget ||
                 batchSelection.singleCueExceedsOutputBudget
@@ -2185,7 +2203,10 @@ class GeminiEngine(
             android.util.Log.d(
                 "GeminiEngine",
                 "Subtitle batch selected: model=${model.take(100)}, startRow=${i + 1}, " +
-                    "rows=${batch.size}, estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
+                    "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                    "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
+                    "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
+                    "estimatedInputTokens=${batchSelection.estimatedInputTokens}, " +
                     "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                     "maxOutputTokens=${batchSelection.maxOutputTokens}",
             )
