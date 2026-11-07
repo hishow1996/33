@@ -54,6 +54,14 @@ internal data class ApiSubtitleBatchLearningRecord(
     val inputBudgetTokens: Int,
     val outputBudgetTokens: Int,
     val averageLatencyMs: Double = 0.0,
+    val latencySamplesMs: List<Long> = emptyList(),
+    val rowsPerMinuteSamples: List<Double> = emptyList(),
+)
+
+internal data class ApiSubtitleBatchPerformanceSnapshot(
+    val averageLatencyMs: Long,
+    val p90LatencyMs: Long,
+    val averageRowsPerMinute: Double,
 )
 
 internal object ApiSubtitleBatchPolicy {
@@ -420,6 +428,8 @@ internal class ApiSubtitleBatchLearningState(
     private var consecutiveSuccessfulBatches = 0
     private val successfulLimitingReasons = linkedSetOf<ApiSubtitleBatchLimitReason>()
     private var averageLatencyMs = 0.0
+    private val recentLatencySamplesMs = mutableListOf<Long>()
+    private val recentRowsPerMinuteSamples = mutableListOf<Double>()
 
     init {
         store?.restoreCapability(model, providerKey)
@@ -431,6 +441,10 @@ internal class ApiSubtitleBatchLearningState(
         currentInputBudgetTokens = saved?.inputBudgetTokens ?: capability.inputBudgetTokens
         currentOutputBudgetTokens = saved?.outputBudgetTokens ?: capability.outputBudgetTokens
         averageLatencyMs = saved?.averageLatencyMs ?: 0.0
+        recentLatencySamplesMs.addAll(saved?.latencySamplesMs.orEmpty().takeLast(MAX_PERFORMANCE_SAMPLES))
+        recentRowsPerMinuteSamples.addAll(
+            saved?.rowsPerMinuteSamples.orEmpty().takeLast(MAX_PERFORMANCE_SAMPLES)
+        )
     }
 
     @Synchronized
@@ -453,6 +467,7 @@ internal class ApiSubtitleBatchLearningState(
         actualInputTokens: Int?,
         actualOutputTokens: Int?,
         latencyMs: Long,
+        batchRows: Int = 0,
     ) {
         if (actualInputTokens != null && actualInputTokens > 0 && estimatedInputTokens > 0) {
             inputMultiplier = calibrateMultiplier(
@@ -471,8 +486,37 @@ internal class ApiSubtitleBatchLearningState(
         if (latencyMs > 0) {
             averageLatencyMs = if (averageLatencyMs <= 0.0) latencyMs.toDouble()
             else averageLatencyMs * 0.7 + latencyMs * 0.3
+            recentLatencySamplesMs += latencyMs
+            while (recentLatencySamplesMs.size > MAX_PERFORMANCE_SAMPLES) {
+                recentLatencySamplesMs.removeAt(0)
+            }
+            if (batchRows > 0) {
+                val rowsPerMinute = batchRows * 60_000.0 / latencyMs
+                if (rowsPerMinute.isFinite() && rowsPerMinute > 0.0) {
+                    recentRowsPerMinuteSamples += rowsPerMinute.coerceAtMost(MAX_ROWS_PER_MINUTE_SAMPLE)
+                    while (recentRowsPerMinuteSamples.size > MAX_PERFORMANCE_SAMPLES) {
+                        recentRowsPerMinuteSamples.removeAt(0)
+                    }
+                }
+            }
         }
         persist()
+    }
+
+    @Synchronized
+    fun performanceSnapshot(): ApiSubtitleBatchPerformanceSnapshot {
+        val sortedLatencies = recentLatencySamplesMs.sorted()
+        val p90Index = if (sortedLatencies.isEmpty()) {
+            -1
+        } else {
+            (ceil(sortedLatencies.size * 0.9).toInt() - 1).coerceIn(0, sortedLatencies.lastIndex)
+        }
+        return ApiSubtitleBatchPerformanceSnapshot(
+            averageLatencyMs = averageLatencyMs.toLong().coerceAtLeast(0L),
+            p90LatencyMs = sortedLatencies.getOrNull(p90Index) ?: averageLatencyMs.toLong().coerceAtLeast(0L),
+            averageRowsPerMinute = if (recentRowsPerMinuteSamples.isEmpty()) 0.0
+            else recentRowsPerMinuteSamples.average(),
+        )
     }
 
     /** Called exactly once after the outer/original subtitle batch has completed. */
@@ -597,7 +641,14 @@ internal class ApiSubtitleBatchLearningState(
                 inputBudgetTokens = currentInputBudgetTokens,
                 outputBudgetTokens = currentOutputBudgetTokens,
                 averageLatencyMs = averageLatencyMs,
+                latencySamplesMs = recentLatencySamplesMs.toList(),
+                rowsPerMinuteSamples = recentRowsPerMinuteSamples.toList(),
             ),
         )
+    }
+
+    private companion object {
+        const val MAX_PERFORMANCE_SAMPLES = 24
+        const val MAX_ROWS_PER_MINUTE_SAMPLE = 1_000_000.0
     }
 }
