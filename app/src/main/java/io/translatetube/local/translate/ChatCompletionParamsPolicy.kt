@@ -26,12 +26,15 @@ internal object ChatCompletionParamsPolicy {
         normalizedModel.contains("qwq") ||
             normalizedModel.contains("deepseek-r1") ||
             normalizedModel.contains("deepseek-reasoner") ||
+            normalizedModel.contains("gpt-6-astra") ||
+            normalizedModel.contains("gpt-6.1-sol") ||
             thinkingWordRegex.containsMatchIn(normalizedModel)
 
     /** OpenAI 的推理模型：o1/o3/o4 与 gpt-5（含 gpt-5.x）。 */
     fun isOpenAiReasoningModel(normalizedModel: String): Boolean =
         openAiReasoningRegex.containsMatchIn(normalizedModel) ||
-            normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5")
+            normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5") ||
+            normalizedModel.contains("gpt-6")
 
     /** finish_reason 表示"输出额度用完被截断"（不同服务商写法不同）。 */
     fun isLengthTruncation(finishReason: String?): Boolean =
