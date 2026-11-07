@@ -615,6 +615,29 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
+    fun lowSuccessRateBlocksGrowthEvenWhenThroughputSamplesAreSparse() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        repeat(6) {
+            learning.recordOriginalBatchFailure(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                failureKinds = emptySet(),
+            )
+        }
+        repeat(2) {
+            learning.recordUsage(1_000, 500, 1_000, 500, 10_000, batchRows = 10)
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+        assertEquals(30, learning.snapshot().maxRows)
+        assertEquals(25.0, learning.performanceSnapshot().successRatePercent, 0.001)
+    }
+
+    @Test
     fun repeatedSplitRecoveriesBlockFurtherBatchGrowth() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         repeat(8) {
