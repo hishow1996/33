@@ -1567,6 +1567,41 @@ private fun extractOpenAiCompatContentInternal(body: String): String {
  * was pasted into the Base URL field, remove that resource suffix before building a route.
  * Existing query parameters stay after the endpoint path.
  */
+internal fun openAiCompatModelCatalogEndpoints(baseUrl: String): List<String> {
+    val primary = openAiCompatEndpoint(baseUrl, "/models")
+    val uri = java.net.URI(baseUrl.trim().trimEnd('/'))
+    var basePath = uri.rawPath.orEmpty().trimEnd('/')
+    basePath = when {
+        basePath.endsWith("/chat/completions", ignoreCase = true) ->
+            basePath.dropLast("/chat/completions".length)
+        basePath.endsWith("/models", ignoreCase = true) ->
+            basePath.dropLast("/models".length)
+        else -> basePath
+    }.trimEnd('/')
+    val unversionedPath = basePath.replace(Regex("/v[0-9]+$", RegexOption.IGNORE_CASE), "")
+    val fallbackPath = (unversionedPath + "/models")
+        .replace(Regex("/{2,}"), "/")
+        .let { if (it.startsWith('/')) it else "/$it" }
+    val fallback = buildString {
+        append(uri.scheme)
+        append("://")
+        append(uri.rawAuthority)
+        append(fallbackPath)
+        uri.rawQuery?.takeIf { it.isNotBlank() }?.let { append("?$it") }
+    }
+    return listOf(primary, fallback).distinct()
+}
+
+private fun isModelCatalogRouteMissing(error: Throwable): Boolean {
+    val detail = generateSequence(error) { it.cause }
+        .take(8)
+        .joinToString(" ") { it.message.orEmpty() }
+    return Regex("""\\bHTTP\\s+(404|405)\\b""", RegexOption.IGNORE_CASE)
+        .containsMatchIn(detail) ||
+        Regex("""\\b(404|405)\\s+(Not Found|Method Not Allowed)\\b""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(detail)
+}
+
 internal fun openAiCompatEndpoint(baseUrl: String, path: String): String {
     val rawBase = baseUrl.trim().trimEnd('/')
     require(rawBase.isNotEmpty()) { "API Base URL 不能为空" }
@@ -1956,7 +1991,25 @@ class OpenAiCompatEngine(
         openAiCompatEndpoint(baseUrl, path)
 
     override suspend fun listModels(): List<String> {
-        val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"), currentCoroutineContext()[Job])
+        val ownerJob = currentCoroutineContext()[Job]
+        val headers = mapOf("Authorization" to "Bearer $apiKey")
+        val endpoints = openAiCompatModelCatalogEndpoints(baseUrl)
+        var catalogBody: String? = null
+        for ((index, url) in endpoints.withIndex()) {
+            try {
+                catalogBody = get(url, headers, ownerJob)
+                break
+            } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
+                if (index == endpoints.lastIndex || !isModelCatalogRouteMissing(error)) throw error
+                android.util.Log.i(
+                    "TranslationAPI",
+                    "Model catalog route unavailable; trying compatible fallback path",
+                )
+            }
+        }
+        val body = catalogBody
+            ?: throw IllegalStateException("API 未返回模型目录")
         return parseOpenAiCompatibleModelCatalog(body).mapNotNull { item ->
             val id = item.readApiCatalogModelId() ?: return@mapNotNull null
             val limits = readApiCatalogModelLimits(item)
