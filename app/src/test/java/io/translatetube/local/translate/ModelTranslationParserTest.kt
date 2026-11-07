@@ -9,6 +9,32 @@ import org.junit.Test
 
 class ModelTranslationParserTest {
     @Test
+    fun acceptsObjectWrappedJsonTranslationArrays() {
+        assertEquals(
+            listOf("第一条译文", "第二条译文"),
+            parseModelTranslations(
+                """{"translations":["第一条译文","第二条译文"]}""",
+                2,
+            ),
+        )
+        assertEquals(
+            listOf("Hello", "Goodbye"),
+            parseModelTranslations(
+                """{"results":["Hello","Goodbye"]}""",
+                2,
+            ),
+        )
+    }
+
+    @Test
+    fun acceptsCommonNumberedDelimitersWithoutChangingRowOrder() {
+        assertEquals(
+            listOf("第一条", "第二条", "第三条"),
+            parseModelTranslations("1. 第一条\n2) 第二条\n3：第三条", 3),
+        )
+    }
+
+    @Test
     fun acceptsCompleteZeroBasedResultsIncludingEmptyRows() {
         assertEquals(
             listOf("hello", ""),
@@ -111,7 +137,7 @@ class ModelTranslationParserTest {
     }
 
     @Test
-    fun rejectsCompletelyUnparseableMultiRowOutputSoAdaptiveRecoveryCanSplitIt() {
+    fun rejectsCompletelyUnparseableMultiRowOutputWithoutAssumingBatchSplitting() {
         val error = runCatching {
             parseModelTranslations("The service is temporarily unavailable.", 3)
         }.exceptionOrNull()
