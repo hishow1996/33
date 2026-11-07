@@ -168,11 +168,11 @@ internal object ApiSubtitleBatchPolicy {
 
     private fun knownCapabilityForModel(id: String): ApiModelCapability {
         return when {
-            modelFamilyMatches(id, "deepseek-v4-pro", "deepseek-flash", "deepseek-v4-flash") ->
+            modelFamilyMatches(id, "deepseek-v4-pro", "deepseek-v4-flash") ->
                 ApiModelCapability(
                     1_048_576, 393_216, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
-            modelFamilyMatches(id, "kimi-k3.1-pro", "kimi-k3") ->
+            modelFamilyMatches(id, "kimi-k3.1-pro") ->
                 ApiModelCapability(
                     1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
@@ -231,8 +231,14 @@ internal object ApiSubtitleBatchPolicy {
             else -> tier.initialRows to tier.maxRows
         }
         // Keep startup budgets conservative, but let successful learning grow up to the actual
-        // catalog limits instead of an unrelated fixed tier ceiling.
-        val maxOutputBudget = output.coerceAtLeast(512)
+        // catalog limits instead of an unrelated fixed tier ceiling. When catalog fields conflict,
+        // preserve room for input and framing inside a combined context window.
+        val combinedContextOutputCeiling = if (context > 0) {
+            (context - CONTEXT_RESERVE_TOKENS - 512).coerceAtLeast(512)
+        } else {
+            output
+        }
+        val maxOutputBudget = minOf(output, combinedContextOutputCeiling).coerceAtLeast(512)
         val contextInputCeiling = if (context > 0) {
             (context - maxOutputBudget - CONTEXT_RESERVE_TOKENS).coerceAtLeast(512)
         } else {
