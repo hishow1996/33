@@ -76,10 +76,30 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun onlyFinalOriginalBatchFailureReducesTheNextLimit() {
+    fun onlyFinalOriginalBatchFailureReducesTheNextLimitByFiveRows() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         learning.recordOriginalBatchFailure(30)
-        assertEquals(15, learning.snapshot().maxRows)
+        assertEquals(25, learning.snapshot().maxRows)
+    }
+
+    @Test
+    fun glmFailureReducesTheNextBatchByFiveRowsAtATime() {
+        val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
+        learning.recordOriginalBatchFailure(50)
+        assertEquals(45, learning.snapshot().maxRows)
+        learning.recordOriginalBatchFailure(45)
+        assertEquals(40, learning.snapshot().maxRows)
+    }
+
+    @Test
+    fun singleCueRecoveryCannotLowerTheModelWideBatchLimit() {
+        val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
+        learning.recordOriginalBatchSuccess(
+            batchRows = 50,
+            recoveredBySplitting = true,
+            largestSuccessfulBatchRows = 1,
+        )
+        assertEquals(50, learning.snapshot().maxRows)
     }
 
     @Test
@@ -141,13 +161,13 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun slowSuccessfulOriginalBatchesDoNotGrowTheGlobalLimit() {
+    fun slowSuccessfulOriginalBatchesCanStillGrowTheGlobalLimit() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         repeat(2) {
             learning.recordUsage(4_000, 1_200, 4_000, 1_200, 12_000)
             learning.recordOriginalBatchSuccess(30, recoveredBySplitting = false)
         }
-        assertEquals(30, learning.snapshot().maxRows)
+        assertTrue(learning.snapshot().maxRows > 30)
     }
 
     @Test
