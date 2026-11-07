@@ -21,6 +21,7 @@ internal data class ApiSubtitleBatchSelection(
     val estimatedOutputTokens: Int,
     val maxOutputTokens: Int,
     val singleCueExceedsInputBudget: Boolean = false,
+    val singleCueExceedsOutputBudget: Boolean = false,
 )
 
 internal data class ApiSubtitleBatchLearningSnapshot(
@@ -232,6 +233,7 @@ internal object ApiSubtitleBatchPolicy {
         var estimatedInput = PROMPT_OVERHEAD_TOKENS + CONTEXT_RESERVE_TOKENS
         var estimatedOutput = 0
         var singleCueExceedsInputBudget = false
+        var singleCueExceedsOutputBudget = false
         while (endExclusive < lines.size && endExclusive - startIndex < rowLimit) {
             val cueInput = estimateTextTokens(lines[endExclusive], "", outputText = false) + 3
             val cueOutput = estimateTextTokens(lines[endExclusive], targetLanguage, outputText = true)
@@ -243,8 +245,9 @@ internal object ApiSubtitleBatchPolicy {
             val exceedsInput = candidateInput > inputBudget
             val exceedsOutput = estimatedOutput + adjustedOutput > outputBudget
             if (endExclusive > startIndex && (exceedsInput || exceedsOutput)) break
-            if (endExclusive == startIndex && exceedsInput) {
-                singleCueExceedsInputBudget = true
+            if (endExclusive == startIndex && (exceedsInput || exceedsOutput)) {
+                singleCueExceedsInputBudget = exceedsInput
+                singleCueExceedsOutputBudget = exceedsOutput
                 estimatedInput = candidateInput
                 estimatedOutput += adjustedOutput
                 endExclusive = candidateEnd
@@ -261,6 +264,7 @@ internal object ApiSubtitleBatchPolicy {
             estimatedOutputTokens = estimatedOutput.coerceAtLeast(1),
             maxOutputTokens = outputLimit,
             singleCueExceedsInputBudget = singleCueExceedsInputBudget,
+            singleCueExceedsOutputBudget = singleCueExceedsOutputBudget,
         )
     }
 
@@ -372,10 +376,10 @@ internal class ApiSubtitleBatchLearningState(
     fun recordOriginalBatchSuccess(
         batchRows: Int,
         recoveredBySplitting: Boolean,
-        smallestSuccessfulBatchRows: Int? = null,
+        largestSuccessfulBatchRows: Int? = null,
     ) {
         if (recoveredBySplitting) {
-            smallestSuccessfulBatchRows?.takeIf { it > 0 }?.let { safeRows ->
+            largestSuccessfulBatchRows?.takeIf { it > 0 }?.let { safeRows ->
                 currentRows = minOf(currentRows, safeRows.coerceAtMost(capability.maxRows))
             }
             consecutiveSuccessfulBatches = 0
@@ -401,9 +405,9 @@ internal class ApiSubtitleBatchLearningState(
 
     /** Only the final failure of the original batch reduces the next batch. */
     @Synchronized
-    fun recordOriginalBatchFailure(attemptedRows: Int, smallestSuccessfulBatchRows: Int? = null) {
+    fun recordOriginalBatchFailure(attemptedRows: Int, largestSuccessfulBatchRows: Int? = null) {
         val halfAttempt = (attemptedRows / 2).coerceAtLeast(1)
-        val safeCeiling = smallestSuccessfulBatchRows?.takeIf { it > 0 }
+        val safeCeiling = largestSuccessfulBatchRows?.takeIf { it > 0 }
             ?.let { minOf(halfAttempt, it) } ?: halfAttempt
         currentRows = minOf(currentRows, safeCeiling).coerceAtLeast(1)
         currentInputBudgetTokens = maxOf(

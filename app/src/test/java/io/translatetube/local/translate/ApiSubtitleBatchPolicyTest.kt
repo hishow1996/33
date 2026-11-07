@@ -147,4 +147,83 @@ class ApiSubtitleBatchPolicyTest {
         }
         assertEquals(30, learning.snapshot().maxRows)
     }
+
+    @Test
+    fun fullPromptEstimatorLimitsRowsByTheCompleteRequest() {
+        val model = "glm-4-flash-250414"
+        val lines = List(60) { "subtitle $it" }
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = lines,
+            startIndex = 0,
+            model = model,
+            targetLanguage = "zh-CN",
+            learning = snapshot(model),
+            inputTokenEstimator = { candidate -> 18_000 + candidate.size * 300 },
+        )
+        assertEquals(20, selection.endExclusive)
+        assertEquals(24_000, selection.estimatedInputTokens)
+    }
+
+    @Test
+    fun oneCueThatExceedsInputBudgetIsMarkedBeforeDispatch() {
+        val model = "glm-4-flash-250414"
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = listOf("a very long subtitle"),
+            startIndex = 0,
+            model = model,
+            targetLanguage = "zh-CN",
+            learning = snapshot(model),
+            inputTokenEstimator = { 100_000 },
+        )
+        assertEquals(1, selection.endExclusive)
+        assertTrue(selection.singleCueExceedsInputBudget)
+    }
+
+    @Test
+    fun oneCueThatExceedsOutputBudgetIsMarkedBeforeDispatch() {
+        val model = "glm-4-flash-250414"
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = listOf("中".repeat(2_000)),
+            startIndex = 0,
+            model = model,
+            targetLanguage = "zh-CN",
+            learning = snapshot(model).copy(outputBudgetTokens = 512),
+        )
+        assertEquals(1, selection.endExclusive)
+        assertTrue(selection.singleCueExceedsOutputBudget)
+    }
+
+    @Test
+    fun splitRecoveryUsesLargestVerifiedLeafAsTheNextBatchCeiling() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        learning.recordOriginalBatchSuccess(
+            batchRows = 30,
+            recoveredBySplitting = true,
+            largestSuccessfulBatchRows = 8,
+        )
+        assertEquals(8, learning.snapshot().maxRows)
+    }
+
+    @Test
+    fun finalSplitFailureUsesLargestVerifiedLeafAndHalfAttemptCeiling() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        learning.recordOriginalBatchFailure(30, largestSuccessfulBatchRows = 8)
+        assertEquals(8, learning.snapshot().maxRows)
+    }
+
+    @Test
+    fun independentInputMetadataDoesNotBecomeACombinedContextWindow() {
+        val model = "gemini-catalog-model-1m"
+        val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
+            model = model,
+            contextWindowTokens = null,
+            maxOutputTokens = 8_192,
+            maxInputTokens = 1_000_000,
+            providerKey = "https://gemini.example/v1",
+        )
+        assertEquals(0, capability.contextWindowTokens)
+        assertEquals(1_000_000, capability.maxInputTokens ?: 0)
+        assertEquals(240_000, capability.maxInputBudgetTokens)
+        assertEquals(48_000, capability.inputBudgetTokens)
+    }
 }

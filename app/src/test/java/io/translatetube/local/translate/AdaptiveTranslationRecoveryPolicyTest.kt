@@ -106,4 +106,24 @@ class AdaptiveTranslationRecoveryPolicyTest {
             )
         )
     }
+
+    @Test
+    fun recoverySummaryReportsLargestSuccessfulLeafAndTotalAttempts() = runBlocking {
+        var summary: TranslationRecoverySummary? = null
+        val lines = List(30) { "subtitle $it" }
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = lines,
+            onRecoverySummary = { summary = it },
+            translate = { rows, _ ->
+                if (rows.size > 10) {
+                    throw IllegalStateException("翻译服务返回的字幕编号不完整")
+                }
+                rows.map { "译文-$it" }
+            },
+        )
+        assertEquals(lines.size, result.size)
+        assertTrue(summary?.recoveredBySplitting == true)
+        assertEquals(8, summary?.largestSuccessfulBatchRows ?: 0)
+        assertTrue((summary?.attempts ?: 0) > 1)
+    }
 }
