@@ -284,6 +284,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     var recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH"
     var response: List<String>? = null
     var shouldRetrySameBatchForFormat = false
+    var sameBatchFormatRetryAttempted = false
     try {
         budget.consumeAttempt()
         response = translate(lines, context)
@@ -304,6 +305,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     }
 
     if (shouldRetrySameBatchForFormat && retryMalformedBatch != null) {
+        sameBatchFormatRetryAttempted = true
         android.util.Log.w(
             "TranslationAPI",
             "Retrying malformed subtitle response once at same batch size: rows=${lines.size}",
@@ -459,6 +461,11 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     if (lines.size == 1) {
         // A malformed single-row response has no safe value to pass back. Let the caller retry it.
         if (deferInvalidRowsToCaller) return listOf("")
+        if (sameBatchFormatRetryAttempted) {
+            throw IllegalStateException(
+                "单条字幕格式异常；同批次修复重试后仍未得到可用结果，已停止重复请求。"
+            )
+        }
         // Even an isolated cue gets one retry: source-echo validation happens inside this helper,
         // so otherwise a single echoed cue would fail before the caller can recover it.
         val retryCandidate = try {
@@ -1981,6 +1988,8 @@ class OpenAiCompatEngine(
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
                             "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
                             "rowCapWasBinding=$rowCapWasBinding, failureKinds=${recoverySummary.failureKinds}, " +
+                            "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
+                            "recoveryAttempts=${recoverySummary.attempts}, " +
                             "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
                             "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
                             "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
@@ -2316,6 +2325,8 @@ class GeminiEngine(
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
                             "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
                             "rowCapWasBinding=$rowCapWasBinding, failureKinds=${recoverySummary.failureKinds}, " +
+                            "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
+                            "recoveryAttempts=${recoverySummary.attempts}, " +
                             "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
                             "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
                             "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
