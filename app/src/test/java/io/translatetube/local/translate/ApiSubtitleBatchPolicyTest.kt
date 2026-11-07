@@ -8,7 +8,7 @@ class ApiSubtitleBatchPolicyTest {
     private fun snapshot(model: String) = ApiSubtitleBatchLearningState(model).snapshot()
 
     @Test
-    fun glmStartsAtFiftyRowsAndQwenStartsAtThirtyFiveRows() {
+    fun glmStartsAtSixteenRowsAndQwenStartsAtThirtyFiveRows() {
         val lines = List(200) { "A short subtitle." }
         val glm = ApiSubtitleBatchPolicy.selectBatch(
             lines, 0, "GLM-4-Flash-250414", "zh-CN", snapshot("GLM-4-Flash-250414"),
@@ -16,8 +16,43 @@ class ApiSubtitleBatchPolicyTest {
         val qwen = ApiSubtitleBatchPolicy.selectBatch(
             lines, 0, "Qwen/Qwen2.5-7B-Instruct", "zh-CN", snapshot("Qwen/Qwen2.5-7B-Instruct"),
         )
-        assertEquals(50, glm.endExclusive)
+        assertEquals(16, glm.endExclusive)
         assertEquals(35, qwen.endExclusive)
+    }
+
+    @Test
+    fun glmCanGrowPastItsConservativeStartAfterCleanOriginalBatches() {
+        val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
+        assertEquals(16, learning.snapshot().maxRows)
+
+        repeat(2) {
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+
+        assertEquals(21, learning.snapshot().maxRows)
+    }
+
+    @Test
+    fun registeredGlmCatalogLimitsKeepTheModelScopedSafetyCeiling() {
+        val model = "GLM-4-Flash-250414"
+        val provider = "https://zhipu.example/v4"
+        val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
+            model = model,
+            contextWindowTokens = 131_072,
+            maxOutputTokens = 16_384,
+            providerKey = provider,
+        )
+        assertEquals(16, capability.initialRows)
+        assertEquals(100, capability.maxRows)
+
+        val learning = ApiSubtitleBatchLearningState(model, provider)
+        assertEquals(16, learning.snapshot().maxRows)
     }
 
     @Test
@@ -98,18 +133,18 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun glmFailureReducesTheNextBatchByFiveRowsAtATime() {
+    fun glmFailureReducesTheAdaptiveLimitFromSixteenRowsByFiveAtATime() {
         val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
         learning.recordOriginalBatchFailure(
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(45, learning.snapshot().maxRows)
+        assertEquals(11, learning.snapshot().maxRows)
         learning.recordOriginalBatchFailure(
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(40, learning.snapshot().maxRows)
+        assertEquals(6, learning.snapshot().maxRows)
     }
 
     @Test

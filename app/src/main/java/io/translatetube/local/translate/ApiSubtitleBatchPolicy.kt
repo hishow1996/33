@@ -127,7 +127,8 @@ internal object ApiSubtitleBatchPolicy {
         capability: ApiModelCapability,
         providerKey: String = "",
     ) {
-        providerCapabilities[providerModelKey(model, providerKey)] = sanitizeCapability(capability)
+        providerCapabilities[providerModelKey(model, providerKey)] =
+            sanitizeCapability(capabilityWithModelSafetyBounds(model, capability))
     }
 
     private fun sanitizeCapability(value: ApiModelCapability): ApiModelCapability {
@@ -166,6 +167,23 @@ internal object ApiSubtitleBatchPolicy {
         }
     }
 
+    /** Conservative first-batch size for models with a known response-integrity issue. */
+    internal fun conservativeInitialRowsForModel(model: String): Int? =
+        if (modelFamilyMatches(normalized(model), "glm-4-flash-250414")) 16 else null
+
+    private fun capabilityWithModelSafetyBounds(
+        model: String,
+        capability: ApiModelCapability,
+    ): ApiModelCapability {
+        val conservativeRows = conservativeInitialRowsForModel(model) ?: return capability
+        // GLM starts with the proven 16-row size, then the existing learning policy may grow it
+        // after clean original batches. Keep its independent model ceiling at 100 rows.
+        return capability.copy(
+            initialRows = minOf(capability.initialRows, conservativeRows),
+            maxRows = minOf(capability.maxRows, 100),
+        )
+    }
+
     private fun knownCapabilityForModel(id: String): ApiModelCapability {
         return when {
             modelFamilyMatches(id, "deepseek-v4-pro", "deepseek-v4-flash") ->
@@ -187,7 +205,7 @@ internal object ApiSubtitleBatchPolicy {
                 131_072, 8_192, 35, 80, 24_000, 8_192, 64_000, 8_192,
             )
             modelFamilyMatches(id, "glm-4-flash-250414") -> ApiModelCapability(
-                131_072, 16_384, 50, 100, 24_000, 8_192, 64_000, 16_384,
+                131_072, 16_384, 16, 100, 24_000, 8_192, 64_000, 16_384,
             )
             modelFamilyMatches(id, "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro") ->
                 ApiModelCapability(
@@ -226,7 +244,7 @@ internal object ApiSubtitleBatchPolicy {
             else -> ModelBudgetTier(30, 80, 8_000, 4_096)
         }
         val rows = when {
-            modelFamilyMatches(id, "glm-4-flash-250414") -> 50 to 100
+            modelFamilyMatches(id, "glm-4-flash-250414") -> 16 to 100
             modelFamilyMatches(id, "qwen2.5-7b-instruct") && tierBasis < 1_000_000 -> 35 to 80
             else -> tier.initialRows to tier.maxRows
         }

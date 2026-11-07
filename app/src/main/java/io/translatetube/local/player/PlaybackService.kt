@@ -11450,13 +11450,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val batchSize = 16
             val translationVideoTitle = ui.value.takeIf { it.key == key }
                 ?.title?.trim()?.take(120)?.takeIf { it.isNotBlank() }
-            // API models size each request from their own token budgets and what they have learned.
-            // Hand them a chunk that matches that choice instead of a fixed 16 rows, so one chunk is
-            // one request. Capped so progress, pause and checkpoints still move at a steady pace.
-            // Held at the old fixed chunk size (16) for now: a 2026-11-07 Zhipu run with larger
-            // chunks dropped rows and spent minutes in split-recovery. Raise it again only after a
-            // run shows the larger chunks are not what breaks.
-            val maxAdaptiveBatchRows = batchSize
+            // API engines choose each chunk from provider/model token budgets and their own learned
+            // reliability profile. Keep this decision out of the service so one model's failure
+            // cannot clamp every other API model; non-adaptive engines still use the fixed 16 rows.
             val pendingSourceTexts by lazy(LazyThreadSafetyMode.NONE) { pendingIndices.map { plain[it] } }
             var usesEngineBatchSizing = false
             suspend fun rowsForBatchAt(position: Int): Int {
@@ -11470,7 +11466,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 if (preferred == null) return batchSize
                 usesEngineBatchSizing = true
-                return preferred.coerceIn(1, maxAdaptiveBatchRows)
+                return preferred.coerceAtLeast(1)
             }
             fun estimateTotalBatches(batchesDone: Int, position: Int, rowsPerBatch: Int): Int =
                 batchesDone + (pendingIndices.size - position + rowsPerBatch - 1) / rowsPerBatch
@@ -11502,7 +11498,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "翻译批次总数（预估，批次大小可能随模型表现调整）" to
                             (if (pendingIndices.isEmpty()) 0 else estimateTotalBatches(0, 0, firstBatchRows)).toString(),
                         "单批字幕行数" to firstBatchRows.toString(),
-                        "批次大小来源" to if (usesEngineBatchSizing) "API 引擎按模型预算自适应（服务层单批上限 $maxAdaptiveBatchRows）" else "固定 $batchSize",
+                        "批次大小来源" to if (usesEngineBatchSizing) {
+                            "API 引擎按服务商/模型预算与历史表现自适应"
+                        } else {
+                            "固定 $batchSize"
+                        },
                         "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
                         "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
                     ),
@@ -11531,8 +11531,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
             // Checkpoint the first batch immediately, then every few successful batches and
-            // always at the end. This bounds crash recovery loss while avoiding serializing the full
-            // subtitle timeline to Room after every 16 translated cues.
+            // always at the end. This bounds crash recovery loss without serializing the full
+            // subtitle timeline to Room after every small fixed-size chunk.
             // Walk the pending-index list by bounded views instead of eagerly materializing
             // thousands of small chunk lists for long subtitle files. The chunk size is decided per
             // batch (see rowsForBatchAt), so advance explicitly instead of stepping by a constant.
