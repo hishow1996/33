@@ -24,7 +24,7 @@ class ApiSubtitleBatchLearningStore(
         runCatching {
             val json = preferences.getString(key("capability", model), null)
                 ?.let(::JSONObject) ?: return
-            val contextTokens = json.optInt("contextWindowTokens").takeIf { it > 0 } ?: return
+            val contextTokens = json.optInt("contextWindowTokens").coerceAtLeast(0)
             val maxOutputTokens = json.optInt("maxOutputTokens").takeIf { it > 0 } ?: return
             val capability = ApiModelCapability(
                 contextWindowTokens = contextTokens,
@@ -41,6 +41,7 @@ class ApiSubtitleBatchLearningStore(
                     "maxOutputBudgetTokens",
                     json.optInt("outputBudgetTokens", 4_096),
                 ),
+                maxInputTokens = json.optInt("maxInputTokens").takeIf { it > 0 },
             )
             ApiSubtitleBatchPolicy.registerProviderCapability(model, capability, providerKey)
         }
@@ -57,6 +58,7 @@ class ApiSubtitleBatchLearningStore(
                 .put("outputBudgetTokens", capability.outputBudgetTokens)
                 .put("maxInputBudgetTokens", capability.maxInputBudgetTokens)
                 .put("maxOutputBudgetTokens", capability.maxOutputBudgetTokens)
+                .put("maxInputTokens", capability.maxInputTokens ?: 0)
             preferences.edit().putString(key("capability", model), json.toString()).apply()
         }
     }

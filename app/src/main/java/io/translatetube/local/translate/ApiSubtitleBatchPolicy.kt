@@ -12,6 +12,7 @@ internal data class ApiModelCapability(
     val outputBudgetTokens: Int,
     val maxInputBudgetTokens: Int = inputBudgetTokens,
     val maxOutputBudgetTokens: Int = outputBudgetTokens,
+    val maxInputTokens: Int? = null,
 )
 
 internal data class ApiSubtitleBatchSelection(
@@ -19,6 +20,7 @@ internal data class ApiSubtitleBatchSelection(
     val estimatedInputTokens: Int,
     val estimatedOutputTokens: Int,
     val maxOutputTokens: Int,
+    val singleCueExceedsInputBudget: Boolean = false,
 )
 
 internal data class ApiSubtitleBatchLearningSnapshot(
@@ -66,15 +68,18 @@ internal object ApiSubtitleBatchPolicy {
     }
 
     private fun sanitizeCapability(value: ApiModelCapability): ApiModelCapability {
-        val context = value.contextWindowTokens.coerceIn(4_096, 2_000_000)
+        // Zero means the provider did not publish a combined context-window limit.
+        val context = value.contextWindowTokens.takeIf { it > 0 }?.coerceIn(4_096, 2_000_000) ?: 0
         val output = value.maxOutputTokens.coerceIn(512, 1_000_000)
-        val maxInput = value.maxInputBudgetTokens.coerceIn(512, (context - 512).coerceAtLeast(512))
+        val maxInput = value.maxInputBudgetTokens.coerceIn(512, 2_000_000)
+        val advertisedInput = value.maxInputTokens?.takeIf { it > 0 }?.coerceIn(512, 2_000_000)
         val maxOutputBudget = value.maxOutputBudgetTokens.coerceIn(512, output)
         val maxRows = value.maxRows.coerceIn(1, 400)
         val initialRows = value.initialRows.coerceIn(1, maxRows)
         return value.copy(
             contextWindowTokens = context,
             maxOutputTokens = output,
+            maxInputTokens = advertisedInput,
             initialRows = initialRows,
             maxRows = maxRows,
             inputBudgetTokens = value.inputBudgetTokens.coerceIn(512, maxInput),
@@ -126,22 +131,31 @@ internal object ApiSubtitleBatchPolicy {
     ): ApiModelCapability {
         val id = normalized(model)
         val known = knownCapabilityForModel(id)
-        val context = contextWindowTokens?.takeIf { it > 0 } ?: known.contextWindowTokens
+        val explicitContext = contextWindowTokens?.takeIf { it > 0 }
+        val explicitInput = maxInputTokens?.takeIf { it > 0 }
+        // A separate inputTokenLimit is not the same thing as a shared input+output context window.
+        val context = explicitContext ?: if (explicitInput == null) known.contextWindowTokens else 0
         val output = maxOutputTokens?.takeIf { it > 0 } ?: known.maxOutputTokens
+        val tierBasis = explicitContext ?: explicitInput ?: known.contextWindowTokens
         val tier = when {
-            context >= 1_000_000 -> ModelBudgetTier(80, 200, 48_000, 240_000, 16_384, 65_536)
-            context >= 256_000 -> ModelBudgetTier(60, 150, 32_000, 96_000, 8_192, 24_576)
-            context >= 128_000 -> ModelBudgetTier(50, 120, 24_000, 64_000, 8_192, 16_384)
+            tierBasis >= 1_000_000 -> ModelBudgetTier(80, 200, 48_000, 240_000, 16_384, 65_536)
+            tierBasis >= 256_000 -> ModelBudgetTier(60, 150, 32_000, 96_000, 8_192, 24_576)
+            tierBasis >= 128_000 -> ModelBudgetTier(50, 120, 24_000, 64_000, 8_192, 16_384)
             else -> ModelBudgetTier(30, 80, 8_000, 16_000, 4_096, 8_192)
         }
         val rows = when {
             id.contains("glm-4-flash-250414") -> 50 to 100
-            id.contains("qwen2.5-7b-instruct") && context < 1_000_000 -> 35 to 80
+            id.contains("qwen2.5-7b-instruct") && tierBasis < 1_000_000 -> 35 to 80
             else -> tier.initialRows to tier.maxRows
         }
-        val contextInputCeiling = (context - output - CONTEXT_RESERVE_TOKENS).coerceAtLeast(512)
-        val advertisedInput = maxInputTokens?.takeIf { it > 0 } ?: contextInputCeiling
-        val maxInputBudget = minOf(advertisedInput, tier.maxInputBudget, contextInputCeiling).coerceAtLeast(512)
+        val sharedContextInputCeiling = if (context > 0) {
+            (context - output - CONTEXT_RESERVE_TOKENS).coerceAtLeast(512)
+        } else {
+            2_000_000
+        }
+        val advertisedInput = explicitInput ?: sharedContextInputCeiling
+        val maxInputBudget = minOf(advertisedInput, tier.maxInputBudget, sharedContextInputCeiling)
+            .coerceAtLeast(512)
         val initialInputBudget = minOf(tier.initialInputBudget, maxInputBudget).coerceAtLeast(512)
         val maxOutputBudget = minOf(output, tier.maxOutputBudget).coerceAtLeast(512)
         val initialOutputBudget = minOf(maxOutputBudget, tier.initialOutputBudget).coerceAtLeast(512)
@@ -155,6 +169,7 @@ internal object ApiSubtitleBatchPolicy {
                 outputBudgetTokens = initialOutputBudget,
                 maxInputBudgetTokens = maxInputBudget,
                 maxOutputBudgetTokens = maxOutputBudget,
+                maxInputTokens = explicitInput,
             )
         )
         registerProviderCapability(model, capability, providerKey)
@@ -206,6 +221,7 @@ internal object ApiSubtitleBatchPolicy {
         targetLanguage: String,
         learning: ApiSubtitleBatchLearningSnapshot,
         providerKey: String = "",
+        inputTokenEstimator: ((List<String>) -> Int)? = null,
     ): ApiSubtitleBatchSelection {
         require(startIndex in 0 until lines.size) { "startIndex must point to an existing subtitle cue" }
         val capability = capabilityForModel(model, providerKey)
@@ -215,17 +231,28 @@ internal object ApiSubtitleBatchPolicy {
         var endExclusive = startIndex
         var estimatedInput = PROMPT_OVERHEAD_TOKENS + CONTEXT_RESERVE_TOKENS
         var estimatedOutput = 0
+        var singleCueExceedsInputBudget = false
         while (endExclusive < lines.size && endExclusive - startIndex < rowLimit) {
             val cueInput = estimateTextTokens(lines[endExclusive], "", outputText = false) + 3
             val cueOutput = estimateTextTokens(lines[endExclusive], targetLanguage, outputText = true)
             val adjustedInput = ceil(cueInput * learning.inputTokenMultiplier).toInt()
             val adjustedOutput = ceil(cueOutput * 1.25 * learning.outputTokenMultiplier).toInt()
-            if (endExclusive > startIndex &&
-                (estimatedInput + adjustedInput > inputBudget || estimatedOutput + adjustedOutput > outputBudget)
-            ) break
-            estimatedInput += adjustedInput
+            val candidateEnd = endExclusive + 1
+            val candidateInput = inputTokenEstimator?.invoke(lines.subList(startIndex, candidateEnd))
+                ?: (estimatedInput + adjustedInput)
+            val exceedsInput = candidateInput > inputBudget
+            val exceedsOutput = estimatedOutput + adjustedOutput > outputBudget
+            if (endExclusive > startIndex && (exceedsInput || exceedsOutput)) break
+            if (endExclusive == startIndex && exceedsInput) {
+                singleCueExceedsInputBudget = true
+                estimatedInput = candidateInput
+                estimatedOutput += adjustedOutput
+                endExclusive = candidateEnd
+                break
+            }
+            estimatedInput = candidateInput
             estimatedOutput += adjustedOutput
-            endExclusive++
+            endExclusive = candidateEnd
         }
         val outputLimit = outputLimitForModel(model, estimatedOutput, providerKey, outputBudget)
         return ApiSubtitleBatchSelection(
@@ -233,6 +260,7 @@ internal object ApiSubtitleBatchPolicy {
             estimatedInputTokens = estimatedInput,
             estimatedOutputTokens = estimatedOutput.coerceAtLeast(1),
             maxOutputTokens = outputLimit,
+            singleCueExceedsInputBudget = singleCueExceedsInputBudget,
         )
     }
 
@@ -341,8 +369,15 @@ internal class ApiSubtitleBatchLearningState(
 
     /** Called exactly once after the outer/original subtitle batch has completed. */
     @Synchronized
-    fun recordOriginalBatchSuccess(batchRows: Int, recoveredBySplitting: Boolean) {
+    fun recordOriginalBatchSuccess(
+        batchRows: Int,
+        recoveredBySplitting: Boolean,
+        smallestSuccessfulBatchRows: Int? = null,
+    ) {
         if (recoveredBySplitting) {
+            smallestSuccessfulBatchRows?.takeIf { it > 0 }?.let { safeRows ->
+                currentRows = minOf(currentRows, safeRows.coerceAtMost(capability.maxRows))
+            }
             consecutiveSuccessfulBatches = 0
             persist()
             return
@@ -366,8 +401,11 @@ internal class ApiSubtitleBatchLearningState(
 
     /** Only the final failure of the original batch reduces the next batch. */
     @Synchronized
-    fun recordOriginalBatchFailure(attemptedRows: Int) {
-        currentRows = minOf(currentRows, (attemptedRows / 2).coerceAtLeast(1)).coerceAtLeast(1)
+    fun recordOriginalBatchFailure(attemptedRows: Int, smallestSuccessfulBatchRows: Int? = null) {
+        val halfAttempt = (attemptedRows / 2).coerceAtLeast(1)
+        val safeCeiling = smallestSuccessfulBatchRows?.takeIf { it > 0 }
+            ?.let { minOf(halfAttempt, it) } ?: halfAttempt
+        currentRows = minOf(currentRows, safeCeiling).coerceAtLeast(1)
         currentInputBudgetTokens = maxOf(
             minOf(capability.inputBudgetTokens, 512),
             (currentInputBudgetTokens * 0.8).toInt(),
