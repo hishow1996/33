@@ -56,7 +56,7 @@ internal object OpusMtBatchPolicy {
             "native library",
             "libopusmtct2.so",
         )
-        return nonRecoverable.none(detail::contains)
+        return nonRecoverable.none { marker -> detail.contains(marker) }
     }
 
     /** Returns an exclusive end index and always advances for a valid start index. */

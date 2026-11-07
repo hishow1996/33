@@ -1017,13 +1017,6 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
             targetLanguage = "zh-CN",
             lines = lines,
         ) {
-            return LocalTranslationDiagnostics.run(
-            context = appContext,
-            engine = id,
-            sourceLanguage = source,
-            targetLanguage = "zh-CN",
-            lines = lines,
-        ) {
             val simplifiedChineseSource = !HyMtLanguagePolicy.requiresTranslation(source)
             HyMtRuntime.acquireLease()
             try {
@@ -1096,8 +1089,8 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                 HyMtRuntime.releaseLease()
             }
         }
-
     }
+
 
     override fun close() = Unit
 }
