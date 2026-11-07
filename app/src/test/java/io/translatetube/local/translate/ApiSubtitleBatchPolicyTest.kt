@@ -63,7 +63,7 @@ class ApiSubtitleBatchPolicyTest {
             learning.recordUsage(4_000, 1_200, 4_000, 1_200, 1_000)
             learning.recordOriginalBatchSuccess(30, recoveredBySplitting = false)
         }
-        assertTrue(learning.snapshot().maxRows > 30)
+        assertEquals(35, learning.snapshot().maxRows)
     }
 
     @Test
