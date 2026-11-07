@@ -2009,7 +2009,6 @@ class OpenAiCompatEngine(
             batchLearning.recordOriginalBatchSuccess(
                 batchRows = batch.size,
                 recoveredBySplitting = recoverySummary.recoveredBySplitting || !allRowsAccepted,
-                largestSuccessfulBatchRows = recoverySummary.largestSuccessfulBatchRows,
             )
             out += translated
             i = batchSelection.endExclusive
@@ -2346,7 +2345,6 @@ class GeminiEngine(
             batchLearning.recordOriginalBatchSuccess(
                 batchRows = batch.size,
                 recoveredBySplitting = recoverySummary.recoveredBySplitting || !allRowsAccepted,
-                largestSuccessfulBatchRows = recoverySummary.largestSuccessfulBatchRows,
             )
             out += translated
             i = batchSelection.endExclusive
