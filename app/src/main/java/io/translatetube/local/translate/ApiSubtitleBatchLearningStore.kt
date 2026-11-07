@@ -30,9 +30,9 @@ class ApiSubtitleBatchLearningStore(
             val capability = ApiModelCapability(
                 contextWindowTokens = contextTokens,
                 maxOutputTokens = maxOutputTokens,
-                initialRows = ApiSubtitleBatchPolicy.conservativeInitialRowsForModel(model)
-                    ?: json.optInt("initialRows", 30),
-                maxRows = json.optInt("maxRows", 80),
+                // Older persisted row ceilings are intentionally ignored after fixed-size batching.
+                initialRows = FIXED_API_TRANSLATION_BATCH_ROWS,
+                maxRows = FIXED_API_TRANSLATION_BATCH_ROWS,
                 inputBudgetTokens = json.optInt("inputBudgetTokens", 8_000),
                 outputBudgetTokens = json.optInt("outputBudgetTokens", 4_096),
                 maxInputBudgetTokens = json.optInt(
