@@ -1,6 +1,7 @@
 package io.translatetube.local.translate
 
 import kotlin.math.ceil
+import java.util.concurrent.ConcurrentHashMap
 
 internal data class ApiModelCapability(
     val contextWindowTokens: Int,
@@ -38,12 +39,18 @@ internal object ApiSubtitleBatchPolicy {
     private const val CONTEXT_RESERVE_TOKENS = 800
 
     const val EXPANDED_MAX_OUTPUT_TOKENS = 4_096
+    private val providerCapabilities = ConcurrentHashMap<String, ApiModelCapability>()
 
     private fun normalized(model: String): String =
         model.trim().removePrefix("models/").lowercase(java.util.Locale.ROOT)
 
-    fun capabilityForModel(model: String): ApiModelCapability {
-        val id = normalized(model)
+    private fun providerModelKey(model: String, providerKey: String): String =
+        providerKey.trim().lowercase(java.util.Locale.ROOT) + "|" + normalized(model)
+
+    fun capabilityForModel(model: String, providerKey: String = ""): ApiModelCapability =
+        providerCapabilities[providerModelKey(model, providerKey)] ?: knownCapabilityForModel(normalized(model))
+
+    private fun knownCapabilityForModel(id: String): ApiModelCapability {
         return when {
             id.contains("qwen2.5-7b-instruct-1m") -> ApiModelCapability(
                 1_010_000, 8_192, 80, 160, 48_000, 16_384,
@@ -87,6 +94,55 @@ internal object ApiSubtitleBatchPolicy {
         }
     }
 
+    /**
+     * Register limits advertised by a provider's /models catalog. Context, input and output
+     * are independent limits; absent fields retain the curated profile or conservative default.
+     */
+    fun registerProviderLimits(
+        model: String,
+        contextWindowTokens: Int?,
+        maxOutputTokens: Int?,
+        maxInputTokens: Int? = null,
+        providerKey: String = "",
+    ) {
+        val id = normalized(model)
+        val known = knownCapabilityForModel(id)
+        val context = contextWindowTokens?.takeIf { it > 0 } ?: known.contextWindowTokens
+        val output = maxOutputTokens?.takeIf { it > 0 } ?: known.maxOutputTokens
+        val inputSafetyCap = when {
+            context >= 1_000_000 -> 48_000
+            context >= 256_000 -> 32_000
+            context >= 128_000 -> 24_000
+            else -> 8_000
+        }
+        val outputSafetyCap = when {
+            context >= 1_000_000 -> 16_384
+            context >= 256_000 -> 12_288
+            context >= 128_000 -> 8_192
+            else -> 4_096
+        }
+        val estimatedInputLimit = if (context > 0) context / 5 else inputSafetyCap
+        val inputBudget = minOf(
+            maxInputTokens?.takeIf { it > 0 } ?: estimatedInputLimit,
+            inputSafetyCap,
+        ).coerceAtLeast(512)
+        val rows = when {
+            context >= 1_000_000 -> 80 to 160
+            context >= 256_000 -> 60 to 120
+            id.contains("glm-4-flash-250414") -> 50 to 90
+            id.contains("qwen2.5-7b-instruct") && context <= 131_072 -> 35 to 80
+            context >= 128_000 -> 50 to 90
+            else -> DEFAULT_INITIAL_ROWS to DEFAULT_MAX_ROWS
+        }
+        providerCapabilities[providerModelKey(model, providerKey)] = ApiModelCapability(
+            contextWindowTokens = context,
+            maxOutputTokens = output,
+            initialRows = rows.first.coerceAtMost(rows.second),
+            maxRows = rows.second,
+            inputBudgetTokens = inputBudget,
+            outputBudgetTokens = minOf(output, outputSafetyCap),
+        )
+    }
     fun requiresExpandedOutputBudget(model: String): Boolean {
         val id = normalized(model)
         return id.contains("glm-4-flash-250414") ||
@@ -121,9 +177,10 @@ internal object ApiSubtitleBatchPolicy {
         model: String,
         targetLanguage: String,
         learning: ApiSubtitleBatchLearningSnapshot,
+        providerKey: String = "",
     ): ApiSubtitleBatchSelection {
         require(startIndex in 0 until lines.size) { "startIndex must point to an existing subtitle cue" }
-        val capability = capabilityForModel(model)
+        val capability = capabilityForModel(model, providerKey)
         val rowLimit = learning.maxRows.coerceIn(1, capability.maxRows)
         val inputBudget = capability.inputBudgetTokens
         val outputBudget = capability.outputBudgetTokens
@@ -142,7 +199,7 @@ internal object ApiSubtitleBatchPolicy {
             estimatedOutput += adjustedOutput
             endExclusive++
         }
-        val outputLimit = outputLimitForModel(model, estimatedOutput)
+        val outputLimit = outputLimitForModel(model, estimatedOutput, providerKey)
         return ApiSubtitleBatchSelection(
             endExclusive = endExclusive,
             estimatedInputTokens = estimatedInput,
@@ -151,8 +208,12 @@ internal object ApiSubtitleBatchPolicy {
         )
     }
 
-    fun outputLimitForModel(model: String, estimatedOutputTokens: Int): Int {
-        val capability = capabilityForModel(model)
+    fun outputLimitForModel(
+        model: String,
+        estimatedOutputTokens: Int,
+        providerKey: String = "",
+    ): Int {
+        val capability = capabilityForModel(model, providerKey)
         val requested = ceil(estimatedOutputTokens.coerceAtLeast(1) * 1.6 + 512.0).toInt()
         val floor = minOf(2_048, capability.maxOutputTokens, capability.outputBudgetTokens)
         return requested.coerceAtLeast(floor).coerceAtMost(
@@ -187,8 +248,8 @@ internal object ApiSubtitleBatchPolicy {
 }
 
 /** Per-engine learning: successful batches cautiously grow; length/format failures halve the next cap. */
-internal class ApiSubtitleBatchLearningState(model: String) {
-    private val capability = ApiSubtitleBatchPolicy.capabilityForModel(model)
+internal class ApiSubtitleBatchLearningState(model: String, providerKey: String = "") {
+    private val capability = ApiSubtitleBatchPolicy.capabilityForModel(model, providerKey)
     private var currentRows = capability.initialRows
     private var consecutiveSuccessfulBatches = 0
     private var inputMultiplier = 1.0

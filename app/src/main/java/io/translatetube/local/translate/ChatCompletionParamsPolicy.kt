@@ -48,10 +48,11 @@ internal object ChatCompletionParamsPolicy {
         val thinkingOnly = isThinkingOnlyModel(normalizedModel)
         val officialOpenAi = normalizedBase.contains("api.openai.com") ||
             normalizedBase.contains(".openai.azure.com")
-        val capability = ApiSubtitleBatchPolicy.capabilityForModel(normalizedModel)
+        val capability = ApiSubtitleBatchPolicy.capabilityForModel(normalizedModel, baseUrl)
         val dynamicLimit = ApiSubtitleBatchPolicy.outputLimitForModel(
             normalizedModel,
             estimatedOutputTokens.coerceAtLeast(1),
+            baseUrl,
         )
         val isReasoningModel = openAiReasoning || thinkingOnly
         val reasoningFloor = if (isReasoningModel) REASONING_MAX_TOKENS else 0

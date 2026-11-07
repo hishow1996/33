@@ -1468,7 +1468,7 @@ class OpenAiCompatEngine(
 ) : TranslationEngine {
     override val id = "openai"
     override val displayName = model.ifEmpty { "OpenAI 兼容" }
-    private val batchLearning = ApiSubtitleBatchLearningState(model)
+    private val batchLearning by lazy { ApiSubtitleBatchLearningState(model, baseUrl) }
 
     private fun payloadWithThinkingControl(
         original: JSONObject,
@@ -1600,7 +1600,7 @@ class OpenAiCompatEngine(
         ) {
             val raised = JSONObject(payload.toString())
             val budgetKey = if (raised.has("max_completion_tokens")) "max_completion_tokens" else "max_tokens"
-            val modelOutputCeiling = ApiSubtitleBatchPolicy.capabilityForModel(model).maxOutputTokens
+            val modelOutputCeiling = ApiSubtitleBatchPolicy.capabilityForModel(model, baseUrl).maxOutputTokens
             val reasoningRetryBudget = minOf(
                 ChatCompletionParamsPolicy.REASONING_MAX_TOKENS,
                 modelOutputCeiling,
@@ -1630,7 +1630,40 @@ class OpenAiCompatEngine(
     override suspend fun listModels(): List<String> {
         val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"), currentCoroutineContext()[Job])
         val arr = JSONObject(body).optJSONArray("data") ?: return emptyList()
-        return (0 until arr.length()).map { arr.getJSONObject(it).optString("id") }.sorted()
+        return (0 until arr.length()).mapNotNull { index ->
+            val item = arr.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optString("id").takeIf { it.isNotBlank() && it != "null" }
+                ?: return@mapNotNull null
+            val limits = item.optJSONObject("limits")
+            fun positive(vararg values: Int): Int? = values.firstOrNull { it > 0 }
+            val contextTokens = positive(
+                item.optInt("context_length"),
+                item.optInt("context_window"),
+                item.optInt("max_model_len"),
+                limits?.optInt("context") ?: 0,
+            )
+            val inputTokens = positive(
+                item.optInt("max_input_tokens"),
+                item.optInt("input_token_limit"),
+                limits?.optInt("input") ?: 0,
+            )
+            val outputTokens = positive(
+                item.optInt("max_output_tokens"),
+                item.optInt("max_completion_tokens"),
+                item.optInt("output_token_limit"),
+                limits?.optInt("output") ?: 0,
+            )
+            if (contextTokens != null || inputTokens != null || outputTokens != null) {
+                ApiSubtitleBatchPolicy.registerProviderLimits(
+                    model = id,
+                    contextWindowTokens = contextTokens,
+                    maxOutputTokens = outputTokens,
+                    maxInputTokens = inputTokens,
+                    providerKey = baseUrl,
+                )
+            }
+            id
+        }.sorted()
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
@@ -1656,6 +1689,7 @@ class OpenAiCompatEngine(
                 model = model,
                 targetLanguage = tgtLang,
                 learning = batchLearning.snapshot(),
+                providerKey = baseUrl,
             )
             val batch = lines.subList(i, batchSelection.endExclusive)
             android.util.Log.d(
@@ -1836,7 +1870,7 @@ class GeminiEngine(
     private val endpointBase = baseUrl.trimEnd('/')
     override val id = "gemini"
     override val displayName = model.ifEmpty { "Gemini" }
-    private val batchLearning = ApiSubtitleBatchLearningState(model)
+    private val batchLearning by lazy { ApiSubtitleBatchLearningState(model, endpointBase) }
 
     // AQ.-format Gemini authorization keys are still passed as API keys via x-goog-api-key.
     // Trim pasted whitespace/newlines so a copied key is not accidentally sent with extra characters.
@@ -1851,7 +1885,21 @@ class GeminiEngine(
             val methods = m.optJSONArray("supportedGenerationMethods") ?: continue
             var ok = false
             for (j in 0 until methods.length()) if (methods.getString(j) == "generateContent") ok = true
-            if (ok) out += m.optString("name").removePrefix("models/")
+            if (ok) {
+                val modelId = m.optString("name").removePrefix("models/")
+                val inputLimit = m.optInt("inputTokenLimit").takeIf { it > 0 }
+                val outputLimit = m.optInt("outputTokenLimit").takeIf { it > 0 }
+                if (inputLimit != null || outputLimit != null) {
+                    ApiSubtitleBatchPolicy.registerProviderLimits(
+                        model = modelId,
+                        contextWindowTokens = inputLimit,
+                        maxOutputTokens = outputLimit,
+                        maxInputTokens = inputLimit,
+                        providerKey = endpointBase,
+                    )
+                }
+                out += modelId
+            }
         }
         return out.sorted()
     }
@@ -1879,6 +1927,7 @@ class GeminiEngine(
                 model = model,
                 targetLanguage = tgtLang,
                 learning = batchLearning.snapshot(),
+                providerKey = endpointBase,
             )
             val batch = lines.subList(i, batchSelection.endExclusive)
             android.util.Log.d(
@@ -2003,6 +2052,13 @@ class GeminiEngine(
             )
         val candidate = candidates.optJSONObject(0)
             ?: throw IllegalStateException("Gemini 未返回可用候选译文（候选数：${candidates.length()}）")
+        val finishReason = candidate.optString("finishReason")
+        if (finishReason.equals("MAX_TOKENS", ignoreCase = true)) {
+            batchLearning.recordFailure(lines.size)
+            throw IllegalStateException(
+                "finish_reason=length；Gemini 输出达到本批 token 上限，已交由自适应分批机制缩小批次"
+            )
+        }
         val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
             ?: throw IllegalStateException(
                 "Gemini 候选结果不包含文本内容（结束原因：${candidate.optString("finishReason", "未知")}）"
@@ -2015,13 +2071,6 @@ class GeminiEngine(
         if (text.isBlank()) {
             throw IllegalStateException(
                 "Gemini 已响应，但没有返回可用文本（结束原因：${candidate.optString("finishReason", "未知")}）"
-            )
-        }
-        val finishReason = candidate.optString("finishReason")
-        if (finishReason.equals("MAX_TOKENS", ignoreCase = true)) {
-            batchLearning.recordFailure(lines.size)
-            throw IllegalStateException(
-                "finish_reason=length；Gemini 输出达到本批 token 上限，已交由自适应分批机制缩小批次"
             )
         }
         val usage = response.optJSONObject("usageMetadata")
@@ -2042,7 +2091,7 @@ class GeminiEngine(
                 estimatedOutputTokens = estimatedOutputTokens,
                 actualInputTokens = usage?.optInt("promptTokenCount")?.takeIf { it > 0 },
                 actualOutputTokens = usage?.optInt("candidatesTokenCount")?.takeIf { it > 0 },
-                maxOutputTokens = ApiSubtitleBatchPolicy.outputLimitForModel(configuredModel, estimatedOutputTokens),
+                maxOutputTokens = ApiSubtitleBatchPolicy.outputLimitForModel(configuredModel, estimatedOutputTokens, endpointBase),
                 finishReason = finishReason,
             )
         }
@@ -2062,7 +2111,7 @@ class GeminiEngine(
         val config = payload.optJSONObject("generationConfig") ?: JSONObject()
         config.put(
             "maxOutputTokens",
-            ApiSubtitleBatchPolicy.outputLimitForModel(modelId, estimatedOutputTokens),
+            ApiSubtitleBatchPolicy.outputLimitForModel(modelId, estimatedOutputTokens, endpointBase),
         )
         payload.put("generationConfig", config)
     }
