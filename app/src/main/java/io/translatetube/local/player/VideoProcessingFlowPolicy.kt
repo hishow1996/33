@@ -309,9 +309,22 @@ object VideoProcessingFlowPolicy {
     fun translationBatchLabel(currentBatch: Int, totalBatches: Int, retryCount: Int): String? {
         if (totalBatches <= 0) return null
         val current = currentBatch.coerceIn(0, totalBatches)
-        // The total is an estimate: engines that size their own requests revise it as they go.
-        val batch = if (current == 0) "预计共 ${totalBatches} 批" else "第 ${current} 批 · 预计共 ${totalBatches} 批"
+        val batch = if (current == 0) "共 $totalBatches 批" else "第 $current/$totalBatches 批"
         return if (retryCount > 0) "$batch · 重试第 $retryCount 次" else batch
+    }
+
+    /** Exact number of requests for a fixed row cap, including a shorter final batch. */
+    fun translationBatchCount(pendingRows: Int, rowsPerBatch: Int): Int {
+        if (pendingRows <= 0 || rowsPerBatch <= 0) return 0
+        return ((pendingRows.toLong() + rowsPerBatch - 1L) / rowsPerBatch)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+    }
+
+    /** Progress ratio shared by the translation counter and its stage-card progress bar. */
+    fun translationProgressRatio(completed: Int, total: Int): Float? {
+        if (total <= 0) return null
+        return completed.coerceIn(0, total).toFloat() / total.toFloat()
     }
 
     fun completionPercent(completed: Int, total: Int): Int? {
