@@ -2240,7 +2240,9 @@ class OpenAiCompatEngine(
             actualInputTokens = apiResponse.usage.promptTokens,
             actualOutputTokens = apiResponse.usage.outputTokens,
             latencyMs = apiResponse.elapsedMs,
+            batchRows = lines.size,
         )
+        val performance = batchLearning.performanceSnapshot()
         if (ChatCompletionParamsPolicy.isLengthTruncation(apiResponse.usage.finishReason)) {
             throw IllegalStateException(
                 "finish_reason=length；模型输出达到本批 token 上限，已交由自适应分批机制缩小批次"
@@ -2273,7 +2275,10 @@ class OpenAiCompatEngine(
             "Batch usage: model=${model.take(100)}, rows=${lines.size}, " +
                 "estimatedPromptTokens=$estimatedInputTokens, actualPromptTokens=${apiResponse.usage.promptTokens ?: -1}, " +
                 "estimatedOutputTokens=$estimatedOutputTokens, actualOutputTokens=${apiResponse.usage.outputTokens ?: -1}, " +
-                "maxOutputTokens=${params.maxTokens}, latencyMs=${apiResponse.elapsedMs}",
+                "maxOutputTokens=${params.maxTokens}, latencyMs=${apiResponse.elapsedMs}, " +
+                    "rollingAverageLatencyMs=${performance.averageLatencyMs}, " +
+                    "p90LatencyMs=${performance.p90LatencyMs}, " +
+                    "averageRowsPerMinute=${performance.averageRowsPerMinute.toLong()}",
         )
         return translated
     }
@@ -2619,7 +2624,9 @@ class GeminiEngine(
             actualInputTokens = usage?.optInt("promptTokenCount")?.takeIf { it > 0 },
             actualOutputTokens = usage?.optInt("candidatesTokenCount")?.takeIf { it > 0 },
             latencyMs = elapsedMs,
+            batchRows = lines.size,
         )
+        val performance = batchLearning.performanceSnapshot()
         if (finishReason.equals("MAX_TOKENS", ignoreCase = true)) {
             throw IllegalStateException(
                 "finish_reason=length；Gemini 输出达到本批 token 上限，已交由自适应分批机制缩小批次"
@@ -2646,7 +2653,10 @@ class GeminiEngine(
                 "estimatedPromptTokens=$estimatedInputTokens, actualPromptTokens=${usage?.optInt("promptTokenCount") ?: -1}, " +
                 "estimatedOutputTokens=$estimatedOutputTokens, actualOutputTokens=${usage?.optInt("candidatesTokenCount") ?: -1}, " +
                 "maxOutputTokens=${ApiSubtitleBatchPolicy.outputLimitForModel(configuredModel, estimatedOutputTokens, endpointBase, learningSnapshot.outputBudgetTokens)}, " +
-                "latencyMs=$elapsedMs",
+                "latencyMs=$elapsedMs, " +
+                    "rollingAverageLatencyMs=${performance.averageLatencyMs}, " +
+                    "p90LatencyMs=${performance.p90LatencyMs}, " +
+                    "averageRowsPerMinute=${performance.averageRowsPerMinute.toLong()}",
         )
         return translated
     }
