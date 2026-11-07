@@ -213,18 +213,30 @@ class VideoProcessingFlowPolicyTest {
     @Test
     fun translationBatchLabelsAndPercentagesReflectRealCounters() {
         assertEquals(
-            "预计共 8 批",
+            "共 8 批",
             VideoProcessingFlowPolicy.translationBatchLabel(0, 8, 0),
         )
         assertEquals(
-            "第 3 批 · 预计共 8 批",
+            "第 3/8 批",
             VideoProcessingFlowPolicy.translationBatchLabel(3, 8, 0),
         )
         assertEquals(
-            "第 3 批 · 预计共 8 批 · 重试第 1 次",
+            "第 3/8 批 · 重试第 1 次",
             VideoProcessingFlowPolicy.translationBatchLabel(3, 8, 1),
         )
         assertEquals(null, VideoProcessingFlowPolicy.translationBatchLabel(0, 0, 0))
+
+        assertEquals(44, VideoProcessingFlowPolicy.translationBatchCount(1291, 30))
+        assertEquals(26, VideoProcessingFlowPolicy.translationBatchCount(770, 30))
+        assertEquals(81, VideoProcessingFlowPolicy.translationBatchCount(1291, 16))
+        assertEquals(1, VideoProcessingFlowPolicy.translationBatchCount(1, 30))
+        assertEquals(0, VideoProcessingFlowPolicy.translationBatchCount(0, 30))
+        assertEquals(0, VideoProcessingFlowPolicy.translationBatchCount(1291, 0))
+
+        assertEquals(600f / 1291f, VideoProcessingFlowPolicy.translationProgressRatio(600, 1291)!!, 0.0001f)
+        assertEquals(1f, VideoProcessingFlowPolicy.translationProgressRatio(150, 120)!!, 0f)
+        assertEquals(0f, VideoProcessingFlowPolicy.translationProgressRatio(-5, 120)!!, 0f)
+        assertEquals(null, VideoProcessingFlowPolicy.translationProgressRatio(1, 0))
 
         assertEquals(0, VideoProcessingFlowPolicy.completionPercent(0, 120))
         assertEquals(29, VideoProcessingFlowPolicy.completionPercent(35, 120))
