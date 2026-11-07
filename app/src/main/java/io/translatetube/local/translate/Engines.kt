@@ -171,6 +171,10 @@ internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 64
  */
 internal const val MAX_ISOLATED_CUE_FAILURES_PER_BATCH = 2
 
+/** Batch-capacity recovery removes five subtitle rows per step and never splits below five. */
+internal const val TRANSLATION_RECOVERY_BATCH_STEP_ROWS = 5
+internal const val MIN_TRANSLATION_RECOVERY_BATCH_ROWS = 5
+
 internal data class TranslationRecoverySummary(
     val recoveredBySplitting: Boolean,
     val largestSuccessfulBatchRows: Int?,
@@ -186,7 +190,10 @@ private class TranslationRecoveryBudget {
     var hadUnalignedResponse: Boolean = false
 
     fun recordSuccessfulBatch(rows: Int) {
-        if (rows > 0) largestSuccessfulBatchRows = maxOf(largestSuccessfulBatchRows ?: rows, rows)
+        // Single-cue quality retries must never lower the model-wide batch ceiling.
+        if (rows >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS) {
+            largestSuccessfulBatchRows = maxOf(largestSuccessfulBatchRows ?: rows, rows)
+        }
     }
 
     fun summary(): TranslationRecoverySummary = TranslationRecoverySummary(
@@ -215,9 +222,10 @@ private class TranslationRecoveryBudget {
 }
 
 /**
- * Retry malformed or truncated model output with smaller cue groups. Successfully translated
- * halves feed their last few cues into the next half so splitting does not discard continuity.
- * All recursive calls share a fixed attempt budget for this original batch.
+ * Retry malformed or truncated model output by reducing the leading batch by five rows at a time.
+ * Each successful leading segment feeds its translated cues into the following five-row segment.
+ * Recovery never creates a capacity-split batch smaller than five rows. All recursive calls share
+ * a fixed attempt budget for this original batch.
  * When [deferInvalidRowsToCaller] is true, correctly aligned but rejected rows are returned
  * to the caller's existing row-only retry loop; malformed responses still split safely.
  */
@@ -359,10 +367,59 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
             }
             return output
         }
+
+        // For a small, correctly aligned batch that only failed quality checks, retain the
+        // existing cue-specific retry path. This is not batch-capacity splitting.
+        if (retrySingle != null && lines.size in 2 until (MIN_TRANSLATION_RECOVERY_BATCH_ROWS * 2)) {
+            val recovered = output.toMutableList()
+            val priorCues = mutableListOf<Pair<String, String>>()
+            val priorSources = context?.first.orEmpty()
+            val priorTranslations = context?.second.orEmpty()
+            for (index in 0 until minOf(priorSources.size, priorTranslations.size)) {
+                val source = priorSources[index]
+                val translation = priorTranslations[index]
+                if (source.isNotBlank() && translation.isNotBlank()) priorCues += source to translation
+            }
+            for (index in lines.indices) {
+                val source = lines[index]
+                if (source.isBlank() || recovered[index].isNotBlank()) continue
+                val recent = priorCues.takeLast(CONTEXT_LINES)
+                val retryContext = if (recent.isEmpty()) null else {
+                    recent.map { it.first } to recent.map { it.second }
+                }
+                val retryCandidate = try {
+                    budget.consumeAttempt()
+                    retrySingle(source, retryContext)
+                } catch (error: IllegalStateException) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (!isRecoverableTranslationFormatError(error)) throw error
+                    null
+                }?.trim().orEmpty()
+                if (retryCandidate.isNotBlank() &&
+                    (isAcceptableTranslation(source, retryCandidate) ||
+                        acceptAfterRecovery?.invoke(source, retryCandidate) == true)
+                ) {
+                    recovered[index] = retryCandidate
+                    priorCues += source to retryCandidate
+                    budget.recordSuccessfulBatch(1)
+                } else {
+                    if (!budget.tolerateIsolatedCueFailure()) {
+                        val reason = if (retryCandidate.isBlank()) {
+                            "单条恢复请求仍未返回可用文本"
+                        } else {
+                            "单条恢复请求仍未通过译文质量校验"
+                        }
+                        throw IllegalStateException("单条字幕翻译恢复失败：$reason；原文字符数=${source.length}。")
+                    }
+                    recovered[index] = retryCandidate
+                }
+            }
+            return recovered
+        }
     }
 
     // A malformed or wholly missing batch cannot be mapped safely to individual input rows.
-    // Split it in half so every retry makes progress and never shifts one cue onto another.
+    // Preserve a five-row minimum; a smaller request cannot be safely subdivided further.
     if (lines.size == 1) {
         // A malformed single-row response has no safe value to pass back. Let the caller retry it.
         if (deferInvalidRowsToCaller) return listOf("")
@@ -405,9 +462,16 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         )
     }
 
-    val midpoint = lines.size / 2
-    val leftSource = lines.subList(0, midpoint)
-    val rightSource = lines.subList(midpoint, lines.size)
+    if (lines.size < MIN_TRANSLATION_RECOVERY_BATCH_ROWS * 2) {
+        throw IllegalStateException(
+            "翻译服务响应格式不完整；当前批次仅${lines.size}条，已达到最小恢复批次" +
+                "${MIN_TRANSLATION_RECOVERY_BATCH_ROWS}条，停止继续拆分。"
+        )
+    }
+    val splitAt = (lines.size - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
+        .coerceAtLeast(MIN_TRANSLATION_RECOVERY_BATCH_ROWS)
+    val leftSource = lines.subList(0, splitAt)
+    val rightSource = lines.subList(splitAt, lines.size)
     val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
         leftSource, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
         deferInvalidRowsToCaller, translate, budget,
