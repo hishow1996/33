@@ -157,6 +157,18 @@ jobs:
       - name: Run JVM unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
 
+      # Keep JVM XML reports available even when a regression test fails, so CI failures can be diagnosed precisely.
+      - name: Upload JVM unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elephant-translate-jvm-test-reports
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: warn
+          retention-days: 3
+
       # This repository intentionally ignores local keystores. Generate an ephemeral CI-only
       # debug keystore so the debug APK remains installable without storing signing keys in Git.
       - name: Generate CI debug keystore
