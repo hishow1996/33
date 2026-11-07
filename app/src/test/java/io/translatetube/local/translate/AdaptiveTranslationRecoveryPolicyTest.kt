@@ -37,6 +37,26 @@ class AdaptiveTranslationRecoveryPolicyTest {
     }
 
     @Test
+    fun batchFailureClassificationSeparatesFormatInputAndOutputCapacity() {
+        assertEquals(
+            ApiSubtitleBatchFailureKind.RESPONSE_FORMAT,
+            translationBatchFailureKind(IllegalStateException("翻译服务返回的字幕编号不完整")),
+        )
+        assertEquals(
+            ApiSubtitleBatchFailureKind.INPUT_CAPACITY,
+            translationBatchFailureKind(IllegalStateException("HTTP 400: context_length_exceeded")),
+        )
+        assertEquals(
+            ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY,
+            translationBatchFailureKind(IllegalStateException("finish_reason=length")),
+        )
+        assertEquals(
+            null,
+            translationBatchFailureKind(IllegalStateException("HTTP 429: rate limit exceeded")),
+        )
+    }
+
+    @Test
     fun existingSubtitleAlignmentErrorsRemainRecoverable() {
         assertTrue(
             isRecoverableTranslationFormatError(
@@ -72,6 +92,58 @@ class AdaptiveTranslationRecoveryPolicyTest {
         assertTrue(error?.message.orEmpty().contains("最小恢复批次5条"))
         assertEquals(listOf(30, 25, 20, 15, 10, 5), requests)
         assertTrue(requests.all { it >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS })
+    }
+
+    @Test
+    fun malformedOutputGetsOneSameSizeStrictRetryBeforeAnySplit() = runBlocking {
+        val source = List(10) { "cue-$it" }
+        val normalCalls = mutableListOf<Int>()
+        val repairCalls = mutableListOf<Int>()
+        var summary: TranslationRecoverySummary? = null
+        val translated = translateBatchWithAdaptiveRecovery(
+            lines = source,
+            retryMalformedBatch = { rows, _ ->
+                repairCalls += rows.size
+                rows.map { "译:$it" }
+            },
+            onRecoverySummary = { summary = it },
+        ) { rows, _ ->
+            normalCalls += rows.size
+            throw IllegalStateException("翻译服务返回的字幕编号不完整")
+        }
+
+        assertEquals(source.map { "译:$it" }, translated)
+        assertEquals(listOf(10), normalCalls)
+        assertEquals(listOf(10), repairCalls)
+        assertEquals(2, summary?.attempts)
+        assertTrue(summary?.failureKinds?.contains(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT) == true)
+    }
+
+    @Test
+    fun capacityFailureSkipsSameSizeFormatRetryAndKeepsFiveRowRecovery() = runBlocking {
+        val requests = mutableListOf<Int>()
+        var formatRepairCalls = 0
+        var summary: TranslationRecoverySummary? = null
+        val source = List(10) { "cue-$it" }
+        val translated = translateBatchWithAdaptiveRecovery(
+            lines = source,
+            retryMalformedBatch = { rows, _ ->
+                formatRepairCalls++
+                rows.map { "修复:$it" }
+            },
+            onRecoverySummary = { summary = it },
+        ) { rows, _ ->
+            requests += rows.size
+            if (rows.size > MIN_TRANSLATION_RECOVERY_BATCH_ROWS) {
+                throw IllegalStateException("HTTP 413: Payload Too Large")
+            }
+            rows.map { "译:$it" }
+        }
+
+        assertEquals(source.map { "译:$it" }, translated)
+        assertEquals(listOf(10, 5, 5), requests)
+        assertEquals(0, formatRepairCalls)
+        assertTrue(summary?.failureKinds?.contains(ApiSubtitleBatchFailureKind.INPUT_CAPACITY) == true)
     }
 
     @Test
