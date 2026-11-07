@@ -144,6 +144,55 @@ class TranslationAdaptiveRecoveryTest {
     }
 
     @Test
+    fun providerContentFilterIsolatesTheRefusedCueAndKeepsTheRest() = runBlocking {
+        val requestSizes = mutableListOf<Int>()
+        val sources = List(30) { if (it == 17) "refused-cue" else "cue-$it" }
+
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = sources,
+            deferInvalidRowsToCaller = true,
+            splitOnPersistentFormatFailure = true,
+            translate = { rows, _ ->
+                requestSizes += rows.size
+                if ("refused-cue" in rows) {
+                    throw TranslationHttpException(
+                        message = "HTTP 400 [POST x]: rootFields=contentFilter,error; providerErrorCode=1301",
+                        retryAfterMs = null,
+                        statusCode = 400,
+                        providerErrorCode = "1301",
+                    )
+                }
+                rows.map { "译-$it" }
+            },
+        )
+
+        assertEquals(30, result.size)
+        assertEquals("", result[17])
+        assertEquals(sources.indices.filter { it != 17 }.map { "译-${sources[it]}" }, result.filterIndexed { i, _ -> i != 17 })
+        assertTrue(requestSizes.size <= MAX_TRANSLATION_REPAIR_ATTEMPTS_PER_BATCH)
+        assertTrue(requestSizes.contains(1))
+    }
+
+    @Test
+    fun contentFilterRejectionStillFailsFastWhenSplittingIsNotEnabled() = runBlocking {
+        val failure = runCatching {
+            translateBatchWithAdaptiveRecovery(
+                lines = List(4) { "cue-$it" },
+                translate = { _, _ ->
+                    throw TranslationHttpException(
+                        message = "HTTP 400 contentFilter",
+                        retryAfterMs = null,
+                        statusCode = 400,
+                        providerErrorCode = "1301",
+                    )
+                },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is TranslationHttpException)
+    }
+
+    @Test
     fun retriesOnlyMissingRowsAndKeepsAlreadyTranslatedRows() = runBlocking {
         val calls = mutableListOf<List<String>>()
         val seenContexts = mutableListOf<Pair<List<String>, List<String>>?>()

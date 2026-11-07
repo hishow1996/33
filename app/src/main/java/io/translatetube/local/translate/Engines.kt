@@ -144,6 +144,21 @@ internal fun translationBatchFailureKind(
     return if (malformedTranslation) ApiSubtitleBatchFailureKind.RESPONSE_FORMAT else null
 }
 
+/**
+ * The provider's own safety filter refused this request (Zhipu: HTTP 400, code 1301,
+ * `contentFilter` in the body). It is not a transport or alignment problem and retrying the same
+ * text never helps; only sending fewer cues can show which ones trigger it.
+ */
+internal fun isProviderContentFilterRejection(error: Throwable): Boolean =
+    generateSequence(error) { it.cause }.take(8).any { cause ->
+        val http = cause as? TranslationHttpException
+        val code = http?.providerErrorCode.orEmpty().trim().lowercase(java.util.Locale.ROOT)
+        val text = cause.message.orEmpty()
+        (code == "1301" && (http?.statusCode == null || http.statusCode == 400)) ||
+            code.contains("content_filter") || code.contains("content_policy") ||
+            text.contains("contentFilter") || text.contains("不安全或敏感内容")
+    }
+
 internal fun isClassifiedTranslationBatchFailure(error: IllegalStateException): Boolean =
     translationBatchFailureKind(error) != null
 
@@ -307,6 +322,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     var response: List<String>? = null
     var shouldRetrySameBatchForFormat = false
     var sameBatchFormatRetryAttempted = false
+    var contentFiltered = false
     val diagnostics = TranslationDiagnosticContextHolder.current()
     try {
         budget.consumeAttempt()
@@ -315,11 +331,17 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     } catch (error: IllegalStateException) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         diagnostics?.recordRecoveryAttempt(lines.size, "首次请求", describeRecoveryError(error))
-        val failureKind = translationBatchFailureKind(error) ?: throw error
-        budget.recordFailureKind(failureKind)
-        budget.hadRecoverableFailure = true
-        recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
-        shouldRetrySameBatchForFormat = failureKind == ApiSubtitleBatchFailureKind.RESPONSE_FORMAT
+        if (splitOnPersistentFormatFailure && isProviderContentFilterRejection(error)) {
+            contentFiltered = true
+            budget.hadRecoverableFailure = true
+            recoveryReason = "PROVIDER_CONTENT_FILTER"
+        } else {
+            val failureKind = translationBatchFailureKind(error) ?: throw error
+            budget.recordFailureKind(failureKind)
+            budget.hadRecoverableFailure = true
+            recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
+            shouldRetrySameBatchForFormat = failureKind == ApiSubtitleBatchFailureKind.RESPONSE_FORMAT
+        }
     }
 
     if (response != null && response.size != lines.size) {
@@ -345,9 +367,14 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         } catch (error: IllegalStateException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             diagnostics?.recordRecoveryAttempt(lines.size, "同批重试", describeRecoveryError(error))
-            val failureKind = translationBatchFailureKind(error) ?: throw error
-            budget.recordFailureKind(failureKind)
-            recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
+            if (splitOnPersistentFormatFailure && isProviderContentFilterRejection(error)) {
+                contentFiltered = true
+                recoveryReason = "PROVIDER_CONTENT_FILTER"
+            } else {
+                val failureKind = translationBatchFailureKind(error) ?: throw error
+                budget.recordFailureKind(failureKind)
+                recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
+            }
             null
         }
         if (response != null && response.size != lines.size) {
@@ -485,6 +512,14 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
             }
             return recovered
         }
+    }
+
+    // A single cue the provider's safety filter refuses can never be translated by this provider.
+    // Hand it back as unresolved (blank) so every other cue of the batch is kept; the caller's
+    // row-level handling then reports exactly which row it is. Never invent a translation.
+    if (contentFiltered && lines.size == 1) {
+        diagnostics?.recordRecoveryAttempt(1, "内容安全过滤", "服务商拒绝这一行，已单独标记为未翻译")
+        return listOf("")
     }
 
     // A malformed or wholly missing batch cannot be mapped safely to individual input rows.
