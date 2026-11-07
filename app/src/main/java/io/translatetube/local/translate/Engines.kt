@@ -2161,20 +2161,24 @@ class OpenAiCompatEngine(
                         limitingReasons = batchSelection.limitingReasons,
                         failureKinds = failureKinds,
                     )
-                    if (adaptiveFailure) {
-                        android.util.Log.w(
-                            "TranslationAPI",
-                            "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
-                                "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
-                                "limitingReasons=${batchSelection.limitingReasons}, failureKinds=$failureKinds, " +
-                                "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
-                                "recoveryAttempts=${recoverySummary.attempts}, " +
-                                "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
-                                "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
-                                "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
-                                "httpStatus=${TranslationFailureDiagnosticPolicy.httpStatus(error)}",
-                        )
-                    }
+                    val performance = batchLearning.performanceSnapshot()
+                    android.util.Log.w(
+                        "TranslationAPI",
+                        "Original subtitle batch failed: model=${model.take(100)}, " +
+                            "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                            "adaptiveRecovery=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
+                            "failureKinds=$failureKinds, " +
+                            "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
+                            "recoveryAttempts=${recoverySummary.attempts}, " +
+                            "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
+                            "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
+                            "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
+                            "httpStatus=${TranslationFailureDiagnosticPolicy.httpStatus(error)}, " +
+                            "batchSuccessRate=${"%.1f".format(java.util.Locale.ROOT, performance.successRatePercent)}%, " +
+                            "successfulBatches=${performance.successfulBatchCount}/${performance.sampledBatchCount}, " +
+                            "splitRecoveries=${performance.splitRecoveryCount}, " +
+                            "failedBatches=${performance.failedBatchCount}",
+                    )
                 }
                 throw error
             }
@@ -2526,20 +2530,24 @@ class GeminiEngine(
                         limitingReasons = batchSelection.limitingReasons,
                         failureKinds = failureKinds,
                     )
-                    if (adaptiveFailure) {
-                        android.util.Log.w(
-                            "GeminiEngine",
-                            "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
-                                "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
-                                "limitingReasons=${batchSelection.limitingReasons}, failureKinds=$failureKinds, " +
-                                "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
-                                "recoveryAttempts=${recoverySummary.attempts}, " +
-                                "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
-                                "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
-                                "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
-                                "httpStatus=${TranslationFailureDiagnosticPolicy.httpStatus(error)}",
-                        )
-                    }
+                    val performance = batchLearning.performanceSnapshot()
+                    android.util.Log.w(
+                        "GeminiEngine",
+                        "Original subtitle batch failed: model=${model.take(100)}, " +
+                            "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                            "adaptiveRecovery=$adaptiveFailure, limitingReasons=${batchSelection.limitingReasons}, " +
+                            "failureKinds=$failureKinds, " +
+                            "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
+                            "recoveryAttempts=${recoverySummary.attempts}, " +
+                            "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
+                            "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
+                            "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
+                            "httpStatus=${TranslationFailureDiagnosticPolicy.httpStatus(error)}, " +
+                            "batchSuccessRate=${"%.1f".format(java.util.Locale.ROOT, performance.successRatePercent)}%, " +
+                            "successfulBatches=${performance.successfulBatchCount}/${performance.sampledBatchCount}, " +
+                            "splitRecoveries=${performance.splitRecoveryCount}, " +
+                            "failedBatches=${performance.failedBatchCount}",
+                    )
                 }
                 throw error
             }
