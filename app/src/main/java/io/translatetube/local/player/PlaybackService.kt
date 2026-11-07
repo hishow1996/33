@@ -11697,7 +11697,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "本批输入字幕行数" to batch.size.toString(),
                                 "服务层本批分配行数" to thisBatchRows.toString(),
                                 "批次大小来源" to if (usesEngineBatchSizing) {
-                                    "API 引擎自适应（服务层单批上限 $maxAdaptiveBatchRows）"
+                                    "API 固定批次（每批 $batchSize 条，上限不随模型或历史表现变化）"
                                 } else {
                                     "固定 $batchSize"
                                 },
