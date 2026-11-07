@@ -26,6 +26,8 @@ internal object ChatCompletionParamsPolicy {
         normalizedModel.contains("qwq") ||
             normalizedModel.contains("deepseek-r1") ||
             normalizedModel.contains("deepseek-reasoner") ||
+            normalizedModel.contains("deepseek-v4") ||
+            normalizedModel.contains("deepseek-flash") ||
             normalizedModel.contains("gpt-6-astra") ||
             normalizedModel.contains("gpt-6.1-sol") ||
             thinkingWordRegex.containsMatchIn(normalizedModel)
