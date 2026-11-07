@@ -2,6 +2,7 @@ package io.translatetube.local.translate
 
 import java.io.IOException
 import java.util.concurrent.CancellationException
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,18 +36,21 @@ class TranslationRetryPolicyTest {
     @Test
     fun transientHttpFailuresAreNotClassifiedAsBatchCapacityFailures() {
         for (status in listOf(408, 425, 429, 500, 502, 503, 504)) {
-            assertFalse(
-                "HTTP $status must not shrink the model batch profile",
-                isRecoverableTranslationFormatError(IllegalStateException("HTTP $status: temporary failure")),
+            assertEquals(
+                "HTTP $status must not be treated as a request-capacity failure",
+                null,
+                translationBatchFailureKind(IllegalStateException("HTTP $status: temporary failure")),
             )
         }
-        assertTrue(isRecoverableTranslationFormatError(IllegalStateException("HTTP 413: request too large")))
+        assertEquals(
+            ApiSubtitleBatchFailureKind.INPUT_CAPACITY,
+            translationBatchFailureKind(IllegalStateException("HTTP 413: request too large")),
+        )
     }
 
     @Test
-    fun recoveryAttemptLimitIsTerminalRatherThanAnotherSplitTrigger() {
-        val error = IllegalStateException("拆分恢复已达到单批请求上限 64 次")
-        assertFalse(isRecoverableTranslationFormatError(error))
+    fun recoveryAttemptLimitIsRecognizedAsTerminal() {
+        val error = IllegalStateException("单批字幕修复已达到请求上限 64 次")
         assertTrue(isTranslationRecoveryAttemptLimit(error))
     }
 }
