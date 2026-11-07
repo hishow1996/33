@@ -309,7 +309,8 @@ object VideoProcessingFlowPolicy {
     fun translationBatchLabel(currentBatch: Int, totalBatches: Int, retryCount: Int): String? {
         if (totalBatches <= 0) return null
         val current = currentBatch.coerceIn(0, totalBatches)
-        val batch = if (current == 0) "共 ${totalBatches} 批" else "第 ${current}/${totalBatches} 批"
+        // The total is an estimate: engines that size their own requests revise it as they go.
+        val batch = if (current == 0) "预计共 ${totalBatches} 批" else "第 ${current} 批 · 预计共 ${totalBatches} 批"
         return if (retryCount > 0) "$batch · 重试第 $retryCount 次" else batch
     }
 

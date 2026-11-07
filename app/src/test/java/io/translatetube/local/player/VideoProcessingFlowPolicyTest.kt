@@ -213,15 +213,15 @@ class VideoProcessingFlowPolicyTest {
     @Test
     fun translationBatchLabelsAndPercentagesReflectRealCounters() {
         assertEquals(
-            "共 8 批",
+            "预计共 8 批",
             VideoProcessingFlowPolicy.translationBatchLabel(0, 8, 0),
         )
         assertEquals(
-            "第 3/8 批",
+            "第 3 批 · 预计共 8 批",
             VideoProcessingFlowPolicy.translationBatchLabel(3, 8, 0),
         )
         assertEquals(
-            "第 3/8 批 · 重试第 1 次",
+            "第 3 批 · 预计共 8 批 · 重试第 1 次",
             VideoProcessingFlowPolicy.translationBatchLabel(3, 8, 1),
         )
         assertEquals(null, VideoProcessingFlowPolicy.translationBatchLabel(0, 0, 0))

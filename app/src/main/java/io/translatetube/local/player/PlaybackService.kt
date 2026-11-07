@@ -11522,7 +11522,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     progress = if (translationTotalBatches == 0) {
                         "字幕已有可用译文，正在整理结果…"
                     } else {
-                        "准备翻译 ${pendingIndices.size} 条字幕，共 ${translationTotalBatches} 批"
+                        "准备翻译 ${pendingIndices.size} 条字幕"
                     },
                 )
             }
@@ -11551,7 +11551,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         translationCurrentBatch = batchIndex + 1,
                         translationTotalBatches = translationTotalBatches,
                         translationRetryCount = 0,
-                        progress = "准备第 ${batchIndex + 1}/${translationTotalBatches} 批字幕翻译…",
+                        progress = "准备第 ${batchIndex + 1} 批字幕翻译…",
                     )
                 }
                 val batchStartedAtNanos = System.nanoTime()
@@ -11616,9 +11616,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             translationTotalBatches = translationTotalBatches,
                             translationRetryCount = attempt,
                             progress = if (attempt == 0) {
-                                "正在请求翻译服务 · 第 ${batchIndex + 1}/${translationTotalBatches} 批"
+                                "正在请求翻译服务 · 第 ${batchIndex + 1} 批"
                             } else {
-                                "第 ${batchIndex + 1}/${translationTotalBatches} 批译文不完整，正在重试第 ${attempt} 次"
+                                "第 ${batchIndex + 1} 批译文不完整，正在重试第 ${attempt} 次"
                             },
                         )
                     }
@@ -11816,7 +11816,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 translationCurrentBatch = batchIndex + 1,
                                 translationTotalBatches = translationTotalBatches,
                                 translationRetryCount = attempt,
-                                progress = "正在处理第 ${batchIndex + 1}/${translationTotalBatches} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
+                                progress = "正在处理第 ${batchIndex + 1} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
                             )
                         }
                     }
@@ -11958,7 +11958,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         translationCurrentBatch = batchIndex + 1,
                         translationTotalBatches = translationTotalBatches,
                         translationRetryCount = 0,
-                        progress = "已完成第 ${batchIndex + 1}/${translationTotalBatches} 批 · 已处理 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                        progress = "已完成第 ${batchIndex + 1} 批 · 已处理 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                     )
                 }
                 // Unlike the coarser Room cache checkpoint, persist each completed batch so
