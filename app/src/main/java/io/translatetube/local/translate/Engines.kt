@@ -1830,8 +1830,15 @@ class OpenAiCompatEngine(
 ) : TranslationEngine {
     override val id = "openai"
     override val displayName = model.ifEmpty { "OpenAI 兼容" }
-    private val batchLearning by lazy {
-        ApiSubtitleBatchLearningState(model, baseUrl, batchLearningStore)
+    private val batchLearningByLanguage =
+        java.util.concurrent.ConcurrentHashMap<String, ApiSubtitleBatchLearningState>()
+
+    private fun batchLearningFor(srcLang: String, tgtLang: String): ApiSubtitleBatchLearningState {
+        val scope = "${srcLang.trim().lowercase(java.util.Locale.ROOT)}->" +
+            tgtLang.trim().lowercase(java.util.Locale.ROOT)
+        return batchLearningByLanguage.computeIfAbsent(scope) {
+            ApiSubtitleBatchLearningState(model, baseUrl, batchLearningStore, scope)
+        }
     }
 
     private fun payloadWithThinkingControl(
@@ -2044,6 +2051,7 @@ class OpenAiCompatEngine(
         videoTitle: String?,
     ): List<String> {
         val out = mutableListOf<String>()
+        val batchLearning = batchLearningFor(srcLang, tgtLang)
         val usableContextRow = subtitleTranslationAcceptor(srcLang, tgtLang)
         val usableRecoveredNameRow = subtitleShortUntranslatedAcceptor(srcLang, tgtLang)
         val coroutineContext = currentCoroutineContext()
@@ -2142,16 +2150,17 @@ class OpenAiCompatEngine(
                         isRecoverableTranslationFormatError(error) ||
                         isTranslationRecoveryAttemptLimit(error))
                 ) {
-                    val rowCapWasBinding = batch.size == learningSnapshot.maxRows
+                    val failureKinds = recoverySummary.failureKinds +
+                        listOfNotNull((error as? IllegalStateException)?.let(::translationBatchFailureKind))
                     batchLearning.recordOriginalBatchFailure(
-                        rowCapWasBinding = rowCapWasBinding,
-                        failureKinds = recoverySummary.failureKinds,
+                        limitingReasons = batchSelection.limitingReasons,
+                        failureKinds = failureKinds,
                     )
                     android.util.Log.w(
                         "TranslationAPI",
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
                             "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
-                            "rowCapWasBinding=$rowCapWasBinding, failureKinds=${recoverySummary.failureKinds}, " +
+                            "limitingReasons=${batchSelection.limitingReasons}, failureKinds=$failureKinds, " +
                             "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
                             "recoveryAttempts=${recoverySummary.attempts}, " +
                             "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
@@ -2171,9 +2180,11 @@ class OpenAiCompatEngine(
                     isAcceptedAfterRecovery(batch[index], translatedRow)
             }
             batchLearning.recordOriginalBatchSuccess(
-                batchRows = batch.size,
-                recoveredBySplitting = recoverySummary.recoveredBySplitting ||
-                    recoverySummary.hadRecoverableFailure || !allRowsAccepted,
+                limitingReasons = batchSelection.limitingReasons,
+                hadRecoverableFailure = recoverySummary.hadRecoverableFailure,
+                recoveredBySplitting = recoverySummary.recoveredBySplitting,
+                failureKinds = recoverySummary.failureKinds,
+                allRowsAccepted = allRowsAccepted,
             )
             out += translated
             i = batchSelection.endExclusive
@@ -2193,6 +2204,7 @@ class OpenAiCompatEngine(
         if (apiKey.isBlank()) {
             throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
         }
+        val batchLearning = batchLearningFor(srcLang, tgtLang)
         val prompts = buildOpenAiSubtitlePrompts(
             lines, srcLang, tgtLang, context, lookaheadSource, videoTitle, forceTranslate,
         )
@@ -2332,8 +2344,15 @@ class GeminiEngine(
     private val endpointBase = baseUrl.trimEnd('/')
     override val id = "gemini"
     override val displayName = model.ifEmpty { "Gemini" }
-    private val batchLearning by lazy {
-        ApiSubtitleBatchLearningState(model, endpointBase, batchLearningStore)
+    private val batchLearningByLanguage =
+        java.util.concurrent.ConcurrentHashMap<String, ApiSubtitleBatchLearningState>()
+
+    private fun batchLearningFor(srcLang: String, tgtLang: String): ApiSubtitleBatchLearningState {
+        val scope = "${srcLang.trim().lowercase(java.util.Locale.ROOT)}->" +
+            tgtLang.trim().lowercase(java.util.Locale.ROOT)
+        return batchLearningByLanguage.computeIfAbsent(scope) {
+            ApiSubtitleBatchLearningState(model, endpointBase, batchLearningStore, scope)
+        }
     }
 
     // AQ.-format Gemini authorization keys are still passed as API keys via x-goog-api-key.
@@ -2381,6 +2400,7 @@ class GeminiEngine(
         videoTitle: String?,
     ): List<String> {
         val out = mutableListOf<String>()
+        val batchLearning = batchLearningFor(srcLang, tgtLang)
         val usableContextRow = subtitleTranslationAcceptor(srcLang, tgtLang)
         val usableRecoveredNameRow = subtitleShortUntranslatedAcceptor(srcLang, tgtLang)
         val coroutineContext = currentCoroutineContext()
@@ -2479,16 +2499,17 @@ class GeminiEngine(
                         isRecoverableTranslationFormatError(error) ||
                         isTranslationRecoveryAttemptLimit(error))
                 ) {
-                    val rowCapWasBinding = batch.size == learningSnapshot.maxRows
+                    val failureKinds = recoverySummary.failureKinds +
+                        listOfNotNull((error as? IllegalStateException)?.let(::translationBatchFailureKind))
                     batchLearning.recordOriginalBatchFailure(
-                        rowCapWasBinding = rowCapWasBinding,
-                        failureKinds = recoverySummary.failureKinds,
+                        limitingReasons = batchSelection.limitingReasons,
+                        failureKinds = failureKinds,
                     )
                     android.util.Log.w(
                         "GeminiEngine",
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
                             "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
-                            "rowCapWasBinding=$rowCapWasBinding, failureKinds=${recoverySummary.failureKinds}, " +
+                            "limitingReasons=${batchSelection.limitingReasons}, failureKinds=$failureKinds, " +
                             "largestSuccessfulChunkRows=${recoverySummary.largestSuccessfulBatchRows ?: -1}, " +
                             "recoveryAttempts=${recoverySummary.attempts}, " +
                             "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
@@ -2508,9 +2529,11 @@ class GeminiEngine(
                     isAcceptedAfterRecovery(batch[index], translatedRow)
             }
             batchLearning.recordOriginalBatchSuccess(
-                batchRows = batch.size,
-                recoveredBySplitting = recoverySummary.recoveredBySplitting ||
-                    recoverySummary.hadRecoverableFailure || !allRowsAccepted,
+                limitingReasons = batchSelection.limitingReasons,
+                hadRecoverableFailure = recoverySummary.hadRecoverableFailure,
+                recoveredBySplitting = recoverySummary.recoveredBySplitting,
+                failureKinds = recoverySummary.failureKinds,
+                allRowsAccepted = allRowsAccepted,
             )
             out += translated
             i = batchSelection.endExclusive
@@ -2530,6 +2553,7 @@ class GeminiEngine(
         if (normalizedApiKey.isBlank()) {
             throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
         }
+        val batchLearning = batchLearningFor(srcLang, tgtLang)
         val prompts = buildGeminiSubtitlePrompts(
             lines, srcLang, tgtLang, context, lookaheadSource, videoTitle, forceTranslate,
         )
