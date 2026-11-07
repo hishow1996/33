@@ -76,6 +76,8 @@ internal class ApiSubtitleBatchLearningStore(
                     .coerceIn(512, capability.maxInputBudgetTokens),
                 outputBudgetTokens = json.optInt("outputBudgetTokens", capability.outputBudgetTokens)
                     .coerceIn(512, capability.maxOutputBudgetTokens),
+                averageLatencyMs = json.optDouble("averageLatencyMs", 0.0)
+                    .coerceIn(0.0, 300_000.0),
             )
         }.getOrNull()
 
@@ -87,6 +89,7 @@ internal class ApiSubtitleBatchLearningStore(
                 .put("outputTokenMultiplier", record.outputTokenMultiplier)
                 .put("inputBudgetTokens", record.inputBudgetTokens)
                 .put("outputBudgetTokens", record.outputBudgetTokens)
+                .put("averageLatencyMs", record.averageLatencyMs)
             preferences.edit().putString(key("learning", model), json.toString()).apply()
         }
     }

@@ -171,4 +171,15 @@ class ChatCompletionParamsPolicyTest {
         )
         assertEquals(8_192L, params.maxTokens.toLong())
     }
+
+    @Test
+    fun learnedOutputBudgetCannotExceedTheModelMaximum() {
+        val params = ChatCompletionParamsPolicy.forModel(
+            gateway,
+            "Qwen/Qwen2.5-7B-Instruct-1M",
+            estimatedOutputTokens = 20_000,
+            outputBudgetTokens = 100_000,
+        )
+        assertEquals(8_192L, params.maxTokens.toLong())
+    }
 }

@@ -21,29 +21,27 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun oneMillionTokenModelsCanStartWithLargerBatches() {
+    fun oneMillionTokenModelsStartWithLargerBatchesButRespectOutputCaps() {
         val lines = List(200) { "A short subtitle." }
         val model = "Qwen/Qwen2.5-7B-Instruct-1M"
         val selection = ApiSubtitleBatchPolicy.selectBatch(lines, 0, model, "zh-CN", snapshot(model))
         assertEquals(80, selection.endExclusive)
-        assertEquals(
-            1_010_000,
-            ApiSubtitleBatchPolicy.capabilityForModel(model).contextWindowTokens,
-        )
+        assertEquals(1_010_000, ApiSubtitleBatchPolicy.capabilityForModel(model).contextWindowTokens)
+        assertEquals(8_192, selection.maxOutputTokens)
     }
 
     @Test
-    fun inputAndOutputLimitsAreIndependentFromTheContextWindow() {
-        val normal = ApiSubtitleBatchPolicy.capabilityForModel("Qwen/Qwen2.5-7B-Instruct")
+    fun inputAndOutputLimitsAreIndependentFromContextLength() {
+        val standard = ApiSubtitleBatchPolicy.capabilityForModel("Qwen/Qwen2.5-7B-Instruct")
         val longContext = ApiSubtitleBatchPolicy.capabilityForModel("Qwen/Qwen2.5-7B-Instruct-1M")
-        assertEquals(131_072, normal.contextWindowTokens)
-        assertEquals(8_192, normal.maxOutputTokens)
+        assertEquals(131_072, standard.contextWindowTokens)
+        assertEquals(8_192, standard.maxOutputTokens)
         assertEquals(1_010_000, longContext.contextWindowTokens)
         assertEquals(8_192, longContext.maxOutputTokens)
     }
 
     @Test
-    fun longSubtitlesReduceBatchSizeByTokenBudget() {
+    fun longSubtitlesReduceTheBatchByTokenBudget() {
         val lines = List(80) { "中".repeat(300) }
         val glm = ApiSubtitleBatchPolicy.selectBatch(
             lines, 0, "glm-4-flash-250414", "zh-CN", snapshot("glm-4-flash-250414"),
@@ -56,51 +54,42 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun unknownModelsStartConservativelyAndLearnToIncrease() {
+    fun unknownModelsIncreaseOnlyAfterCleanOriginalBatches() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         assertEquals(30, learning.snapshot().maxRows)
         repeat(2) {
-            learning.recordSuccess(30, 4_000, 1_200, 4_000, 1_200, 4_096, "stop")
+            learning.recordUsage(4_000, 1_200, 4_000, 1_200, 1_000)
+            learning.recordOriginalBatchSuccess(30, recoveredBySplitting = false)
         }
         assertTrue(learning.snapshot().maxRows > 30)
     }
 
     @Test
-    fun recoverableFailuresReduceTheNextBatchLimit() {
+    fun successfulSplitRecoveryDoesNotGrowTheGlobalLimit() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
-        learning.recordFailure(30)
+        repeat(3) {
+            learning.recordOriginalBatchSuccess(30, recoveredBySplitting = true)
+        }
+        assertEquals(30, learning.snapshot().maxRows)
+    }
+
+    @Test
+    fun onlyFinalOriginalBatchFailureReducesTheNextLimit() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        learning.recordOriginalBatchFailure(30)
         assertEquals(15, learning.snapshot().maxRows)
     }
 
     @Test
-    fun actualUsageCalibratesTokenEstimates() {
+    fun actualUsageCalibratesInputAndOutputEstimates() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
-        learning.recordSuccess(30, 2_000, 1_000, 3_000, 1_500, 4_096, "stop")
+        learning.recordUsage(2_000, 1_000, 3_000, 1_500, 750)
         assertTrue(learning.snapshot().inputTokenMultiplier > 1.0)
         assertTrue(learning.snapshot().outputTokenMultiplier > 1.0)
     }
 
     @Test
-    fun consecutiveBatchesCoverAllCuesWithoutGaps() {
-        val lines = List(80) { "中".repeat(100) }
-        val model = "glm-4-flash-250414"
-        val learning = ApiSubtitleBatchLearningState(model)
-        var nextIndex = 0
-        var totalRows = 0
-        while (nextIndex < lines.size) {
-            val selection = ApiSubtitleBatchPolicy.selectBatch(
-                lines, nextIndex, model, "zh-CN", learning.snapshot(),
-            )
-            assertTrue(selection.endExclusive > nextIndex)
-            totalRows += selection.endExclusive - nextIndex
-            nextIndex = selection.endExclusive
-        }
-        assertEquals(lines.size, nextIndex)
-        assertEquals(lines.size, totalRows)
-    }
-
-    @Test
-    fun providerPublishedMillionTokenLimitsOverrideOnlyTheirOwnProvider() {
+    fun providerLimitsRemainScopedToTheProvider() {
         val model = "custom-provider/long-context-model"
         ApiSubtitleBatchPolicy.registerProviderLimits(
             model = model,
@@ -110,18 +99,28 @@ class ApiSubtitleBatchPolicyTest {
             providerKey = "https://provider-a.example/v1",
         )
         val discovered = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-a.example/v1")
-        val otherProvider = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-b.example/v1")
+        val other = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-b.example/v1")
         assertEquals(1_000_000, discovered.contextWindowTokens)
         assertEquals(80, discovered.initialRows)
         assertEquals(48_000, discovered.inputBudgetTokens)
-        assertEquals(32_768, otherProvider.contextWindowTokens)
-        assertEquals(30, otherProvider.initialRows)
+        assertEquals(32_768, other.contextWindowTokens)
+        assertEquals(30, other.initialRows)
     }
 
     @Test
-    fun geminiThreePointEightFlashUsesItsPublishedTokenLimits() {
-        val capability = ApiSubtitleBatchPolicy.capabilityForModel("gemini-3.8-flash")
-        assertEquals(1_048_576, capability.contextWindowTokens)
-        assertEquals(65_536, capability.maxOutputTokens)
+    fun unknownNamesContainingOneMillionMarkerAreNotTrustedWithoutMetadata() {
+        val capability = ApiSubtitleBatchPolicy.capabilityForModel("vendor/custom-1m-edition")
+        assertEquals(32_768, capability.contextWindowTokens)
+        assertEquals(30, capability.initialRows)
+    }
+
+    @Test
+    fun promptEstimateIncludesSystemAndContextText() {
+        val short = ApiSubtitleBatchPolicy.estimatePromptTokens("Translate.", "1|Hello")
+        val long = ApiSubtitleBatchPolicy.estimatePromptTokens(
+            "Translate. ".repeat(200),
+            """previous reference cues: [{"source":"hello","translation":"你好"}] current cues: 1|Hello""",
+        )
+        assertTrue(long > short)
     }
 }

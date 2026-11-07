@@ -35,6 +35,7 @@ internal data class ApiSubtitleBatchLearningRecord(
     val outputTokenMultiplier: Double,
     val inputBudgetTokens: Int,
     val outputBudgetTokens: Int,
+    val averageLatencyMs: Double = 0.0,
 )
 
 internal object ApiSubtitleBatchPolicy {
@@ -273,7 +274,7 @@ internal object ApiSubtitleBatchPolicy {
 }
 
 internal class ApiSubtitleBatchLearningState(
-    model: String,
+    private val model: String,
     providerKey: String = "",
     private val store: ApiSubtitleBatchLearningStore? = null,
 ) {
@@ -295,6 +296,7 @@ internal class ApiSubtitleBatchLearningState(
         outputMultiplier = saved?.outputTokenMultiplier ?: 1.0
         currentInputBudgetTokens = saved?.inputBudgetTokens ?: capability.inputBudgetTokens
         currentOutputBudgetTokens = saved?.outputBudgetTokens ?: capability.outputBudgetTokens
+        averageLatencyMs = saved?.averageLatencyMs ?: 0.0
     }
 
     @Synchronized
@@ -376,13 +378,14 @@ internal class ApiSubtitleBatchLearningState(
 
     private fun persist() {
         store?.saveLearning(
-            model = store.modelForCurrentStateFallback,
+            model = model,
             record = ApiSubtitleBatchLearningRecord(
                 maxRows = currentRows,
                 inputTokenMultiplier = inputMultiplier,
                 outputTokenMultiplier = outputMultiplier,
                 inputBudgetTokens = currentInputBudgetTokens,
                 outputBudgetTokens = currentOutputBudgetTokens,
+                averageLatencyMs = averageLatencyMs,
             ),
         )
     }

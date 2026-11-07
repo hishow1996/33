@@ -41,6 +41,7 @@ internal object ChatCompletionParamsPolicy {
         baseUrl: String,
         model: String,
         estimatedOutputTokens: Int = 0,
+        outputBudgetTokens: Int? = null,
     ): ChatSamplingParams {
         val normalizedModel = model.trim().lowercase(java.util.Locale.ROOT)
         val normalizedBase = baseUrl.trim().lowercase(java.util.Locale.ROOT)
@@ -53,6 +54,7 @@ internal object ChatCompletionParamsPolicy {
             normalizedModel,
             estimatedOutputTokens.coerceAtLeast(1),
             baseUrl,
+            outputBudgetTokens,
         )
         val isReasoningModel = openAiReasoning || thinkingOnly
         val reasoningFloor = if (isReasoningModel) REASONING_MAX_TOKENS else 0
