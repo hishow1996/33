@@ -2,6 +2,7 @@ package io.translatetube.local.translate
 
 import android.app.ActivityManager
 import android.content.Context
+import android.os.SystemClock
 import io.translatetube.local.performance.DevicePerformanceManager
 import io.translatetube.local.performance.DevicePerformancePolicy
 import kotlinx.coroutines.CoroutineScope
@@ -21,7 +22,27 @@ import java.nio.charset.StandardCharsets
 
 /** Native CTranslate2 runtime for additional quantized OPUS-MT pairs; keeps one model resident. */
 internal object OpusMtCt2Runtime {
-    private data class Loaded(val source: String, val identity: String, val handle: Long)
+    private data class Loaded(
+        val source: String,
+        val identity: String,
+        val handle: Long,
+        val inferenceThreads: Int,
+    )
+
+    private data class BatchRuntimeSnapshot(
+        val limits: OpusMtBatchPolicy.Limits,
+        val availableMemoryBytes: Long,
+        val playbackActive: Boolean,
+    )
+
+    private data class BatchRecoveryStats(
+        var nativeCalls: Int = 0,
+        var splitRetries: Int = 0,
+        var singleCueRetries: Int = 0,
+        var maxSplitDepth: Int = 0,
+        var firstError: Exception? = null,
+        val failedRows: MutableList<Int> = mutableListOf(),
+    )
 
     private val lock = Mutex()
     private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -47,11 +68,70 @@ internal object OpusMtCt2Runtime {
                 val nonBlankEntries = lines.withIndex().filter { it.value.isNotBlank() }
                 val lineLengths = nonBlankEntries.map { it.value.length }
                 var batchStartIndex = 0
+                var batchNumber = 0
+
+                suspend fun translateSegment(
+                    entries: List<IndexedValue<String>>,
+                    depth: Int,
+                    stats: BatchRecoveryStats,
+                ) {
+                    currentCoroutineContext().ensureActive()
+                    if (entries.isEmpty()) return
+                    stats.nativeCalls += 1
+                    val input = entries.map { it.value.toByteArray(StandardCharsets.UTF_8) }.toTypedArray()
+                    val result = try {
+                        OpusMtCt2Native.nativeTranslate(engine.handle, input).also { translated ->
+                            currentCoroutineContext().ensureActive()
+                            if (translated.size != entries.size) {
+                                throw IOException(
+                                    "CTranslate2 返回的字幕条数不匹配：预期 ${entries.size}，实际 ${translated.size}"
+                                )
+                            }
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        if (stats.firstError == null) stats.firstError = error
+                        val splitAt = OpusMtBatchPolicy.splitBatch(entries.size)
+                        if (splitAt != null && OpusMtBatchPolicy.shouldSplitAfterFailure(entries.size, error)) {
+                            stats.splitRetries += 1
+                            stats.maxSplitDepth = maxOf(stats.maxSplitDepth, depth + 1)
+                            // Retry smaller contiguous halves. Each successful half is kept even
+                            // when the other half still contains one malformed or expensive cue.
+                            translateSegment(entries.subList(0, splitAt), depth + 1, stats)
+                            translateSegment(entries.subList(splitAt, entries.size), depth + 1, stats)
+                        } else {
+                            entries.forEach { entry -> stats.failedRows += entry.index + 1 }
+                        }
+                        return
+                    }
+
+                    for ((offset, entry) in entries.withIndex()) {
+                        currentCoroutineContext().ensureActive()
+                        val translatedText = String(result[offset], StandardCharsets.UTF_8).trim()
+                        if (translatedText.isNotBlank()) {
+                            output[entry.index] = translatedText
+                        } else if (entries.size > 1) {
+                            // A valid batch response can still contain an empty hypothesis for
+                            // one cue. Retry only that cue rather than repeating good rows.
+                            stats.singleCueRetries += 1
+                            translateSegment(listOf(entry), depth + 1, stats)
+                        } else {
+                            stats.failedRows += entry.index + 1
+                            if (stats.firstError == null) {
+                                stats.firstError = IOException("CTranslate2 单条推理返回空译文")
+                            }
+                        }
+                    }
+                }
+
                 while (batchStartIndex < nonBlankEntries.size) {
                     currentCoroutineContext().ensureActive()
-                    // Re-sample available memory before each batch so later batches can shrink
+                    batchNumber += 1
+                    // Re-sample memory for every top-level batch so later batches can shrink
                     // when other apps or the video player increase device memory pressure.
-                    val limits = resolveBatchLimits(context.applicationContext)
+                    val runtimeSnapshot = resolveBatchRuntimeSnapshot(context.applicationContext)
+                    val limits = runtimeSnapshot.limits
                     val batchEndIndex = OpusMtBatchPolicy.nextBatchEndIndex(
                         lineLengths,
                         batchStartIndex,
@@ -59,85 +139,63 @@ internal object OpusMtCt2Runtime {
                     )
                     val batchEntries = nonBlankEntries.subList(batchStartIndex, batchEndIndex)
                     val batch = batchEntries.map { it.value }
-                    val input = batch.map { it.toByteArray(StandardCharsets.UTF_8) }.toTypedArray()
+                    val totalCharacters = batch.sumOf { it.length }
+                    val maxLineCharacters = batch.maxOfOrNull { it.length } ?: 0
+                    val stats = BatchRecoveryStats()
+                    val startedAt = SystemClock.elapsedRealtime()
 
-                    var batchError: Exception? = null
-                    val batchResult: Array<ByteArray>? = try {
-                        val result = OpusMtCt2Native.nativeTranslate(engine.handle, input)
-                        currentCoroutineContext().ensureActive()
-                        if (result.size != batch.size) {
-                            throw IOException(
-                                "CTranslate2 返回的字幕条数不匹配：预期 ${batch.size}，实际 ${result.size}"
-                            )
+                    translateSegment(batchEntries, depth = 0, stats = stats)
+
+                    val elapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+                    val firstRowNumber = batchEntries.first().index + 1
+                    val diagnosticContext = mapOf(
+                        "批次序号" to batchNumber.toString(),
+                        "批次起始字幕序号" to firstRowNumber.toString(),
+                        "批次字幕数量" to batch.size.toString(),
+                        "批次总字符数" to totalCharacters.toString(),
+                        "单行最大字符数" to maxLineCharacters.toString(),
+                        "采样可用内存MB" to (runtimeSnapshot.availableMemoryBytes / (1024L * 1024L)).toString(),
+                        "内存分档最大字幕数" to limits.maxExamples.toString(),
+                        "内存分档字符上限" to limits.maxCharacters.toString(),
+                        "播放负载活跃" to runtimeSnapshot.playbackActive.toString(),
+                        "模型加载时推理线程数" to engine.inferenceThreads.toString(),
+                        "CTranslate2 原生调用次数" to stats.nativeCalls.toString(),
+                        "二分缩小次数" to stats.splitRetries.toString(),
+                        "空结果单条重试次数" to stats.singleCueRetries.toString(),
+                        "最大拆分深度" to stats.maxSplitDepth.toString(),
+                        "最终失败字幕序号" to stats.failedRows.distinct().sorted().joinToString(","),
+                        "最终失败数量" to stats.failedRows.distinct().size.toString(),
+                        "耗时毫秒" to elapsedMs.toString(),
+                        "未记录字幕原文" to "true",
+                    )
+
+                    if (stats.splitRetries > 0 || stats.singleCueRetries > 0 || stats.failedRows.isNotEmpty()) {
+                        val recoveryPath = when {
+                            stats.failedRows.isNotEmpty() && stats.splitRetries > 0 -> "二分缩小后仍隔离失败行"
+                            stats.splitRetries > 0 -> "二分缩小后恢复"
+                            stats.singleCueRetries > 0 -> "仅对空结果逐条重试"
+                            else -> "无"
                         }
-                        result
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        batchError = error
-                        null
-                    }
-
-                    val failedRows = ArrayList<Int>()
-                    var retriedEmptyRows = 0
-                    for ((offset, line) in batch.withIndex()) {
-                        currentCoroutineContext().ensureActive()
-                        val originalRowNumber = batchEntries[offset].index + 1
-                        val batchText = batchResult
-                            ?.getOrNull(offset)
-                            ?.let { String(it, StandardCharsets.UTF_8).trim() }
-                            .orEmpty()
-
-                        val translatedText = if (batchText.isNotBlank()) {
-                            batchText
-                        } else {
-                            if (batchResult != null) retriedEmptyRows++
-                            try {
-                                val one = OpusMtCt2Native.nativeTranslate(
-                                    engine.handle,
-                                    arrayOf(line.toByteArray(StandardCharsets.UTF_8)),
-                                )
-                                currentCoroutineContext().ensureActive()
-                                if (one.size != 1) {
-                                    throw IOException("CTranslate2 单条重试返回了 ${one.size} 条结果")
-                                }
-                                String(one.single(), StandardCharsets.UTF_8).trim().also { value ->
-                                    if (value.isBlank()) {
-                                        throw IOException("CTranslate2 单条重试返回空译文")
-                                    }
-                                }
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (rowError: Exception) {
-                                failedRows += originalRowNumber
-                                ""
-                            }
-                        }
-                        output[batchEntries[offset].index] = translatedText
-                    }
-
-                    if (batchError != null || retriedEmptyRows > 0 || failedRows.isNotEmpty()) {
-                        val diagnosticError = batchError
-                            ?: IllegalStateException("CTranslate2 批量结果包含空译文，已逐条恢复")
                         AppLogStore.warning(
                             context.applicationContext,
                             "Translation",
-                            "OPUS-MT CTranslate2 已执行逐条恢复",
-                            diagnosticError,
-                            diagnosticContext = mapOf(
-                                "源语言" to source,
-                                "目标语言" to "zh-CN",
-                                "批次起始字幕序号" to (batchEntries.first().index + 1).toString(),
-                                "批次字幕数量" to batch.size.toString(),
-                                "空译文逐条重试数量" to retriedEmptyRows.toString(),
-                                "逐条恢复失败字幕序号" to failedRows.joinToString(","),
-                                "逐条恢复失败数量" to failedRows.size.toString(),
-                                "未记录字幕原文" to "true",
+                            "OPUS-MT CTranslate2 批次已执行恢复",
+                            stats.firstError ?: IOException("CTranslate2 批次中存在空译文"),
+                            diagnosticContext = diagnosticContext + mapOf(
+                                "恢复路径" to recoveryPath,
+                                "错误分类" to (stats.firstError?.javaClass?.simpleName ?: "空译文"),
                             ),
                         )
                     }
-                    // Failed cues stay blank in their original positions. The playback layer can
-                    // retry just those rows without losing successful translations in this batch.
+                    AppLogStore.info(
+                        context.applicationContext,
+                        "Translation",
+                        "OPUS-MT CTranslate2 批次处理完成",
+                        diagnosticContext = diagnosticContext,
+                    )
+
+                    // Failed cues stay blank at their original positions. The playback layer can
+                    // retry only those rows without losing successful translations in this batch.
                     batchStartIndex = batchEndIndex
                 }
                 output
@@ -175,13 +233,17 @@ internal object OpusMtCt2Runtime {
         Unit
     }
 
-    private fun resolveBatchLimits(context: Context): OpusMtBatchPolicy.Limits {
+    private fun resolveBatchRuntimeSnapshot(context: Context): BatchRuntimeSnapshot {
         val device = DevicePerformanceManager.snapshot(context)
         val playbackActive = DevicePerformanceManager.isPlaybackLoadActive()
-        return OpusMtBatchPolicy.resolve(
+        return BatchRuntimeSnapshot(
+            limits = OpusMtBatchPolicy.resolve(
+                availableMemoryBytes = device.availableMemoryBytes,
+                deviceMaxExamples = DevicePerformancePolicy.translationBatchMaxExamples(device, playbackActive),
+                deviceMaxCharacters = DevicePerformancePolicy.translationBatchMaxCharacters(device, playbackActive),
+            ),
             availableMemoryBytes = device.availableMemoryBytes,
-            deviceMaxExamples = DevicePerformancePolicy.translationBatchMaxExamples(device, playbackActive),
-            deviceMaxCharacters = DevicePerformancePolicy.translationBatchMaxCharacters(device, playbackActive),
+            playbackActive = playbackActive,
         )
     }
 
@@ -237,7 +299,7 @@ internal object OpusMtCt2Runtime {
             )
         }
         if (handle == 0L) throw IOException("CTranslate2 未返回有效的模型句柄")
-        return Loaded(source, identity, handle).also { loaded = it }
+        return Loaded(source, identity, handle, inferenceThreads).also { loaded = it }
     }
 }
 

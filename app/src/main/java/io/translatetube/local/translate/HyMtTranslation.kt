@@ -1010,22 +1010,29 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                 "模型格式" to "GGUF / Q2_0C",
             ),
         )
-        val simplifiedChineseSource = !HyMtLanguagePolicy.requiresTranslation(source)
-        HyMtRuntime.acquireLease()
-        try {
-            if (!simplifiedChineseSource && lines.any { it.isNotBlank() }) {
-                HyMtRuntime.prepare(appContext)
+        return LocalTranslationDiagnostics.run(
+            context = appContext,
+            engine = id,
+            sourceLanguage = source,
+            targetLanguage = "zh-CN",
+            lines = lines,
+        ) {
+            val simplifiedChineseSource = !HyMtLanguagePolicy.requiresTranslation(source)
+            HyMtRuntime.acquireLease()
+            try {
+                if (!simplifiedChineseSource && lines.any { it.isNotBlank() }) {
+                    HyMtRuntime.prepare(appContext)
             }
-            return withContext(Dispatchers.Default) {
-                val taskContext = currentCoroutineContext()
-                var rollingContext = context?.first.orEmpty()
+                withContext(Dispatchers.Default) {
+                    val taskContext = currentCoroutineContext()
+                    var rollingContext = context?.first.orEmpty()
                     .zip(context?.second.orEmpty())
                     .filter { it.first.isNotBlank() && it.second.isNotBlank() }
                     .takeLast(3)
                     .let { cues ->
                         if (cues.isEmpty()) null else cues.map { it.first } to cues.map { it.second }
                     }
-                lines.mapIndexed { index, line ->
+                    lines.mapIndexed { index, line ->
                     taskContext.ensureActive()
                     val translated = when {
                         line.isBlank() -> ""
@@ -1076,10 +1083,11 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                         )
                     }
                     translated
+                    }
                 }
+            } finally {
+                HyMtRuntime.releaseLease()
             }
-        } finally {
-            HyMtRuntime.releaseLease()
         }
     }
 

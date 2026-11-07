@@ -574,9 +574,16 @@ class Small100Engine(private val context: Context) : TranslationEngine {
             appContext, "Translation", "开始调用 SMaLL-100 多语言本地模型",
             diagnosticContext = mapOf("源语言" to source, "目标语言" to "zh", "字幕条数" to lines.size.toString()),
         )
-        return withContext(Dispatchers.Default) {
-            val taskContext = currentCoroutineContext()
-            lines.mapIndexed { index, line ->
+        return LocalTranslationDiagnostics.run(
+            context = appContext,
+            engine = id,
+            sourceLanguage = source,
+            targetLanguage = "zh-CN",
+            lines = lines,
+        ) {
+            withContext(Dispatchers.Default) {
+                val taskContext = currentCoroutineContext()
+                lines.mapIndexed { index, line ->
                 taskContext.ensureActive()
                 val translated = if (line.isBlank()) "" else try {
                     Small100Runtime.translateOneWithRecovery(appContext, line, "zh", source)
@@ -613,7 +620,7 @@ class Small100Engine(private val context: Context) : TranslationEngine {
                     )
                 }
                 translated
-            }
+                }
         }
     }
 

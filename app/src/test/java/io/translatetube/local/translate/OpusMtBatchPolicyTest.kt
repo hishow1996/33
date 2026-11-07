@@ -1,6 +1,10 @@
 package io.translatetube.local.translate
 
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpusMtBatchPolicyTest {
@@ -46,6 +50,49 @@ class OpusMtBatchPolicyTest {
         assertEquals(1, firstEnd)
         assertEquals(2, longCueEnd)
         assertEquals(3, finalEnd)
+    }
+
+    @Test
+    fun failedBatchesAreSplitIntoBalancedOrderedHalves() {
+        assertEquals(4, OpusMtBatchPolicy.splitBatch(8))
+        assertEquals(2, OpusMtBatchPolicy.splitBatch(5))
+        assertEquals(1, OpusMtBatchPolicy.splitBatch(2))
+        assertNull(OpusMtBatchPolicy.splitBatch(1))
+        assertNull(OpusMtBatchPolicy.splitBatch(0))
+    }
+
+    @Test
+    fun onlyBatchLevelFailuresAreEligibleForSplitRecovery() {
+        assertTrue(
+            OpusMtBatchPolicy.shouldSplitAfterFailure(
+                4,
+                IllegalStateException("std::bad_alloc while translating batch"),
+            ),
+        )
+        assertTrue(
+            OpusMtBatchPolicy.shouldSplitAfterFailure(
+                4,
+                IllegalStateException("Source SentencePiece encoding failed"),
+            ),
+        )
+        assertFalse(
+            OpusMtBatchPolicy.shouldSplitAfterFailure(
+                4,
+                CancellationException("translation cancelled"),
+            ),
+        )
+        assertFalse(
+            OpusMtBatchPolicy.shouldSplitAfterFailure(
+                4,
+                IllegalStateException("unsupported language"),
+            ),
+        )
+        assertFalse(
+            OpusMtBatchPolicy.shouldSplitAfterFailure(
+                1,
+                IllegalStateException("out of memory"),
+            ),
+        )
     }
 
     @Test

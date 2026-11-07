@@ -28,6 +28,37 @@ internal object OpusMtBatchPolicy {
         )
     }
 
+    /**
+     * Returns the exclusive split point for a failed batch. The two resulting ranges remain
+     * contiguous and preserve subtitle order; a singleton cannot be split further.
+     */
+    fun splitBatch(batchSize: Int): Int? =
+        if (batchSize > 1) (batchSize / 2).coerceAtLeast(1) else null
+
+    /**
+     * A native batch failure can be isolated by smaller requests, but cancellation and explicit
+     * model/language setup errors must never trigger more native inference calls.
+     */
+    fun shouldSplitAfterFailure(batchSize: Int, error: Throwable): Boolean {
+        if (batchSize <= 1) return false
+        val causes = generateSequence(error) { it.cause }.take(8).toList()
+        if (causes.any { it is kotlinx.coroutines.CancellationException }) return false
+        val detail = causes.joinToString(" ") { it.message.orEmpty() }
+            .lowercase(java.util.Locale.ROOT)
+        val nonRecoverable = listOf(
+            "model handle is empty",
+            "unsupported language",
+            "language is not supported",
+            "不支持源语言",
+            "目标语言",
+            "模型文件不完整",
+            "模型尚未下载",
+            "native library",
+            "libopusmtct2.so",
+        )
+        return nonRecoverable.none(detail::contains)
+    }
+
     /** Returns an exclusive end index and always advances for a valid start index. */
     fun nextBatchEndIndex(
         lineLengths: List<Int>,
