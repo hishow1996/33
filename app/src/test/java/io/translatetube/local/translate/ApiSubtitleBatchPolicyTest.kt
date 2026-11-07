@@ -97,7 +97,6 @@ class ApiSubtitleBatchPolicyTest {
         learning.recordOriginalBatchSuccess(
             batchRows = 50,
             recoveredBySplitting = true,
-            largestSuccessfulBatchRows = 1,
         )
         assertEquals(50, learning.snapshot().maxRows)
     }
@@ -221,7 +220,6 @@ class ApiSubtitleBatchPolicyTest {
         learning.recordOriginalBatchSuccess(
             batchRows = 30,
             recoveredBySplitting = true,
-            largestSuccessfulBatchRows = 5,
         )
         assertEquals(30, learning.snapshot().maxRows)
     }
