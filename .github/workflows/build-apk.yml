@@ -394,3 +394,5 @@ jobs:
 # Explicit user-requested APK rebuild after repairing Kokoro URL matcher string syntax (2026-11-07).
 
 # Explicit user-requested APK build trigger marker (2026-11-07 09:42 +08:00): build latest main and publish debug/release APK artifacts.
+
+# Explicit user-requested APK build retry marker (2026-11-07 09:53 +08:00): rerun tests and produce debug/release APK artifacts.
