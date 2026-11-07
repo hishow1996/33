@@ -100,9 +100,15 @@ class ApiSubtitleBatchPolicyTest {
     @Test
     fun glmFailureReducesTheNextBatchByFiveRowsAtATime() {
         val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
-        learning.recordOriginalBatchFailure(true, setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT))
+        learning.recordOriginalBatchFailure(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
+        )
         assertEquals(45, learning.snapshot().maxRows)
-        learning.recordOriginalBatchFailure(true, setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT))
+        learning.recordOriginalBatchFailure(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
+        )
         assertEquals(40, learning.snapshot().maxRows)
     }
 
