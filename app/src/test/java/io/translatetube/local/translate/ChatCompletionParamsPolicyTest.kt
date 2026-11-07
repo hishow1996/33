@@ -152,6 +152,24 @@ class ChatCompletionParamsPolicyTest {
     }
 
     @Test
+    fun modelCatalogSupportsVersionedAndUnversionedRelayRoutes() {
+        assertEquals(
+            listOf(
+                "https://api.deepseek.com/v1/models",
+                "https://api.deepseek.com/models",
+            ),
+            openAiCompatModelCatalogEndpoints("https://api.deepseek.com"),
+        )
+        assertEquals(
+            listOf(
+                "https://relay.example/api/v1/models",
+                "https://relay.example/api/models",
+            ),
+            openAiCompatModelCatalogEndpoints("https://relay.example/api/v1"),
+        )
+    }
+
+    @Test
     fun baseUrlQueryParametersRemainAfterTheEndpointPath() {
         assertEquals(
             "https://gateway.example/api/v3/chat/completions?tenant=abc",
