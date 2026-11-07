@@ -314,10 +314,12 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
 
     if (shouldRetrySameBatchForFormat && retryMalformedBatch != null) {
         sameBatchFormatRetryAttempted = true
-        android.util.Log.w(
-            "TranslationAPI",
-            "Retrying malformed subtitle response once at same batch size: rows=${lines.size}",
-        )
+        runCatching {
+            android.util.Log.w(
+                "TranslationAPI",
+                "Retrying malformed subtitle response once at same batch size: rows=${lines.size}",
+            )
+        }
         response = try {
             budget.consumeAttempt()
             retryMalformedBatch(lines, context)
@@ -514,11 +516,13 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     }
 
     if (lines.size < MIN_TRANSLATION_RECOVERY_BATCH_ROWS * 2) {
-        android.util.Log.w(
-            "TranslationAPI",
-            "Adaptive subtitle recovery stopped: rows=${lines.size}, " +
-                "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
-        )
+        runCatching {
+            android.util.Log.w(
+                "TranslationAPI",
+                "Adaptive subtitle recovery stopped: rows=${lines.size}, " +
+                    "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
+            )
+        }
         throw IllegalStateException(
             "翻译服务响应格式不完整；当前批次仅${lines.size}条，已达到最小恢复批次" +
                 "${MIN_TRANSLATION_RECOVERY_BATCH_ROWS}条，停止继续拆分。"
@@ -527,12 +531,14 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     val splitAt = (lines.size - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
         .coerceAtLeast(MIN_TRANSLATION_RECOVERY_BATCH_ROWS)
     budget.recordSplit()
-    android.util.Log.w(
-        "TranslationAPI",
-        "Adaptive subtitle batch reduction: rows=${lines.size}, nextRows=$splitAt, " +
-            "tailRows=${lines.size - splitAt}, stepRows=$TRANSLATION_RECOVERY_BATCH_STEP_ROWS, " +
-            "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
-    )
+    runCatching {
+        android.util.Log.w(
+            "TranslationAPI",
+            "Adaptive subtitle batch reduction: rows=${lines.size}, nextRows=$splitAt, " +
+                "tailRows=${lines.size - splitAt}, stepRows=$TRANSLATION_RECOVERY_BATCH_STEP_ROWS, " +
+                "minimumRows=$MIN_TRANSLATION_RECOVERY_BATCH_ROWS, reason=$recoveryReason",
+        )
+    }
     val leftSource = lines.subList(0, splitAt)
     val rightSource = lines.subList(splitAt, lines.size)
     val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
