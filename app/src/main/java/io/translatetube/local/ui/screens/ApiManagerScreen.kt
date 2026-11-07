@@ -70,6 +70,7 @@ import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.FreeModelDefaults
 import io.translatetube.local.translate.GeminiEngine
 import io.translatetube.local.translate.OpenAiCompatEngine
+import io.translatetube.local.translate.ApiSubtitleBatchLearningStore
 import io.translatetube.local.translate.encodeApiProfileExtraCredential
 import io.translatetube.local.translate.readApiProfileCredential
 import io.translatetube.local.tts.TtsCacheIdentityPolicy
@@ -688,7 +689,7 @@ fun ApiManagerScreen(onBack: () -> Unit, initialTab: String = "online") {
                                                     "模型名称" to p.model.take(120),
                                                 ),
                                             )
-                                            EngineFactory.fromProfile(p).testConnection()
+                                            EngineFactory.fromProfile(p, ctx.applicationContext).testConnection()
                                             val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
                                             AppLogStore.info(
                                                 ctx.applicationContext,
@@ -1543,9 +1544,25 @@ private fun FreeModelConfigDialog(
                         val started = System.currentTimeMillis()
                         try {
                             val engine = if (isGemini) {
-                                GeminiEngine(apiKey = apiKey.trim(), model = model.trim().ifEmpty { defaultModel }, baseUrl = FreeModelDefaults.GEMINI_BASE_URL)
+                                GeminiEngine(
+                                    apiKey = apiKey.trim(),
+                                    model = model.trim().ifEmpty { defaultModel },
+                                    baseUrl = FreeModelDefaults.GEMINI_BASE_URL,
+                                    batchLearningStore = ApiSubtitleBatchLearningStore(
+                                        ctx.applicationContext,
+                                        FreeModelDefaults.GEMINI_BASE_URL,
+                                    ),
+                                )
                             } else {
-                                OpenAiCompatEngine(baseUrl = baseUrl.trim().ifEmpty { FreeModelDefaults.DEEPSEEK_BASE_URL }, apiKey = apiKey.trim(), model = model.trim().ifEmpty { defaultModel })
+                                OpenAiCompatEngine(
+                                    baseUrl = baseUrl.trim().ifEmpty { FreeModelDefaults.DEEPSEEK_BASE_URL },
+                                    apiKey = apiKey.trim(),
+                                    model = model.trim().ifEmpty { defaultModel },
+                                    batchLearningStore = ApiSubtitleBatchLearningStore(
+                                        ctx.applicationContext,
+                                        baseUrl.trim().ifEmpty { FreeModelDefaults.DEEPSEEK_BASE_URL },
+                                    ),
+                                )
                             }
                             engine.testConnection()
                             val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
@@ -1768,7 +1785,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     ),
                 )
                 try {
-                    val list = EngineFactory.fromProfile(profile).listModels()
+                    val list = EngineFactory.fromProfile(profile, ctx.applicationContext).listModels()
                         ?: throw IllegalStateException("该类型不支持拉取模型")
                     val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                     AppLogStore.info(
@@ -1838,7 +1855,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     ),
                 )
                 try {
-                    EngineFactory.fromProfile(profile).testConnection()
+                    EngineFactory.fromProfile(profile, ctx.applicationContext).testConnection()
                     val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                     AppLogStore.info(
                         ctx,

@@ -10,7 +10,7 @@ import java.util.Locale
  * Persists only model limits and tuning statistics. The provider URL is reduced to a hashed
  * origin/path identity; API keys, query strings, prompt text and subtitle content are never saved.
  */
-internal class ApiSubtitleBatchLearningStore(
+class ApiSubtitleBatchLearningStore(
     context: Context,
     providerKey: String,
 ) {
@@ -20,7 +20,7 @@ internal class ApiSubtitleBatchLearningStore(
     )
     private val providerFingerprint = sha256(safeProviderIdentity(providerKey))
 
-    fun restoreCapability(model: String, providerKey: String) {
+    internal fun restoreCapability(model: String, providerKey: String) {
         runCatching {
             val json = preferences.getString(key("capability", model), null)
                 ?.let(::JSONObject) ?: return
@@ -46,7 +46,7 @@ internal class ApiSubtitleBatchLearningStore(
         }
     }
 
-    fun saveCapability(model: String, capability: ApiModelCapability) {
+    internal fun saveCapability(model: String, capability: ApiModelCapability) {
         runCatching {
             val json = JSONObject()
                 .put("contextWindowTokens", capability.contextWindowTokens)
@@ -61,7 +61,7 @@ internal class ApiSubtitleBatchLearningStore(
         }
     }
 
-    fun loadLearning(model: String, capability: ApiModelCapability): ApiSubtitleBatchLearningRecord? =
+    internal fun loadLearning(model: String, capability: ApiModelCapability): ApiSubtitleBatchLearningRecord? =
         runCatching {
             val json = preferences.getString(key("learning", model), null)
                 ?.let(::JSONObject) ?: return null
@@ -81,7 +81,7 @@ internal class ApiSubtitleBatchLearningStore(
             )
         }.getOrNull()
 
-    fun saveLearning(model: String, record: ApiSubtitleBatchLearningRecord) {
+    internal fun saveLearning(model: String, record: ApiSubtitleBatchLearningRecord) {
         runCatching {
             val json = JSONObject()
                 .put("maxRows", record.maxRows)

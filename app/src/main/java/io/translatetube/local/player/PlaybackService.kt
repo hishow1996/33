@@ -11348,7 +11348,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val active = profiles.firstOrNull { it.id == activeId }
         if (engine == null && active != null) {
             engine = try {
-                EngineFactory.fromProfile(active).also { engineName = active.name }
+                EngineFactory.fromProfile(active, applicationContext).also { engineName = active.name }
             } catch (failure: Exception) {
                 throw IllegalStateException(
                     "所选翻译服务“${active.name}”配置无法初始化：${failure.message ?: failure.javaClass.simpleName}。" +

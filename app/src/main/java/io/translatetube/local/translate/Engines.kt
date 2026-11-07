@@ -2412,7 +2412,8 @@ object EngineFactory {
     }
 
     fun getBuiltinEngine(activeId: Long, context: Context): TranslationEngine? {
-        val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
         return when (activeId) {
             ID_GOOGLE, ID_GOOGLE_ALT -> GoogleHybridEngine(context)
             ID_LOCAL_MLKIT -> MlKitEngine()
@@ -2427,26 +2428,55 @@ object EngineFactory {
                 val encKey = prefs.getString("free_gemini_key", "").orEmpty()
                 val key = if (encKey.isNotBlank()) Crypto.decrypt(encKey) else FreeModelDefaults.DEFAULT_GEMINI_KEY
                 val model = prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL) ?: FreeModelDefaults.GEMINI_MODEL
-                GeminiEngine(apiKey = key, model = model, baseUrl = FreeModelDefaults.GEMINI_BASE_URL)
+                GeminiEngine(
+                    apiKey = key,
+                    model = model,
+                    baseUrl = FreeModelDefaults.GEMINI_BASE_URL,
+                    batchLearningStore = ApiSubtitleBatchLearningStore(
+                        appContext,
+                        FreeModelDefaults.GEMINI_BASE_URL,
+                    ),
+                )
             }
             ID_FREE_DEEPSEEK -> {
                 val encKey = prefs.getString("free_deepseek_key", "").orEmpty()
                 val key = if (encKey.isNotBlank()) Crypto.decrypt(encKey) else FreeModelDefaults.DEFAULT_DEEPSEEK_KEY
                 val baseUrl = prefs.getString("free_deepseek_base_url", FreeModelDefaults.DEEPSEEK_BASE_URL) ?: FreeModelDefaults.DEEPSEEK_BASE_URL
                 val model = prefs.getString("free_deepseek_model", FreeModelDefaults.DEEPSEEK_MODEL) ?: FreeModelDefaults.DEEPSEEK_MODEL
-                OpenAiCompatEngine(baseUrl = baseUrl, apiKey = key, model = model)
+                OpenAiCompatEngine(
+                    baseUrl = baseUrl,
+                    apiKey = key,
+                    model = model,
+                    batchLearningStore = ApiSubtitleBatchLearningStore(appContext, baseUrl),
+                )
             }
             else -> null
         }
     }
 
-    fun fromProfile(p: io.translatetube.local.data.ApiProfile): TranslationEngine {
+    fun fromProfile(
+        p: io.translatetube.local.data.ApiProfile,
+        context: Context? = null,
+    ): TranslationEngine {
         val key = Crypto.decrypt(p.apiKey)
+        val appContext = context?.applicationContext
         return when (p.type) {
-            "OPENAI" -> OpenAiCompatEngine(p.baseUrl, key, p.model)
+            "OPENAI" -> OpenAiCompatEngine(
+                p.baseUrl,
+                key,
+                p.model,
+                appContext?.let { ApiSubtitleBatchLearningStore(it, p.baseUrl) },
+            )
             // Gemini does not expose a Base URL field in the UI. Ignore stale values from older
             // profiles so a Gemini API key is never sent to an OAuth-only Vertex/custom endpoint.
-            "GEMINI" -> GeminiEngine(key, p.model, "https://generativelanguage.googleapis.com")
+            "GEMINI" -> GeminiEngine(
+                key,
+                p.model,
+                "https://generativelanguage.googleapis.com",
+                appContext?.let {
+                    ApiSubtitleBatchLearningStore(it, "https://generativelanguage.googleapis.com")
+                },
+            )
             "GCLOUD" -> GoogleCloudEngine(key)
             "DEEPL" -> DeepLTranslationEngine(key, p.baseUrl)
             "BAIDU_API" -> BaiduOfficialTranslationEngine(readApiProfileCredential(p, "appId"), key)
