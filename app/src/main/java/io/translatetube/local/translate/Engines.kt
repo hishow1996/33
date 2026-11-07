@@ -307,6 +307,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         val complete = lines.indices.all { index ->
             lines[index].isBlank() || output[index].isNotBlank()
         }
+        if (!complete) recoveryReason = "TRANSLATION_QUALITY_REJECTED"
         if (complete) {
             budget.recordSuccessfulBatch(lines.size)
             return output
