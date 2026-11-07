@@ -186,6 +186,9 @@ private class TranslationRecoveryBudget {
     /** Any response/capacity failure that entered the bounded repair path. */
     var hadRecoverableFailure: Boolean = false
 
+    /** True once a persistently failing batch was divided into smaller requests. */
+    var recoveredBySplitting: Boolean = false
+
     fun recordFailureKind(kind: ApiSubtitleBatchFailureKind) {
         failureKinds += kind
         hadRecoverableFailure = true
@@ -199,7 +202,7 @@ private class TranslationRecoveryBudget {
     }
 
     fun summary(): TranslationRecoverySummary = TranslationRecoverySummary(
-        recoveredBySplitting = false,
+        recoveredBySplitting = recoveredBySplitting,
         largestSuccessfulBatchRows = largestSuccessfulBatchRows,
         attempts = attempts,
         failureKinds = failureKinds.toSet(),
@@ -230,6 +233,12 @@ private class TranslationRecoveryBudget {
  * Malformed or truncated output may be retried once with the exact same rows; if alignment
  * still cannot be proven, the batch fails instead of being divided into smaller requests.
  * Correctly aligned rejected rows may be returned to the caller's row-only repair loop.
+ *
+ * API engines pass [splitOnPersistentFormatFailure]: when the same-size retry also fails, the
+ * batch is divided in half (recursively, down to single cues) instead of being abandoned. Before
+ * the fixed-batch change this was the recovery that let providers which drop the tail of a long
+ * reply (observed on Zhipu) still finish. Halves share the original attempt budget and never
+ * repeat the same-size retry, so the number of paid requests stays bounded.
  */
 internal suspend fun translateBatchWithAdaptiveRecovery(
     lines: List<String>,
@@ -242,6 +251,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     deferInvalidRowsToCaller: Boolean = false,
     retryMalformedBatch: (suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>)? = null,
     onRecoverySummary: ((summary: TranslationRecoverySummary) -> Unit)? = null,
+    splitOnPersistentFormatFailure: Boolean = false,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
@@ -250,6 +260,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
         translateBatchWithAdaptiveRecoveryInternal(
             lines, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
             deferInvalidRowsToCaller, retryMalformedBatch, translate, budget,
+            splitOnPersistentFormatFailure,
         )
     } catch (error: Exception) {
         onRecoverySummary?.invoke(budget.summary())
@@ -290,6 +301,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     retryMalformedBatch: (suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>)?,
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
     budget: TranslationRecoveryBudget,
+    splitOnPersistentFormatFailure: Boolean = false,
 ): List<String> {
     var recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH"
     var response: List<String>? = null
@@ -416,6 +428,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                     retryMalformedBatch,
                     translate,
                     budget,
+                    splitOnPersistentFormatFailure,
                 )
                 retry.forEachIndexed { offset, value ->
                     output[missingStart + offset] = value
@@ -523,9 +536,9 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         )
     }
 
-    // Batch sizing is fixed. A malformed or truncated response must never silently
-    // reduce the next request to a smaller row count; retry the same batch once above,
-    // then fail with the original alignment evidence intact.
+    // Batch sizing stays fixed for the next batch. Without splitting enabled, a malformed or
+    // truncated response is retried once above and then fails with the alignment evidence intact;
+    // with splitting enabled (API engines) only this batch is subdivided, below.
     runCatching {
         android.util.Log.w(
             "TranslationAPI",
@@ -533,6 +546,30 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                 "sameBatchRetryAttempted=$sameBatchFormatRetryAttempted, reason=$recoveryReason",
         )
     }
+    if (splitOnPersistentFormatFailure && lines.size > 1) {
+        // Malformed output cannot be mapped to rows, so smaller requests are the only safe way
+        // forward: every half is answered on its own and merged in the original order.
+        val midpoint = lines.size / 2
+        val leftSource = lines.subList(0, midpoint)
+        val rightSource = lines.subList(midpoint, lines.size)
+        budget.recoveredBySplitting = true
+        diagnostics?.recordRecoveryAttempt(
+            lines.size, "拆分", "拆成 ${leftSource.size}+${rightSource.size} 条分别请求",
+        )
+        val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
+            leftSource, context, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
+            deferInvalidRowsToCaller, null, translate, budget, true,
+        )
+        val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
+        val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
+        val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
+        val rightTranslation = translateBatchWithAdaptiveRecoveryInternal(
+            rightSource, rightContext, isAcceptableTranslation, retrySingle, acceptAfterRecovery,
+            deferInvalidRowsToCaller, null, translate, budget, true,
+        )
+        return leftTranslation + rightTranslation
+    }
+
     val attemptBrief = diagnostics?.recoveryAttemptBrief().orEmpty()
     throw IllegalStateException(
         "翻译服务响应格式不完整；固定批次 ${lines.size} 条在同批重试后仍无法可靠对齐，" +
@@ -2179,6 +2216,7 @@ class OpenAiCompatEngine(
                         )
                     },
                     onRecoverySummary = { recoverySummary = it },
+                    splitOnPersistentFormatFailure = true,
                 ) { rows, cueContext ->
                     translateBatch(
                         rows, srcLang, tgtLang, cueContext,
@@ -2550,6 +2588,7 @@ class GeminiEngine(
                         )
                     },
                     onRecoverySummary = { recoverySummary = it },
+                    splitOnPersistentFormatFailure = true,
                 ) { rows, cueContext ->
                     translateBatch(
                         rows, srcLang, tgtLang, cueContext,

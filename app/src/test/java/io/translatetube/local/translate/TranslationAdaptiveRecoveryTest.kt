@@ -99,6 +99,51 @@ class TranslationAdaptiveRecoveryTest {
     }
 
     @Test
+    fun apiEnginesSplitABatchWhoseTailTheProviderKeepsDropping() = runBlocking {
+        val requestSizes = mutableListOf<Int>()
+        val sources = List(16) { "cue-$it" }
+        // Simulates a provider that cannot return more than 8 aligned rows per reply.
+        val reply: suspend (List<String>) -> List<String> = { rows ->
+            requestSizes += rows.size
+            if (rows.size > 8) {
+                throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
+            }
+            rows.map { "译-$it" }
+        }
+        var summary: TranslationRecoverySummary? = null
+
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = sources,
+            retryMalformedBatch = { rows, _ -> reply(rows) },
+            onRecoverySummary = { summary = it },
+            splitOnPersistentFormatFailure = true,
+            translate = { rows, _ -> reply(rows) },
+        )
+
+        assertEquals(listOf(16, 16, 8, 8), requestSizes)
+        assertEquals(sources.map { "译-$it" }, result)
+        assertTrue(summary?.recoveredBySplitting == true)
+    }
+
+    @Test
+    fun splitRecoveryKeepsOrderAndBoundsRequestsWhenEveryReplyFails() = runBlocking {
+        val requestSizes = mutableListOf<Int>()
+        val failure = runCatching {
+            translateBatchWithAdaptiveRecovery(
+                lines = List(16) { "cue-$it" },
+                splitOnPersistentFormatFailure = true,
+                translate = { rows, _ ->
+                    requestSizes += rows.size
+                    throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
+                },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertTrue(requestSizes.size <= MAX_TRANSLATION_REPAIR_ATTEMPTS_PER_BATCH)
+    }
+
+    @Test
     fun retriesOnlyMissingRowsAndKeepsAlreadyTranslatedRows() = runBlocking {
         val calls = mutableListOf<List<String>>()
         val seenContexts = mutableListOf<Pair<List<String>, List<String>>?>()
