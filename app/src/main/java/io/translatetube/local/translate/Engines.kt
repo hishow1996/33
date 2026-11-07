@@ -2059,14 +2059,6 @@ class OpenAiCompatEngine(
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
         translateWithContext(lines, srcLang, tgtLang, null, emptyList(), null)
 
-    override suspend fun preferredBatchRows(
-        lines: List<String>,
-        startIndex: Int,
-        srcLang: String,
-        tgtLang: String,
-        videoTitle: String?,
-    ): Int = minOf(FIXED_API_TRANSLATION_BATCH_ROWS, lines.size - startIndex).coerceAtLeast(1)
-
     override suspend fun translateWithContext(
         lines: List<String>,
         srcLang: String,
@@ -2437,14 +2429,6 @@ class GeminiEngine(
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
         translateWithContext(lines, srcLang, tgtLang, null, emptyList(), null)
-
-    override suspend fun preferredBatchRows(
-        lines: List<String>,
-        startIndex: Int,
-        srcLang: String,
-        tgtLang: String,
-        videoTitle: String?,
-    ): Int = minOf(FIXED_API_TRANSLATION_BATCH_ROWS, lines.size - startIndex).coerceAtLeast(1)
 
     override suspend fun translateWithContext(
         lines: List<String>,
