@@ -1949,6 +1949,14 @@ class OpenAiCompatEngine(
                     isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                     acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                     deferInvalidRowsToCaller = true,
+                    retryMalformedBatch = { rows, cueContext ->
+                        translateBatch(
+                            rows, srcLang, tgtLang, cueContext,
+                            forceTranslate = true,
+                            lookaheadSource = lookaheadSource,
+                            videoTitle = videoTitle,
+                        )
+                    },
                     onRecoverySummary = { recoverySummary = it },
                 ) { rows, cueContext ->
                     translateBatch(
@@ -1959,15 +1967,23 @@ class OpenAiCompatEngine(
                 }
             } catch (error: Exception) {
                 if (error is IllegalStateException &&
-                    (isRecoverableTranslationFormatError(error) || isTranslationRecoveryAttemptLimit(error))
+                    (recoverySummary.failureKinds.isNotEmpty() ||
+                        isRecoverableTranslationFormatError(error) ||
+                        isTranslationRecoveryAttemptLimit(error))
                 ) {
+                    val rowCapWasBinding = batch.size == learningSnapshot.maxRows
                     batchLearning.recordOriginalBatchFailure(
-                        batch.size, recoverySummary.largestSuccessfulBatchRows,
+                        rowCapWasBinding = rowCapWasBinding,
+                        failureKinds = recoverySummary.failureKinds,
                     )
                     android.util.Log.w(
                         "TranslationAPI",
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
-                            "rows=${batch.size}, failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
+                            "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                            "rowCapWasBinding=$rowCapWasBinding, failureKinds=${recoverySummary.failureKinds}, " +
+                            "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
+                            "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
+                            "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
                             "httpStatus=${TranslationFailureDiagnosticPolicy.httpStatus(error)}",
                     )
                 }
@@ -2268,6 +2284,14 @@ class GeminiEngine(
                     isAcceptableTranslation = subtitleTranslationAcceptor(srcLang, tgtLang),
                     acceptAfterRecovery = subtitleShortUntranslatedAcceptor(srcLang, tgtLang),
                     deferInvalidRowsToCaller = true,
+                    retryMalformedBatch = { rows, cueContext ->
+                        translateBatch(
+                            rows, srcLang, tgtLang, cueContext,
+                            forceTranslate = true,
+                            lookaheadSource = lookaheadSource,
+                            videoTitle = videoTitle,
+                        )
+                    },
                     onRecoverySummary = { recoverySummary = it },
                 ) { rows, cueContext ->
                     translateBatch(
@@ -2278,15 +2302,23 @@ class GeminiEngine(
                 }
             } catch (error: Exception) {
                 if (error is IllegalStateException &&
-                    (isRecoverableTranslationFormatError(error) || isTranslationRecoveryAttemptLimit(error))
+                    (recoverySummary.failureKinds.isNotEmpty() ||
+                        isRecoverableTranslationFormatError(error) ||
+                        isTranslationRecoveryAttemptLimit(error))
                 ) {
+                    val rowCapWasBinding = batch.size == learningSnapshot.maxRows
                     batchLearning.recordOriginalBatchFailure(
-                        batch.size, recoverySummary.largestSuccessfulBatchRows,
+                        rowCapWasBinding = rowCapWasBinding,
+                        failureKinds = recoverySummary.failureKinds,
                     )
                     android.util.Log.w(
                         "GeminiEngine",
                         "Original subtitle batch failed after adaptive recovery: model=${model.take(100)}, " +
-                            "rows=${batch.size}, failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
+                            "rows=${batch.size}, rowCap=${learningSnapshot.maxRows}, " +
+                            "rowCapWasBinding=$rowCapWasBinding, failureKinds=${recoverySummary.failureKinds}, " +
+                            "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
+                            "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, " +
+                            "failureType=${TranslationFailureDiagnosticPolicy.classify(error)}, " +
                             "httpStatus=${TranslationFailureDiagnosticPolicy.httpStatus(error)}",
                     )
                 }
