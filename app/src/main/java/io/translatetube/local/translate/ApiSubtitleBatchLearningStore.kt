@@ -93,15 +93,8 @@ class ApiSubtitleBatchLearningStore(
                     (array.opt(index) as? Number)?.toInt()?.takeIf { it in 0..4 }
                 }.takeLast(24)
             }.orEmpty()
-            val storedMaxRows = json.optInt("maxRows", capability.initialRows)
-                .coerceIn(1, capability.maxRows)
-            val sizingPolicyVersion = json.optInt("batchSizingPolicyVersion", 0)
-            val migratedMaxRows = ApiSubtitleBatchPolicy.conservativeInitialRowsForModel(model)
-                ?.takeIf { sizingPolicyVersion < BATCH_SIZING_POLICY_VERSION }
-                ?.let { storedMaxRows.coerceAtMost(it) }
-                ?: storedMaxRows
             ApiSubtitleBatchLearningRecord(
-                maxRows = migratedMaxRows,
+                maxRows = FIXED_API_TRANSLATION_BATCH_ROWS,
                 inputTokenMultiplier = json.optDouble("inputTokenMultiplier", 1.0)
                     .coerceIn(0.75, 3.0),
                 outputTokenMultiplier = json.optDouble("outputTokenMultiplier", 1.0)
@@ -144,7 +137,6 @@ class ApiSubtitleBatchLearningStore(
                     JSONArray().apply { record.batchOutcomeSamples.takeLast(24).forEach { put(it) } },
                 )
                 .put("recoveryPolicyVersion", RECOVERY_POLICY_VERSION)
-                .put("batchSizingPolicyVersion", BATCH_SIZING_POLICY_VERSION)
             preferences.edit().putString(key("learning", model, learningScope), json.toString()).apply()
         }
     }
@@ -172,6 +164,5 @@ class ApiSubtitleBatchLearningStore(
         const val PREFS_NAME = "api_translation_batch_learning"
         const val RECOVERY_POLICY_VERSION = 5
         const val CAPABILITY_SCHEMA_VERSION = 3
-        const val BATCH_SIZING_POLICY_VERSION = 1
     }
 }
