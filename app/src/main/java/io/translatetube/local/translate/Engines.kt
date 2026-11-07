@@ -1664,6 +1664,125 @@ private fun buildOpenAiSubtitlePrompts(
     return ApiSubtitlePrompts(sys, user)
 }
 
+/**
+ * Read common model-catalog envelopes used by OpenAI-compatible gateways and relays.
+ * Official OpenAI exposes IDs only; DeepSeek and OpenRouter additionally publish machine-readable
+ * context/output limits. Unknown fields remain optional and never make a model unavailable.
+ */
+private fun parseOpenAiCompatibleModelCatalog(body: String): List<JSONObject> {
+    fun convertArray(array: JSONArray?): List<JSONObject> {
+        if (array == null) return emptyList()
+        val models = mutableListOf<JSONObject>()
+        for (index in 0 until array.length()) {
+            when (val item = array.opt(index)) {
+                is JSONObject -> models += item
+                is String -> item.takeIf(String::isNotBlank)?.let {
+                    models += JSONObject().put("id", it)
+                }
+            }
+        }
+        return models
+    }
+
+    val rootObject = runCatching { JSONObject(body) }.getOrNull()
+    if (rootObject == null) {
+        val rootArray = runCatching { JSONArray(body) }.getOrNull()
+        return convertArray(rootArray)
+    }
+
+    val data = rootObject.optJSONObject("data")
+    val models = rootObject.optJSONObject("models")
+    val result = rootObject.optJSONObject("result")
+    val arrays = listOfNotNull(
+        rootObject.optJSONArray("data"),
+        rootObject.optJSONArray("models"),
+        rootObject.optJSONArray("items"),
+        data?.optJSONArray("models"),
+        data?.optJSONArray("data"),
+        models?.optJSONArray("data"),
+        models?.optJSONArray("items"),
+        result?.optJSONArray("data"),
+        result?.optJSONArray("models"),
+        result?.optJSONArray("items"),
+    )
+    return arrays.firstOrNull { it.length() > 0 }?.let(::convertArray)
+        ?: arrays.firstOrNull()?.let(::convertArray)
+        ?: emptyList()
+}
+
+private fun JSONObject.firstPositiveInt(vararg keys: String): Int? {
+    for (key in keys) {
+        val raw = opt(key)
+        val value = when (raw) {
+            is Number -> raw.toLong()
+            is String -> raw.trim().toLongOrNull()
+            else -> null
+        } ?: continue
+        if (value in 1..Int.MAX_VALUE.toLong()) return value.toInt()
+    }
+    return null
+}
+
+private data class ApiCatalogModelLimits(
+    val contextWindowTokens: Int?,
+    val maxInputTokens: Int?,
+    val maxOutputTokens: Int?,
+)
+
+private fun readApiCatalogModelLimits(model: JSONObject): ApiCatalogModelLimits {
+    val nested = listOfNotNull(
+        model.optJSONObject("limits"),
+        model.optJSONObject("top_provider"),
+        model.optJSONObject("architecture"),
+        model.optJSONObject("token_limits"),
+        model.optJSONObject("model_limits"),
+        model.optJSONObject("capabilities"),
+        model.optJSONObject("metadata"),
+    )
+    val sources = listOf(model) + nested
+    fun read(vararg keys: String): Int? =
+        sources.firstNotNullOfOrNull { source -> source.firstPositiveInt(*keys) }
+
+    return ApiCatalogModelLimits(
+        contextWindowTokens = read(
+            "context_window",
+            "context_length",
+            "context_window_tokens",
+            "max_context_length",
+            "max_context_tokens",
+            "max_model_len",
+            "num_ctx",
+            "context",
+        ),
+        maxInputTokens = read(
+            "max_input_tokens",
+            "input_token_limit",
+            "max_prompt_tokens",
+            "max_input_token_length",
+            "max_input_length",
+            "input_limit",
+            "max_input",
+            "input",
+        ),
+        maxOutputTokens = read(
+            "max_output_tokens",
+            "max_completion_tokens",
+            "output_token_limit",
+            "max_output_length",
+            "completion_limit",
+            "output_limit",
+            "max_tokens",
+            "output",
+        ),
+    )
+}
+
+private fun JSONObject.readApiCatalogModelId(): String? =
+    listOf("id", "model", "model_id", "slug", "name")
+        .firstNotNullOfOrNull { key ->
+            optString(key).trim().takeIf { it.isNotBlank() && it != "null" }
+        }
+
 /** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
 class OpenAiCompatEngine(
     private val baseUrl: String,
@@ -1837,44 +1956,24 @@ class OpenAiCompatEngine(
 
     override suspend fun listModels(): List<String> {
         val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"), currentCoroutineContext()[Job])
-        val arr = JSONObject(body).optJSONArray("data") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { index ->
-            val item = arr.optJSONObject(index) ?: return@mapNotNull null
-            val id = item.optString("id").takeIf { it.isNotBlank() && it != "null" }
-                ?: return@mapNotNull null
-            val limits = item.optJSONObject("limits")
-            fun positive(vararg values: Int): Int? = values.firstOrNull { it > 0 }
-            val contextTokens = positive(
-                item.optInt("context_length"),
-                item.optInt("context_window"),
-                item.optInt("max_model_len"),
-                limits?.optInt("context") ?: 0,
-                item.optJSONObject("top_provider")?.optInt("context_length") ?: 0,
-            )
-            val inputTokens = positive(
-                item.optInt("max_input_tokens"),
-                item.optInt("input_token_limit"),
-                limits?.optInt("input") ?: 0,
-            )
-            val outputTokens = positive(
-                item.optInt("max_output_tokens"),
-                item.optInt("max_completion_tokens"),
-                item.optInt("output_token_limit"),
-                limits?.optInt("output") ?: 0,
-                item.optJSONObject("top_provider")?.optInt("max_completion_tokens") ?: 0,
-            )
-            if (contextTokens != null || inputTokens != null || outputTokens != null) {
+        return parseOpenAiCompatibleModelCatalog(body).mapNotNull { item ->
+            val id = item.readApiCatalogModelId() ?: return@mapNotNull null
+            val limits = readApiCatalogModelLimits(item)
+            if (limits.contextWindowTokens != null ||
+                limits.maxInputTokens != null ||
+                limits.maxOutputTokens != null
+            ) {
                 val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
                     model = id,
-                    contextWindowTokens = contextTokens,
-                    maxOutputTokens = outputTokens,
-                    maxInputTokens = inputTokens,
+                    contextWindowTokens = limits.contextWindowTokens,
+                    maxOutputTokens = limits.maxOutputTokens,
+                    maxInputTokens = limits.maxInputTokens,
                     providerKey = baseUrl,
                 )
                 batchLearningStore?.saveCapability(id, capability)
             }
             id
-        }.sorted()
+        }.distinct().sorted()
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
