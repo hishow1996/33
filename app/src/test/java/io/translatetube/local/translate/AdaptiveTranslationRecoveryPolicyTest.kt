@@ -56,31 +56,22 @@ class AdaptiveTranslationRecoveryPolicyTest {
     }
 
     @Test
-    fun adaptiveRecoveryStopsAtSharedPerBatchRequestBudget() = runBlocking {
-        var requests = 0
-        val attemptsPerSubtitle = mutableMapOf<String, Int>()
+    fun adaptiveRecoveryReducesByFiveRowsAndNeverSplitsBelowFive() = runBlocking {
+        val requests = mutableListOf<Int>()
         val error = runCatching {
             translateBatchWithAdaptiveRecovery(
                 lines = List(30) { "subtitle $it" },
                 translate = { rows, _ ->
-                    requests++
-                    if (rows.size > 1) {
-                        throw IllegalStateException("翻译服务返回的字幕编号不完整")
-                    }
-                    val source = rows.single()
-                    val attempt = (attemptsPerSubtitle[source] ?: 0) + 1
-                    attemptsPerSubtitle[source] = attempt
-                    if (attempt == 1) {
-                        throw IllegalStateException("翻译服务返回的字幕编号不完整")
-                    }
-                    listOf("译文-$source")
+                    requests += rows.size
+                    throw IllegalStateException("翻译服务返回的字幕编号不完整")
                 },
             )
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("单批请求上限"))
-        assertEquals(MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH, requests)
+        assertTrue(error?.message.orEmpty().contains("最小恢复批次5条"))
+        assertEquals(listOf(30, 25, 20, 15, 10, 5), requests)
+        assertTrue(requests.all { it >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS })
     }
 
     @Test
@@ -123,7 +114,7 @@ class AdaptiveTranslationRecoveryPolicyTest {
         )
         assertEquals(lines.size, result.size)
         assertTrue(summary?.recoveredBySplitting == true)
-        assertEquals(8, summary?.largestSuccessfulBatchRows ?: 0)
+        assertEquals(10, summary?.largestSuccessfulBatchRows ?: 0)
         assertTrue((summary?.attempts ?: 0) > 1)
     }
 }
