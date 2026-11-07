@@ -1596,9 +1596,9 @@ private fun isModelCatalogRouteMissing(error: Throwable): Boolean {
     val detail = generateSequence(error) { it.cause }
         .take(8)
         .joinToString(" ") { it.message.orEmpty() }
-    return Regex("""\\bHTTP\\s+(404|405)\\b""", RegexOption.IGNORE_CASE)
+    return Regex("""\bHTTP\s+(404|405)\b""", RegexOption.IGNORE_CASE)
         .containsMatchIn(detail) ||
-        Regex("""\\b(404|405)\\s+(Not Found|Method Not Allowed)\\b""", RegexOption.IGNORE_CASE)
+        Regex("""\b(404|405)\s+(Not Found|Method Not Allowed)\b""", RegexOption.IGNORE_CASE)
             .containsMatchIn(detail)
 }
 
