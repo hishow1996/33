@@ -134,6 +134,22 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
+    fun extremeUsageOutliersDoNotPoisonTokenCalibration() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        val before = learning.snapshot()
+        learning.recordUsage(
+            estimatedInputTokens = 1_000,
+            estimatedOutputTokens = 1_000,
+            actualInputTokens = 10_000,
+            actualOutputTokens = 10_000,
+            latencyMs = 500,
+        )
+        val after = learning.snapshot()
+        assertEquals(before.inputTokenMultiplier, after.inputTokenMultiplier, 0.0001)
+        assertEquals(before.outputTokenMultiplier, after.outputTokenMultiplier, 0.0001)
+    }
+
+    @Test
     fun providerLimitsRemainScopedToTheProvider() {
         val model = "custom-provider/long-context-model"
         ApiSubtitleBatchPolicy.registerProviderLimits(
@@ -157,6 +173,43 @@ class ApiSubtitleBatchPolicyTest {
         val capability = ApiSubtitleBatchPolicy.capabilityForModel("vendor/custom-1m-edition")
         assertEquals(32_768, capability.contextWindowTokens)
         assertEquals(30, capability.initialRows)
+    }
+
+    @Test
+    fun knownModelLimitsRequireARecognizedBasenamePrefix() {
+        val official = ApiSubtitleBatchPolicy.capabilityForModel(
+            "deepseek-ai/DeepSeek-V4-Pro-2026-11",
+        )
+        val spoofed = ApiSubtitleBatchPolicy.capabilityForModel(
+            "relay/custom-deepseek-v4-pro",
+        )
+        val genericMarker = ApiSubtitleBatchPolicy.capabilityForModel(
+            "vendor/custom-128k-edition",
+        )
+        assertEquals(1_048_576, official.contextWindowTokens)
+        assertEquals(32_768, spoofed.contextWindowTokens)
+        assertEquals(32_768, genericMarker.contextWindowTokens)
+        assertEquals(30, genericMarker.initialRows)
+    }
+
+    @Test
+    fun providerCatalogLimitsOverrideBuiltInModelFamilyDefaults() {
+        val model = "vendor/deepseek-v4-pro"
+        val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
+            model = model,
+            contextWindowTokens = 64_000,
+            maxOutputTokens = 4_096,
+            maxInputTokens = 48_000,
+            providerKey = "https://catalog.example/v1",
+        )
+        val resolved = ApiSubtitleBatchPolicy.capabilityForModel(
+            model,
+            "https://catalog.example/v1",
+        )
+        assertEquals(64_000, resolved.contextWindowTokens)
+        assertEquals(4_096, resolved.maxOutputTokens)
+        assertEquals(48_000, resolved.maxInputTokens ?: 0)
+        assertEquals(capability, resolved)
     }
 
     @Test
@@ -511,6 +564,92 @@ class ApiSubtitleBatchPolicyTest {
         assertTrue(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in selection.limitingReasons)
         assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET !in selection.limitingReasons)
         assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT !in selection.limitingReasons)
+    }
+
+    @Test
+    fun performanceMetricsTrackSuccessRateFailuresAndSplitRecoveries() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        learning.recordOriginalBatchSuccess(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            hadRecoverableFailure = false,
+            recoveredBySplitting = false,
+            failureKinds = emptySet(),
+            allRowsAccepted = true,
+        )
+        learning.recordOriginalBatchSuccess(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            hadRecoverableFailure = true,
+            recoveredBySplitting = true,
+            failureKinds = emptySet(),
+            allRowsAccepted = true,
+        )
+        learning.recordOriginalBatchFailure(
+            limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+            failureKinds = emptySet(),
+        )
+        val performance = learning.performanceSnapshot()
+        assertEquals(3, performance.sampledBatchCount)
+        assertEquals(2, performance.successfulBatchCount)
+        assertEquals(66.6667, performance.successRatePercent, 0.001)
+        assertEquals(1, performance.recoveredBatchCount)
+        assertEquals(1, performance.splitRecoveryCount)
+        assertEquals(1, performance.failedBatchCount)
+    }
+
+    @Test
+    fun repeatedSplitRecoveriesBlockFurtherBatchGrowth() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        repeat(8) {
+            learning.recordUsage(1_000, 500, 1_000, 500, 10_000, batchRows = 10)
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = true,
+                recoveredBySplitting = true,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+        val beforeCleanBatches = learning.snapshot()
+        repeat(2) {
+            learning.recordUsage(1_000, 500, 1_000, 500, 10_000, batchRows = 10)
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+        assertEquals(beforeCleanBatches.maxRows, learning.snapshot().maxRows)
+        assertEquals(8, learning.performanceSnapshot().splitRecoveryCount)
+    }
+
+    @Test
+    fun throughputRegressionPausesBatchGrowthWithoutShrinkingKnownCapacity() {
+        val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
+        repeat(8) {
+            learning.recordUsage(1_000, 500, 1_000, 500, 12_000, batchRows = 20)
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+        val beforeSlowWindow = learning.snapshot().maxRows
+        assertTrue(beforeSlowWindow > 30)
+        repeat(2) {
+            learning.recordUsage(1_000, 500, 1_000, 500, 120_000, batchRows = 20)
+            learning.recordOriginalBatchSuccess(
+                limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
+                hadRecoverableFailure = false,
+                recoveredBySplitting = false,
+                failureKinds = emptySet(),
+                allRowsAccepted = true,
+            )
+        }
+        assertEquals(beforeSlowWindow, learning.snapshot().maxRows)
     }
 
     @Test
