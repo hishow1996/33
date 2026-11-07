@@ -7,46 +7,48 @@ import org.junit.Test
 
 class TranslationAdaptiveRecoveryTest {
     @Test
-    fun splitsLargeRequestsWhenTheModelReturnsIncompleteRows() = runBlocking {
+    fun splitsLargeRequestsInFiveRowStepsWhenTheModelReturnsIncompleteRows() = runBlocking {
         val calls = mutableListOf<Int>()
-        val result = translateBatchWithAdaptiveRecovery(
-            lines = (0 until 8).map { "source-$it" },
-        ) { rows, _ ->
+        val sources = (0 until 20).map { "source-$it" }
+        val result = translateBatchWithAdaptiveRecovery(lines = sources) { rows, _ ->
             calls += rows.size
-            if (rows.size > 2) {
+            if (rows.size > 10) {
                 List(rows.size) { "" }
             } else {
                 rows.map { "中文：$it" }
             }
         }
 
-        assertEquals((0 until 8).map { "中文：source-$it" }, result)
-        assertTrue(calls.any { it == 8 })
-        assertTrue(calls.any { it == 4 })
-        assertTrue(calls.any { it == 2 })
+        assertEquals(sources.map { "中文：$it" }, result)
+        assertTrue(calls.contains(20))
+        assertTrue(calls.contains(15))
+        assertTrue(calls.contains(10))
+        assertTrue(calls.count { it == 5 } >= 2)
+        assertTrue(calls.all { it >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS })
     }
 
     @Test
     fun passesPriorContextAndCarriesFreshlyTranslatedLeftHalfForward() = runBlocking {
         val contexts = mutableListOf<Pair<List<String>, List<String>>?>()
+        val sources = ('a'..'j').map(Char::toString)
         val result = translateBatchWithAdaptiveRecovery(
-            lines = listOf("a", "b", "c", "d"),
+            lines = sources,
             context = listOf("previous") to listOf("此前译文"),
         ) { rows, context ->
             contexts += context
-            if (rows.size > 1) {
+            if (rows.size > MIN_TRANSLATION_RECOVERY_BATCH_ROWS) {
                 List(rows.size) { "" }
             } else {
                 rows.map { "译:$it" }
             }
         }
 
-        assertEquals(listOf("译:a", "译:b", "译:c", "译:d"), result)
+        assertEquals(sources.map { "译:$it" }, result)
         assertTrue(contexts.any { it?.first?.contains("previous") == true })
         assertTrue(contexts.any {
             it != null &&
-                it.first.takeLast(2) == listOf("a", "b") &&
-                it.second.takeLast(2) == listOf("译:a", "译:b")
+                it.first.takeLast(5) == listOf("a", "b", "c", "d", "e") &&
+                it.second.takeLast(5) == listOf("译:a", "译:b", "译:c", "译:d", "译:e")
         })
     }
 
@@ -78,17 +80,18 @@ class TranslationAdaptiveRecoveryTest {
     @Test
     fun splitsOnlyRecognizedIncompleteNumberedOutputErrors() = runBlocking {
         val sizes = mutableListOf<Int>()
-        val result = translateBatchWithAdaptiveRecovery(listOf("a", "b", "c", "d")) { rows, _ ->
+        val sources = List(10) { "cue-$it" }
+        val result = translateBatchWithAdaptiveRecovery(sources) { rows, _ ->
             sizes += rows.size
-            if (rows.size > 2) {
+            if (rows.size > MIN_TRANSLATION_RECOVERY_BATCH_ROWS) {
                 throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
             }
             rows.map { "中:$it" }
         }
 
-        assertEquals(listOf("中:a", "中:b", "中:c", "中:d"), result)
-        assertTrue(sizes.contains(4))
-        assertTrue(sizes.count { it == 2 } >= 2)
+        assertEquals(sources.map { "中:$it" }, result)
+        assertTrue(sizes.contains(10))
+        assertTrue(sizes.count { it == MIN_TRANSLATION_RECOVERY_BATCH_ROWS } >= 2)
     }
     @Test
     fun retriesOnlyMissingRowsAndKeepsAlreadyTranslatedRows() = runBlocking {
@@ -155,25 +158,17 @@ class TranslationAdaptiveRecoveryTest {
 
     @Test
     fun returnsUnresolvedRowsAfterSafeAlignmentRecoveryWhenCallerOwnsRetry() = runBlocking {
+        val sources = listOf("first", "unresolved", "last") + List(7) { "cue-$it" }
         val result = translateBatchWithAdaptiveRecovery(
-            lines = listOf("first", "unresolved", "last"),
+            lines = sources,
             isAcceptableTranslation = { _, candidate -> candidate.startsWith("中文:") },
             deferInvalidRowsToCaller = true,
             translate = { rows, _ ->
-                if (rows.size > 1) {
-                    listOf("截断响应")
-                } else {
-                    when (rows.single()) {
-                        "first" -> listOf("中文:first")
-                        "unresolved" -> listOf("")
-                        "last" -> listOf("中文:last")
-                        else -> listOf("")
-                    }
-                }
+                rows.map { source -> if (source == "unresolved") "" else "中文:$source" }
             },
         )
 
-        assertEquals(listOf("中文:first", "", "中文:last"), result)
+        assertEquals(sources.map { if (it == "unresolved") "" else "中文:$it" }, result)
     }
 
     @Test
@@ -267,7 +262,7 @@ class TranslationAdaptiveRecoveryTest {
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("翻译失败"))
+        assertTrue(error?.message.orEmpty().contains("最小恢复批次"))
     }
 
     @Test
