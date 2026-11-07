@@ -22,7 +22,10 @@ class ChatCompletionParamsPolicyTest {
 
     @Test
     fun thinkingOnlyModelsGetRoomForTheirReasoning() {
-        for (model in listOf("deepseek-r1", "DeepSeek-Reasoner", "QwQ-32B", "qwen3-thinking", "vendor/some-thinking-model")) {
+        for (model in listOf(
+            "deepseek-r1", "DeepSeek-Reasoner", "deepseek-v4-pro",
+            "deepseek-flash", "QwQ-32B", "qwen3-thinking", "vendor/some-thinking-model",
+        )) {
             val params = ChatCompletionParamsPolicy.forModel(gateway, model)
             assertEquals(model, 8192L, params.maxTokens.toLong())
             assertEquals(model, 0.2, params.temperature)
@@ -32,11 +35,25 @@ class ChatCompletionParamsPolicyTest {
 
     @Test
     fun openAiReasoningModelsDropTemperatureAndGetMoreRoom() {
-        for (model in listOf("o1", "o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "GPT-5.1")) {
+        for (model in listOf(
+            "o1", "o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "GPT-5.1",
+            "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna",
+        )) {
             val params = ChatCompletionParamsPolicy.forModel(gateway, model)
             assertNull(model, params.temperature)
             assertEquals(model, 8192L, params.maxTokens.toLong())
         }
+    }
+
+    @Test
+    fun gpt6UsesOfficialCompletionTokensOnlyForOfficialOpenAiEndpoints() {
+        val official = ChatCompletionParamsPolicy.forModel(openAi, "gpt-6-astra")
+        val relay = ChatCompletionParamsPolicy.forModel(gateway, "gpt-6-astra")
+        assertNull(official.temperature)
+        assertNull(relay.temperature)
+        assertTrue(official.useMaxCompletionTokens)
+        assertFalse(relay.useMaxCompletionTokens)
+        assertTrue(official.maxTokens >= 8192)
     }
 
     @Test
@@ -59,6 +76,9 @@ class ChatCompletionParamsPolicyTest {
     fun thinkingOnlyDetectionMatchesTheEarlierRules() {
         assertTrue(ChatCompletionParamsPolicy.isThinkingOnlyModel("qwq"))
         assertTrue(ChatCompletionParamsPolicy.isThinkingOnlyModel("deepseek-r1-distill"))
+        assertTrue(ChatCompletionParamsPolicy.isThinkingOnlyModel("deepseek-v4-pro"))
+        assertTrue(ChatCompletionParamsPolicy.isThinkingOnlyModel("gpt-6-astra"))
+        assertFalse(ChatCompletionParamsPolicy.isThinkingOnlyModel("kimi-k3.1-pro"))
         assertFalse(ChatCompletionParamsPolicy.isThinkingOnlyModel("deepseek-chat"))
         assertFalse(ChatCompletionParamsPolicy.isThinkingOnlyModel("qwen3.8-flash"))
     }
