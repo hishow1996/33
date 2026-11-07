@@ -11453,7 +11453,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // API models size each request from their own token budgets and what they have learned.
             // Hand them a chunk that matches that choice instead of a fixed 16 rows, so one chunk is
             // one request. Capped so progress, pause and checkpoints still move at a steady pace.
-            val maxAdaptiveBatchRows = 60
+            // Held at the old fixed chunk size (16) for now: a 2026-11-07 Zhipu run with larger
+            // chunks dropped rows and spent minutes in split-recovery. Raise it again only after a
+            // run shows the larger chunks are not what breaks.
+            val maxAdaptiveBatchRows = batchSize
             val pendingSourceTexts by lazy(LazyThreadSafetyMode.NONE) { pendingIndices.map { plain[it] } }
             var usesEngineBatchSizing = false
             suspend fun rowsForBatchAt(position: Int): Int {
