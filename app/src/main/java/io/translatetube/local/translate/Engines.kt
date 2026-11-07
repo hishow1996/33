@@ -169,6 +169,7 @@ internal const val MAX_ISOLATED_CUE_FAILURES_PER_BATCH = 2
 internal const val MIN_TRANSLATION_RECOVERY_BATCH_ROWS = 5
 
 internal data class TranslationRecoverySummary(
+    // Legacy performance field retained for compatibility; fixed-size recovery never splits.
     val recoveredBySplitting: Boolean,
     val largestSuccessfulBatchRows: Int?,
     val attempts: Int,
@@ -181,7 +182,6 @@ private class TranslationRecoveryBudget {
     private var isolatedCueFailures = 0
     private var largestSuccessfulBatchRows: Int? = null
     private val failureKinds = linkedSetOf<ApiSubtitleBatchFailureKind>()
-    private var didSplit = false
 
     /** Any response/capacity failure that entered the bounded repair path. */
     var hadRecoverableFailure: Boolean = false
@@ -189,10 +189,6 @@ private class TranslationRecoveryBudget {
     fun recordFailureKind(kind: ApiSubtitleBatchFailureKind) {
         failureKinds += kind
         hadRecoverableFailure = true
-    }
-
-    fun recordSplit() {
-        didSplit = true
     }
 
     fun recordSuccessfulBatch(rows: Int) {
@@ -203,7 +199,7 @@ private class TranslationRecoveryBudget {
     }
 
     fun summary(): TranslationRecoverySummary = TranslationRecoverySummary(
-        recoveredBySplitting = didSplit,
+        recoveredBySplitting = false,
         largestSuccessfulBatchRows = largestSuccessfulBatchRows,
         attempts = attempts,
         failureKinds = failureKinds.toSet(),
