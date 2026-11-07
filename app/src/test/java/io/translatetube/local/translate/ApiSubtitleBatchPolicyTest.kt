@@ -409,14 +409,14 @@ class ApiSubtitleBatchPolicyTest {
     fun aFixedBatchThatExceedsInputBudgetIsMarkedBeforeDispatch() {
         val model = "glm-4-flash-250414"
         val selection = ApiSubtitleBatchPolicy.selectBatch(
-            lines = listOf("a very long subtitle"),
+            lines = List(30) { "a very long subtitle $it" },
             startIndex = 0,
             model = model,
             targetLanguage = "zh-CN",
             learning = snapshot(model),
             inputTokenEstimator = { 100_000 },
         )
-        assertEquals(1, selection.endExclusive)
+        assertEquals(30, selection.endExclusive)
         assertTrue(selection.batchExceedsInputBudget)
         assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
     }
@@ -425,14 +425,36 @@ class ApiSubtitleBatchPolicyTest {
     fun aFixedBatchThatExceedsOutputBudgetIsMarkedBeforeDispatch() {
         val model = "glm-4-flash-250414"
         val selection = ApiSubtitleBatchPolicy.selectBatch(
-            lines = listOf("中".repeat(2_000)),
+            lines = List(30) { "中".repeat(2_000) },
             startIndex = 0,
             model = model,
             targetLanguage = "zh-CN",
             learning = snapshot(model).copy(outputBudgetTokens = 512),
         )
-        assertEquals(1, selection.endExclusive)
+        assertEquals(30, selection.endExclusive)
         assertTrue(selection.batchExceedsOutputBudget)
+        assertTrue(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in selection.limitingReasons)
+    }
+
+    @Test
+    fun preflightReportsBothInputAndOutputBudgetOverrunsForTheSameFixedBatch() {
+        val model = "glm-4-flash-250414"
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = List(30) { "中".repeat(2_000) },
+            startIndex = 0,
+            model = model,
+            targetLanguage = "zh-CN",
+            learning = snapshot(model).copy(
+                inputBudgetTokens = 512,
+                outputBudgetTokens = 512,
+            ),
+            inputTokenEstimator = { 100_000 },
+        )
+
+        assertEquals(30, selection.endExclusive)
+        assertTrue(selection.batchExceedsInputBudget)
+        assertTrue(selection.batchExceedsOutputBudget)
+        assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
         assertTrue(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in selection.limitingReasons)
     }
 
