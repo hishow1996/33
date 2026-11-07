@@ -73,12 +73,10 @@ internal data class ApiSubtitleBatchPerformanceSnapshot(
 )
 
 /**
- * Rows per API translation request. A 30-row batch failed twice in a row on Zhipu (HTTP 200 but
- * an unalignable response); API requests now use the same 16 rows as on-device engines so one
- * malformed index/line costs less and is less likely. The size stays fixed and is never shrunk
- * automatically.
+ * Rows per API translation request. The size is fixed and never shrunk for later batches; a batch
+ * whose reply cannot be aligned is retried once and then split in half for that batch only.
  */
-internal const val FIXED_API_TRANSLATION_BATCH_ROWS = 16
+internal const val FIXED_API_TRANSLATION_BATCH_ROWS = 30
 
 internal object ApiSubtitleBatchPolicy {
     private const val UNKNOWN_CONTEXT_TOKENS = 32_768

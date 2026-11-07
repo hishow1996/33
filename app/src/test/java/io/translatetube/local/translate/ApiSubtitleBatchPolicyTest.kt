@@ -400,10 +400,10 @@ class ApiSubtitleBatchPolicyTest {
             model = model,
             targetLanguage = "zh-CN",
             learning = snapshot(model),
-            inputTokenEstimator = { candidate -> 20_000 + candidate.size * 300 },
+            inputTokenEstimator = { candidate -> 18_000 + candidate.size * 300 },
         )
         assertEquals(FIXED_API_TRANSLATION_BATCH_ROWS, selection.endExclusive)
-        assertEquals(20_000 + FIXED_API_TRANSLATION_BATCH_ROWS * 300, selection.estimatedInputTokens)
+        assertEquals(18_000 + FIXED_API_TRANSLATION_BATCH_ROWS * 300, selection.estimatedInputTokens)
         assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
         assertTrue(ApiSubtitleBatchLimitReason.ROW_LIMIT in selection.limitingReasons)
     }
@@ -661,7 +661,7 @@ class ApiSubtitleBatchPolicyTest {
     fun outputBudgetFailureDoesNotChangeTheFixedRowCount() {
         val model = "GLM-4-Flash-250414"
         val selection = ApiSubtitleBatchPolicy.selectBatch(
-            lines = List(80) { "中".repeat(600) },
+            lines = List(80) { "中".repeat(300) },
             startIndex = 0,
             model = model,
             targetLanguage = "zh-CN",
