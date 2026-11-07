@@ -3,6 +3,12 @@ package io.translatetube.local.translate
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
 
+internal enum class ApiSubtitleBatchFailureKind {
+    RESPONSE_FORMAT,
+    INPUT_CAPACITY,
+    OUTPUT_CAPACITY,
+}
+
 internal data class ApiModelCapability(
     val contextWindowTokens: Int,
     val maxOutputTokens: Int,
@@ -379,12 +385,8 @@ internal class ApiSubtitleBatchLearningState(
         largestSuccessfulBatchRows: Int? = null,
     ) {
         if (recoveredBySplitting) {
-            largestSuccessfulBatchRows
-                ?.takeIf { it >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS }
-                ?.let { safeRows ->
-                    currentRows = minOf(currentRows, safeRows.coerceAtMost(capability.maxRows))
-                        .coerceAtLeast(MIN_TRANSLATION_RECOVERY_BATCH_ROWS)
-                }
+            // A successful split proves the operation can recover, not that the largest leaf is
+            // the model-wide limit. Keep that observation in recovery diagnostics only.
             consecutiveSuccessfulBatches = 0
             persist()
             return
@@ -407,26 +409,33 @@ internal class ApiSubtitleBatchLearningState(
         persist()
     }
 
-    /** Only the final failure of the original batch reduces the next batch. */
+    /** Only the final failure of the original batch updates the persisted limits. */
     @Synchronized
-    fun recordOriginalBatchFailure(attemptedRows: Int, largestSuccessfulBatchRows: Int? = null) {
+    fun recordOriginalBatchFailure(
+        rowCapWasBinding: Boolean,
+        failureKinds: Set<ApiSubtitleBatchFailureKind>,
+    ) {
         val minimumRows = minOf(MIN_TRANSLATION_RECOVERY_BATCH_ROWS, capability.maxRows)
-        if (attemptedRows > minimumRows) {
-            val stepwiseCeiling = (attemptedRows - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
+        if (rowCapWasBinding && currentRows > minimumRows) {
+            // The global row ceiling moves in exact five-row steps. Successful recovery leaves
+            // never clamp it to a tiny leaf such as five rows.
+            currentRows = (currentRows - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
                 .coerceAtLeast(minimumRows)
-            val safeCeiling = largestSuccessfulBatchRows
-                ?.takeIf { it >= minimumRows }
-                ?.let { minOf(stepwiseCeiling, it) } ?: stepwiseCeiling
-            currentRows = minOf(currentRows, safeCeiling).coerceAtLeast(minimumRows)
         }
-        currentInputBudgetTokens = maxOf(
-            minOf(capability.inputBudgetTokens, 512),
-            (currentInputBudgetTokens * 0.8).toInt(),
-        )
-        currentOutputBudgetTokens = maxOf(
-            minOf(capability.outputBudgetTokens, 512),
-            (currentOutputBudgetTokens * 0.8).toInt(),
-        )
+        if (ApiSubtitleBatchFailureKind.INPUT_CAPACITY in failureKinds) {
+            currentInputBudgetTokens = maxOf(
+                minOf(capability.inputBudgetTokens, 512),
+                (currentInputBudgetTokens * 0.8).toInt(),
+            )
+        }
+        if (ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY in failureKinds) {
+            currentOutputBudgetTokens = maxOf(
+                minOf(capability.outputBudgetTokens, 512),
+                (currentOutputBudgetTokens * 0.8).toInt(),
+            )
+        }
+        // Format/alignment failures affect only the row ceiling when it was the active
+        // constraint; they must not lower either independent token budget.
         consecutiveSuccessfulBatches = 0
         persist()
     }
