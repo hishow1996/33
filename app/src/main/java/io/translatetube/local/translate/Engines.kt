@@ -153,8 +153,8 @@ internal fun isTranslationRecoveryAttemptLimit(error: Throwable): Boolean =
         .any { it.message.orEmpty().contains("拆分恢复已达到单批请求上限") }
 
 /**
- * Upper bound shared by every retry/split derived from one original subtitle batch.
- * Without a shared budget, a 30-row malformed response could trigger dozens of paid requests.
+ * Upper bound shared by same-batch and row-level repairs for one original subtitle batch.
+ * This prevents malformed output from triggering an unbounded number of paid requests.
  */
 internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 64
 
@@ -166,8 +166,6 @@ internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 64
  */
 internal const val MAX_ISOLATED_CUE_FAILURES_PER_BATCH = 2
 
-/** Batch-capacity recovery removes five subtitle rows per step and never splits below five. */
-internal const val TRANSLATION_RECOVERY_BATCH_STEP_ROWS = 5
 internal const val MIN_TRANSLATION_RECOVERY_BATCH_ROWS = 5
 
 internal data class TranslationRecoverySummary(
@@ -185,7 +183,7 @@ private class TranslationRecoveryBudget {
     private val failureKinds = linkedSetOf<ApiSubtitleBatchFailureKind>()
     private var didSplit = false
 
-    /** Any response/capacity failure that entered adaptive recovery. */
+    /** Any response/capacity failure that entered the bounded repair path. */
     var hadRecoverableFailure: Boolean = false
 
     fun recordFailureKind(kind: ApiSubtitleBatchFailureKind) {
@@ -232,12 +230,10 @@ private class TranslationRecoveryBudget {
 }
 
 /**
- * Retry malformed or truncated model output by reducing the leading batch by five rows at a time.
- * Each successful leading segment feeds its translated cues into the following five-row segment.
- * Recovery never creates a capacity-split batch smaller than five rows. All recursive calls share
- * a fixed attempt budget for this original batch.
- * When [deferInvalidRowsToCaller] is true, correctly aligned but rejected rows are returned
- * to the caller's existing row-only retry loop; malformed responses still split safely.
+ * Recover quality and formatting failures without changing the configured batch size.
+ * Malformed or truncated output may be retried once with the exact same rows; if alignment
+ * still cannot be proven, the batch fails instead of being divided into smaller requests.
+ * Correctly aligned rejected rows may be returned to the caller's row-only repair loop.
  */
 internal suspend fun translateBatchWithAdaptiveRecovery(
     lines: List<String>,
@@ -483,7 +479,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     }
 
     // A malformed or wholly missing batch cannot be mapped safely to individual input rows.
-    // Preserve a five-row minimum; a smaller request cannot be safely subdivided further.
+    // A malformed fixed-size batch is not subdivided; only the same-batch retry is allowed.
     if (lines.size == 1) {
         // A malformed single-row response has no safe value to pass back. Let the caller retry it.
         if (deferInvalidRowsToCaller) return listOf("")
@@ -629,13 +625,41 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         return List(size) { "" }
     }
 
-    // Accept JSON arrays when a model disregards the requested text format. Keep every
-    // org.json call inside runCatching because Android's local-test stub may throw from length().
-    val jsonTranslations = runCatching {
-        JSONArray(normalized).takeIf { it.length() == size }?.let { array ->
-            List(size) { i -> array.optString(i).trim() }
+    // Accept JSON arrays and common object-wrapped arrays. Keep org.json calls inside
+    // runCatching because Android's local-test stub may throw from length().
+    val jsonPayload = runCatching {
+        fun readStringArray(array: JSONArray?): List<String>? {
+            if (array == null || array.length() != size) return null
+            val values = ArrayList<String>(size)
+            for (index in 0 until size) {
+                val value = array.opt(index) as? String ?: return null
+                values += value.trim()
+            }
+            return values
+        }
+
+        val directArray = runCatching { JSONArray(normalized) }.getOrNull()
+        if (directArray != null) {
+            readStringArray(directArray)?.let { "PARSED_JSON_ARRAY" to it }
+        } else {
+            val root = JSONObject(normalized)
+            val arrayKeys = listOf(
+                "translations", "translated_texts", "results", "items", "lines", "data", "output",
+            )
+            arrayKeys.firstNotNullOfOrNull { key ->
+                readStringArray(root.optJSONArray(key))?.let { "PARSED_JSON_OBJECT_ARRAY" to it }
+            }
         }
     }.getOrNull()
+    val jsonTranslations = jsonPayload?.second
+    if (jsonTranslations != null) {
+        recordParser(
+            jsonPayload.first,
+            "expectedRows=$size; outputRows=${jsonTranslations.size}",
+        )
+        return jsonTranslations
+    }
+
     if (jsonTranslations != null) {
         recordParser("PARSED_JSON_ARRAY", "expectedRows=$size; outputRows=${jsonTranslations.size}")
         return jsonTranslations
@@ -2108,20 +2132,22 @@ class OpenAiCompatEngine(
                     "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                     "maxOutputTokens=${batchSelection.maxOutputTokens}",
             )
-            if (batchSelection.singleCueExceedsInputBudget ||
-                batchSelection.singleCueExceedsOutputBudget
+            if (batchSelection.batchExceedsInputBudget ||
+                batchSelection.batchExceedsOutputBudget
             ) {
-                val budgetDetail = if (batchSelection.singleCueExceedsInputBudget) {
-                    "输入 Token 预算不足"
-                } else {
-                    "输出 Token 预算不足"
+                val budgetDetail = when {
+                    batchSelection.batchExceedsInputBudget && batchSelection.batchExceedsOutputBudget ->
+                        "输入和输出 Token 预算均不足"
+                    batchSelection.batchExceedsInputBudget -> "输入 Token 预算不足"
+                    else -> "输出 Token 预算不足"
                 }
                 throw IllegalStateException(
-                    "固定 30 条批次超出当前模型 Token 容量（$budgetDetail），未发送 API 请求；请缩短字幕或更换模型。" +
-                        " estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
+                    "固定 30 条批次超出当前模型 Token 预算（$budgetDetail），未发送 API 请求；不会自动减少批次条数。" +
+                        " batchRows=${batch.size}, startRow=${i + 1}, " +
+                        "estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
                         "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                         "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
-                        "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, row=${i + 1}"
+                        "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}"
                 )
             }
             val batchContext = contextForSelection
@@ -2485,20 +2511,22 @@ class GeminiEngine(
                     "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                     "maxOutputTokens=${batchSelection.maxOutputTokens}",
             )
-            if (batchSelection.singleCueExceedsInputBudget ||
-                batchSelection.singleCueExceedsOutputBudget
+            if (batchSelection.batchExceedsInputBudget ||
+                batchSelection.batchExceedsOutputBudget
             ) {
-                val budgetDetail = if (batchSelection.singleCueExceedsInputBudget) {
-                    "输入 Token 预算不足"
-                } else {
-                    "输出 Token 预算不足"
+                val budgetDetail = when {
+                    batchSelection.batchExceedsInputBudget && batchSelection.batchExceedsOutputBudget ->
+                        "输入和输出 Token 预算均不足"
+                    batchSelection.batchExceedsInputBudget -> "输入 Token 预算不足"
+                    else -> "输出 Token 预算不足"
                 }
                 throw IllegalStateException(
-                    "固定 30 条批次超出当前模型 Token 容量（$budgetDetail），未发送 API 请求；请缩短字幕或更换模型。" +
-                        " estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
+                    "固定 30 条批次超出当前模型 Token 预算（$budgetDetail），未发送 API 请求；不会自动减少批次条数。" +
+                        " batchRows=${batch.size}, startRow=${i + 1}, " +
+                        "estimatedPromptTokens=${batchSelection.estimatedInputTokens}, " +
                         "estimatedOutputTokens=${batchSelection.estimatedOutputTokens}, " +
                         "inputBudgetTokens=${learningSnapshot.inputBudgetTokens}, " +
-                        "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}, row=${i + 1}"
+                        "outputBudgetTokens=${learningSnapshot.outputBudgetTokens}"
                 )
             }
             val batchContext = contextForSelection
