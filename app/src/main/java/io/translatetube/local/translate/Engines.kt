@@ -452,10 +452,10 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
                     budget.recordSuccessfulBatch(1)
                 } else {
                     if (!budget.tolerateIsolatedCueFailure()) {
-                        val reason = if (retryCandidate.isBlank()) {
-                            "单条恢复请求仍未返回可用文本"
-                        } else {
-                            "单条恢复请求仍未通过译文质量校验"
+                        val reason = when {
+                            retryCandidate.isBlank() -> "单条恢复请求仍未返回可用文本"
+                            retryCandidate == source -> "单条恢复请求仍与原文相同"
+                            else -> "单条恢复请求仍未通过译文质量校验"
                         }
                         throw IllegalStateException("单条字幕翻译恢复失败：$reason；原文字符数=${source.length}。")
                     }
