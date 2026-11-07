@@ -8,7 +8,7 @@ import kotlinx.coroutines.runBlocking
 
 class AdaptiveTranslationRecoveryPolicyTest {
     @Test
-    fun contextAndPayloadLimitFailuresCanRetryWithSmallerBatches() {
+    fun contextAndPayloadLimitFailuresAreClassifiedForBudgetDiagnostics() {
         assertTrue(
             isRecoverableTranslationFormatError(
                 IllegalStateException("HTTP 400: maximum context length exceeded")
@@ -57,7 +57,7 @@ class AdaptiveTranslationRecoveryPolicyTest {
     }
 
     @Test
-    fun existingSubtitleAlignmentErrorsRemainRecoverable() {
+    fun existingSubtitleAlignmentErrorsAreClassifiedForRepair() {
         assertTrue(
             isRecoverableTranslationFormatError(
                 IllegalStateException("翻译服务返回的字幕编号不完整")
@@ -76,7 +76,7 @@ class AdaptiveTranslationRecoveryPolicyTest {
     }
 
     @Test
-    fun adaptiveRecoveryReducesByFiveRowsAndNeverSplitsBelowFive() = runBlocking {
+    fun formatFailureNeverShrinksTheFixedBatch() = runBlocking {
         val requests = mutableListOf<Int>()
         val error = runCatching {
             translateBatchWithAdaptiveRecovery(
@@ -89,13 +89,13 @@ class AdaptiveTranslationRecoveryPolicyTest {
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("最小恢复批次5条"))
-        assertEquals(listOf(30, 25, 20, 15, 10, 5), requests)
-        assertTrue(requests.all { it >= MIN_TRANSLATION_RECOVERY_BATCH_ROWS })
+        assertEquals(listOf(30), requests)
+        assertTrue(error?.message.orEmpty().contains("固定批次 30 条"))
+        assertTrue(error?.message.orEmpty().contains("不会自动缩小后续批次"))
     }
 
     @Test
-    fun malformedOutputGetsOneSameSizeStrictRetryBeforeAnySplit() = runBlocking {
+    fun malformedOutputGetsOneSameSizeStrictRetry() = runBlocking {
         val source = List(10) { "cue-$it" }
         val normalCalls = mutableListOf<Int>()
         val repairCalls = mutableListOf<Int>()
@@ -122,30 +122,30 @@ class AdaptiveTranslationRecoveryPolicyTest {
     }
 
     @Test
-    fun capacityFailureSkipsSameSizeFormatRetryAndKeepsFiveRowRecovery() = runBlocking {
+    fun capacityFailureDoesNotRetryAsFormatOrResizeTheBatch() = runBlocking {
         val requests = mutableListOf<Int>()
         var formatRepairCalls = 0
         var summary: TranslationRecoverySummary? = null
         val source = List(10) { "cue-$it" }
-        val translated = translateBatchWithAdaptiveRecovery(
-            lines = source,
-            retryMalformedBatch = { rows, _ ->
-                formatRepairCalls++
-                rows.map { "修复:$it" }
-            },
-            onRecoverySummary = { summary = it },
-        ) { rows, _ ->
-            requests += rows.size
-            if (rows.size > MIN_TRANSLATION_RECOVERY_BATCH_ROWS) {
+        val error = runCatching {
+            translateBatchWithAdaptiveRecovery(
+                lines = source,
+                retryMalformedBatch = { rows, _ ->
+                    formatRepairCalls++
+                    rows.map { "修复:$it" }
+                },
+                onRecoverySummary = { summary = it },
+            ) { rows, _ ->
+                requests += rows.size
                 throw IllegalStateException("HTTP 413: Payload Too Large")
             }
-            rows.map { "译:$it" }
-        }
+        }.exceptionOrNull()
 
-        assertEquals(source.map { "译:$it" }, translated)
-        assertEquals(listOf(10, 5, 5), requests)
+        assertTrue(error is IllegalStateException)
+        assertEquals(listOf(10), requests)
         assertEquals(0, formatRepairCalls)
         assertTrue(summary?.failureKinds?.contains(ApiSubtitleBatchFailureKind.INPUT_CAPACITY) == true)
+        assertTrue(error?.message.orEmpty().contains("固定批次 10 条"))
     }
 
     @Test
@@ -173,22 +173,23 @@ class AdaptiveTranslationRecoveryPolicyTest {
     }
 
     @Test
-    fun recoverySummaryReportsLargestSuccessfulLeafAndTotalAttempts() = runBlocking {
+    fun sameBatchRetrySummaryReportsTheOriginalBatchSizeAndAttemptCount() = runBlocking {
         var summary: TranslationRecoverySummary? = null
         val lines = List(30) { "subtitle $it" }
         val result = translateBatchWithAdaptiveRecovery(
             lines = lines,
+            retryMalformedBatch = { rows, _ -> rows.map { "译文-$it" } },
             onRecoverySummary = { summary = it },
-            translate = { rows, _ ->
-                if (rows.size > 10) {
-                    throw IllegalStateException("翻译服务返回的字幕编号不完整")
-                }
-                rows.map { "译文-$it" }
+            translate = { _, _ ->
+                throw IllegalStateException("翻译服务返回的字幕编号不完整")
             },
         )
+
         assertEquals(lines.size, result.size)
-        assertTrue(summary?.recoveredBySplitting == true)
-        assertEquals(10, summary?.largestSuccessfulBatchRows ?: 0)
-        assertTrue((summary?.attempts ?: 0) > 1)
+        assertEquals(false, summary?.recoveredBySplitting)
+        assertEquals(30, summary?.largestSuccessfulBatchRows ?: 0)
+        assertEquals(2, summary?.attempts)
     }
+
+
 }
