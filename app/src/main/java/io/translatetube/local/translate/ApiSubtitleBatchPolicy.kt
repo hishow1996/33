@@ -382,7 +382,6 @@ internal class ApiSubtitleBatchLearningState(
     fun recordOriginalBatchSuccess(
         batchRows: Int,
         recoveredBySplitting: Boolean,
-        largestSuccessfulBatchRows: Int? = null,
     ) {
         if (recoveredBySplitting) {
             // A successful split proves the operation can recover, not that the largest leaf is
