@@ -422,7 +422,7 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun formatFailureReducesTheBindingRowCapByFiveWithoutChangingTokenBudgets() {
+    fun formatFailureDoesNotChangeFixedRowsOrTokenBudgets() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         val before = learning.snapshot()
         learning.recordOriginalBatchFailure(
@@ -430,7 +430,7 @@ class ApiSubtitleBatchPolicyTest {
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
         val after = learning.snapshot()
-        assertEquals(25, after.maxRows)
+        assertEquals(30, after.maxRows)
         assertEquals(before.inputBudgetTokens, after.inputBudgetTokens)
         assertEquals(before.outputBudgetTokens, after.outputBudgetTokens)
     }
