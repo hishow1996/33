@@ -1600,12 +1600,17 @@ class OpenAiCompatEngine(
         ) {
             val raised = JSONObject(payload.toString())
             val budgetKey = if (raised.has("max_completion_tokens")) "max_completion_tokens" else "max_tokens"
-            if (raised.optInt(budgetKey, 0) < ChatCompletionParamsPolicy.REASONING_MAX_TOKENS) {
-                raised.put(budgetKey, ChatCompletionParamsPolicy.REASONING_MAX_TOKENS)
+            val modelOutputCeiling = ApiSubtitleBatchPolicy.capabilityForModel(model).maxOutputTokens
+            val reasoningRetryBudget = minOf(
+                ChatCompletionParamsPolicy.REASONING_MAX_TOKENS,
+                modelOutputCeiling,
+            )
+            if (raised.optInt(budgetKey, 0) < reasoningRetryBudget) {
+                raised.put(budgetKey, reasoningRetryBudget)
                 android.util.Log.w(
                     "TranslationAPI",
                     "Reasoning used the whole output budget; retrying once with $budgetKey=" +
-                        "${ChatCompletionParamsPolicy.REASONING_MAX_TOKENS}: model=${model.take(100)}",
+                        "${reasoningRetryBudget}: model=${model.take(100)}",
                 )
                 return requestTranslationContent(raised, outputBudgetRaised = true)
             }

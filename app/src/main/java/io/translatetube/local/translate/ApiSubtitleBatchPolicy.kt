@@ -31,7 +31,7 @@ internal data class ApiSubtitleBatchLearningSnapshot(
  */
 internal object ApiSubtitleBatchPolicy {
     private const val UNKNOWN_CONTEXT_TOKENS = 32_768
-    private const val UNKNOWN_OUTPUT_TOKENS = 4_096
+    private const val UNKNOWN_OUTPUT_TOKENS = 8_192
     private const val DEFAULT_INITIAL_ROWS = 30
     private const val DEFAULT_MAX_ROWS = 60
     private const val PROMPT_OVERHEAD_TOKENS = 1_600
@@ -168,8 +168,11 @@ internal object ApiSubtitleBatchPolicy {
         if (visible == 0) return 1
         val target = targetLanguage.trim().lowercase(java.util.Locale.ROOT)
         val toChinese = outputText && (target.startsWith("zh") || target.contains("中文"))
-        val estimate = if (toChinese) cjk.toDouble() + (visible - cjk) / 3.2
-        else visible / 3.2
+        val estimate = if (!outputText || toChinese) {
+            cjk.toDouble() + (visible - cjk) / 3.2
+        } else {
+            visible / 3.2
+        }
         return ceil(estimate.coerceAtLeast(1.0)).toInt()
     }
 

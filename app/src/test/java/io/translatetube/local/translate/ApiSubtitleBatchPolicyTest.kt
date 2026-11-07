@@ -44,7 +44,7 @@ class ApiSubtitleBatchPolicyTest {
 
     @Test
     fun longSubtitlesReduceBatchSizeByTokenBudget() {
-        val lines = List(80) { "中".repeat(100) }
+        val lines = List(80) { "中".repeat(300) }
         val glm = ApiSubtitleBatchPolicy.selectBatch(
             lines, 0, "glm-4-flash-250414", "zh-CN", snapshot("glm-4-flash-250414"),
         )
