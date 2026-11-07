@@ -159,35 +159,37 @@ internal object ApiSubtitleBatchPolicy {
      * Generic "128k"/"256k" suffixes are deliberately not treated as proof of capacity; a provider
      * catalog must advertise those limits explicitly.
      */
-    private fun knownCapabilityForModel(id: String): ApiModelCapability {
+    private fun modelFamilyMatches(id: String, vararg families: String): Boolean {
         val baseName = id.substringAfterLast('/').trim()
-        fun family(vararg names: String): Boolean = names.any { name ->
+        return families.any { name ->
             baseName == name || baseName.startsWith("$name-") || baseName.startsWith("$name:")
         }
+    }
 
+    private fun knownCapabilityForModel(id: String): ApiModelCapability {
         return when {
-            family("deepseek-v4-pro", "deepseek-flash", "deepseek-v4-flash") ->
+            modelFamilyMatches(id, "deepseek-v4-pro", "deepseek-flash", "deepseek-v4-flash") ->
                 ApiModelCapability(
                     1_048_576, 393_216, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
-            family("kimi-k3.1-pro", "kimi-k3") ->
+            modelFamilyMatches(id, "kimi-k3.1-pro", "kimi-k3") ->
                 ApiModelCapability(
                     1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
-            family("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna") ->
+            modelFamilyMatches(id, "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna") ->
                 ApiModelCapability(
                     1_050_000, 128_000, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
-            family("qwen2.5-7b-instruct-1m") -> ApiModelCapability(
+            modelFamilyMatches(id, "qwen2.5-7b-instruct-1m") -> ApiModelCapability(
                 1_010_000, 8_192, 80, 160, 48_000, 8_192, 240_000, 8_192,
             )
-            family("qwen2.5-7b-instruct") -> ApiModelCapability(
+            modelFamilyMatches(id, "qwen2.5-7b-instruct") -> ApiModelCapability(
                 131_072, 8_192, 35, 80, 24_000, 8_192, 64_000, 8_192,
             )
-            family("glm-4-flash-250414") -> ApiModelCapability(
+            modelFamilyMatches(id, "glm-4-flash-250414") -> ApiModelCapability(
                 131_072, 16_384, 50, 100, 24_000, 8_192, 64_000, 16_384,
             )
-            family("gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro") ->
+            modelFamilyMatches(id, "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro") ->
                 ApiModelCapability(
                     1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
                 )
@@ -218,26 +220,27 @@ internal object ApiSubtitleBatchPolicy {
         val output = maxOutputTokens?.takeIf { it > 0 } ?: known.maxOutputTokens
         val tierBasis = explicitContext ?: explicitInput ?: known.contextWindowTokens
         val tier = when {
-            tierBasis >= 1_000_000 -> ModelBudgetTier(80, 200, 48_000, 240_000, 16_384, 65_536)
-            tierBasis >= 256_000 -> ModelBudgetTier(60, 150, 32_000, 96_000, 8_192, 24_576)
-            tierBasis >= 128_000 -> ModelBudgetTier(50, 120, 24_000, 64_000, 8_192, 16_384)
-            else -> ModelBudgetTier(30, 80, 8_000, 16_000, 4_096, 8_192)
+            tierBasis >= 1_000_000 -> ModelBudgetTier(80, 200, 48_000, 16_384)
+            tierBasis >= 256_000 -> ModelBudgetTier(60, 150, 32_000, 8_192)
+            tierBasis >= 128_000 -> ModelBudgetTier(50, 120, 24_000, 8_192)
+            else -> ModelBudgetTier(30, 80, 8_000, 4_096)
         }
         val rows = when {
-            id.contains("glm-4-flash-250414") -> 50 to 100
-            id.contains("qwen2.5-7b-instruct") && tierBasis < 1_000_000 -> 35 to 80
+            modelFamilyMatches(id, "glm-4-flash-250414") -> 50 to 100
+            modelFamilyMatches(id, "qwen2.5-7b-instruct") && tierBasis < 1_000_000 -> 35 to 80
             else -> tier.initialRows to tier.maxRows
         }
-        val sharedContextInputCeiling = if (context > 0) {
-            (context - output - CONTEXT_RESERVE_TOKENS).coerceAtLeast(512)
+        // Keep startup budgets conservative, but let successful learning grow up to the actual
+        // catalog limits instead of an unrelated fixed tier ceiling.
+        val maxOutputBudget = output.coerceAtLeast(512)
+        val contextInputCeiling = if (context > 0) {
+            (context - maxOutputBudget - CONTEXT_RESERVE_TOKENS).coerceAtLeast(512)
         } else {
             2_000_000
         }
-        val advertisedInput = explicitInput ?: sharedContextInputCeiling
-        val maxInputBudget = minOf(advertisedInput, tier.maxInputBudget, sharedContextInputCeiling)
-            .coerceAtLeast(512)
+        val advertisedInput = explicitInput ?: contextInputCeiling
+        val maxInputBudget = minOf(advertisedInput, contextInputCeiling).coerceAtLeast(512)
         val initialInputBudget = minOf(tier.initialInputBudget, maxInputBudget).coerceAtLeast(512)
-        val maxOutputBudget = minOf(output, tier.maxOutputBudget).coerceAtLeast(512)
         val initialOutputBudget = minOf(maxOutputBudget, tier.initialOutputBudget).coerceAtLeast(512)
         val capability = sanitizeCapability(
             ApiModelCapability(
@@ -260,9 +263,7 @@ internal object ApiSubtitleBatchPolicy {
         val initialRows: Int,
         val maxRows: Int,
         val initialInputBudget: Int,
-        val maxInputBudget: Int,
         val initialOutputBudget: Int,
-        val maxOutputBudget: Int,
     )
 
     fun estimateOutputTokens(
