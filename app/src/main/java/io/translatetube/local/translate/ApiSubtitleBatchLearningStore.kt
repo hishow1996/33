@@ -87,6 +87,11 @@ class ApiSubtitleBatchLearningStore(
                         ?.coerceAtMost(1_000_000.0)
                 }.takeLast(24)
             }.orEmpty()
+            val batchOutcomes = json.optJSONArray("batchOutcomeSamples")?.let { array ->
+                (0 until array.length()).mapNotNull { index ->
+                    (array.opt(index) as? Number)?.toInt()?.takeIf { it in 0..4 }
+                }.takeLast(24)
+            }.orEmpty()
             ApiSubtitleBatchLearningRecord(
                 maxRows = json.optInt("maxRows", capability.initialRows)
                     .coerceIn(1, capability.maxRows),
@@ -102,6 +107,7 @@ class ApiSubtitleBatchLearningStore(
                     .coerceIn(0.0, 300_000.0),
                 latencySamplesMs = latencySamples,
                 rowsPerMinuteSamples = throughputSamples,
+                batchOutcomeSamples = batchOutcomes,
             )
         }.getOrNull()
 
@@ -125,6 +131,10 @@ class ApiSubtitleBatchLearningStore(
                 .put(
                     "rowsPerMinuteSamples",
                     JSONArray().apply { record.rowsPerMinuteSamples.takeLast(24).forEach { put(it) } },
+                )
+                .put(
+                    "batchOutcomeSamples",
+                    JSONArray().apply { record.batchOutcomeSamples.takeLast(24).forEach { put(it) } },
                 )
                 .put("recoveryPolicyVersion", RECOVERY_POLICY_VERSION)
             preferences.edit().putString(key("learning", model, learningScope), json.toString()).apply()
