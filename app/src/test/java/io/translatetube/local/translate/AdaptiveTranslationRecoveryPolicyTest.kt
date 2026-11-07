@@ -10,27 +10,27 @@ class AdaptiveTranslationRecoveryPolicyTest {
     @Test
     fun contextAndPayloadLimitFailuresAreClassifiedForBudgetDiagnostics() {
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("HTTP 400: maximum context length exceeded")
             )
         )
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("HTTP 400: context_length_exceeded")
             )
         )
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("HTTP 413: Payload Too Large")
             )
         )
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("Request body too large for selected model")
             )
         )
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("API 未返回可用翻译文本；finish_reason=length")
             )
         )
@@ -59,17 +59,17 @@ class AdaptiveTranslationRecoveryPolicyTest {
     @Test
     fun existingSubtitleAlignmentErrorsAreClassifiedForRepair() {
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("翻译服务返回的字幕编号不完整")
             )
         )
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("翻译服务重复返回字幕编号")
             )
         )
         assertTrue(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("翻译服务在编号译文中混入未编号内容")
             )
         )
@@ -151,22 +151,22 @@ class AdaptiveTranslationRecoveryPolicyTest {
     @Test
     fun authenticationRateLimitAndServerFailuresAreNotSplitIntoSmallerBatches() {
         assertFalse(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("HTTP 401: invalid API key")
             )
         )
         assertFalse(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("HTTP 429: rate limit exceeded")
             )
         )
         assertFalse(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("HTTP 503: service unavailable")
             )
         )
         assertFalse(
-            isRecoverableTranslationFormatError(
+            isClassifiedTranslationBatchFailure(
                 IllegalStateException("HTTP 400: invalid model ID")
             )
         )
