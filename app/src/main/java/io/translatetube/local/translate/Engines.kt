@@ -2042,6 +2042,34 @@ class OpenAiCompatEngine(
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
         translateWithContext(lines, srcLang, tgtLang, null, emptyList(), null)
 
+    override suspend fun preferredBatchRows(
+        lines: List<String>,
+        startIndex: Int,
+        srcLang: String,
+        tgtLang: String,
+        videoTitle: String?,
+    ): Int {
+        val learningSnapshot = batchLearningFor(srcLang, tgtLang).snapshot()
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = lines,
+            startIndex = startIndex,
+            model = model,
+            targetLanguage = tgtLang,
+            learning = learningSnapshot,
+            providerKey = baseUrl,
+            inputTokenEstimator = { candidateLines ->
+                val prompt = buildOpenAiSubtitlePrompts(
+                    candidateLines, srcLang, tgtLang, null, emptyList(), videoTitle,
+                    forceTranslate = false,
+                )
+                ApiSubtitleBatchPolicy.estimatePromptTokens(
+                    prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
+                )
+            },
+        )
+        return (selection.endExclusive - startIndex).coerceAtLeast(1)
+    }
+
     override suspend fun translateWithContext(
         lines: List<String>,
         srcLang: String,
@@ -2410,6 +2438,34 @@ class GeminiEngine(
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
         translateWithContext(lines, srcLang, tgtLang, null, emptyList(), null)
+
+    override suspend fun preferredBatchRows(
+        lines: List<String>,
+        startIndex: Int,
+        srcLang: String,
+        tgtLang: String,
+        videoTitle: String?,
+    ): Int {
+        val learningSnapshot = batchLearningFor(srcLang, tgtLang).snapshot()
+        val selection = ApiSubtitleBatchPolicy.selectBatch(
+            lines = lines,
+            startIndex = startIndex,
+            model = model,
+            targetLanguage = tgtLang,
+            learning = learningSnapshot,
+            providerKey = endpointBase,
+            inputTokenEstimator = { candidateLines ->
+                val prompt = buildGeminiSubtitlePrompts(
+                    candidateLines, srcLang, tgtLang, null, emptyList(), videoTitle,
+                    forceTranslate = false,
+                )
+                ApiSubtitleBatchPolicy.estimatePromptTokens(
+                    prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
+                )
+            },
+        )
+        return (selection.endExclusive - startIndex).coerceAtLeast(1)
+    }
 
     override suspend fun translateWithContext(
         lines: List<String>,

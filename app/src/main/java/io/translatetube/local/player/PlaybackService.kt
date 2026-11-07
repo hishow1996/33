@@ -11446,9 +11446,32 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
             }
             val sourceLanguageForUi = src.ifBlank { srcLang }
+            // Fixed chunk size for engines that do not size their own requests (local, web, official).
             val batchSize = 16
             val translationVideoTitle = ui.value.takeIf { it.key == key }
                 ?.title?.trim()?.take(120)?.takeIf { it.isNotBlank() }
+            // API models size each request from their own token budgets and what they have learned.
+            // Hand them a chunk that matches that choice instead of a fixed 16 rows, so one chunk is
+            // one request. Capped so progress, pause and checkpoints still move at a steady pace.
+            val maxAdaptiveBatchRows = 60
+            val pendingSourceTexts by lazy(LazyThreadSafetyMode.NONE) { pendingIndices.map { plain[it] } }
+            var usesEngineBatchSizing = false
+            suspend fun rowsForBatchAt(position: Int): Int {
+                val preferred = try {
+                    engine?.preferredBatchRows(
+                        pendingSourceTexts, position, src.ifBlank { srcLang }, tgt, translationVideoTitle,
+                    )
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    null
+                }
+                if (preferred == null) return batchSize
+                usesEngineBatchSizing = true
+                return preferred.coerceIn(1, maxAdaptiveBatchRows)
+            }
+            fun estimateTotalBatches(batchesDone: Int, position: Int, rowsPerBatch: Int): Int =
+                batchesDone + (pendingIndices.size - position + rowsPerBatch - 1) / rowsPerBatch
+            val firstBatchRows = if (pendingIndices.isEmpty()) batchSize else rowsForBatchAt(0)
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.info(
                     this@PlaybackService,
@@ -11473,14 +11496,18 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "输入字幕行数" to lines.size.toString(),
                         "本次需要翻译的字幕行数" to pendingIndices.size.toString(),
                         "无需翻译/已具备有效译文行数" to completed.toString(),
-                        "翻译批次总数" to ((pendingIndices.size + batchSize - 1) / batchSize).toString(),
-                        "单批字幕行数" to batchSize.toString(),
+                        "翻译批次总数（预估，批次大小可能随模型表现调整）" to
+                            (if (pendingIndices.isEmpty()) 0 else estimateTotalBatches(0, 0, firstBatchRows)).toString(),
+                        "单批字幕行数" to firstBatchRows.toString(),
+                        "批次大小来源" to if (usesEngineBatchSizing) "API 引擎按模型预算自适应（服务层单批上限 $maxAdaptiveBatchRows）" else "固定 $batchSize",
                         "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
                         "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
                     ),
                 )
             }
-            val translationTotalBatches = (pendingIndices.size + batchSize - 1) / batchSize
+            // Estimate only: with engine-sized batches the real count is revised before each batch.
+            var translationTotalBatches =
+                if (pendingIndices.isEmpty()) 0 else estimateTotalBatches(0, 0, firstBatchRows)
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     engineName = engineName,
@@ -11504,11 +11531,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // always at the end. This bounds crash recovery loss while avoiding serializing the full
             // subtitle timeline to Room after every 16 translated cues.
             // Walk the pending-index list by bounded views instead of eagerly materializing
-            // thousands of small chunk lists for long subtitle files.
-            for (batchStart in pendingIndices.indices step batchSize) {
-                val batchIndex = batchStart / batchSize
-                val batchEndExclusive = minOf(batchStart + batchSize, pendingIndices.size)
+            // thousands of small chunk lists for long subtitle files. The chunk size is decided per
+            // batch (see rowsForBatchAt), so advance explicitly instead of stepping by a constant.
+            var nextBatchStart = 0
+            var nextBatchIndex = 0
+            while (nextBatchStart < pendingIndices.size) {
+                val batchStart = nextBatchStart
+                val batchIndex = nextBatchIndex
+                val thisBatchRows = rowsForBatchAt(batchStart)
+                val batchEndExclusive = minOf(batchStart + thisBatchRows, pendingIndices.size)
                 val batchIndices = pendingIndices.subList(batchStart, batchEndExclusive)
+                nextBatchStart = batchEndExclusive
+                nextBatchIndex = batchIndex + 1
+                translationTotalBatches = estimateTotalBatches(batchIndex, batchStart, thisBatchRows)
                 awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)?.let { return it }
                 awaitProcessingResumed(key, pipelineGeneration)
                 updateUiForSession(key, pipelineGeneration) { state ->

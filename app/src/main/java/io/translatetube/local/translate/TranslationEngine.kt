@@ -27,6 +27,20 @@ interface TranslationEngine {
     /** Release engine-owned native/model resources when a translation task finishes. */
     fun close() = Unit
 
+    /**
+     * How many rows this engine would put into its next single request when translation resumes at
+     * [startIndex] of [lines]. Engines that size requests themselves (token-budgeted API models)
+     * override this so the caller can hand over a matching chunk; null means "no preference" and
+     * the caller keeps its own fixed chunk size.
+     */
+    suspend fun preferredBatchRows(
+        lines: List<String>,
+        startIndex: Int,
+        srcLang: String,
+        tgtLang: String,
+        videoTitle: String? = null,
+    ): Int? = null
+
     /** Optional continuity context from already-translated cues immediately before this batch. */
     suspend fun translateWithContext(
         lines: List<String>,
