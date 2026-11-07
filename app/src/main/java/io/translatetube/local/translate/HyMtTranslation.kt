@@ -1017,78 +1017,86 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
             targetLanguage = "zh-CN",
             lines = lines,
         ) {
+            return LocalTranslationDiagnostics.run(
+            context = appContext,
+            engine = id,
+            sourceLanguage = source,
+            targetLanguage = "zh-CN",
+            lines = lines,
+        ) {
             val simplifiedChineseSource = !HyMtLanguagePolicy.requiresTranslation(source)
             HyMtRuntime.acquireLease()
             try {
                 if (!simplifiedChineseSource && lines.any { it.isNotBlank() }) {
                     HyMtRuntime.prepare(appContext)
-            }
+                }
                 withContext(Dispatchers.Default) {
                     val taskContext = currentCoroutineContext()
                     var rollingContext = context?.first.orEmpty()
-                    .zip(context?.second.orEmpty())
-                    .filter { it.first.isNotBlank() && it.second.isNotBlank() }
-                    .takeLast(3)
-                    .let { cues ->
-                        if (cues.isEmpty()) null else cues.map { it.first } to cues.map { it.second }
-                    }
+                        .zip(context?.second.orEmpty())
+                        .filter { it.first.isNotBlank() && it.second.isNotBlank() }
+                        .takeLast(3)
+                        .let { cues ->
+                            if (cues.isEmpty()) null else cues.map { it.first } to cues.map { it.second }
+                        }
                     lines.mapIndexed { index, line ->
-                    taskContext.ensureActive()
-                    val translated = when {
-                        line.isBlank() -> ""
-                        simplifiedChineseSource -> line
-                        else -> try {
-                            val prompt = HyMtPromptBuilder.build(line, source, rollingContext)
-                            val maxTokens = (line.length * 2 + 64).coerceIn(96, 512)
-                            HyMtRuntime.translate(appContext, prompt, maxTokens)
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Exception) {
-                            AppLogStore.warning(
+                        taskContext.ensureActive()
+                        val translated = when {
+                            line.isBlank() -> ""
+                            simplifiedChineseSource -> line
+                            else -> try {
+                                val prompt = HyMtPromptBuilder.build(line, source, rollingContext)
+                                val maxTokens = (line.length * 2 + 64).coerceIn(96, 512)
+                                HyMtRuntime.translate(appContext, prompt, maxTokens)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                AppLogStore.warning(
+                                    appContext,
+                                    "Translation",
+                                    "HY-MT1.5 单条字幕翻译失败，已交给批次恢复逻辑",
+                                    error,
+                                    diagnosticContext = mapOf(
+                                        "字幕序号" to (index + 1).toString(),
+                                        "字幕总数" to lines.size.toString(),
+                                        "字幕字符数" to line.length.toString(),
+                                        "模型版本" to "1.8B · 2-bit",
+                                        "未记录字幕原文" to "true",
+                                    ),
+                                )
+                                ""
+                            }
+                        }
+                        if (
+                            translated.isNotBlank() &&
+                            !SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(line, translated) &&
+                            !SubtitleTranslationQualityPolicy.isSourceEcho(line, translated, source) &&
+                            !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                                line, translated, source, "zh-CN",
+                            )
+                        ) {
+                            rollingContext = appendHyMtTranslationContext(rollingContext, line, translated)
+                        }
+                        if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
+                            AppLogStore.info(
                                 appContext,
                                 "Translation",
-                                "HY-MT1.5 单条字幕翻译失败，已交给批次恢复逻辑",
-                                error,
+                                "HY-MT1.5 本地翻译进度",
                                 diagnosticContext = mapOf(
-                                    "字幕序号" to (index + 1).toString(),
+                                    "已完成字幕" to (index + 1).toString(),
                                     "字幕总数" to lines.size.toString(),
-                                    "字幕字符数" to line.length.toString(),
                                     "模型版本" to "1.8B · 2-bit",
-                                    "未记录字幕原文" to "true",
                                 ),
                             )
-                            ""
                         }
-                    }
-                    if (
-                        translated.isNotBlank() &&
-                        !SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(line, translated) &&
-                        !SubtitleTranslationQualityPolicy.isSourceEcho(line, translated, source) &&
-                        !SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
-                            line, translated, source, "zh-CN",
-                        )
-                    ) {
-                        rollingContext = appendHyMtTranslationContext(rollingContext, line, translated)
-                    }
-                    if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
-                        AppLogStore.info(
-                            appContext,
-                            "Translation",
-                            "HY-MT1.5 本地翻译进度",
-                            diagnosticContext = mapOf(
-                                "已完成字幕" to (index + 1).toString(),
-                                "字幕总数" to lines.size.toString(),
-                                "模型版本" to "1.8B · 2-bit",
-                            ),
-                        )
-                    }
-                    translated
+                        translated
                     }
                 }
             } finally {
                 HyMtRuntime.releaseLease()
             }
         }
+
     }
 
     override fun close() = Unit

@@ -584,43 +584,44 @@ class Small100Engine(private val context: Context) : TranslationEngine {
             withContext(Dispatchers.Default) {
                 val taskContext = currentCoroutineContext()
                 lines.mapIndexed { index, line ->
-                taskContext.ensureActive()
-                val translated = if (line.isBlank()) "" else try {
-                    Small100Runtime.translateOneWithRecovery(appContext, line, "zh", source)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    // Keep successful cues in this batch. PlaybackService recognizes the blank
-                    // row as missing and retries only that cue instead of discarding the batch.
-                    AppLogStore.warning(
-                        appContext,
-                        "Translation",
-                        "SMaLL-100 单条字幕恢复失败，已隔离该行",
-                        error,
-                        diagnosticContext = mapOf(
-                            "字幕序号" to (index + 1).toString(),
-                            "字幕总数" to lines.size.toString(),
-                            "字幕字符数" to line.length.toString(),
-                            "自动拆分恢复" to "已尝试",
-                            "后续处理" to "仅重试当前失败字幕",
-                            "未记录字幕原文" to "true",
-                        ),
-                    )
-                    ""
+                    taskContext.ensureActive()
+                    val translated = if (line.isBlank()) "" else try {
+                        Small100Runtime.translateOneWithRecovery(appContext, line, "zh", source)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        // Keep successful cues in this batch. PlaybackService recognizes the blank
+                        // row as missing and retries only that cue instead of discarding the batch.
+                        AppLogStore.warning(
+                            appContext,
+                            "Translation",
+                            "SMaLL-100 单条字幕恢复失败，已隔离该行",
+                            error,
+                            diagnosticContext = mapOf(
+                                "字幕序号" to (index + 1).toString(),
+                                "字幕总数" to lines.size.toString(),
+                                "字幕字符数" to line.length.toString(),
+                                "自动拆分恢复" to "已尝试",
+                                "后续处理" to "仅重试当前失败字幕",
+                                "未记录字幕原文" to "true",
+                            ),
+                        )
+                        ""
+                    }
+                    if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
+                        AppLogStore.info(
+                            appContext, "Translation", "SMaLL-100 本地翻译进度",
+                            diagnosticContext = mapOf(
+                                "已完成字幕" to (index + 1).toString(),
+                                "字幕总数" to lines.size.toString(),
+                                "源语言" to source,
+                                "目标语言" to "zh",
+                            ),
+                        )
+                    }
+                    translated
                 }
-                if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
-                    AppLogStore.info(
-                        appContext, "Translation", "SMaLL-100 本地翻译进度",
-                        diagnosticContext = mapOf(
-                            "已完成字幕" to (index + 1).toString(),
-                            "字幕总数" to lines.size.toString(),
-                            "源语言" to source,
-                            "目标语言" to "zh",
-                        ),
-                    )
-                }
-                translated
-                }
+            }
         }
     }
 
