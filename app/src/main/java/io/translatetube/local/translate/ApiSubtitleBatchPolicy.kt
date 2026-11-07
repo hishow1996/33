@@ -130,6 +130,19 @@ internal object ApiSubtitleBatchPolicy {
 
     private fun knownCapabilityForModel(id: String): ApiModelCapability {
         return when {
+            id.contains("deepseek-v4-pro") || id.contains("deepseek-flash") ->
+                ApiModelCapability(
+                    1_048_576, 393_216, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                )
+            id.contains("kimi-k3.1-pro") || id.contains("kimi-k3") ->
+                ApiModelCapability(
+                    1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                )
+            id.contains("gpt-6-astra") || id.contains("gpt-6.1-sol") ||
+                id.contains("gpt-6.1-terra") || id.contains("gpt-6-luna") ->
+                ApiModelCapability(
+                    1_050_000, 128_000, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                )
             id.contains("qwen2.5-7b-instruct-1m") -> ApiModelCapability(
                 1_010_000, 8_192, 80, 160, 48_000, 8_192, 240_000, 8_192,
             )
