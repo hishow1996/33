@@ -52,7 +52,7 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(100, capability.maxRows)
 
         val learning = ApiSubtitleBatchLearningState(model, provider)
-        assertEquals(16, learning.snapshot().maxRows)
+        assertEquals(30, learning.snapshot().maxRows)
     }
 
     @Test
@@ -123,28 +123,28 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun onlyFinalOriginalBatchFailureReducesTheNextLimitByFiveRows() {
+    fun finalOriginalBatchFailureNeverChangesTheFixedRowCount() {
         val learning = ApiSubtitleBatchLearningState("custom-provider/unknown-model")
         learning.recordOriginalBatchFailure(
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(25, learning.snapshot().maxRows)
+        assertEquals(30, learning.snapshot().maxRows)
     }
 
     @Test
-    fun glmFailureReducesTheAdaptiveLimitFromSixteenRowsByFiveAtATime() {
+    fun glmResponseFailuresNeverChangeTheFixedRowCount() {
         val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
         learning.recordOriginalBatchFailure(
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(11, learning.snapshot().maxRows)
+        assertEquals(30, learning.snapshot().maxRows)
         learning.recordOriginalBatchFailure(
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
             failureKinds = setOf(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT),
         )
-        assertEquals(6, learning.snapshot().maxRows)
+        assertEquals(30, learning.snapshot().maxRows)
     }
 
     @Test
@@ -157,7 +157,7 @@ class ApiSubtitleBatchPolicyTest {
             failureKinds = emptySet(),
             allRowsAccepted = true,
         )
-        assertEquals(50, learning.snapshot().maxRows)
+        assertEquals(30, learning.snapshot().maxRows)
     }
 
     @Test
@@ -562,7 +562,7 @@ class ApiSubtitleBatchPolicyTest {
                 allRowsAccepted = true,
             )
         }
-        assertEquals(35, enToZh.snapshot().maxRows)
+        assertEquals(30, enToZh.snapshot().maxRows)
         assertEquals(beforeJa.maxRows, enToJa.snapshot().maxRows)
         assertEquals(beforeJa.inputBudgetTokens, enToJa.snapshot().inputBudgetTokens)
     }
@@ -714,7 +714,7 @@ class ApiSubtitleBatchPolicyTest {
             )
         }
         val beforeSlowWindow = learning.snapshot().maxRows
-        assertTrue(beforeSlowWindow > 30)
+        assertEquals(30, beforeSlowWindow)
         repeat(2) {
             learning.recordUsage(1_000, 500, 1_000, 500, 120_000, batchRows = 20)
             learning.recordOriginalBatchSuccess(
