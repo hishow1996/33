@@ -764,7 +764,7 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
     }
 
     // Do not disguise an unparseable multi-row response as an aligned list of blanks.
-    // Adaptive recovery recognizes this format error and safely lowers the request size.
+    // The fixed-batch repair path records this format error and retries the same rows once.
     recordParser(
         "UNPARSEABLE_CONTENT",
         "expectedRows=$size; rawChars=${content.length}; normalizedChars=${normalized.length}; lineCount=${normalized.lines().size}; indexedRows=${indexed.size}; unnumberedRows=${unexpectedLines.size}",
