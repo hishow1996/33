@@ -11450,26 +11450,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val batchSize = if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeId)) 16 else 30
             val translationVideoTitle = ui.value.takeIf { it.key == key }
                 ?.title?.trim()?.take(120)?.takeIf { it.isNotBlank() }
-            // API engines use the same fixed 30-row size. The engine hook is retained only so the
-            // service can keep the last partial batch bounded; no provider/model learning changes it.
-            val pendingSourceTexts by lazy(LazyThreadSafetyMode.NONE) { pendingIndices.map { plain[it] } }
-            var usesEngineBatchSizing = false
-            suspend fun rowsForBatchAt(position: Int): Int {
-                val preferred = try {
-                    engine?.preferredBatchRows(
-                        pendingSourceTexts, position, src.ifBlank { srcLang }, tgt, translationVideoTitle,
-                    )
-                } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    null
-                }
-                if (preferred == null) return batchSize
-                usesEngineBatchSizing = true
-                return preferred.coerceAtLeast(1)
-            }
-            fun estimateTotalBatches(batchesDone: Int, position: Int, rowsPerBatch: Int): Int =
-                batchesDone + (pendingIndices.size - position + rowsPerBatch - 1) / rowsPerBatch
-            val firstBatchRows = if (pendingIndices.isEmpty()) batchSize else rowsForBatchAt(0)
+            // API requests are always 30 rows; on-device engines remain at 16. Only the final
+            // request may contain fewer rows.
+            fun rowsForBatchAt(position: Int): Int =
+                minOf(batchSize, pendingIndices.size - position).coerceAtLeast(1)
+            val firstBatchRows = if (pendingIndices.isEmpty()) 0 else rowsForBatchAt(0)
+            val translationTotalBatches = VideoProcessingFlowPolicy.translationBatchCount(
+                pendingRows = pendingIndices.size,
+                rowsPerBatch = batchSize,
+            )
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.info(
                     this@PlaybackService,
@@ -11494,22 +11483,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "输入字幕行数" to lines.size.toString(),
                         "本次需要翻译的字幕行数" to pendingIndices.size.toString(),
                         "无需翻译/已具备有效译文行数" to completed.toString(),
-                        "翻译批次总数（按固定批次估算）" to
-                            (if (pendingIndices.isEmpty()) 0 else estimateTotalBatches(0, 0, firstBatchRows)).toString(),
+                        "翻译批次总数（固定批次计算）" to translationTotalBatches.toString(),
                         "单批字幕行数" to firstBatchRows.toString(),
-                        "批次大小来源" to if (usesEngineBatchSizing) {
-                            "API 固定批次（每批 30 条）"
+                        "批次大小来源" to if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeId)) {
+                            "本地固定批次（每批 $batchSize 条）"
                         } else {
-                            "固定 $batchSize"
+                            "API 固定批次（每批 $batchSize 条）"
                         },
                         "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
                         "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
                     ),
                 )
             }
-            // Estimate only: the fixed row count is used for every full batch and the final remainder.
-            var translationTotalBatches =
-                if (pendingIndices.isEmpty()) 0 else estimateTotalBatches(0, 0, firstBatchRows)
+            // The total is exact because the row cap is fixed for the selected engine class.
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     engineName = engineName,
@@ -11532,9 +11518,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // Checkpoint the first batch immediately, then every few successful batches and
             // always at the end. This bounds crash recovery loss without serializing the full
             // subtitle timeline to Room after every small fixed-size chunk.
-            // Walk the pending-index list by bounded views instead of eagerly materializing
-            // thousands of small chunk lists for long subtitle files. The chunk size is decided per
-            // batch (see rowsForBatchAt), so advance explicitly instead of stepping by a constant.
+            // Walk the pending-index list by fixed-size views instead of materializing every batch.
             var nextBatchStart = 0
             var nextBatchIndex = 0
             while (nextBatchStart < pendingIndices.size) {
@@ -11545,7 +11529,6 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val batchIndices = pendingIndices.subList(batchStart, batchEndExclusive)
                 nextBatchStart = batchEndExclusive
                 nextBatchIndex = batchIndex + 1
-                translationTotalBatches = estimateTotalBatches(batchIndex, batchStart, thisBatchRows)
                 awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)?.let { return it }
                 awaitProcessingResumed(key, pipelineGeneration)
                 updateUiForSession(key, pipelineGeneration) { state ->
@@ -11695,10 +11678,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "本次翻译批次大小" to batch.size.toString(),
                                 "本批输入字幕行数" to batch.size.toString(),
                                 "服务层本批分配行数" to thisBatchRows.toString(),
-                                "批次大小来源" to if (usesEngineBatchSizing) {
-                                    "API 固定批次（每批 $batchSize 条，上限不随模型或历史表现变化）"
+                                "批次大小来源" to if (io.translatetube.local.translate.EngineFactory.isLocalTranslationEngine(activeId)) {
+                                    "本地固定批次（每批 $batchSize 条）"
                                 } else {
-                                    "固定 $batchSize"
+                                    "API 固定批次（每批 $batchSize 条）"
                                 },
                                 "批次拆分恢复尝试" to traceContext.recoveryAttemptSummary(),
                                 "请求总字符数" to batch.sumOf { it.length }.toString(),
