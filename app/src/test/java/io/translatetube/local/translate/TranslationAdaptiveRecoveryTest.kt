@@ -147,24 +147,31 @@ class TranslationAdaptiveRecoveryTest {
     fun providerContentFilterIsolatesTheRefusedCueAndKeepsTheRest() = runBlocking {
         val requestSizes = mutableListOf<Int>()
         val sources = List(30) { if (it == 17) "refused-cue" else "cue-$it" }
+        val trace = TranslationDiagnosticContext("5b2f0c4e-3a8d-4f0e-9a43-0f2d7c9b1a11")
 
-        val result = translateBatchWithAdaptiveRecovery(
-            lines = sources,
-            deferInvalidRowsToCaller = true,
-            splitOnPersistentFormatFailure = true,
-            translate = { rows, _ ->
-                requestSizes += rows.size
-                if ("refused-cue" in rows) {
-                    throw TranslationHttpException(
-                        message = "HTTP 400 [POST x]: rootFields=contentFilter,error; providerErrorCode=1301",
-                        retryAfterMs = null,
-                        statusCode = 400,
-                        providerErrorCode = "1301",
-                    )
-                }
-                rows.map { "译-$it" }
-            },
-        )
+        val result = TranslationDiagnosticContextHolder.withDiagnosticContext(trace) {
+            translateBatchWithAdaptiveRecovery(
+                lines = sources,
+                deferInvalidRowsToCaller = true,
+                splitOnPersistentFormatFailure = true,
+                translate = { rows, _ ->
+                    requestSizes += rows.size
+                    if ("refused-cue" in rows) {
+                        throw TranslationHttpException(
+                            message = "HTTP 400 [POST x]: rootFields=contentFilter,error; providerErrorCode=1301",
+                            retryAfterMs = null,
+                            statusCode = 400,
+                            providerErrorCode = "1301",
+                        )
+                    }
+                    rows.map { "译-$it" }
+                },
+            )
+        }
+
+        // The caller uses this to tell "safety filter refused" apart from a generic bad reply.
+        assertTrue(trace.isContentFilteredCue("refused-cue"))
+        assertTrue(!trace.isContentFilteredCue("cue-3"))
 
         assertEquals(30, result.size)
         assertEquals("", result[17])

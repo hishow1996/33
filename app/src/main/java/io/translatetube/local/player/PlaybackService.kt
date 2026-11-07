@@ -11731,7 +11731,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
                             detail.contains("Function", ignoreCase = true) &&
                             detail.contains("Not found for account", ignoreCase = true)
-                        val message = if (active != null) {
+                        val contentFiltered = io.translatetube.local.translate.isProviderContentFilterRejection(e)
+                        val message = if (contentFiltered) {
+                            "字幕翻译失败：安全过滤拒绝翻译（" + (active?.name ?: "当前翻译引擎") + "：服务商的内容安全过滤拒绝了本次请求）。请更换翻译引擎后重试。原始响应：" + detail
+                        } else if (active != null) {
                             if (functionMissing) {
                                 "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
                             } else {
@@ -11919,8 +11922,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             ),
                         )
                     }
+                    val filteredRows = unresolvedIndices.filter { traceContext.isContentFilteredCue(plain[it]) }
+                    val filteredRowsText = filteredRows.map { it + 1 }.let { rows ->
+                        if (rows.size > 8) rows.take(8).joinToString("、") + " 等 ${rows.size} 行" else rows.joinToString("、")
+                    }
                     throw TranslationFailureException(
-                        if (hadResponseCountMismatch) {
+                        if (filteredRows.isNotEmpty()) {
+                            "字幕翻译失败：安全过滤拒绝翻译（第 $filteredRowsText 行被翻译服务商的内容安全过滤拒绝，共 ${unresolvedIndices.size} 行未得到译文）。已停止处理。请更换翻译引擎后重试。"
+                        } else if (hadResponseCountMismatch) {
                             "翻译接口响应数量异常：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。请检查网络和翻译服务后重试。"
                         } else {
                             "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。"

@@ -91,6 +91,17 @@ internal class TranslationDiagnosticContext(
         return recent.joinToString("；").take(maxChars)
     }
 
+    /** Source text of every single cue the provider's safety filter refused to translate. */
+    private val contentFilteredCues = java.util.Collections.synchronizedSet(LinkedHashSet<String>())
+
+    fun recordContentFilteredCue(sourceText: String) {
+        contentFilteredCues += sourceText.trim()
+    }
+
+    fun isContentFilteredCue(sourceText: String): Boolean = sourceText.trim() in contentFilteredCues
+
+    fun hasContentFilteredCues(): Boolean = contentFilteredCues.isNotEmpty()
+
     fun snapshot(maxChars: Int = 6_000): String {
         if (events.isEmpty()) return "本次没有记录到 HTTP 响应或网络重试事件（可能是本地引擎、预检阶段失败，或请求在连接前终止）"
         val limit = maxChars.coerceIn(500, 12_000)

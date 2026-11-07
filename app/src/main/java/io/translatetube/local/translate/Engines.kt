@@ -518,7 +518,8 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     // Hand it back as unresolved (blank) so every other cue of the batch is kept; the caller's
     // row-level handling then reports exactly which row it is. Never invent a translation.
     if (contentFiltered && lines.size == 1) {
-        diagnostics?.recordRecoveryAttempt(1, "内容安全过滤", "服务商拒绝这一行，已单独标记为未翻译")
+        diagnostics?.recordRecoveryAttempt(1, "内容安全过滤", "安全过滤拒绝翻译这一行，已单独标记为未翻译")
+        diagnostics?.recordContentFilteredCue(lines[0])
         return listOf("")
     }
 
