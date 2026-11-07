@@ -10535,6 +10535,8 @@ updateUiForSession(key, pipelineGeneration) {
                         ),
                     )
 
+                    // A voice model that is still downloading/unpacking: wait on this stage page.
+                    awaitLocalDubbingModelInstall(key, pipelineGeneration, selectedTts, selectedTtsName)
                     val selectedEngineReady = when (selectedTts) {
                         "system" -> true
                         "edge" -> true
@@ -10719,6 +10721,7 @@ updateUiForSession(key, pipelineGeneration) {
                                 // The selected local model is unavailable. Keep the engine and volume setting unchanged.
                             )
                         }
+                        watchLocalDubbingModelReady(key, pipelineGeneration, selectedTts)
                         withContext(Dispatchers.Main) {
                         }
                     }
@@ -13999,6 +14002,157 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     }.onFailure {
         android.util.Log.w("PlaybackService", "Kokoro runtime readiness check failed", it)
     }.getOrDefault(false)
+
+    private fun isLocalDubbingEngine(engineId: String): Boolean =
+        engineId == "kokoro" || engineId == "piper" || engineId == "melo" || engineId == "matcha"
+
+    /** True once the selected on-device voice model is fully installed and usable. */
+    private fun isLocalDubbingModelReady(engineId: String): Boolean = when (engineId) {
+        "kokoro" -> kokoroRuntimeReady()
+        "piper" -> piperModelReadyForChinese()
+        "melo", "matcha" -> localSherpaModelReadyForChinese(engineId)
+        else -> true
+    }
+
+    /**
+     * Short status text while the selected on-device voice model is being downloaded or unpacked;
+     * null when no install is running for it (finished, failed, cancelled or never started).
+     */
+    private fun localDubbingModelInstallProgress(engineId: String): String? {
+        val downloading: Boolean
+        val extracting: Boolean
+        val percent: Int
+        when (engineId) {
+            "kokoro" -> {
+                val state = (application as io.translatetube.local.TranslateTubeApp).modelDownload.tts.value
+                downloading = state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING
+                extracting = state.status == io.translatetube.local.data.ModelStatus.EXTRACTING
+                percent = state.progress
+            }
+            "piper", "melo", "matcha" -> {
+                val modelId = if (engineId == "piper") {
+                    getSharedPreferences("settings", MODE_PRIVATE)
+                        .getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                } else {
+                    localSherpaModelId(engineId) ?: return null
+                }
+                val state = io.translatetube.local.tts.PiperModels.downloadStates.value[modelId]
+                    ?: return null
+                downloading = state.status == io.translatetube.local.tts.PiperModelDownloadStatus.DOWNLOADING
+                extracting = state.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING
+                percent = state.progress
+            }
+            else -> return null
+        }
+        return when {
+            downloading -> "正在下载配音模型 ${percent.coerceIn(0, 100)}%"
+            extracting -> "正在解压安装配音模型"
+            else -> null
+        }
+    }
+
+    /**
+     * Stage 5 waits here while the selected on-device voice model is still installing, so the
+     * user stays on the five-stage page instead of landing on a player stuck on "preparing".
+     * Returns immediately when nothing is installing; a failed or cancelled install falls through
+     * to the normal "model not ready" handling.
+     */
+    private suspend fun awaitLocalDubbingModelInstall(
+        key: String,
+        pipelineGeneration: Long,
+        engineId: String,
+        engineName: String,
+    ) {
+        if (!isLocalDubbingEngine(engineId)) return
+        var sawInstall = false
+        var idleSinceMs = 0L
+        while (true) {
+            awaitProcessingResumed(key, pipelineGeneration)
+            ensureCurrentSession(key, pipelineGeneration)
+            if (isLocalDubbingModelReady(engineId)) return
+            val installText = localDubbingModelInstallProgress(engineId)
+            if (installText != null) {
+                sawInstall = true
+                idleSinceMs = 0L
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.SYNTHESIZING,
+                        waitingForDubbingEngine = false,
+                        noModelHint = null,
+                        dubbingStatus = "$engineName：$installText",
+                        progress = "$installText，完成后自动开始合成配音",
+                    )
+                }
+            } else {
+                if (!sawInstall) return
+                // The installer just finished: allow a moment for the files to become visible.
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (idleSinceMs == 0L) idleSinceMs = now
+                if (now - idleSinceMs > 3_000L) return
+            }
+            kotlinx.coroutines.delay(500L)
+        }
+    }
+
+    private var dubbingModelReadyWatchJob: Job? = null
+
+    /**
+     * A session that already reached the player with "dubbing engine not ready" would otherwise
+     * stay that way forever, even after the model finishes installing. Watch for the model and
+     * re-enter the dubbing stage (reusing source text, translation and media) once it is usable.
+     */
+    private fun watchLocalDubbingModelReady(key: String, pipelineGeneration: Long, engineId: String) {
+        if (!isLocalDubbingEngine(engineId)) return
+        dubbingModelReadyWatchJob?.cancel()
+        dubbingModelReadyWatchJob = scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(1_500L)
+                val state = ui.value
+                if (videoKey != key || activePipelineGeneration != pipelineGeneration ||
+                    state.key != key || !state.waitingForDubbingEngine
+                ) return@launch
+                val selected = DubbingConfigPreferencePolicy.normalizeEngineId(
+                    getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+                )
+                if (selected != engineId) return@launch
+                if (!isLocalDubbingModelReady(engineId)) continue
+                if (localDubbingModelInstallProgress(engineId) != null) continue
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackFlow",
+                    "本地配音模型已就绪，自动重新进入配音阶段",
+                    diagnosticContext = mapOf(
+                        "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                        "配音引擎 ID" to engineId,
+                    ),
+                )
+                val restartState = stateForEngineRestart(state, EngineRestartStage.DUBBING)
+                val restartRemoteUrl = remoteMediaUrl
+                val restartVideoId = videoId ?: if (restartRemoteUrl == null) {
+                    key.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+                } else null
+                withContext(Dispatchers.Main.immediate) {
+                    open(
+                        key = key,
+                        videoId = restartVideoId,
+                        localUri = localUri,
+                        importedLines = if (this@PlaybackService.importedLines != null) restartState?.lines else null,
+                        resumeState = restartState,
+                        remoteMediaUrl = restartRemoteUrl,
+                        remoteMediaTitle = remoteMediaTitle,
+                        remoteMediaReferrer = remoteMediaReferrer,
+                        remoteMediaCookie = remoteMediaCookie,
+                        remoteMediaUserAgent = remoteMediaUserAgent,
+                        requestToken = activeOpenRequestToken,
+                        reuseMountedMediaForRestart = restartState != null,
+                        forceRegenerateDubbing = true,
+                        forceRegenerateFromStage = EngineRestartStage.DUBBING,
+                    )
+                }
+                return@launch
+            }
+        }
+    }
 
     private fun ttsDisplayName(engineId: String): String = when (engineId) {
         "system" -> "系统 TTS"
