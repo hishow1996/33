@@ -48,7 +48,12 @@ internal object ChatCompletionParamsPolicy {
             normalizedBase.contains(".openai.azure.com")
         return ChatSamplingParams(
             temperature = if (openAiReasoning) null else NORMAL_TEMPERATURE,
-            maxTokens = if (openAiReasoning || thinkingOnly) REASONING_MAX_TOKENS else NORMAL_MAX_TOKENS,
+            maxTokens = when {
+                openAiReasoning || thinkingOnly -> REASONING_MAX_TOKENS
+                ApiSubtitleBatchPolicy.requiresExpandedOutputBudget(normalizedModel) ->
+                    ApiSubtitleBatchPolicy.EXPANDED_MAX_OUTPUT_TOKENS
+                else -> NORMAL_MAX_TOKENS
+            },
             useMaxCompletionTokens = openAiReasoning && officialOpenAi,
         )
     }

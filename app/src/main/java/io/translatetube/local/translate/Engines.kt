@@ -1620,7 +1620,18 @@ class OpenAiCompatEngine(
         val coroutineContext = currentCoroutineContext()
         var i = 0
         while (i < lines.size) {
-            val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
+            val batchSelection = ApiSubtitleBatchPolicy.selectBatch(
+                lines = lines,
+                startIndex = i,
+                model = model,
+                targetLanguage = tgtLang,
+            )
+            val batch = lines.subList(i, batchSelection.endExclusive)
+            android.util.Log.d(
+                "TranslationAPI",
+                "Subtitle batch selected: model=${model.take(100)}, startRow=${i + 1}, " +
+                    "rows=${batch.size}, estimatedOutputTokens=${batchSelection.estimatedOutputTokens}",
+            )
             val batchContext = TranslationContextPolicy.contextForBatchWithTermContinuity(
                 initialContext = initialContext,
                 completedSources = lines.subList(0, i),
@@ -1647,7 +1658,7 @@ class OpenAiCompatEngine(
                 )
             }
             out += translated
-            i += 30
+            i = batchSelection.endExclusive
         }
         return out
     }

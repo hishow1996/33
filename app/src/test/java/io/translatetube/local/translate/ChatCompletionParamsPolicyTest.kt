@@ -150,4 +150,11 @@ class ChatCompletionParamsPolicyTest {
         assertTrue(error.message.orEmpty().contains("API Base URL 格式无效"))
     }
 
+
+    @Test
+    fun namedLargeSubtitleModelsReceiveAnExpandedOutputBudget() {
+        assertEquals(4_096L, ChatCompletionParamsPolicy.forModel(gateway, "GLM-4-Flash-250414").maxTokens.toLong())
+        assertEquals(4_096L, ChatCompletionParamsPolicy.forModel(gateway, "Qwen/Qwen2.5-7B-Instruct").maxTokens.toLong())
+        assertEquals(2_048L, ChatCompletionParamsPolicy.forModel(gateway, "qwen-plus").maxTokens.toLong())
+    }
 }
