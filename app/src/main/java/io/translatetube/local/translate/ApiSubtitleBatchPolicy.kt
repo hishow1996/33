@@ -395,7 +395,8 @@ internal class ApiSubtitleBatchLearningState(
         // Response latency is not evidence of a batch-capacity failure; clean successes may grow
         // the batch even on slower providers, while actual usage and provider errors guide limits.
         if (consecutiveSuccessfulBatches >= 2 && batchRows >= (currentRows * 0.6).toInt()) {
-            currentRows = (currentRows + maxOf(2, currentRows / 5)).coerceAtMost(capability.maxRows)
+            currentRows = (currentRows + TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
+                .coerceAtMost(capability.maxRows)
             currentInputBudgetTokens = minOf(
                 capability.maxInputBudgetTokens,
                 maxOf(currentInputBudgetTokens + 1, (currentInputBudgetTokens * 1.2).toInt()),
