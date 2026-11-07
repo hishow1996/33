@@ -20,6 +20,7 @@ internal enum class ApiSubtitleBatchLimitReason {
 internal data class ApiModelCapability(
     val contextWindowTokens: Int,
     val maxOutputTokens: Int,
+    // Legacy persisted fields; both are normalized to the single fixed API batch size.
     val initialRows: Int,
     val maxRows: Int,
     val inputBudgetTokens: Int,
@@ -171,28 +172,28 @@ internal object ApiSubtitleBatchPolicy {
         return when {
             modelFamilyMatches(id, "deepseek-v4-pro", "deepseek-v4-flash") ->
                 ApiModelCapability(
-                    1_048_576, 393_216, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                    1_048_576, 393_216, 30, 30, 48_000, 16_384, 240_000, 65_536,
                 )
             modelFamilyMatches(id, "kimi-k3.1-pro") ->
                 ApiModelCapability(
-                    1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                    1_048_576, 65_536, 30, 30, 48_000, 16_384, 240_000, 65_536,
                 )
             modelFamilyMatches(id, "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna") ->
                 ApiModelCapability(
-                    1_050_000, 128_000, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                    1_050_000, 128_000, 30, 30, 48_000, 16_384, 240_000, 65_536,
                 )
             modelFamilyMatches(id, "qwen2.5-7b-instruct-1m") -> ApiModelCapability(
-                1_010_000, 8_192, 80, 160, 48_000, 8_192, 240_000, 8_192,
+                1_010_000, 8_192, 30, 30, 48_000, 8_192, 240_000, 8_192,
             )
             modelFamilyMatches(id, "qwen2.5-7b-instruct") -> ApiModelCapability(
-                131_072, 8_192, 35, 80, 24_000, 8_192, 64_000, 8_192,
+                131_072, 8_192, 30, 30, 24_000, 8_192, 64_000, 8_192,
             )
             modelFamilyMatches(id, "glm-4-flash-250414") -> ApiModelCapability(
-                131_072, 16_384, 16, 100, 24_000, 8_192, 64_000, 16_384,
+                131_072, 16_384, 30, 30, 24_000, 8_192, 64_000, 16_384,
             )
             modelFamilyMatches(id, "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro") ->
                 ApiModelCapability(
-                    1_048_576, 65_536, 80, 200, 48_000, 16_384, 240_000, 65_536,
+                    1_048_576, 65_536, 30, 30, 48_000, 16_384, 240_000, 65_536,
                 )
             else -> ApiModelCapability(
                 UNKNOWN_CONTEXT_TOKENS, UNKNOWN_OUTPUT_TOKENS,
