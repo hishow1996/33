@@ -209,6 +209,8 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(64_000, resolved.contextWindowTokens)
         assertEquals(4_096, resolved.maxOutputTokens)
         assertEquals(48_000, resolved.maxInputTokens ?: 0)
+        assertEquals(48_000, resolved.maxInputBudgetTokens)
+        assertEquals(4_096, resolved.maxOutputBudgetTokens)
         assertEquals(capability, resolved)
     }
 
@@ -422,7 +424,7 @@ class ApiSubtitleBatchPolicyTest {
         )
         assertEquals(0, capability.contextWindowTokens)
         assertEquals(1_000_000, capability.maxInputTokens ?: 0)
-        assertEquals(240_000, capability.maxInputBudgetTokens)
+        assertEquals(1_000_000, capability.maxInputBudgetTokens)
         assertEquals(48_000, capability.inputBudgetTokens)
     }
     @Test
