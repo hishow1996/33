@@ -9,6 +9,14 @@ internal enum class ApiSubtitleBatchFailureKind {
     OUTPUT_CAPACITY,
 }
 
+/** The constraint that stopped the selector from adding the next subtitle cue. */
+internal enum class ApiSubtitleBatchLimitReason {
+    ROW_LIMIT,
+    INPUT_BUDGET,
+    OUTPUT_BUDGET,
+    END_OF_INPUT,
+}
+
 internal data class ApiModelCapability(
     val contextWindowTokens: Int,
     val maxOutputTokens: Int,
@@ -28,6 +36,7 @@ internal data class ApiSubtitleBatchSelection(
     val maxOutputTokens: Int,
     val singleCueExceedsInputBudget: Boolean = false,
     val singleCueExceedsOutputBudget: Boolean = false,
+    val limitingReasons: Set<ApiSubtitleBatchLimitReason> = emptySet(),
 )
 
 internal data class ApiSubtitleBatchLearningSnapshot(
@@ -285,6 +294,9 @@ internal object ApiSubtitleBatchPolicy {
         var estimatedOutput = 0
         var singleCueExceedsInputBudget = false
         var singleCueExceedsOutputBudget = false
+        var stoppedByInputBudget = false
+        var stoppedByOutputBudget = false
+
         while (endExclusive < lines.size && endExclusive - startIndex < rowLimit) {
             val cueInput = estimateTextTokens(lines[endExclusive], "", outputText = false) + 3
             val cueOutput = estimateTextTokens(lines[endExclusive], targetLanguage, outputText = true)
@@ -293,21 +305,53 @@ internal object ApiSubtitleBatchPolicy {
             val candidateEnd = endExclusive + 1
             val candidateInput = inputTokenEstimator?.invoke(lines.subList(startIndex, candidateEnd))
                 ?: (estimatedInput + adjustedInput)
+            val candidateOutput = estimatedOutput + adjustedOutput
             val exceedsInput = candidateInput > inputBudget
-            val exceedsOutput = estimatedOutput + adjustedOutput > outputBudget
-            if (endExclusive > startIndex && (exceedsInput || exceedsOutput)) break
+            val exceedsOutput = candidateOutput > outputBudget
+
+            if (endExclusive > startIndex && (exceedsInput || exceedsOutput)) {
+                stoppedByInputBudget = exceedsInput
+                stoppedByOutputBudget = exceedsOutput
+                break
+            }
             if (endExclusive == startIndex && (exceedsInput || exceedsOutput)) {
                 singleCueExceedsInputBudget = exceedsInput
                 singleCueExceedsOutputBudget = exceedsOutput
+                stoppedByInputBudget = exceedsInput
+                stoppedByOutputBudget = exceedsOutput
                 estimatedInput = candidateInput
-                estimatedOutput += adjustedOutput
+                estimatedOutput = candidateOutput
                 endExclusive = candidateEnd
                 break
             }
             estimatedInput = candidateInput
-            estimatedOutput += adjustedOutput
+            estimatedOutput = candidateOutput
             endExclusive = candidateEnd
         }
+
+        val limitingReasons = linkedSetOf<ApiSubtitleBatchLimitReason>()
+        if (endExclusive >= lines.size) {
+            limitingReasons += ApiSubtitleBatchLimitReason.END_OF_INPUT
+        } else if (endExclusive - startIndex >= rowLimit) {
+            limitingReasons += ApiSubtitleBatchLimitReason.ROW_LIMIT
+            // A row cap can hide a second, tighter constraint. Check the next cue so learning
+            // does not grow token budgets when they would already have stopped this batch.
+            val nextInput = inputTokenEstimator?.invoke(lines.subList(startIndex, endExclusive + 1))
+                ?: run {
+                    val nextCueInput =
+                        estimateTextTokens(lines[endExclusive], "", outputText = false) + 3
+                    estimatedInput + ceil(nextCueInput * learning.inputTokenMultiplier).toInt()
+                }
+            val nextCueOutput = ceil(
+                estimateTextTokens(lines[endExclusive], targetLanguage, outputText = true) *
+                    1.25 * learning.outputTokenMultiplier
+            ).toInt()
+            if (nextInput > inputBudget) stoppedByInputBudget = true
+            if (estimatedOutput + nextCueOutput > outputBudget) stoppedByOutputBudget = true
+        }
+        if (stoppedByInputBudget) limitingReasons += ApiSubtitleBatchLimitReason.INPUT_BUDGET
+        if (stoppedByOutputBudget) limitingReasons += ApiSubtitleBatchLimitReason.OUTPUT_BUDGET
+
         val outputLimit = outputLimitForModel(model, estimatedOutput, providerKey, outputBudget)
         return ApiSubtitleBatchSelection(
             endExclusive = endExclusive,
@@ -316,6 +360,7 @@ internal object ApiSubtitleBatchPolicy {
             maxOutputTokens = outputLimit,
             singleCueExceedsInputBudget = singleCueExceedsInputBudget,
             singleCueExceedsOutputBudget = singleCueExceedsOutputBudget,
+            limitingReasons = limitingReasons,
         )
     }
 
@@ -364,6 +409,7 @@ internal class ApiSubtitleBatchLearningState(
     private val model: String,
     providerKey: String = "",
     private val store: ApiSubtitleBatchLearningStore? = null,
+    private val learningScope: String = "",
 ) {
     private val capability: ApiModelCapability
     private var currentRows: Int
@@ -372,12 +418,13 @@ internal class ApiSubtitleBatchLearningState(
     private var currentInputBudgetTokens: Int
     private var currentOutputBudgetTokens: Int
     private var consecutiveSuccessfulBatches = 0
+    private val successfulLimitingReasons = linkedSetOf<ApiSubtitleBatchLimitReason>()
     private var averageLatencyMs = 0.0
 
     init {
         store?.restoreCapability(model, providerKey)
         capability = ApiSubtitleBatchPolicy.capabilityForModel(model, providerKey)
-        val saved = store?.loadLearning(model, capability)
+        val saved = store?.loadLearning(model, capability, learningScope)
         currentRows = saved?.maxRows ?: capability.initialRows
         inputMultiplier = saved?.inputTokenMultiplier ?: 1.0
         outputMultiplier = saved?.outputTokenMultiplier ?: 1.0
@@ -408,12 +455,18 @@ internal class ApiSubtitleBatchLearningState(
         latencyMs: Long,
     ) {
         if (actualInputTokens != null && actualInputTokens > 0 && estimatedInputTokens > 0) {
-            val ratio = (actualInputTokens.toDouble() / estimatedInputTokens).coerceIn(0.5, 4.0)
-            inputMultiplier = (inputMultiplier * 0.7 + ratio * 0.3).coerceIn(0.75, 3.0)
+            inputMultiplier = calibrateMultiplier(
+                current = inputMultiplier,
+                estimated = estimatedInputTokens,
+                actual = actualInputTokens,
+            )
         }
         if (actualOutputTokens != null && actualOutputTokens > 0 && estimatedOutputTokens > 0) {
-            val ratio = (actualOutputTokens.toDouble() / estimatedOutputTokens).coerceIn(0.5, 4.0)
-            outputMultiplier = (outputMultiplier * 0.7 + ratio * 0.3).coerceIn(0.75, 3.0)
+            outputMultiplier = calibrateMultiplier(
+                current = outputMultiplier,
+                estimated = estimatedOutputTokens,
+                actual = actualOutputTokens,
+            )
         }
         if (latencyMs > 0) {
             averageLatencyMs = if (averageLatencyMs <= 0.0) latencyMs.toDouble()
@@ -425,31 +478,49 @@ internal class ApiSubtitleBatchLearningState(
     /** Called exactly once after the outer/original subtitle batch has completed. */
     @Synchronized
     fun recordOriginalBatchSuccess(
-        batchRows: Int,
+        limitingReasons: Set<ApiSubtitleBatchLimitReason>,
+        hadRecoverableFailure: Boolean,
         recoveredBySplitting: Boolean,
+        failureKinds: Set<ApiSubtitleBatchFailureKind>,
+        allRowsAccepted: Boolean,
     ) {
         if (recoveredBySplitting) {
-            // A successful split proves the operation can recover, not that the largest leaf is
-            // the model-wide limit. Keep that observation in recovery diagnostics only.
+            // Feed the original failure back into the matching constraint. A successful split
+            // must not be mistaken for proof that the original batch size was safe.
+            applyFailureAdjustments(limitingReasons, failureKinds)
             consecutiveSuccessfulBatches = 0
+            successfulLimitingReasons.clear()
             persist()
             return
         }
-        consecutiveSuccessfulBatches++
-        // Response latency is not evidence of a batch-capacity failure; clean successes may grow
-        // the batch even on slower providers, while actual usage and provider errors guide limits.
-        if (consecutiveSuccessfulBatches >= 2 && batchRows >= (currentRows * 0.6).toInt()) {
-            currentRows = (currentRows + TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
-                .coerceAtMost(capability.maxRows)
-            currentInputBudgetTokens = minOf(
-                capability.maxInputBudgetTokens,
-                maxOf(currentInputBudgetTokens + 1, (currentInputBudgetTokens * 1.2).toInt()),
-            )
-            currentOutputBudgetTokens = minOf(
-                capability.maxOutputBudgetTokens,
-                maxOf(currentOutputBudgetTokens + 1, (currentOutputBudgetTokens * 1.2).toInt()),
-            )
+        if (hadRecoverableFailure || !allRowsAccepted) {
             consecutiveSuccessfulBatches = 0
+            successfulLimitingReasons.clear()
+            persist()
+            return
+        }
+
+        consecutiveSuccessfulBatches++
+        successfulLimitingReasons += limitingReasons
+        if (consecutiveSuccessfulBatches >= 2) {
+            if (ApiSubtitleBatchLimitReason.ROW_LIMIT in successfulLimitingReasons) {
+                currentRows = (currentRows + TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
+                    .coerceAtMost(capability.maxRows)
+            }
+            if (ApiSubtitleBatchLimitReason.INPUT_BUDGET in successfulLimitingReasons) {
+                currentInputBudgetTokens = growBudget(
+                    currentInputBudgetTokens,
+                    capability.maxInputBudgetTokens,
+                )
+            }
+            if (ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in successfulLimitingReasons) {
+                currentOutputBudgetTokens = growBudget(
+                    currentOutputBudgetTokens,
+                    capability.maxOutputBudgetTokens,
+                )
+            }
+            consecutiveSuccessfulBatches = 0
+            successfulLimitingReasons.clear()
         }
         persist()
     }
@@ -457,37 +528,63 @@ internal class ApiSubtitleBatchLearningState(
     /** Only the final failure of the original batch updates the persisted limits. */
     @Synchronized
     fun recordOriginalBatchFailure(
-        rowCapWasBinding: Boolean,
+        limitingReasons: Set<ApiSubtitleBatchLimitReason>,
+        failureKinds: Set<ApiSubtitleBatchFailureKind>,
+    ) {
+        applyFailureAdjustments(limitingReasons, failureKinds)
+        consecutiveSuccessfulBatches = 0
+        successfulLimitingReasons.clear()
+        persist()
+    }
+
+    private fun applyFailureAdjustments(
+        limitingReasons: Set<ApiSubtitleBatchLimitReason>,
         failureKinds: Set<ApiSubtitleBatchFailureKind>,
     ) {
         val minimumRows = minOf(MIN_TRANSLATION_RECOVERY_BATCH_ROWS, capability.maxRows)
-        if (rowCapWasBinding && currentRows > minimumRows) {
-            // The global row ceiling moves in exact five-row steps. Successful recovery leaves
-            // never clamp it to a tiny leaf such as five rows.
+        if (ApiSubtitleBatchFailureKind.RESPONSE_FORMAT in failureKinds &&
+            ApiSubtitleBatchLimitReason.ROW_LIMIT in limitingReasons &&
+            currentRows > minimumRows
+        ) {
             currentRows = (currentRows - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
                 .coerceAtLeast(minimumRows)
         }
         if (ApiSubtitleBatchFailureKind.INPUT_CAPACITY in failureKinds) {
-            currentInputBudgetTokens = maxOf(
-                minOf(capability.inputBudgetTokens, 512),
-                (currentInputBudgetTokens * 0.8).toInt(),
+            currentInputBudgetTokens = shrinkBudget(
+                currentInputBudgetTokens,
+                capability.inputBudgetTokens,
             )
         }
         if (ApiSubtitleBatchFailureKind.OUTPUT_CAPACITY in failureKinds) {
-            currentOutputBudgetTokens = maxOf(
-                minOf(capability.outputBudgetTokens, 512),
-                (currentOutputBudgetTokens * 0.8).toInt(),
+            currentOutputBudgetTokens = shrinkBudget(
+                currentOutputBudgetTokens,
+                capability.outputBudgetTokens,
             )
         }
-        // Format/alignment failures affect only the row ceiling when it was the active
-        // constraint; they must not lower either independent token budget.
-        consecutiveSuccessfulBatches = 0
-        persist()
+    }
+
+    private fun growBudget(current: Int, maximum: Int): Int =
+        minOf(maximum, maxOf(current + 1, (current * 1.2).toInt()))
+
+    private fun shrinkBudget(current: Int, initialFloor: Int): Int =
+        maxOf(minOf(initialFloor, 512), (current * 0.8).toInt())
+
+    /**
+     * Estimates passed to this method already include the current multiplier. Correct the
+     * multiplier multiplicatively; blending the raw ratio directly would converge to its square
+     * root and systematically under-calibrate after the first adjustment.
+     */
+    private fun calibrateMultiplier(current: Double, estimated: Int, actual: Int): Double {
+        if (estimated <= 0 || actual <= 0) return current
+        val observedRatio = (actual.toDouble() / estimated).coerceIn(0.75, 1.5)
+        val correctedTarget = current * observedRatio
+        return (current * 0.8 + correctedTarget * 0.2).coerceIn(0.75, 3.0)
     }
 
     private fun persist() {
         store?.saveLearning(
             model = model,
+            learningScope = learningScope,
             record = ApiSubtitleBatchLearningRecord(
                 maxRows = currentRows,
                 inputTokenMultiplier = inputMultiplier,
