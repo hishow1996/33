@@ -58,6 +58,28 @@ internal class TranslationDiagnosticContext(
         trim()
     }
 
+    /**
+     * One line per batch-level request made while a single batch was being recovered. Kept apart
+     * from [events] because those are trimmed to the most recent ones, and with a long split
+     * sequence the early (largest) attempts are exactly what a failure report needs.
+     */
+    private val recoveryAttempts = CopyOnWriteArrayList<String>()
+
+    fun recordRecoveryAttempt(rows: Int, kind: String, outcome: String) {
+        recoveryAttempts += "#${recoveryAttempts.size + 1} ${kind} 行数=$rows 结果=${outcome.take(160)}"
+        while (recoveryAttempts.size > 80) recoveryAttempts.removeAt(0)
+    }
+
+    /** Row counts in request order plus each outcome; empty when no batch needed recovery. */
+    fun recoveryAttemptSummary(): String {
+        if (recoveryAttempts.isEmpty()) return "本次没有记录到批次请求尝试"
+        val all = recoveryAttempts.toList()
+        val sizes = all.joinToString("→") { line ->
+            line.substringAfter("行数=").substringBefore(' ')
+        }
+        return "共记录 ${all.size} 次批次请求；行数顺序：$sizes\n" + all.takeLast(20).joinToString("\n")
+    }
+
     fun snapshot(maxChars: Int = 6_000): String {
         if (events.isEmpty()) return "本次没有记录到 HTTP 响应或网络重试事件（可能是本地引擎、预检阶段失败，或请求在连接前终止）"
         val limit = maxChars.coerceIn(500, 12_000)

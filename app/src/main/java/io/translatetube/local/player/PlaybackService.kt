@@ -11694,6 +11694,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "当前批次进度" to "${batchIndex + 1}/${translationTotalBatches}",
                                 "请求调用方式" to "translateWithContext",
                                 "本次翻译批次大小" to batch.size.toString(),
+                                "本批输入字幕行数" to batch.size.toString(),
+                                "服务层本批分配行数" to thisBatchRows.toString(),
+                                "批次大小来源" to if (usesEngineBatchSizing) {
+                                    "API 引擎自适应（服务层单批上限 $maxAdaptiveBatchRows）"
+                                } else {
+                                    "固定 $batchSize"
+                                },
+                                "批次拆分恢复尝试" to traceContext.recoveryAttemptSummary(),
                                 "请求总字符数" to batch.sumOf { it.length }.toString(),
                                 "请求最长单行字符数" to (batch.maxOfOrNull { it.length } ?: 0).toString(),
                                 "请求最短单行字符数" to (batch.minOfOrNull { it.length } ?: 0).toString(),

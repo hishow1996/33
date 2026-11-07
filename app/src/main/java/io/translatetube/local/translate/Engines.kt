@@ -278,6 +278,16 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     return result
 }
 
+private fun describeRecoveryResponse(requestedRows: Int, response: List<String>): String =
+    if (response.size == requestedRows) {
+        "返回 $requestedRows 行"
+    } else {
+        "返回行数不符 ${response.size}/$requestedRows"
+    }
+
+private fun describeRecoveryError(error: Exception): String =
+    "${TranslationFailureDiagnosticPolicy.classify(error)}：${error.message.orEmpty().replace('\n', ' ')}"
+
 private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     lines: List<String>,
     context: Pair<List<String>, List<String>>?,
@@ -293,11 +303,14 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     var response: List<String>? = null
     var shouldRetrySameBatchForFormat = false
     var sameBatchFormatRetryAttempted = false
+    val diagnostics = TranslationDiagnosticContextHolder.current()
     try {
         budget.consumeAttempt()
         response = translate(lines, context)
+        diagnostics?.recordRecoveryAttempt(lines.size, "首次请求", describeRecoveryResponse(lines.size, response))
     } catch (error: IllegalStateException) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        diagnostics?.recordRecoveryAttempt(lines.size, "首次请求", describeRecoveryError(error))
         val failureKind = translationBatchFailureKind(error) ?: throw error
         budget.recordFailureKind(failureKind)
         budget.hadRecoverableFailure = true
@@ -322,9 +335,12 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         }
         response = try {
             budget.consumeAttempt()
-            retryMalformedBatch(lines, context)
+            retryMalformedBatch(lines, context).also {
+                diagnostics?.recordRecoveryAttempt(lines.size, "同批重试", describeRecoveryResponse(lines.size, it))
+            }
         } catch (error: IllegalStateException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            diagnostics?.recordRecoveryAttempt(lines.size, "同批重试", describeRecoveryError(error))
             val failureKind = translationBatchFailureKind(error) ?: throw error
             budget.recordFailureKind(failureKind)
             recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
