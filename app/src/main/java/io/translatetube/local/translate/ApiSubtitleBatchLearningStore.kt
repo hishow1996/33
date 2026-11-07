@@ -163,6 +163,6 @@ class ApiSubtitleBatchLearningStore(
     private companion object {
         const val PREFS_NAME = "api_translation_batch_learning"
         const val RECOVERY_POLICY_VERSION = 5
-        const val CAPABILITY_SCHEMA_VERSION = 2
+        const val CAPABILITY_SCHEMA_VERSION = 3
     }
 }
