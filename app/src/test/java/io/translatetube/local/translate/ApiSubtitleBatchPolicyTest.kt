@@ -8,6 +8,34 @@ class ApiSubtitleBatchPolicyTest {
     private fun snapshot(model: String) = ApiSubtitleBatchLearningState(model).snapshot()
 
     @Test
+    fun thirtyOneAnd1291CuesArePartitionedIntoThirtyRowBatchesAndOneRemainder() {
+        fun batchSizes(totalRows: Int): List<Int> {
+            val lines = List(totalRows) { "subtitle-$it" }
+            val model = "custom-provider/fixed-batch-test"
+            val learning = snapshot(model)
+            val sizes = mutableListOf<Int>()
+            var start = 0
+            while (start < lines.size) {
+                val selection = ApiSubtitleBatchPolicy.selectBatch(
+                    lines = lines,
+                    startIndex = start,
+                    model = model,
+                    targetLanguage = "zh-CN",
+                    learning = learning,
+                )
+                sizes += selection.endExclusive - start
+                start = selection.endExclusive
+            }
+            return sizes
+        }
+
+        assertEquals(listOf(30, 1), batchSizes(31))
+        val largeVideoBatches = batchSizes(1_291)
+        assertEquals(44, largeVideoBatches.size)
+        assertEquals(List(43) { 30 } + 1, largeVideoBatches)
+    }
+
+    @Test
     fun everyApiModelUsesTheFixedThirtyRowBatch() {
         val lines = List(200) { "A short subtitle." }
         val glm = ApiSubtitleBatchPolicy.selectBatch(
@@ -39,7 +67,7 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun registeredGlmCatalogLimitsKeepTheModelScopedSafetyCeiling() {
+    fun registeredGlmCatalogLimitsKeepTheFixedRowMetadata() {
         val model = "GLM-4-Flash-250414"
         val provider = "https://zhipu.example/v4"
         val capability = ApiSubtitleBatchPolicy.registerProviderLimits(
@@ -48,21 +76,21 @@ class ApiSubtitleBatchPolicyTest {
             maxOutputTokens = 16_384,
             providerKey = provider,
         )
-        assertEquals(16, capability.initialRows)
-        assertEquals(100, capability.maxRows)
+        assertEquals(30, capability.initialRows)
+        assertEquals(30, capability.maxRows)
 
         val learning = ApiSubtitleBatchLearningState(model, provider)
         assertEquals(30, learning.snapshot().maxRows)
     }
 
     @Test
-    fun oneMillionTokenModelsStartWithLargerBatchesButRespectOutputCaps() {
+    fun oneMillionTokenModelsKeepTheFixedThirtyRowBatchAndRespectOutputCaps() {
         val lines = List(200) { "A short subtitle." }
         val model = "Qwen/Qwen2.5-7B-Instruct-1M"
         val selection = ApiSubtitleBatchPolicy.selectBatch(lines, 0, model, "zh-CN", snapshot(model))
         assertEquals(30, selection.endExclusive)
         assertEquals(1_010_000, ApiSubtitleBatchPolicy.capabilityForModel(model).contextWindowTokens)
-        // Dynamic output sizing may be below the provider cap for short batches.
+        // The output allowance is estimated independently from the fixed row count.
         assertTrue(selection.maxOutputTokens >= selection.estimatedOutputTokens)
         assertTrue(selection.maxOutputTokens <= ApiSubtitleBatchPolicy.capabilityForModel(model).maxOutputTokens)
     }
@@ -148,7 +176,7 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun singleCueRecoveryCannotLowerTheModelWideBatchLimit() {
+    fun singleCueRecoveryCannotChangeTheFixedApiBatchSize() {
         val learning = ApiSubtitleBatchLearningState("GLM-4-Flash-250414")
         learning.recordOriginalBatchSuccess(
             limitingReasons = setOf(ApiSubtitleBatchLimitReason.ROW_LIMIT),
@@ -197,7 +225,7 @@ class ApiSubtitleBatchPolicyTest {
         val discovered = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-a.example/v1")
         val other = ApiSubtitleBatchPolicy.capabilityForModel(model, "https://provider-b.example/v1")
         assertEquals(1_000_000, discovered.contextWindowTokens)
-        assertEquals(80, discovered.initialRows)
+        assertEquals(30, discovered.initialRows)
         assertEquals(48_000, discovered.inputBudgetTokens)
         assertEquals(32_768, other.contextWindowTokens)
         assertEquals(30, other.initialRows)
@@ -304,8 +332,8 @@ class ApiSubtitleBatchPolicyTest {
         )
         assertEquals(1_048_576, capability.contextWindowTokens)
         assertEquals(393_216, capability.maxOutputTokens)
-        assertEquals(80, capability.initialRows)
-        assertEquals(200, capability.maxRows)
+        assertEquals(30, capability.initialRows)
+        assertEquals(30, capability.maxRows)
     }
 
     @Test
@@ -315,8 +343,8 @@ class ApiSubtitleBatchPolicyTest {
         assertEquals(1_048_576, kimi.contextWindowTokens)
         assertEquals(1_050_000, gpt6.contextWindowTokens)
         assertEquals(128_000, gpt6.maxOutputTokens)
-        assertEquals(80, kimi.initialRows)
-        assertEquals(80, gpt6.initialRows)
+        assertEquals(30, kimi.initialRows)
+        assertEquals(30, gpt6.initialRows)
     }
 
     @Test
@@ -378,7 +406,7 @@ class ApiSubtitleBatchPolicyTest {
     }
 
     @Test
-    fun oneCueThatExceedsInputBudgetIsMarkedBeforeDispatch() {
+    fun aFixedBatchThatExceedsInputBudgetIsMarkedBeforeDispatch() {
         val model = "glm-4-flash-250414"
         val selection = ApiSubtitleBatchPolicy.selectBatch(
             lines = listOf("a very long subtitle"),
@@ -389,12 +417,12 @@ class ApiSubtitleBatchPolicyTest {
             inputTokenEstimator = { 100_000 },
         )
         assertEquals(1, selection.endExclusive)
-        assertTrue(selection.singleCueExceedsInputBudget)
+        assertTrue(selection.batchExceedsInputBudget)
         assertTrue(ApiSubtitleBatchLimitReason.INPUT_BUDGET in selection.limitingReasons)
     }
 
     @Test
-    fun oneCueThatExceedsOutputBudgetIsMarkedBeforeDispatch() {
+    fun aFixedBatchThatExceedsOutputBudgetIsMarkedBeforeDispatch() {
         val model = "glm-4-flash-250414"
         val selection = ApiSubtitleBatchPolicy.selectBatch(
             lines = listOf("中".repeat(2_000)),
@@ -404,7 +432,7 @@ class ApiSubtitleBatchPolicyTest {
             learning = snapshot(model).copy(outputBudgetTokens = 512),
         )
         assertEquals(1, selection.endExclusive)
-        assertTrue(selection.singleCueExceedsOutputBudget)
+        assertTrue(selection.batchExceedsOutputBudget)
         assertTrue(ApiSubtitleBatchLimitReason.OUTPUT_BUDGET in selection.limitingReasons)
     }
 
