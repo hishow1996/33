@@ -484,16 +484,21 @@ internal class ApiSubtitleBatchLearningState(
         failureKinds: Set<ApiSubtitleBatchFailureKind>,
         allRowsAccepted: Boolean,
     ) {
-        if (recoveredBySplitting) {
-            // Feed the original failure back into the matching constraint. A successful split
-            // must not be mistaken for proof that the original batch size was safe.
-            applyFailureAdjustments(limitingReasons, failureKinds)
+        if (recoveredBySplitting || hadRecoverableFailure) {
+            // Feed recoverable failures back into the matching constraint even when a single
+            // cue cannot be split. Only a real split is evidence for reducing the global row cap.
+            val adjustments = if (recoveredBySplitting) {
+                failureKinds
+            } else {
+                failureKinds - ApiSubtitleBatchFailureKind.RESPONSE_FORMAT
+            }
+            applyFailureAdjustments(limitingReasons, adjustments)
             consecutiveSuccessfulBatches = 0
             successfulLimitingReasons.clear()
             persist()
             return
         }
-        if (hadRecoverableFailure || !allRowsAccepted) {
+        if (!allRowsAccepted) {
             consecutiveSuccessfulBatches = 0
             successfulLimitingReasons.clear()
             persist()
