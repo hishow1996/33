@@ -60,8 +60,40 @@ internal object ApiSubtitleBatchPolicy {
     private fun normalized(model: String): String =
         model.trim().removePrefix("models/").lowercase(java.util.Locale.ROOT)
 
+    /**
+     * Canonical endpoint identity shared by in-memory capability lookup and persisted learning.
+     * Ignore credentials, query strings, fragments and trailing slashes so harmless URL spelling
+     * differences do not create separate profiles; preserve the path because relay routes can
+     * apply different model mappings and limits.
+     */
+    internal fun normalizeProviderKey(raw: String): String {
+        val value = raw.trim()
+        if (value.isBlank()) return "unknown-provider"
+        return runCatching {
+            val uri = java.net.URI(value)
+            val scheme = uri.scheme.orEmpty().lowercase(java.util.Locale.ROOT)
+            val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+            require(scheme.isNotBlank() && host.isNotBlank())
+            val port = when {
+                uri.port <= 0 -> ""
+                scheme == "https" && uri.port == 443 -> ""
+                scheme == "http" && uri.port == 80 -> ""
+                else -> ":" + uri.port
+            }
+            val path = uri.rawPath.orEmpty().trimEnd('/')
+            scheme + "://" + host + port + path
+        }.getOrElse {
+            value.substringBefore('?')
+                .substringBefore('#')
+                .substringAfterLast('@')
+                .trimEnd('/')
+                .lowercase(java.util.Locale.ROOT)
+                .ifBlank { "unknown-provider" }
+        }
+    }
+
     private fun providerModelKey(model: String, providerKey: String): String =
-        providerKey.trim().lowercase(java.util.Locale.ROOT) + "|" + normalized(model)
+        normalizeProviderKey(providerKey) + "|" + normalized(model)
 
     fun capabilityForModel(model: String, providerKey: String = ""): ApiModelCapability =
         providerCapabilities[providerModelKey(model, providerKey)] ?: knownCapabilityForModel(normalized(model))
