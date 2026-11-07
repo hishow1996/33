@@ -64,12 +64,29 @@ class ModelTranslationParserTest {
     }
 
     @Test
-    fun rejectsIncompleteIndexedResultsInsteadOfReturningMisalignedBlanks() {
+    fun keepsAlignedZeroBasedRowsAndLeavesOmittedTailRowsBlank() {
+        assertEquals(
+            listOf("hello", "", ""),
+            parseModelTranslations("0|hello", 3),
+        )
+    }
+
+    @Test
+    fun keepsAlignedZeroBasedRowsAndLeavesSkippedMiddleRowBlank() {
+        assertEquals(
+            listOf("a", "", "c"),
+            parseModelTranslations("0|a\n2|c", 3),
+        )
+    }
+
+    @Test
+    fun rejectsIncompleteOneBasedResultsBecauseTheyCouldBeShifted() {
         val error = runCatching {
-            parseModelTranslations("0|hello", 2)
+            parseModelTranslations("1|first\n2|second", 3)
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("编号不完整"))
     }
 
     @Test

@@ -732,6 +732,19 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         }
         if ((0 until size).any { (it + base) !in indexed.keys }) {
             val missing = (0 until size).map { it + base }.filterNot(indexed::containsKey)
+            // The prompt asks for zero-based numbers. When the reply uses them (index 0 present),
+            // contains no unnumbered text, duplicates or out-of-range numbers, every returned row
+            // is provably bound to its own cue. Keep those rows and leave only the omitted cues
+            // blank: blanks are never accepted as translations, and the caller re-requests just
+            // those cues. One-based replies stay rejected because a zero-based reply that merely
+            // lost row 0 looks identical and would shift every translation by one.
+            if (hasZeroBasedStart && base == 0) {
+                recordParser(
+                    "PARTIAL_INDEXED_LINES",
+                    "expectedRows=$size; indexedRows=${indexed.size}; missingIndexes=${missing.joinToString(",")}",
+                )
+                return List(size) { i -> indexed[i].orEmpty() }
+            }
             recordParser("REJECTED_MISSING_INDEX", "expectedRows=$size; missingIndexes=${missing.joinToString(",")}")
             throw IllegalStateException(
                 "翻译服务返回的字幕编号不完整（期望 $size 条，缺少编号 " +
