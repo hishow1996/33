@@ -2278,7 +2278,11 @@ class OpenAiCompatEngine(
                 "maxOutputTokens=${params.maxTokens}, latencyMs=${apiResponse.elapsedMs}, " +
                     "rollingAverageLatencyMs=${performance.averageLatencyMs}, " +
                     "p90LatencyMs=${performance.p90LatencyMs}, " +
-                    "averageRowsPerMinute=${performance.averageRowsPerMinute.toLong()}",
+                    "averageRowsPerMinute=${performance.averageRowsPerMinute.toLong()}, " +
+                    "batchSuccessRate=${"%.1f".format(java.util.Locale.ROOT, performance.successRatePercent)}%, " +
+                    "successfulBatches=${performance.successfulBatchCount}/${performance.sampledBatchCount}, " +
+                    "splitRecoveries=${performance.splitRecoveryCount}, " +
+                    "failedBatches=${performance.failedBatchCount}",
         )
         return translated
     }
@@ -2656,7 +2660,11 @@ class GeminiEngine(
                 "latencyMs=$elapsedMs, " +
                     "rollingAverageLatencyMs=${performance.averageLatencyMs}, " +
                     "p90LatencyMs=${performance.p90LatencyMs}, " +
-                    "averageRowsPerMinute=${performance.averageRowsPerMinute.toLong()}",
+                    "averageRowsPerMinute=${performance.averageRowsPerMinute.toLong()}, " +
+                    "batchSuccessRate=${"%.1f".format(java.util.Locale.ROOT, performance.successRatePercent)}%, " +
+                    "successfulBatches=${performance.successfulBatchCount}/${performance.sampledBatchCount}, " +
+                    "splitRecoveries=${performance.splitRecoveryCount}, " +
+                    "failedBatches=${performance.failedBatchCount}",
         )
         return translated
     }
