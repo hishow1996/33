@@ -30,7 +30,7 @@ class TranslationAdaptiveRecoveryTest {
     @Test
     fun passesPriorContextAndCarriesFreshlyTranslatedLeftHalfForward() = runBlocking {
         val contexts = mutableListOf<Pair<List<String>, List<String>>?>()
-        val sources = ('a'..'j').map(Char::toString)
+        val sources = List(10) { ('a' + it).toString() }
         val result = translateBatchWithAdaptiveRecovery(
             lines = sources,
             context = listOf("previous") to listOf("此前译文"),
