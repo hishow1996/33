@@ -117,6 +117,8 @@ class AdaptiveTranslationRecoveryPolicyTest {
         assertEquals(listOf(10), repairCalls)
         assertEquals(2, summary?.attempts)
         assertTrue(summary?.failureKinds?.contains(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT) == true)
+        assertTrue(summary?.hadRecoverableFailure == true)
+        assertEquals(false, summary?.recoveredBySplitting)
     }
 
     @Test
