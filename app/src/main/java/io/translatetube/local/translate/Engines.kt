@@ -115,7 +115,7 @@ internal fun translationBatchFailureKind(
     error: IllegalStateException,
 ): ApiSubtitleBatchFailureKind? {
     if (isRetryableTranslationFailure(error)) return null
-    val detail = generateSequence(error) { it.cause }
+    val detail = generateSequence<Throwable>(error) { it.cause }
         .take(8)
         .joinToString(" ") { it.message.orEmpty() }
     val normalized = detail.lowercase(java.util.Locale.ROOT)
