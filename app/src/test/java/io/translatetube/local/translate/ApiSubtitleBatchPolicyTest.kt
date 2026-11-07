@@ -27,7 +27,9 @@ class ApiSubtitleBatchPolicyTest {
         val selection = ApiSubtitleBatchPolicy.selectBatch(lines, 0, model, "zh-CN", snapshot(model))
         assertEquals(80, selection.endExclusive)
         assertEquals(1_010_000, ApiSubtitleBatchPolicy.capabilityForModel(model).contextWindowTokens)
-        assertEquals(8_192, selection.maxOutputTokens)
+        // Dynamic output sizing may be below the provider cap for short batches.
+        assertTrue(selection.maxOutputTokens >= selection.estimatedOutputTokens)
+        assertTrue(selection.maxOutputTokens <= ApiSubtitleBatchPolicy.capabilityForModel(model).maxOutputTokens)
     }
 
     @Test
