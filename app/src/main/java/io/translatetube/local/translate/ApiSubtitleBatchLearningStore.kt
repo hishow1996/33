@@ -1,6 +1,7 @@
 package io.translatetube.local.translate
 
 import android.content.Context
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.Locale
@@ -74,6 +75,18 @@ class ApiSubtitleBatchLearningStore(
             // Discard profiles from earlier recovery policies: their row ceilings and token
             // budgets may have been clamped together by split-leaf outcomes.
             if (json.optInt("recoveryPolicyVersion", 0) != RECOVERY_POLICY_VERSION) return null
+            val latencySamples = json.optJSONArray("latencySamplesMs")?.let { array ->
+                (0 until array.length()).mapNotNull { index ->
+                    (array.opt(index) as? Number)?.toLong()?.takeIf { it in 1..300_000 }
+                }.takeLast(24)
+            }.orEmpty()
+            val throughputSamples = json.optJSONArray("rowsPerMinuteSamples")?.let { array ->
+                (0 until array.length()).mapNotNull { index ->
+                    (array.opt(index) as? Number)?.toDouble()
+                        ?.takeIf { it.isFinite() && it > 0.0 }
+                        ?.coerceAtMost(1_000_000.0)
+                }.takeLast(24)
+            }.orEmpty()
             ApiSubtitleBatchLearningRecord(
                 maxRows = json.optInt("maxRows", capability.initialRows)
                     .coerceIn(1, capability.maxRows),
@@ -87,6 +100,8 @@ class ApiSubtitleBatchLearningStore(
                     .coerceIn(512, capability.maxOutputBudgetTokens),
                 averageLatencyMs = json.optDouble("averageLatencyMs", 0.0)
                     .coerceIn(0.0, 300_000.0),
+                latencySamplesMs = latencySamples,
+                rowsPerMinuteSamples = throughputSamples,
             )
         }.getOrNull()
 
@@ -103,6 +118,14 @@ class ApiSubtitleBatchLearningStore(
                 .put("inputBudgetTokens", record.inputBudgetTokens)
                 .put("outputBudgetTokens", record.outputBudgetTokens)
                 .put("averageLatencyMs", record.averageLatencyMs)
+                .put(
+                    "latencySamplesMs",
+                    JSONArray().apply { record.latencySamplesMs.takeLast(24).forEach(::put) },
+                )
+                .put(
+                    "rowsPerMinuteSamples",
+                    JSONArray().apply { record.rowsPerMinuteSamples.takeLast(24).forEach(::put) },
+                )
                 .put("recoveryPolicyVersion", RECOVERY_POLICY_VERSION)
             preferences.edit().putString(key("learning", model, learningScope), json.toString()).apply()
         }
