@@ -175,6 +175,7 @@ internal data class TranslationRecoverySummary(
     val largestSuccessfulBatchRows: Int?,
     val attempts: Int,
     val failureKinds: Set<ApiSubtitleBatchFailureKind> = emptySet(),
+    val hadRecoverableFailure: Boolean = false,
 )
 
 private class TranslationRecoveryBudget {
@@ -182,12 +183,18 @@ private class TranslationRecoveryBudget {
     private var isolatedCueFailures = 0
     private var largestSuccessfulBatchRows: Int? = null
     private val failureKinds = linkedSetOf<ApiSubtitleBatchFailureKind>()
+    private var didSplit = false
 
-    /** Shared by every split/retry: malformed response alignment must not be treated as a completed translation. */
-    var hadUnalignedResponse: Boolean = false
+    /** Any response/capacity failure that entered adaptive recovery. */
+    var hadRecoverableFailure: Boolean = false
 
     fun recordFailureKind(kind: ApiSubtitleBatchFailureKind) {
         failureKinds += kind
+        hadRecoverableFailure = true
+    }
+
+    fun recordSplit() {
+        didSplit = true
     }
 
     fun recordSuccessfulBatch(rows: Int) {
@@ -198,10 +205,11 @@ private class TranslationRecoveryBudget {
     }
 
     fun summary(): TranslationRecoverySummary = TranslationRecoverySummary(
-        recoveredBySplitting = hadUnalignedResponse,
+        recoveredBySplitting = didSplit,
         largestSuccessfulBatchRows = largestSuccessfulBatchRows,
         attempts = attempts,
         failureKinds = failureKinds.toSet(),
+        hadRecoverableFailure = hadRecoverableFailure,
     )
 
     /** True while this batch may still hand an unusable single cue back to the caller. */
@@ -256,7 +264,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
         throw error
     }
     onRecoverySummary?.invoke(budget.summary())
-    if (!deferInvalidRowsToCaller && budget.hadUnalignedResponse && lines.indices.any { index ->
+    if (!deferInvalidRowsToCaller && budget.hadRecoverableFailure && lines.indices.any { index ->
             val candidate = result.getOrNull(index).orEmpty()
             lines[index].isNotBlank() &&
                 !isAcceptableTranslation(lines[index], candidate) &&
@@ -292,14 +300,14 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         val failureKind = translationBatchFailureKind(error) ?: throw error
         budget.recordFailureKind(failureKind)
-        budget.hadUnalignedResponse = true
+        budget.hadRecoverableFailure = true
         recoveryReason = TranslationFailureDiagnosticPolicy.classify(error)
         shouldRetrySameBatchForFormat = failureKind == ApiSubtitleBatchFailureKind.RESPONSE_FORMAT
     }
 
     if (response != null && response.size != lines.size) {
         budget.recordFailureKind(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT)
-        budget.hadUnalignedResponse = true
+        budget.hadRecoverableFailure = true
         recoveryReason = "RESPONSE_ROW_COUNT_MISMATCH"
         shouldRetrySameBatchForFormat = true
     }
@@ -518,6 +526,7 @@ private suspend fun translateBatchWithAdaptiveRecoveryInternal(
     }
     val splitAt = (lines.size - TRANSLATION_RECOVERY_BATCH_STEP_ROWS)
         .coerceAtLeast(MIN_TRANSLATION_RECOVERY_BATCH_ROWS)
+    budget.recordSplit()
     android.util.Log.w(
         "TranslationAPI",
         "Adaptive subtitle batch reduction: rows=${lines.size}, nextRows=$splitAt, " +
@@ -2008,7 +2017,8 @@ class OpenAiCompatEngine(
             }
             batchLearning.recordOriginalBatchSuccess(
                 batchRows = batch.size,
-                recoveredBySplitting = recoverySummary.recoveredBySplitting || !allRowsAccepted,
+                recoveredBySplitting = recoverySummary.recoveredBySplitting ||
+                    recoverySummary.hadRecoverableFailure || !allRowsAccepted,
             )
             out += translated
             i = batchSelection.endExclusive
@@ -2344,7 +2354,8 @@ class GeminiEngine(
             }
             batchLearning.recordOriginalBatchSuccess(
                 batchRows = batch.size,
-                recoveredBySplitting = recoverySummary.recoveredBySplitting || !allRowsAccepted,
+                recoveredBySplitting = recoverySummary.recoveredBySplitting ||
+                    recoverySummary.hadRecoverableFailure || !allRowsAccepted,
             )
             out += translated
             i = batchSelection.endExclusive
