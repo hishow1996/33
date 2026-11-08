@@ -5,6 +5,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URI
+import java.security.MessageDigest
 import java.util.Properties
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
@@ -302,14 +303,14 @@ if (!sherpaAarFile.isFile || sherpaAarFile.length() != sherpaStaticAarExpectedBy
                             )
                         }
                         val actualSha256 = temp.inputStream().use { input ->
-                            val digest = java.security.MessageDigest.getInstance("SHA-256")
+                            val digest = MessageDigest.getInstance("SHA-256")
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 val count = input.read(buffer)
                                 if (count < 0) break
                                 digest.update(buffer, 0, count)
                             }
-                            digest.digest().joinToString("") { byte ->
+                            digest.digest().joinToString("") { byte: Byte ->
                                 "%02x".format(byte.toInt() and 0xff)
                             }
                         }
