@@ -388,6 +388,7 @@ internal object AppLogAiReport {
         val root=rootCauseForAi(primary)
         val errorClass=primary.errorClass.ifBlank{deepestCause(primary.exceptionSnapshot)?.type.orEmpty()}
         val appFrame=primary.firstAppStackFrame.takeIf{it.isNotBlank()}
+            ?.let{clipForAi(AppLogStore.redactForExport(it),260)}
             ?:exceptionFrames(primary.exceptionSnapshot).firstOrNull{it.className.startsWith("io.translatetube.")}?.let(::formatFrameForAi).orEmpty()
         val context=incidentContextLines(primary)
         val suppressed=suppressedTypes(primary.exceptionSnapshot)
@@ -657,6 +658,8 @@ internal object AppLogAiReport {
     private fun isFrameworkNoiseFrame(frame:AppLogStackFrame)=
         frame.className.startsWith("androidx.compose.runtime.")||
         frame.className.startsWith("kotlinx.coroutines.internal.")||
+        frame.className.startsWith("kotlin.coroutines.jvm.internal.")||
+        frame.className.startsWith("androidx.lifecycle.")||
         frame.className.startsWith("java.lang.reflect.")||
         frame.className.startsWith("jdk.internal.reflect.")
     private fun formatFrameForAi(frame:AppLogStackFrame):String{
