@@ -409,7 +409,7 @@ internal object AppLogAiReport {
             if(diagnosis.evidence.isNotBlank())append("诊断证据：").append(clipForAi(AppLogStore.redactForExport(diagnosis.evidence),280)).append('\n')
             if(root.isNotBlank())append("根因：").append(clipForAi(AppLogStore.redactForExport(root),560)).append('\n')
             else if(primary.message.isNotBlank())append("故障摘要：").append(clipForAi(AppLogStore.redactForExport(primary.message),120)).append('\n')
-            if(chainTypes.isNotEmpty())append("异常链：").append(chainTypes.joinToString(" -> ")).append('\n')
+            if(chainTypes.size>1)append("异常链：").append(chainTypes.joinToString(" -> ")).append('\n')
             if(appFrame.isNotBlank())append("首个应用栈帧：").append(clipForAi(AppLogStore.redactForExport(appFrame),260)).append('\n')
             if(frameCount>0&&frames.isNotEmpty())append("调用栈：").append(frames.take(frameCount).joinToString(" <- "){clipForAi(AppLogStore.redactForExport(it),112)}).append('\n')
             if(suppressed.isNotEmpty())append("suppressed：").append(suppressed.joinToString(", "){simpleErrorType(it)}).append('\n')
