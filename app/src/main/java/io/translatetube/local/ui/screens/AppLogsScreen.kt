@@ -967,9 +967,12 @@ private fun incidentReportFileName(record: AppLogRecord): String {
     val time = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         .format(Date(record.timestampMs))
     val level = record.level.filter { it.isLetterOrDigit() }.take(10).ifBlank { "ERROR" }
-    val identity = record.eventId.ifBlank { record.issueKey.ifBlank { "${record.timestampMs}_${record.tag}" } }
+    val identitySource = record.eventId.ifBlank {
+        "${record.processId}_${record.sequence}_${record.timestampMs}_${record.message.hashCode()}_${record.tag.hashCode()}"
+    }
+    val identity = identitySource
         .filter { it.isLetterOrDigit() }
-        .takeLast(8)
+        .takeLast(10)
         .ifBlank { "event" }
     return "AI诊断_${module}_${level}_${time}_${identity}.txt"
 }
@@ -1056,6 +1059,15 @@ private fun IncidentExportRecordRow(
                     Text(
                         record.rootCauseMessage,
                         color = Color(0xFF737980),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (record.recoveredAtMs != null) {
+                    Text(
+                        "已恢复 · ${AppLogStore.formatTime(record.recoveredAtMs)}",
+                        color = Color(0xFF247347),
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
