@@ -496,10 +496,9 @@ internal object AppLogAiReport {
             node.suppressed.forEach { inspectException(it, depth + 1) }
         }
         primary.exceptionSnapshot?.let { inspectException(it) }
-        val stackTextPresent = Regex("""(?m)^\\s*(?:at\\s+|#\\d+\\s+)""")
+        val stackTextPresent = Regex("""(?m)^\s*(?:at\s+|#\d+\s+)""")
             .containsMatchIn(primary.details)
         val structuredStackPresent = exceptionFrameCount > 0
-        val hasStackEvidence = stackTextPresent || structuredStackPresent
         val omittedContextFields = primary.diagnosticContext["日志诊断字段省略数"]
             ?.toIntOrNull()?.coerceAtLeast(0) ?: 0
         val truncatedContextFields = primary.diagnosticContext["日志诊断字段截断数"]
