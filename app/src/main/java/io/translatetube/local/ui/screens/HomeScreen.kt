@@ -347,16 +347,18 @@ fun HomeScreen(
                     Spacer(Modifier.width(9.dp))
                     Text("观看并翻译", style = MaterialTheme.typography.titleLarge)
                 }
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp))
+                Box(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(15.dp))
                         .clickable { localPicker.launch(arrayOf("video/*")) }
                         .padding(horizontal = 6.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = BrandBright)
-                    Spacer(Modifier.width(12.dp))
-                    Text("打开本地视频", color = OnBg, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                    Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
+                    Icon(
+                        Icons.Filled.FolderOpen,
+                        contentDescription = "打开本地视频",
+                        tint = BrandBright,
+                    )
                 }
             }
         }
