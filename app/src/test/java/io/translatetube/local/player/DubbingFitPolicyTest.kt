@@ -77,19 +77,58 @@ class DubbingFitPolicyTest {
     }
 
     @Test
-    fun largeLagMayBeCompressedAHairHarderThanModerateLag() {
-        // 晚了 6s（>5s）：下限放宽到 MIN_CATCH_UP_RATIO_LARGE_LAG
+    fun largerLagAndLongerSentencesAreCompressedHarder() {
+        // 晚了 6s、4s 长句：期限速率超过上限，按最高速率压缩
         assertEquals(
-            DubbingFitPolicy.MIN_CATCH_UP_RATIO_LARGE_LAG,
+            1f / DubbingFitPolicy.CATCH_UP_MAX_RATE,
             DubbingFitPolicy.catchUpRatio(6_000_000, 4_000_000, 7_000_000, scheduledStartUs = 0L),
-            0.0001f,
+            0.001f,
         )
-        // 晚了 3s：仍用普通下限
+        // 晚了 3s、4s 长句：基础 1.333 倍，长句份额 1.5 → 1.5 倍
         assertEquals(
-            DubbingFitPolicy.MIN_CATCH_UP_RATIO,
+            1f / 1.5f,
             DubbingFitPolicy.catchUpRatio(3_000_000, 4_000_000, 4_000_000, scheduledStartUs = 0L),
-            0.0001f,
+            0.001f,
         )
+    }
+
+    @Test
+    fun shortSentencesGetAGentleRateWhileLongOnesCarryTheCatchUp() {
+        // 同样晚 3s、同样来不及：1s 短句只加速到 1.1 倍，4s 长句 1.5 倍
+        val short = DubbingFitPolicy.catchUpRatio(3_000_000, 1_000_000, 3_100_000, scheduledStartUs = 0L)
+        val long = DubbingFitPolicy.catchUpRatio(3_000_000, 4_000_000, 3_100_000, scheduledStartUs = 0L)
+        assertEquals(1f / 1.1f, short, 0.001f)
+        assertEquals(1f / 1.5f, long, 0.001f)
+        assertTrue(short > long)
+    }
+
+    @Test
+    fun adaptiveFloorScalesWithLagAndSentenceLength() {
+        // 4s 长句：落后 2s → 基础 1.2，份额 1.5 → 1.3 倍；落后 4s → 超过上限，1.6 倍
+        assertEquals(1f / 1.3f, DubbingFitPolicy.adaptiveCatchUpFloor(2_000_000, 4_000_000), 0.001f)
+        assertEquals(
+            1f / DubbingFitPolicy.CATCH_UP_MAX_RATE,
+            DubbingFitPolicy.adaptiveCatchUpFloor(4_000_000, 4_000_000),
+            0.001f,
+        )
+        // 句长在短句和长句之间线性过渡：2.35s 取中点份额 0.9，落后 3s → 1 + 0.333 * 0.9 = 1.3 倍
+        assertEquals(1f / 1.3f, DubbingFitPolicy.adaptiveCatchUpFloor(3_000_000, 2_350_000), 0.001f)
+    }
+
+    @Test
+    fun adaptiveFloorNeverExceedsTheCeilingEvenForHugeLag() {
+        assertEquals(
+            1f / DubbingFitPolicy.CATCH_UP_MAX_RATE,
+            DubbingFitPolicy.adaptiveCatchUpFloor(60_000_000, 10_000_000),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun adaptiveFloorDoesNothingWithoutLagOrDuration() {
+        assertEquals(1f, DubbingFitPolicy.adaptiveCatchUpFloor(0, 4_000_000), 0f)
+        assertEquals(1f, DubbingFitPolicy.adaptiveCatchUpFloor(-500_000, 4_000_000), 0f)
+        assertEquals(1f, DubbingFitPolicy.adaptiveCatchUpFloor(5_000_000, 0), 0f)
     }
 
     @Test
