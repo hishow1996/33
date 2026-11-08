@@ -75,7 +75,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var records by remember { mutableStateOf<List<AppLogRecord>>(emptyList()) }
-    var filter by remember { mutableStateOf("全部") }
+    var filter by remember { mutableStateOf("错误") }
     var refreshKey by remember { mutableIntStateOf(0) }
     var selectedRecord by remember { mutableStateOf<AppLogRecord?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
