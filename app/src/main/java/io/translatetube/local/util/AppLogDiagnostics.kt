@@ -22,6 +22,12 @@ object AppLogDiagnostics {
             append(record.tag).append('\n')
             append(record.message).append('\n')
             append(record.errorClass).append('\n')
+            append(record.rootCauseMessage).append('\n')
+            var exceptionNode = record.exceptionSnapshot
+            while (exceptionNode != null) {
+                append(exceptionNode.type).append(": ").append(exceptionNode.message).append('\n')
+                exceptionNode = exceptionNode.cause
+            }
             record.diagnosticContext.toSortedMap().forEach { (key, value) ->
                 append(key).append('：').append(value).append('\n')
             }
@@ -47,6 +53,63 @@ object AppLogDiagnostics {
             evidence = evidence(record, terms),
             nextSteps = steps,
         )
+
+        // Dedicated verifier/linker rules precede broad runtime and feature fallbacks.
+        val verifyError = record.errorClass.contains("VerifyError", ignoreCase = true) ||
+            Regex("""(?i)failed to verify|verifier rejected""").containsMatchIn(raw)
+        if (verifyError) {
+            val source = listOf(record.rootCauseMessage, record.message, currentDetails).joinToString("\n")
+            val instruction = Regex("""(?i)\[0x[0-9a-f]+\][^\r\n]*""").find(source)?.value
+            val dex = Regex("""(?i)L?((?:[A-Za-z0-9_$]+/)*[A-Za-z0-9_$]+);->([A-Za-z0-9_$<>]+)\(""").find(source)
+            val java = Regex("""(?i)((?:[A-Za-z0-9_$]+\.)*[A-Za-z0-9_$]+)\.([A-Za-z0-9_$<>]+)\(""").find(source)
+            val method = dex ?: java
+            val methodLabel = method?.let {
+                it.groupValues[1].substringAfterLast('/').substringAfterLast('.').removePrefix("L").removeSuffix(";") + "." + it.groupValues[2]
+            }
+            val largeRegister = Regex("""\bv(\d+)\b""").findAll(instruction.orEmpty()).any {
+                it.groupValues[1].toIntOrNull()?.let { number -> number > 255 } == true
+            }
+            val finding = "这是构建产物（D8/R8 生成的 dex）被系统校验器拒绝，不是业务逻辑错误；优先检查报错方法是否过大。" +
+                if (largeRegister) " 寄存器编号超过 255，方法很可能过大。" else ""
+            val evidence = listOfNotNull(methodLabel?.let { "报错方法：$it" }, instruction?.let { "校验指令：$it" })
+                .joinToString("；").ifBlank { "异常文本包含 VerifyError/Verifier rejected。" }
+            return AppLogDiagnosis(
+                "字节码校验失败（编译产物问题）", "已确认", finding, evidence,
+                listOf(
+                    "找到报错方法并统计行数，把其中的协程作用域、启动器、本地函数拆到独立的类或 @Composable 里。",
+                    "重新构建后在同一 Android 版本上复测。",
+                    "仍然失败时升级 AGP/D8 版本再试。",
+                ),
+            )
+        }
+
+        val linkerTypes = listOf("NoSuchMethodError", "NoClassDefFoundError", "ClassNotFoundException",
+            "IncompatibleClassChangeError", "AbstractMethodError", "UnsatisfiedLinkError")
+        val linkerType = linkerTypes.firstOrNull { raw.contains(it, ignoreCase = true) }
+        if (linkerType != null) {
+            val line = listOf(record.rootCauseMessage, record.message, currentDetails).firstNotNullOfOrNull { candidate ->
+                candidate.lineSequence().firstOrNull { it.contains(linkerType, ignoreCase = true) }
+            }?.trim()
+            val missingClass = Regex("""(?i)(?:NoClassDefFoundError|ClassNotFoundException)\s*:\s*([^\s;]+)""")
+                .find(raw)?.groupValues?.getOrNull(1)
+            val library = Regex("""(?i)lib[A-Za-z0-9_.+-]+\.so""").find(raw)?.value
+            val target = when {
+                !library.isNullOrBlank() -> "缺失原生库：$library"
+                !missingClass.isNullOrBlank() -> "缺失类：$missingClass"
+                !line.isNullOrBlank() -> line.take(260)
+                else -> linkerType
+            }
+            return AppLogDiagnosis(
+                "类/方法/原生库链接失败", "链接错误已确认",
+                "多为依赖版本冲突、API 级别不足（minSdk 24 的设备上缺少该 API）、脱糖缺失，或原生库的 ABI 不匹配。",
+                "异常类型：$linkerType；$target",
+                listOf(
+                    "核对该 API 的最低系统版本，并确认 minSdk 24 设备可用。",
+                    "检查 Gradle 依赖树中的版本冲突及 core library desugaring 配置。",
+                    "UnsatisfiedLinkError 时核对 abiFilters、APK 内原生库目录与设备 ABI。",
+                ),
+            )
+        }
 
         if (
             hasAny("remoteserviceexception", "bad notification") &&
