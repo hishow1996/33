@@ -958,14 +958,15 @@ private fun IncidentExportRecordRow(
 ) {
     val levelTint = if (record.level == "FATAL") Color(0xFFB42318) else Color(0xFFD97706)
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(13.dp),
         color = if (selected) Color(0xFFF0F6FF) else Color.White,
         border = BorderStroke(
             1.dp,
             if (selected) BrandBright.copy(alpha = 0.8f) else Color(0xFFE7E9EC),
         ),
-        onClick = onClick,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 11.dp),
@@ -974,7 +975,7 @@ private fun IncidentExportRecordRow(
         ) {
             RadioButton(
                 selected = selected,
-                onClick = onClick,
+                onClick = null,
                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
             )
             Column(
