@@ -326,6 +326,7 @@ internal object AppLogAiReport {
                 if(issue&&event.errorClass.isNotBlank()) append(" | ").append(simpleErrorType(event.errorClass))
                 val root=rootCauseForAi(event)
                 if(issue&&root.isNotBlank()) append(" | 根因=").append(clipForAi(AppLogStore.redactForExport(root),120))
+                if(issue&&event.firstAppStackFrame.isNotBlank()) append(" | 首帧=").append(clipForAi(AppLogStore.redactForExport(event.firstAppStackFrame),96))
                 append('\n')
             }
             if(ordered.size>selected.size) append("另有 ").append(ordered.size-selected.size).append(" 条事件未复制，完整日志请导出文件。\n")
