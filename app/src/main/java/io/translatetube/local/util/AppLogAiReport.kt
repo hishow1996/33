@@ -496,8 +496,10 @@ internal object AppLogAiReport {
             node.suppressed.forEach { inspectException(it, depth + 1) }
         }
         primary.exceptionSnapshot?.let { inspectException(it) }
-        val hasStackEvidence = Regex("""(?m)^\s*(?:at\s+|#\d+\s+)""")
+        val stackTextPresent = Regex("""(?m)^\\s*(?:at\\s+|#\\d+\\s+)""")
             .containsMatchIn(primary.details)
+        val structuredStackPresent = exceptionFrameCount > 0
+        val hasStackEvidence = stackTextPresent || structuredStackPresent
         val omittedContextFields = primary.diagnosticContext["日志诊断字段省略数"]
             ?.toIntOrNull()?.coerceAtLeast(0) ?: 0
         val truncatedContextFields = primary.diagnosticContext["日志诊断字段截断数"]
@@ -616,7 +618,14 @@ internal object AppLogAiReport {
                 )
                 .append('\n')
             append("- 原始堆栈证据：")
-                .append(if (hasStackEvidence) "已在完整诊断详情中发现异常/调用栈文本" else "未在详情中发现标准堆栈行；可能未提供 Throwable 或使用了非标准堆栈格式")
+                .append(
+                    when {
+                        stackTextPresent && structuredStackPresent -> "已在原始 details 与结构化异常树中采集到堆栈"
+                        stackTextPresent -> "已在原始 details 中采集到异常/调用栈文本"
+                        structuredStackPresent -> "原始 details 未发现标准堆栈行，但结构化异常树包含 ${exceptionFrameCount} 个栈帧"
+                        else -> "未发现标准堆栈证据；可能未提供 Throwable 或使用了非标准堆栈格式"
+                    },
+                )
                 .append('\n')
             append("- 结构化异常树：")
                 .append(
@@ -686,7 +695,7 @@ internal object AppLogAiReport {
             }
             append("\n## 7. 同一任务的关联上下文（不是其他被选中的故障）\n")
             append("主故障只包含上文选中的一条 ERROR/FATAL 记录。以下事件仅在同一 sessionId + operationId，或符合旧版同线程近邻规则时作为上下文保留；不代表它们都是本次导出的主故障。\n")
-            append("关联事件数：").append(related.size).append("（最多保留 80 条相关事件）\n")
+            append("关联事件数：").append(related.size).append("（普通上下文最多 80 条；匹配的翻译诊断事件和明确恢复事件优先完整保留）\n")
             append("关联依据说明：每条 JSON 记录均包含 relationToSelectedEvent 和 relationEvidence；恢复记录按 resolvesIssueKey 匹配，翻译事件按诊断 ID 匹配，任务上下文按 sessionId/operationId 匹配。\n")
             append("恢复事件采用显式 resolvesIssueKey 匹配，不会被普通 80 条上下文预算挤掉；issueKey 标识相同故障签名，不保证唯一对应某一次故障实例。\n")
             if (related.isEmpty()) {
