@@ -11615,6 +11615,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // Every engine must return usable Chinese text for each nonblank source cue.
         val pendingIndices = ArrayList<Int>()
         val translationPreviewRows = ArrayList<SubLine>(2)
+        // Keep the newest two distinct translated rows. Used both when rows are accepted inside a
+        // batch (so the preview does not wait for the whole batch) and when the batch completes.
+        fun appendTranslationPreview(rows: List<SubLine>) {
+            for (row in rows) {
+                translationPreviewRows.removeAll {
+                    it.startMs == row.startMs && it.endMs == row.endMs && it.text == row.text
+                }
+                translationPreviewRows += row
+            }
+            while (translationPreviewRows.size > 2) translationPreviewRows.removeAt(0)
+        }
         var completed = 0
         for (index in lines.indices) {
             checkTranslationActive(index)
@@ -12050,10 +12061,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             acceptedByIndex[index]?.let { line.copy(zh = it) } ?: line
                         }
                         val processedRows = (completed + resolvedBatch.size).coerceAtMost(updatedLines.size)
+                        // Show accepted rows right away instead of waiting for the full batch.
+                        appendTranslationPreview(
+                            acceptedByIndex.keys.sorted().mapNotNull { rowIndex ->
+                                val acceptedLine = updatedLines.getOrNull(rowIndex) ?: return@mapNotNull null
+                                SubtitleParsers.preferredTranslationText(acceptedLine)
+                                    ?.let { acceptedLine.copy(zh = it) }
+                            },
+                        )
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
                                 lines = updatedLines,
                                 totalLines = updatedLines.size,
+                                translationPreviewLines = translationPreviewRows.toList(),
                                 translatedLineCount = processedRows,
                                 sourceLang = src,
                                 translationCurrentBatch = batchIndex + 1,
@@ -12193,9 +12213,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     line.copy(zh = translation)
                 }
                 if (completedBatchPreview.isNotEmpty()) {
-                    val combinedPreview = (translationPreviewRows + completedBatchPreview).takeLast(2)
-                    translationPreviewRows.clear()
-                    translationPreviewRows.addAll(combinedPreview)
+                    appendTranslationPreview(completedBatchPreview)
                 }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
