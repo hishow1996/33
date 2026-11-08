@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.os.SystemClock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -33,6 +34,8 @@ internal class EdgeTts(context: Context) : TtsEngine {
     override val name = "微软 Edge TTS"
     private val closed = AtomicBoolean(false)
     private val activeSockets = CopyOnWriteArraySet<WebSocket>()
+    /** Pre-connected socket for the next request; hides the TCP/TLS/WebSocket handshake latency. */
+    private val warmSession = AtomicReference<EdgeSession?>(null)
     private val client = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(40, TimeUnit.SECONDS)
@@ -339,28 +342,33 @@ internal class EdgeTts(context: Context) : TtsEngine {
     /** 服务端正常结束请求，但没有给出足够的音频数据。 */
     private class EmptyAudioException(message: String) : IllegalArgumentException(message)
 
-    private fun synthesizeMp3(text: String, voice: String, ratePercent: Int): ByteArray {
-        checkOpen()
-        val connectionId = UUID.randomUUID().toString().replace("-", "")
-        val securityToken = EdgeTtsSecurity.generateSecMsGec()
-        val url = "$WSS_URL&ConnectionId=$connectionId&Sec-MS-GEC=$securityToken&Sec-MS-GEC-Version=$GEC_VERSION"
+    /** The service did not answer in time; retrying on another connection would only double the wait. */
+    private class EdgeTimeoutException(message: String) : IllegalStateException(message)
+
+    /**
+     * One Edge Read Aloud WebSocket. It connects and sends speech.config as soon as it is created,
+     * so a request that picks it up later skips the TCP/TLS/WebSocket-upgrade round trips. The wire
+     * protocol is unchanged: every session still carries exactly one SSML request.
+     */
+    private inner class EdgeSession {
+        val connectionId: String = UUID.randomUUID().toString().replace("-", "")
+        val createdAtMs: Long = SystemClock.elapsedRealtime()
         val output = ByteArrayOutputStream()
         val failure = AtomicReference<Throwable?>(null)
+        /** Released once the socket is open and speech.config was sent, or on failure/close. */
+        val ready = CountDownLatch(1)
+        /** Released on turn.end, failure or close. */
         val finished = CountDownLatch(1)
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Origin", EDGE_ORIGIN)
-            .header("Pragma", "no-cache")
-            .header("Cache-Control", "no-cache")
-            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-            .header("Cookie", "muid=$connectionId;")
-            .build()
+        @Volatile var socket: WebSocket? = null
 
-        val socket = client.newWebSocket(request, object : WebSocketListener() {
+        val isDead: Boolean get() = failure.get() != null || finished.count == 0L
+        val audioBytes: Int get() = synchronized(output) { output.size() }
+
+        val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (closed.get()) {
                     failure.compareAndSet(null, IllegalStateException("微软 Edge TTS 已关闭"))
+                    ready.countDown()
                     finished.countDown()
                     webSocket.cancel()
                     return
@@ -370,15 +378,13 @@ internal class EdgeTts(context: Context) : TtsEngine {
                         "Content-Type:application/json; charset=utf-8\r\n" +
                         "Path:speech.config\r\n\r\n" +
                         """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
-                    val ssml = """<?xml version="1.0" encoding="UTF-8"?><speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN"><voice name="${voice}"><prosody pitch="+0Hz" rate="${ratePercent}%" volume="+0%">${xmlEscape(text)}</prosody></voice></speak>"""
-                    val ssmlMessage = "X-RequestId:${connectionId}\r\n" +
-                        "Content-Type:application/ssml+xml\r\n" +
-                        "X-Timestamp:${timestamp()}Z\r\nPath:ssml\r\n\r\n${ssml}"
-                    if (!webSocket.send(config) || !webSocket.send(ssmlMessage)) {
+                    if (!webSocket.send(config)) {
                         throw IllegalStateException("无法发送微软 Edge TTS 合成请求")
                     }
+                    ready.countDown()
                 } catch (error: Throwable) {
                     failure.compareAndSet(null, error)
+                    ready.countDown()
                     finished.countDown()
                     webSocket.cancel()
                 }
@@ -426,21 +432,115 @@ internal class EdgeTts(context: Context) : TtsEngine {
                         t,
                     ),
                 )
+                ready.countDown()
                 finished.countDown()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                ready.countDown()
                 finished.countDown()
             }
-        })
+        }
+    }
+
+    /** Starts connecting immediately; the handshake proceeds in the background. */
+    private fun openSession(): EdgeSession {
+        checkOpen()
+        val session = EdgeSession()
+        val securityToken = EdgeTtsSecurity.generateSecMsGec()
+        val url = "$WSS_URL&ConnectionId=${session.connectionId}&Sec-MS-GEC=$securityToken&Sec-MS-GEC-Version=$GEC_VERSION"
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Origin", EDGE_ORIGIN)
+            .header("Pragma", "no-cache")
+            .header("Cache-Control", "no-cache")
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .header("Cookie", "muid=${session.connectionId};")
+            .build()
+        val socket = client.newWebSocket(request, session.listener)
+        session.socket = socket
         activeSockets.add(socket)
-        try {
-            if (!finished.await(SYNTHESIS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                socket.cancel()
-                throw IllegalStateException("微软 Edge TTS 等待合成超时（${SYNTHESIS_TIMEOUT_SECONDS} 秒）")
+        return session
+    }
+
+    private fun discardSession(session: EdgeSession) {
+        session.socket?.let { socket ->
+            activeSockets.remove(socket)
+            runCatching { socket.cancel() }
+        }
+    }
+
+    private fun isUsableWarm(session: EdgeSession): Boolean =
+        !session.isDead && SystemClock.elapsedRealtime() - session.createdAtMs in 0L..WARM_SESSION_MAX_AGE_MS
+
+    private fun takeWarmSession(): EdgeSession? {
+        val session = warmSession.getAndSet(null) ?: return null
+        if (!isUsableWarm(session)) {
+            discardSession(session)
+            return null
+        }
+        return session
+    }
+
+    /** Pre-connect the socket the NEXT request will use, overlapping its handshake with this synthesis. */
+    private fun warmNextSession() {
+        if (closed.get()) return
+        val existing = warmSession.get()
+        if (existing != null && isUsableWarm(existing)) return
+        val fresh = runCatching { openSession() }.getOrNull() ?: return
+        warmSession.getAndSet(fresh)?.let { discardSession(it) }
+        // close() may have run between the check above and the swap.
+        if (closed.get()) warmSession.getAndSet(null)?.let { discardSession(it) }
+    }
+
+    private fun synthesizeMp3(text: String, voice: String, ratePercent: Int): ByteArray {
+        checkOpen()
+        val warm = takeWarmSession()
+        if (warm != null) {
+            warmNextSession()
+            try {
+                return runSession(warm, text, voice, ratePercent)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (empty: EmptyAudioException) {
+                throw empty
+            } catch (timeout: EdgeTimeoutException) {
+                throw timeout
+            } catch (failure: Exception) {
+                // A pre-connected socket the server dropped before any audio arrived costs only this
+                // fallback to a fresh connection, which is exactly what every request used to do.
+                if (warm.audioBytes > 0 || closed.get()) throw failure
+                android.util.Log.w("EdgeTts", "Pre-connected socket failed before audio; retrying on a fresh connection", failure)
             }
-            failure.get()?.let { throw it }
-            val mp3 = synchronized(output) { output.toByteArray() }
+        }
+        val fresh = openSession()
+        warmNextSession()
+        return runSession(fresh, text, voice, ratePercent)
+    }
+
+    private fun runSession(session: EdgeSession, text: String, voice: String, ratePercent: Int): ByteArray {
+        val socket = session.socket ?: throw IllegalStateException("微软 Edge TTS WebSocket 尚未创建")
+        try {
+            if (!session.ready.await(CONNECT_WAIT_SECONDS, TimeUnit.SECONDS)) {
+                socket.cancel()
+                throw EdgeTimeoutException("微软 Edge TTS 连接超时（${CONNECT_WAIT_SECONDS} 秒）")
+            }
+            session.failure.get()?.let { throw it }
+            if (session.finished.count == 0L) {
+                throw IllegalStateException("微软 Edge TTS WebSocket 在发送请求前已被关闭")
+            }
+            val ssml = """<?xml version="1.0" encoding="UTF-8"?><speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN"><voice name="${voice}"><prosody pitch="+0Hz" rate="${ratePercent}%" volume="+0%">${xmlEscape(text)}</prosody></voice></speak>"""
+            val ssmlMessage = "X-RequestId:${session.connectionId}\r\n" +
+                "Content-Type:application/ssml+xml\r\n" +
+                "X-Timestamp:${timestamp()}Z\r\nPath:ssml\r\n\r\n${ssml}"
+            if (!socket.send(ssmlMessage)) throw IllegalStateException("无法发送微软 Edge TTS 合成请求")
+            if (!session.finished.await(SYNTHESIS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                socket.cancel()
+                throw EdgeTimeoutException("微软 Edge TTS 等待合成超时（${SYNTHESIS_TIMEOUT_SECONDS} 秒）")
+            }
+            session.failure.get()?.let { throw it }
+            val mp3 = synchronized(session.output) { session.output.toByteArray() }
             if (mp3.size < MIN_MP3_BYTES) throw EmptyAudioException("微软 Edge TTS 返回音频过短（${mp3.size} 字节）")
             return mp3
         } finally {
@@ -499,7 +599,8 @@ internal class EdgeTts(context: Context) : TtsEngine {
                         }
                     }
                 }
-                val outputIndex = codec.dequeueOutputBuffer(info, 10_000L)
+                // Keep feeding frames without waiting on output; only block once all input is queued.
+                val outputIndex = codec.dequeueOutputBuffer(info, if (inputEos) 10_000L else 0L)
                 when {
                     outputIndex >= 0 -> {
                         val output = codec.getOutputBuffer(outputIndex)
@@ -580,6 +681,7 @@ internal class EdgeTts(context: Context) : TtsEngine {
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        warmSession.getAndSet(null)?.let { discardSession(it) }
         activeSockets.forEach { runCatching { it.cancel() } }
         activeSockets.clear()
         client.dispatcher.cancelAll()
@@ -604,6 +706,8 @@ internal class EdgeTts(context: Context) : TtsEngine {
         const val EMPTY_AUDIO_ATTEMPTS = 3
         const val EMPTY_AUDIO_RETRY_DELAY_MS = 400L
         const val SYNTHESIS_TIMEOUT_SECONDS = 45L
+        const val CONNECT_WAIT_SECONDS = 20L
+        const val WARM_SESSION_MAX_AGE_MS = 15_000L
         const val MAX_DECODE_LOOPS = 10_000
         const val MAX_OUTPUT_SAMPLES = 24_000L * 90L
         const val GEC_VERSION = "2-143.0.3650.75"
