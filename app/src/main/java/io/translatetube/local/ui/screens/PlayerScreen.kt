@@ -5456,6 +5456,7 @@ private fun CurrentSubtitleStrip(
     captionOverride: String? = null,
     fullscreen: Boolean = false,
     fullscreenMaxHeight: androidx.compose.ui.unit.Dp? = null,
+    fullscreenBottomLocked: Boolean = false,
     previewCueKeyMs: Long = 0L,
     captionDurationMs: Long = 2_400L,
     isPlaying: Boolean = true,
@@ -5658,6 +5659,19 @@ private fun CurrentSubtitleStrip(
                     measuredCaptionLines >= 4 -> 104.dp
                     else -> 96.dp
                 }
+                val fullscreenCaptionShape = if (fullscreen && fullscreenBottomLocked) {
+                    RoundedCornerShape(
+                        topStart = 8.dp,
+                        topEnd = 8.dp,
+                        bottomEnd = 0.dp,
+                        bottomStart = 0.dp,
+                    )
+                } else {
+                    RoundedCornerShape(8.dp)
+                }
+                val captionMinHeight = if (fullscreenMaxHeight != null) {
+                    minOf(42.dp, fullscreenMaxHeight)
+                } else 42.dp
                 Column(
                     modifier = Modifier
                         .then(
@@ -5665,9 +5679,12 @@ private fun CurrentSubtitleStrip(
                                 Modifier
                                     .widthIn(max = maxWidth)
                                     .wrapContentWidth()
-                                    .heightIn(min = 42.dp, max = captionMaxHeight)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color.Black.copy(alpha = 0.72f))
+                                    .heightIn(min = captionMinHeight, max = captionMaxHeight)
+                                    .clip(fullscreenCaptionShape)
+                                    .background(
+                                        Color.Black.copy(alpha = 0.72f),
+                                        shape = fullscreenCaptionShape,
+                                    )
                             } else {
                                 // Keep the inline current-caption area visually continuous
                                 // with the surrounding white subtitle list.
@@ -7420,10 +7437,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         if (isFullscreen) {
             // Keep quick audio/subtitle actions at the top edge so they never cover the video center.
             BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.displayCutout)
-                    .windowInsetsPadding(WindowInsets.navigationBars),
+                // Subtitle movement is measured against the complete fullscreen viewport.
+                // System-bar and cutout insets are applied only to the quick-toggle controls below.
+                modifier = Modifier.fillMaxSize(),
             ) {
                 val compact = maxWidth < 420.dp || maxHeight < 280.dp
                 val quickToggleWidth = if (compact) 54.dp else 60.dp
@@ -7435,6 +7451,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.displayCutout)
+                        .windowInsetsPadding(WindowInsets.navigationBars)
                         .padding(top = when {
                             maxHeight < 260.dp -> 4.dp
                             compact -> 6.dp
@@ -7493,7 +7511,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         maxHeight < 260.dp -> 92.dp
                         maxHeight < 360.dp -> 128.dp
                         else -> 144.dp
-                    }
+                    }.coerceAtMost(maxHeight.coerceAtLeast(1.dp))
                     val captionLaneMaxWidth = (maxWidth * 0.8f)
                         .coerceAtMost((maxWidth - 8.dp).coerceAtLeast(1.dp))
                     val density = LocalDensity.current
@@ -7507,10 +7525,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         .takeIf { it > 0 }
                         ?.toFloat()
                         ?: with(density) { captionLaneMaxHeight.toPx() }
-                    // Match the subtitle movement area's left/right edges to the fullscreen
-                    // video viewport. Keep only a compact, symmetric 5dp top/bottom inset.
+                    // Clamp the complete measured background rectangle to the screen.
+                    // All four edges may touch the viewport; no extra inset leaves a visible gap.
                     val horizontalSafePx = 0f
-                    val verticalSafePx = with(density) { 5.dp.toPx() }
+                    val verticalSafePx = 0f
                     val minLeftPx = horizontalSafePx
                     val maxLeftPx = (containerWidthPx - captionWidthPx - horizontalSafePx)
                         .coerceAtLeast(minLeftPx)
@@ -7701,6 +7719,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             captionOverride = captionOverride,
                             fullscreen = true,
                             fullscreenMaxHeight = captionLaneMaxHeight,
+                            fullscreenBottomLocked = fullscreenCaptionBottomLocked,
                             modifier = Modifier,
                         )
                         AnimatedVisibility(
