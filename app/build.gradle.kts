@@ -49,7 +49,7 @@ val hyMtLlamaSourceDir = rootProject.file("native/hymt-llama")
 // Git metadata is optional and must not prevent local or CI builds.
 val gitSha = System.getenv("GITHUB_SHA")?.trim()?.takeIf { it.isNotBlank() }?.take(7)
     ?: runCatching {
-        providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim()
+        providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim().take(7)
     }.getOrNull()?.takeIf { it.isNotBlank() } ?: "unknown"
 
 android {
