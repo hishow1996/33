@@ -429,7 +429,7 @@ internal object AppLogAiReport {
             if(diagnosticId!=null)append("翻译专项要求：同诊断 ID ").append(diagnosticId).append("（").append(diagnosticCount).append(" 条事件）核对请求、批次和字幕行。\n")
             append("要求：对照该提交的代码定位真实根因，给出最小修复，不吞异常。\n")
         }
-        var count=minOf(5,timeline.size);var keepContext=true;var frameCount=minOf(6,frames.size)
+        var count=minOf(5,timeline.size);var keepContext=true;var frameCount=minOf(5,frames.size)
         var output=build(count,keepContext,frameCount);var compressed=false
         while(output.length>MAX_INCIDENT_REPORT_CHARS&&count>0){count--;compressed=true;output=build(count,keepContext,frameCount)}
         if(output.length>MAX_INCIDENT_REPORT_CHARS&&keepContext){keepContext=false;compressed=true;output=build(count,keepContext,frameCount)}
@@ -675,7 +675,7 @@ internal object AppLogAiReport {
     private fun incidentContextLines(event:AppLogRecord):List<String>{
         val keys=listOf("视频来源","当前处理阶段","当前处理步骤","处理流程","翻译引擎","转写引擎","配音引擎","HTTP 状态码","当前批次","批次索引","字幕行索引")
         val values=keys.mapNotNull{key->event.diagnosticContext[key].orEmpty().trim().takeIf{it.isNotBlank()}?.let{key to it}}.toMutableList()
-        if(values.none{it.first=="HTTP 状态码"}&&event.httpStatusCode in 100..599)values+="HTTP 状态码" to event.httpStatusCode.toString()
+        if(values.none{it.first=="HTTP 状态码"}&&event.httpStatusCode in 100..599)values.add("HTTP 状态码" to event.httpStatusCode.toString())
         return values.distinctBy{it.first}.take(8).map{(key,value)->key+"="+clipForAi(AppLogStore.redactForExport(value),80)}
     }
 
