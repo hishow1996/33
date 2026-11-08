@@ -402,7 +402,7 @@ internal object AppLogAiReport {
             append("应用 ").append(clipForAi(AppLogStore.redactForExport(appVersion),72))
                 .append(" | ").append(clipForAi(AppLogStore.redactForExport(device),64))
                 .append(" | Android ").append(clipForAi(androidVersion,32)).append(" | ").append(exportedAt).append('\n')
-            append("故障：").append(primary.level).append(' ').append(clipForAi(AppLogStore.redactForExport(errorClass).ifBlank{primary.tag},120))
+            append("故障：").append(primary.level).append(' ').append(AppLogStore.redactForExport(errorClass).ifBlank{primary.tag}.take(120))
             if(primary.thread.equals("main",true))append("（主线程）")
             append("\n诊断：").append(clipForAi(diagnosis.category,100)).append("；").append(clipForAi(diagnosis.confidence,32)).append('\n')
             if(diagnosis.finding.isNotBlank())append("结论：").append(clipForAi(AppLogStore.redactForExport(diagnosis.finding),360)).append('\n')
@@ -440,7 +440,7 @@ internal object AppLogAiReport {
             output=buildString{
                 append("# 大象翻译故障包 v9\nreport_schema: elephant-app-log/incident-v9\n")
                 append("应用 ").append(clipForAi(appVersion,64)).append(" | ").append(clipForAi(device,48)).append(" | ").append(clipForAi(androidVersion,24)).append('\n')
-                append("故障：").append(primary.level).append(' ').append(clipForAi(AppLogStore.redactForExport(errorClass),120)).append('\n')
+                append("故障：").append(primary.level).append(' ').append(AppLogStore.redactForExport(errorClass).ifBlank{primary.tag}.take(120)).append('\n')
                 append("诊断：").append(clipForAi(diagnosis.category,96)).append('\n')
                 append("结论：").append(clipForAi(diagnosis.finding,300)).append('\n')
                 append("根因：").append(clipForAi(root,420)).append('\n')
