@@ -868,7 +868,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                                     message = "全部日志已复制"
                                     selectedRecord = null
                                 }.onFailure { failure ->
-                                    message = "AI 修复包生成失败：${failure.message ?: "未知错误"}"
+                                    message = "完整日志报告生成失败：${failure.message ?: "未知错误"}"
                                 }
                                 exporting = false
                             }
