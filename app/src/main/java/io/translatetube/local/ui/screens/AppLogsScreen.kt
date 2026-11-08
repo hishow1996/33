@@ -42,8 +42,6 @@ import io.translatetube.local.util.AppLogRecord
 import io.translatetube.local.util.AppLogTitleResolver
 import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.util.AppLogDiagnostics
-import io.translatetube.local.util.AppLogDiagnosticCoverage
-import io.translatetube.local.util.AppLogDiagnosticCoveragePolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -461,7 +459,11 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             ) {
                 items(
                     items = visibleRecords,
-                    key = { "${it.timestampMs}-${it.tag}-${it.message.hashCode()}" },
+                    key = {
+                        it.eventId.ifBlank {
+                            listOf(it.timestampMs, it.sequence, it.tag, it.message.hashCode()).joinToString("-")
+                        }
+                    },
                 ) { record ->
                     LogRecordCard(record = record, onClick = { selectedRecord = record })
                 }
@@ -696,143 +698,43 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 }
                 HorizontalDivider(color = Color(0xFFE9EAEC))
 
+                val document = remember(record, records) {
+                    AppLogIncidentDocument.build(record, records, AppLogStore.environmentSnapshot())
+                }
+                val documentText = remember(document) { document.toPlainText() }
+                val documentCharCount = documentText.codePointCount(0, documentText.length)
+                val annotatedDocument = remember(document, documentText) {
+                    val builder = androidx.compose.ui.text.AnnotatedString.Builder(documentText)
+                    var offset = 0
+                    document.blockTitles().forEach { title ->
+                        val start = documentText.indexOf(title, offset)
+                        if (start >= 0) {
+                            builder.addStyle(
+                                androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold),
+                                start,
+                                start + title.length,
+                            )
+                            offset = start + title.length
+                        }
+                    }
+                    builder.toAnnotatedString()
+                }
+
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 20.dp, vertical = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    Text(
-                        AppLogStore.formatTime(record.timestampMs),
-                        color = Color(0xFF737980),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        AppLogTitleResolver.title(record.tag, record.message),
-                        color = Color(0xFF202124),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    val diagnosis = remember(record.timestampMs, record.tag, record.message, record.details) {
-                        AppLogDiagnostics.analyze(record)
-                    }
-                    val coverage = remember(record.eventId, record.tag, record.message, record.diagnosticContext) {
-                        AppLogDiagnosticCoveragePolicy.analyze(record)
-                    }
-                    if (isRecoverableLevel(record.level)) {
-                        DiagnosisSummaryCard(diagnosis)
-                        DiagnosticCoverageCard(coverage)
-                    }
-
-                    // Put request/response facts up front; users should not have to scan a long
-                    // stack trace to find the HTTP code, response type, or HLS parsing stage.
-                    val diagnosticContextLines = record.details
-                        .substringAfter("故障上下文（用于定位发生时的状态）：\n", "")
-                        .lineSequence()
-                        .takeWhile { it.startsWith("- ") }
-                        .toList()
-                    if (diagnosticContextLines.isNotEmpty()) {
-                        DetailSection(
-                            title = "检测上下文（请求 / HTTP / 清单解析）",
-                            text = diagnosticContextLines.joinToString("\n"),
-                        )
-                    }
-
-                    if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
-                        Surface(
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text(
+                            text = annotatedDocument,
                             modifier = Modifier.fillMaxWidth(),
-                            color = if (record.recoveredAtMs != null) Color(0xFFEAF7EF) else Color(0xFFFFF1F0),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Column(
-                                Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                Text(
-                                    if (record.recoveredAtMs != null) "已恢复" else "尚无恢复成功记录",
-                                    color = if (record.recoveredAtMs != null) Color(0xFF216E39) else Color(0xFFB42318),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                record.recoveredAtMs?.let {
-                                    Text(
-                                        "恢复时间：${AppLogStore.formatTime(it)}",
-                                        color = Color(0xFF565C63),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                }
-                                Text(
-                                    "故障编号：${record.issueKey}",
-                                    color = Color(0xFF565C63),
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                    }
-
-                    if (record.thread.isNotBlank()) {
-                        DetailSection(title = "发生线程", text = record.thread)
-                    }
-
-                    val causeChain = record.details.lineSequence()
-                        .map { it.trim() }
-                        .filter { it.matches(Regex("#\\d+ .+")) }
-                        .take(12)
-                        .toList()
-                    if (causeChain.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                "异常原因",
-                                color = Color(0xFF202124),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Color(0xFFFFF8EB),
-                                shape = RoundedCornerShape(12.dp),
-                            ) {
-                                Column(
-                                    Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(7.dp),
-                                ) {
-                                    causeChain.forEach { cause ->
-                                        Text(
-                                            cause,
-                                            color = Color(0xFF59380B),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontFamily = FontFamily.Monospace,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (record.details.isNotBlank()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                "完整日志",
-                                color = Color(0xFF202124),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Color(0xFFF7F8FA),
-                                shape = RoundedCornerShape(12.dp),
-                            ) {
-                                Text(
-                                    record.details,
-                                    modifier = Modifier.padding(14.dp),
-                                    color = Color(0xFF3F4650),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                )
-                            }
-                        }
+                            color = Color(0xFF3F4650),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                        )
                     }
                 }
 
@@ -851,27 +753,18 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     ) { Text("关闭") }
                     Button(
                         modifier = Modifier.weight(1f),
-                        enabled = !exporting,
                         onClick = {
-                            scope.launch {
-                                exporting = true
-                                val result = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        AppLogStore.exportIncidentFullText(ctx.applicationContext, record)
-                                    }
-                                }
-                                result.onSuccess { report ->
-                                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(
-                                        android.content.ClipData.newPlainText("AI 当前故障完整诊断报告", report),
-                                    )
-                                    message = "当前错误完整诊断已复制"
-                                    selectedRecord = null
-                                }.onFailure { failure ->
-                                    message = "当前错误诊断报告生成失败：${failure.message ?: "未知错误"}"
-                                }
-                                exporting = false
-                            }
+                            val clipboard = ctx.getSystemService(
+                                android.content.Context.CLIPBOARD_SERVICE,
+                            ) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(
+                                android.content.ClipData.newPlainText("AI 故障定位", documentText),
+                            )
+                            android.widget.Toast.makeText(
+                                ctx,
+                                "已复制 " + documentCharCount + " 字",
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = BrandBright,
@@ -881,7 +774,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     ) {
                         Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (exporting) "正在整理…" else "复制当前错误")
+                        Text("复制 · 约 " + documentCharCount + " 字")
                     }
                 }
             }
@@ -1111,157 +1004,6 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
             modifier = Modifier.padding(start = 39.dp),
             color = Color(0xFFF0F1F3),
             thickness = 1.dp,
-        )
-    }
-}
-
-@Composable
-private fun DiagnosisSummaryCard(diagnosis: io.translatetube.local.util.AppLogDiagnosis) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = Color(0xFFF5F8FC),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFE1E8F0)),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "诊断判断",
-                    color = Color(0xFF202124),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    diagnosis.confidence,
-                    color = if (diagnosis.confidence.contains("不足") || diagnosis.confidence.contains("待验证")) {
-                        Color(0xFF946200)
-                    } else {
-                        Color(0xFF356A4A)
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Text(
-                diagnosis.category,
-                color = Color(0xFF26384A),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                diagnosis.finding,
-                color = Color(0xFF354052),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Text(
-                "日志证据",
-                color = Color(0xFF202124),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Medium,
-            )
-            Text(
-                diagnosis.evidence,
-                color = Color(0xFF4D5968),
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-            )
-            Text(
-                "建议排查",
-                color = Color(0xFF202124),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Medium,
-            )
-            diagnosis.nextSteps.forEachIndexed { index, step ->
-                Text(
-                    (index + 1).toString() + ". " + step,
-                    color = Color(0xFF4D5968),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DiagnosticCoverageCard(coverage: AppLogDiagnosticCoverage) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = Color(0xFFF7F8FA),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFE5E8EC)),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "AI 诊断证据 · " + coverage.domain,
-                    color = Color(0xFF202124),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    coverage.completenessPercent.toString() + "%",
-                    color = if (coverage.missingEvidence.isEmpty()) Color(0xFF247347) else Color(0xFF946200),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Text(
-                "已采集 " + coverage.collectedEvidenceCount + "/" + coverage.requiredEvidenceCount + " 项关键证据",
-                color = Color(0xFF68707A),
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (coverage.missingEvidence.isNotEmpty()) {
-                Text("缺失证据", color = Color(0xFF202124), style = MaterialTheme.typography.labelLarge)
-                coverage.missingEvidence.forEach {
-                    Text("· " + it, color = Color(0xFF4D5968), style = MaterialTheme.typography.bodySmall)
-                }
-                Text("建议补采", color = Color(0xFF202124), style = MaterialTheme.typography.labelLarge)
-                coverage.collectionAdvice.forEachIndexed { index, advice ->
-                    Text(
-                        (index + 1).toString() + ". " + advice,
-                        color = Color(0xFF4D5968),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            } else {
-                Text(
-                    "当前模块关键证据采集项齐全；仍需结合代码和事件关系验证真实根因。",
-                    color = Color(0xFF247347),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DetailSection(title: String, text: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            title,
-            color = Color(0xFF202124),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            text,
-            color = Color(0xFF565C63),
-            style = MaterialTheme.typography.bodyMedium,
         )
     }
 }

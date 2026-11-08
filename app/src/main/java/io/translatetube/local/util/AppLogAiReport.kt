@@ -904,13 +904,13 @@ internal object AppLogAiReport {
         val tail=(maxChars-head-3).coerceAtLeast(0)
         return text.take(head)+"..."+text.takeLast(tail)
     }
-    private fun simpleErrorType(value:String)=value.trim().substringBefore(':').substringAfterLast('.').substringAfterLast('/').removePrefix("L").removeSuffix(";")
-    private fun deepestCause(snapshot:AppLogExceptionSnapshot?):AppLogExceptionSnapshot?{
+    internal fun simpleErrorType(value:String)=value.trim().substringBefore(':').substringAfterLast('.').substringAfterLast('/').removePrefix("L").removeSuffix(";")
+    internal fun deepestCause(snapshot:AppLogExceptionSnapshot?):AppLogExceptionSnapshot?{
         var node=snapshot?:return null
         while(node.cause!=null)node=node.cause
         return node
     }
-    private fun rootCauseForAi(event:AppLogRecord):String{
+    internal fun rootCauseForAi(event:AppLogRecord):String{
         deepestCause(event.exceptionSnapshot)?.message?.trim()?.takeIf{it.isNotBlank()}?.let{return it}
         event.rootCauseMessage.trim().takeIf{it.isNotBlank()}?.let{return it}
         val details=event.details.replace("\\n","\n")
@@ -918,24 +918,24 @@ internal object AppLogAiReport {
         if(!line.isNullOrBlank())return line.substringAfter(": ",line)
         return Regex("""(?i)Verifier rejected.*""").find(details)?.value.orEmpty()
     }
-    private fun exceptionFrames(snapshot:AppLogExceptionSnapshot?):List<AppLogStackFrame>{
+    internal fun exceptionFrames(snapshot:AppLogExceptionSnapshot?):List<AppLogStackFrame>{
         val result=mutableListOf<AppLogStackFrame>();var node=snapshot;var depth=0
         while(node!=null&&depth<12){result+=node.stackFrames;node=node.cause;depth++}
         return result
     }
-    private fun isFrameworkNoiseFrame(frame:AppLogStackFrame)=
+    internal fun isFrameworkNoiseFrame(frame:AppLogStackFrame)=
         frame.className.startsWith("androidx.compose.runtime.")||
         frame.className.startsWith("kotlinx.coroutines.internal.")||
         frame.className.startsWith("kotlin.coroutines.jvm.internal.")||
         frame.className.startsWith("androidx.lifecycle.")||
         frame.className.startsWith("java.lang.reflect.")||
         frame.className.startsWith("jdk.internal.reflect.")
-    private fun formatFrameForAi(frame:AppLogStackFrame):String{
+    internal fun formatFrameForAi(frame:AppLogStackFrame):String{
         val klass=frame.className.substringAfterLast('.').substringAfterLast('/')
         val location=frame.fileName?.takeIf{it.isNotBlank()}?.let{if(frame.lineNumber>0)it+":"+frame.lineNumber else it}.orEmpty()
         return if(location.isBlank())klass+"."+frame.methodName else klass+"."+frame.methodName+"("+location+")"
     }
-    private fun suppressedTypes(snapshot:AppLogExceptionSnapshot?):List<String>{
+    internal fun suppressedTypes(snapshot:AppLogExceptionSnapshot?):List<String>{
         val found=linkedSetOf<String>()
         fun visit(node:AppLogExceptionSnapshot?,depth:Int){
             if(node==null||depth>=12)return

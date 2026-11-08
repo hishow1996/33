@@ -39,7 +39,7 @@ internal object AppLogDiagnosticCoveragePolicy {
         )
     }
 
-    private fun detectDomain(record: AppLogRecord): String {
+    internal fun detectDomain(record: AppLogRecord): String {
         val scope = listOf(record.tag, record.category, record.message, record.details.take(1_200))
             .joinToString(" ")
         return when {

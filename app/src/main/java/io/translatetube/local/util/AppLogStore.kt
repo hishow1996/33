@@ -85,7 +85,20 @@ data class AppLogWriterHealth(
     val isHealthy: Boolean get() = lastOperationSucceeded
 }
 
+internal data class AppLogEnvironmentSnapshot(
+    val appVersion: String,
+    val device: String,
+    val androidVersion: String,
+)
+
 object AppLogStore {
+    /** Shared environment metadata for incident details and full exports. */
+    fun environmentSnapshot(): AppLogEnvironmentSnapshot = AppLogEnvironmentSnapshot(
+        appVersion = appVersionLabel(),
+        device = (Build.MANUFACTURER + " " + Build.MODEL).trim(),
+        androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+    )
+
     /** App version and source revision shown in diagnostic reports. */
     fun appVersionLabel(): String {
         val version = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知").ifBlank { "未知" }
@@ -699,13 +712,14 @@ object AppLogStore {
     fun exportIncidentFullText(context: Context, target: AppLogRecord): String {
         val (selected, relatedRecords) = resolveIncidentExportRecords(context, target)
         val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        val environment = environmentSnapshot()
         val report = AppLogAiReport.renderIncidentFull(
             records = relatedRecords,
             target = selected,
             exportedAt = exportedAt,
-            appVersion = appVersionLabel(),
-            device = Build.MANUFACTURER + " " + Build.MODEL,
-            androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+            appVersion = environment.appVersion,
+            device = environment.device,
+            androidVersion = environment.androidVersion,
             writerHealth = writerHealth(),
         )
 
@@ -1607,13 +1621,13 @@ object AppLogStore {
         value = bearer.replace(value, "Bearer [REDACTED]")
         val basic = Regex("""(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}""")
         value = basic.replace(value, "Basic [REDACTED]")
-        val jsonSecrets = Regex("""(?i)("(?:api[_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)"\s*:\s*")[^"]*(")""")
+        val jsonSecrets = Regex("""(?i)("(?:api[\s_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)"\s*:\s*")[^"]*(")""")
         value = jsonSecrets.replace(value) { match ->
             match.groupValues[1] + "[REDACTED]" + match.groupValues[2]
         }
         val urlUserInfo = Regex("""(?i)(https?://)[^/\s@]+@""")
         value = urlUserInfo.replace(value) { match -> match.groupValues[1] + "[REDACTED]@" }
-        val credentials = Regex("""(?i)(api[_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)(\s*[=:]\s*)[^\s,;]+""")
+        val credentials = Regex("""(?i)(api[\s_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)(\s*[=:：]\s*)[^\s,;]+""")
         value = credentials.replace(value) { match ->
             match.groupValues[1] + match.groupValues[2] + "[REDACTED]"
         }
