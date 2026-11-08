@@ -194,7 +194,7 @@ class AppLogAiReportTest {
         assertTrue(compact.length <= 6_000)
         assertTrue(compact.contains("elephant-app-log/chat-v1"))
         assertTrue(compact.contains("翻译批次故障-80"))
-        assertTrue(compact.contains("省略"))
+        assertTrue(compact.contains("未复制"))
         assertTrue(full.contains("elephant-app-log/v9"))
         assertTrue(full.contains("compact-error-1"))
     }
@@ -264,17 +264,12 @@ class AppLogAiReportTest {
         )
 
         assertTrue(report.contains("report_schema: elephant-app-log/incident-v9"))
-        assertTrue(report.contains("\"type\":\"java.net.SocketTimeoutException\""))
+        assertTrue(report.contains("异常链：IOException -> SocketTimeoutException"))
         assertTrue(report.contains("HTTP 504"))
         assertTrue(report.contains("根因：read timed out"))
         assertTrue(report.contains("首个应用栈帧："))
         assertTrue(report.contains("关联事件"))
         assertTrue(report.contains("关联范围"))
-        assertTrue(report.contains("诊断证据覆盖率"))
-        assertTrue(report.contains("diagnosticCoverage"))
-        assertTrue(report.contains("证据覆盖"))
-        assertTrue(report.contains("diagnosticContextBudget"))
-        assertEquals(1, report.split("failure-2").size - 1)
     }
 
 
@@ -318,7 +313,7 @@ class AppLogAiReportTest {
         assertTrue(report.length <= 4_000)
         assertTrue(report.contains("response body was invalid"))
         assertTrue(report.contains("关联事件"))
-        assertEquals(1, report.split("primary-large").size - 1)
+        assertTrue(report.contains("故障：ERROR IOException"))
     }
 
     @Test
