@@ -27,6 +27,13 @@ internal class GoogleTts(context: Context) : TtsEngine {
 
     private val closed = AtomicBoolean(false)
 
+    /**
+     * Index (in the fixed endpoint list) of the endpoint that last succeeded. Later requests start
+     * there, so a blocked or slow first endpoint no longer costs every cue a failed attempt
+     * (up to the connect timeout) before the working endpoint is reached.
+     */
+    @Volatile private var preferredEndpoint = 0
+
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
@@ -128,11 +135,14 @@ internal class GoogleTts(context: Context) : TtsEngine {
         val normalizedSpeed = TtsProviderSpeedPolicy.normalize(requestedSpeed)
         val nativeSpeed = TtsProviderSpeedPolicy.googleNativeSpeed(normalizedSpeed)
         val encoded = URLEncoder.encode(text, "UTF-8")
-        val urls = listOf(
+        val baseUrls = listOf(
             "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=zh-CN&ttsspeed=$nativeSpeed&q=$encoded",
             "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=zh-CN&ttsspeed=$nativeSpeed&q=$encoded",
             "https://translate.google.com/translate_tts?ie=UTF-8&client=dict-chrome-ex&tl=zh-CN&ttsspeed=$nativeSpeed&q=$encoded",
         )
+        val firstEndpoint = preferredEndpoint.coerceIn(0, baseUrls.lastIndex)
+        val order = List(baseUrls.size) { (firstEndpoint + it) % baseUrls.size }
+        val urls = order.map { baseUrls[it] }
         var lastError: Throwable? = null
         for ((index, url) in urls.withIndex()) {
             checkOpen()
@@ -157,6 +167,7 @@ internal class GoogleTts(context: Context) : TtsEngine {
                 }
                 checkOpen()
                 checkActive()
+                preferredEndpoint = order[index]
                 return samples to decoded.second
             } catch (cancelled: java.util.concurrent.CancellationException) {
                 throw cancelled
@@ -174,7 +185,7 @@ internal class GoogleTts(context: Context) : TtsEngine {
                     diagnosticContext = mapOf(
                         "服务商" to "Google Translate TTS",
                         "失败阶段" to stage,
-                        "当前端点序号" to (index + 1).toString(),
+                        "当前端点序号" to (order[index] + 1).toString(),
                         "候选端点总数" to urls.size.toString(),
                         "请求主机" to host,
                         "请求路径（不含查询参数）" to path,
@@ -329,7 +340,8 @@ internal class GoogleTts(context: Context) : TtsEngine {
                     }
                 }
 
-                val outputIndex = codec.dequeueOutputBuffer(info, 10_000L)
+                // Keep feeding frames without waiting on output; only block once all input is queued.
+                val outputIndex = codec.dequeueOutputBuffer(info, if (inputEos) 10_000L else 0L)
                 when {
                     outputIndex >= 0 -> {
                         val output = codec.getOutputBuffer(outputIndex)
