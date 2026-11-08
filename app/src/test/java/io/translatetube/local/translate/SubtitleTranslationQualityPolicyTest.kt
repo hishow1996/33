@@ -1632,4 +1632,32 @@ class SubtitleTranslationQualityPolicyTest {
         )
     }
 
+    @Test
+    fun acceptsKeptLoanwordWhenSourceSpellingIsGarbledButSentenceIsClearlyChinese() {
+        val source = "ですがそうだから今回Vロog撮ろうかな"
+        listOf(
+            "但是这样所以这次想拍Vlog",
+            "但是这样的话，这次就试着拍个Vlog吧",
+            "但是这样的话，这次就试着拍Vlog吧",
+        ).forEach { translated ->
+            assertFalse(
+                "'$translated' keeps a loanword and must not be rejected",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(source, translated, "ja", "zh-CN"),
+            )
+        }
+    }
+
+    @Test
+    fun stillRejectsUngroundedNamesWhenChineseTextIsTooShort() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "Vロog撮ろうかな", "拍Vlog", "ja", "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I met him.", "我见了Beckham。", "en", "zh-CN",
+            ),
+        )
+    }
 }

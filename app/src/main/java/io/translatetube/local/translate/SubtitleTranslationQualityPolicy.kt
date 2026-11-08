@@ -1831,6 +1831,7 @@ internal object SubtitleTranslationQualityPolicy {
         val sourceIdentifiers = sourceIdentifierTokens(sourceText)
         var foreignLetters = 0
         var ungroundedProperName = false
+        var ungroundedLetters = 0
         splitMixedScriptTokens(translatedText).forEach { token ->
             val letters = token.filter { it.isLetter() }
             if (letters.isEmpty() || isLikelyRetainedTerm(
@@ -1849,6 +1850,7 @@ internal object SubtitleTranslationQualityPolicy {
                 // An ungrounded proper-looking Latin/Cyrillic/Greek token can be a changed name
                 // or an invented entity. Do not let a long Chinese prefix hide that substitution.
                 ungroundedProperName = true
+                ungroundedLetters += letters.length
             }
             foreignLetters += letters.count {
                 Character.UnicodeScript.of(it.code) != Character.UnicodeScript.HAN
@@ -1856,7 +1858,13 @@ internal object SubtitleTranslationQualityPolicy {
         }
         // Even a short untranslated fragment (for example "你好 hello") is not a Chinese
         // translation. Known names/terms are exempt only when grounded in the source text.
-        return ungroundedProperName || (foreignLetters >= 2 && hanCount <= foreignLetters)
+        // The ASR/OCR source can garble a foreign term (for example "Vロog" for "Vlog"), so a
+        // correctly kept loanword in the translation then has no source token to match. When the
+        // sentence is clearly Chinese (at least 3 Han characters and more than twice as many Han
+        // characters as ungrounded name letters), such a token no longer fails the whole line.
+        val ungroundedRejected = ungroundedProperName &&
+            !(hanCount >= 3 && hanCount > ungroundedLetters * 2)
+        return ungroundedRejected || (foreignLetters >= 2 && hanCount <= foreignLetters)
     }
 
     private val retainedAcronyms = setOf(
