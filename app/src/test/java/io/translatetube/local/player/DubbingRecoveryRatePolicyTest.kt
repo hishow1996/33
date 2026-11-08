@@ -13,7 +13,7 @@ class DubbingRecoveryRatePolicyTest {
     @Test
     fun rateRisesGraduallyWithTheNumberOfQueuedCues() {
         assertEquals(1.11f, DubbingRecoveryRatePolicy.rateForQueueDepth(1), 0.001f)
-        assertEquals(1.55f, DubbingRecoveryRatePolicy.rateForQueueDepth(5), 0.001f)
+        assertEquals(DubbingTiming.LAG_RECOVERY_SYNC_RATE, DubbingRecoveryRatePolicy.rateForQueueDepth(5), 0.001f)
         assertEquals(DubbingTiming.LAG_RECOVERY_SYNC_RATE, DubbingRecoveryRatePolicy.rateForQueueDepth(10), 0.001f)
     }
 
