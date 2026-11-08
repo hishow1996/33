@@ -534,19 +534,13 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             .padding(start = 20.dp, end = 12.dp, top = 2.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                "选择要导出的错误",
-                                color = Color(0xFF202124),
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                "选择一条错误记录，生成完整 AI 诊断报告",
-                                color = Color(0xFF737980),
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+                        Text(
+                            "选择错误",
+                            modifier = Modifier.weight(1f),
+                            color = Color(0xFF202124),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                         TextButton(
                             onClick = {
                                 showIncidentExportPicker = false
@@ -581,25 +575,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             cursorColor = Color(0xFF202124),
                         ),
                     )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "错误记录",
-                            color = Color(0xFF202124),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            "FATAL 优先 · 同级最新在前",
-                            color = Color(0xFF858B93),
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
                     if (incidentExportCandidates.isEmpty()) {
                         Column(
                             modifier = Modifier
@@ -666,22 +641,22 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             Text(
                                 selectedIncidentForExport?.let { selected ->
                                     AppLogTitleResolver.title(selected.tag, selected.message) + " · " + selected.level
-                                } ?: "尚未选择错误",
+                                } ?: "请选择一条错误",
                                 color = Color(0xFF202124),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            Text(
-                                selectedIncidentForExport?.let { selected ->
-                                    "${selected.tag} · ${AppLogStore.formatTime(selected.timestampMs)}"
-                                } ?: "报告将保留完整堆栈和可确认关联的上下文",
-                                color = Color(0xFF858B93),
-                                style = MaterialTheme.typography.labelSmall,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            selectedIncidentForExport?.let { selected ->
+                                Text(
+                                    "${selected.tag} · ${AppLogStore.formatTime(selected.timestampMs)}",
+                                    color = Color(0xFF737980),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                         Button(
                             enabled = selectedIncidentForExport != null && !exporting,
@@ -1043,46 +1018,6 @@ private fun IncidentExportRecordRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                val errorType = record.errorClass.ifBlank {
-                    record.exceptionSnapshot?.type.orEmpty()
-                }
-                if (errorType.isNotBlank()) {
-                    Text(
-                        "异常：$errorType",
-                        color = Color(0xFF68707A),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (record.rootCauseMessage.isNotBlank()) {
-                    Text(
-                        record.rootCauseMessage,
-                        color = Color(0xFF737980),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (record.recoveredAtMs != null) {
-                    Text(
-                        "已恢复 · ${AppLogStore.formatTime(record.recoveredAtMs)}",
-                        color = Color(0xFF247347),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                val identifier = record.issueKey.ifBlank { record.eventId }
-                if (identifier.isNotBlank()) {
-                    Text(
-                        "编号：$identifier",
-                        color = Color(0xFF858B93),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
             }
         }
     }
