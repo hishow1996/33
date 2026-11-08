@@ -681,7 +681,7 @@ internal object AppLogAiReport {
             append("\n## 7. 同一任务的关联上下文（不是其他被选中的故障）\n")
             append("主故障只包含上文选中的一条 ERROR/FATAL 记录。以下事件仅在同一 sessionId + operationId，或符合旧版同线程近邻规则时作为上下文保留；不代表它们都是本次导出的主故障。\n")
             append("关联事件数：").append(related.size).append("（最多保留 80 条相关事件）\n")
-            append("关联依据说明：每条 JSON 记录均包含 relationToSelectedEvent 和 relationEvidence；恢复记录按 resolvesIssueKey 匹配，翻译事件按诊断 ID 匹配，任务上下文按 sessionId/operationId 匹配。\\n")
+            append("关联依据说明：每条 JSON 记录均包含 relationToSelectedEvent 和 relationEvidence；恢复记录按 resolvesIssueKey 匹配，翻译事件按诊断 ID 匹配，任务上下文按 sessionId/operationId 匹配。\n")
             if (related.isEmpty()) {
                 append("没有找到可确认关联的其他事件。\n")
             } else {
