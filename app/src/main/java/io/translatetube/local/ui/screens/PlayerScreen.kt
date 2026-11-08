@@ -483,7 +483,6 @@ fun PlayerScreen(
     var advancedMenuExpanded by remember { mutableStateOf(false) }
     var showSubtitleDownloadDialog by remember { mutableStateOf(false) }
     var pendingSubtitleTrack by remember { mutableStateOf<SubtitleTrackOption?>(null) }
-    var pendingSubtitleExportContent by remember { mutableStateOf<String?>(null) }
     var showPersonVoiceDialog by remember { mutableStateOf(false) }
     var personVoiceMenuExpanded by remember { mutableStateOf(false) }
     var showSpeakerPeopleDialog by remember { mutableStateOf(false) }
@@ -493,7 +492,8 @@ fun PlayerScreen(
     var personTargetIndex by remember { mutableIntStateOf(-1) }
     var personTargetTitle by remember { mutableStateOf("人物默认音色") }
     var selectedPersonVoiceId by remember { mutableIntStateOf(-1) }
-    val subtitleExportScope = rememberCoroutineScope()
+    // Export scope/launchers live in their own composable so PlayerScreen() stays small enough for D8.
+    val subtitleExporter = rememberSubtitleExporter(state, videoId, mediaUrl, localUri)
     val speakerRecognition = state.speakerRecognition
     val isSpeakerBusy = speakerRecognition.isActive ||
         PlaybackService.instance?.isSpeakerTaskActive == true
@@ -688,52 +688,13 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     val overlayOwnerHolder = remember { arrayOfNulls<FloatingOverlayLifecycleOwner>(1) }
     val tv = remember { TextureView(ctx) }
     val frame = remember { FrameLayout(ctx) }
-    val surfaceAttachScope = rememberCoroutineScope()
-    val surfaceAttachJob = remember(tv) { arrayOfNulls<kotlinx.coroutines.Job>(1) }
-    val lastObservedSurfaceTexture = remember(tv) {
-        arrayOfNulls<android.graphics.SurfaceTexture>(1)
-    }
+    val surfaceAttacher = remember(tv) { VideoSurfaceAttacher(tv) }
 
     // A view can be attached before its SurfaceTexture exists or before layout gives it
     // non-zero dimensions. Both landscape and portrait videos need a real output surface before
     // Media3 binds it; wait for service readiness AND surface readiness, not just window attachment.
     fun attachSurfaceWhenReady() {
-        if (!tv.isAttachedToWindow) return
-        surfaceAttachJob[0]?.cancel()
-        surfaceAttachJob[0] = surfaceAttachScope.launch {
-            var tries = 0
-            while (tries < 100 && tv.isAttachedToWindow) {
-                val service = PlaybackService.instance
-                val surfaceReady = tv.isAvailable && tv.width > 0 && tv.height > 0
-                if (service?.isReady == true && surfaceReady) {
-                    val currentTexture = tv.surfaceTexture
-                    val previousTexture = lastObservedSurfaceTexture[0]
-                    if (
-                        previousTexture != null &&
-                        currentTexture != null &&
-                        currentTexture !== previousTexture
-                    ) {
-                        // A TextureView may keep the same View instance while Android replaces its
-                        // SurfaceTexture. Media3 owns the listener; invalidate only our old frame proof.
-                        service.notifyVideoSurfaceRecreated(tv)
-                    }
-                    if (currentTexture != null) lastObservedSurfaceTexture[0] = currentTexture
-                    service.attachSurface(tv)
-                    return@launch
-                }
-                tries++
-                delay(100)
-            }
-            if (tv.isAttachedToWindow) {
-                val serviceReady = PlaybackService.instance?.isReady == true
-                android.util.Log.w(
-                    "PlayerScreen",
-                    "Video surface initialization timed out: serviceReady=" + serviceReady +
-                        ", textureAvailable=" + tv.isAvailable +
-                        ", size=" + tv.width + "x" + tv.height,
-                )
-            }
-        }
+        surfaceAttacher.attachWhenReady()
     }
 
     // Bind only after TextureView is attached, and do not lose the request if service startup lags.
@@ -744,8 +705,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             }
 
             override fun onViewDetachedFromWindow(view: android.view.View) {
-                surfaceAttachJob[0]?.cancel()
-                surfaceAttachJob[0] = null
+                surfaceAttacher.cancel()
             }
         }
     }
@@ -754,8 +714,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         if (tv.isAttachedToWindow) attachSurfaceWhenReady()
         onDispose {
             tv.removeOnAttachStateChangeListener(surfaceAttachListener)
-            surfaceAttachJob[0]?.cancel()
-            surfaceAttachJob[0] = null
+            surfaceAttacher.close()
         }
     }
 
@@ -1000,137 +959,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         subtitleFileSaver.launch(base + "_" + lang + ".vtt")
     }
 
-    fun saveSubtitleExport(uri: android.net.Uri?) {
-        val content = pendingSubtitleExportContent
-        pendingSubtitleExportContent = null
-        if (uri == null || content.isNullOrBlank()) return
-        subtitleExportScope.launch {
-            val error = withContext(Dispatchers.IO) {
-                runCatching {
-                    val output = ctx.contentResolver.openOutputStream(uri, "wt")
-                        ?: throw java.io.IOException("无法打开导出文件")
-                    OutputStreamWriter(output, Charsets.UTF_8).use { writer ->
-                        writer.write(content)
-                    }
-                }.exceptionOrNull()
-            }
-            if (error != null) {
-                io.translatetube.local.util.AppLogStore.error(
-                    ctx,
-                    "SubtitleExport",
-                    "字幕文件导出失败",
-                    error,
-                    diagnosticContext = mapOf(
-                        "视频来源" to when {
-                            videoId != null -> "YouTube"
-                            !mediaUrl.isNullOrBlank() -> "网页视频"
-                            localUri != null -> "本地视频"
-                            else -> "未知来源"
-                        },
-                        "导出文件 MIME 类型" to (ctx.contentResolver.getType(uri).orEmpty().ifBlank { "未提供" }),
-                        "导出内容字符数" to content.length.toString(),
-                    ),
-                )
-            }
-            val message = if (error == null) {
-                "字幕已导出"
-            } else {
-                "字幕导出失败，请检查保存位置或文件权限。"
-            }
-            android.widget.Toast.makeText(ctx, message, android.widget.Toast.LENGTH_LONG).show()
-        }
-    }
-
-    val subtitleSrtSaver = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/x-subrip"),
-    ) { uri -> saveSubtitleExport(uri) }
-    val subtitleBilingualSrtSaver = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/x-subrip"),
-    ) { uri -> saveSubtitleExport(uri) }
-    val subtitleBilingualVttSaver = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/vtt"),
-    ) { uri -> saveSubtitleExport(uri) }
-
-    fun requestSubtitleExport(format: SubtitleExportFormat) {
-        val linesSnapshot = state.lines
-        if (linesSnapshot.isEmpty()) {
-            android.widget.Toast.makeText(ctx, "当前没有可导出的字幕", android.widget.Toast.LENGTH_SHORT).show()
-            return
-        }
-        val base = state.title.ifBlank { "subtitles" }
-            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
-            .take(48)
-            .ifBlank { "subtitles" }
-        subtitleExportScope.launch {
-            // Large subtitle files can contain tens of thousands of cues. Build export text off
-            // the UI thread so scrolling and playback controls remain responsive.
-            val content = withContext(Dispatchers.Default) {
-                when (format) {
-                    SubtitleExportFormat.CHINESE_SRT -> SubtitleParsers.toSrt(linesSnapshot)
-                    SubtitleExportFormat.BILINGUAL_SRT -> SubtitleParsers.toSrt(linesSnapshot, bilingual = true)
-                    SubtitleExportFormat.BILINGUAL_VTT -> SubtitleParsers.toBilingualVtt(linesSnapshot)
-                }
-            }
-            if (content.isBlank()) {
-                android.widget.Toast.makeText(ctx, "没有有效字幕可导出", android.widget.Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            pendingSubtitleExportContent = content
-            when (format) {
-                SubtitleExportFormat.CHINESE_SRT -> subtitleSrtSaver.launch(base + "_zh.srt")
-                SubtitleExportFormat.BILINGUAL_SRT -> subtitleBilingualSrtSaver.launch(base + "_bilingual.srt")
-                SubtitleExportFormat.BILINGUAL_VTT -> subtitleBilingualVttSaver.launch(base + "_bilingual.vtt")
-            }
-        }
-    }
-
-    fun requestOriginalSubtitleExport() {
-        val linesSnapshot = state.lines.mapIndexed { index, line ->
-            line.copy(index = index, zh = null)
-        }
-        if (linesSnapshot.isEmpty()) {
-            android.widget.Toast.makeText(ctx, "当前还没有可导出的原文字幕，请等待转写阶段完成。", android.widget.Toast.LENGTH_SHORT).show()
-            return
-        }
-        val base = state.title.ifBlank { "subtitles" }
-            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
-            .take(48)
-            .ifBlank { "subtitles" }
-        subtitleExportScope.launch {
-            val content = withContext(Dispatchers.Default) {
-                // Drop any partial/automatic Chinese translation and export the original text only.
-                SubtitleParsers.toSrt(linesSnapshot)
-            }
-            if (content.isBlank()) {
-                android.widget.Toast.makeText(ctx, "没有有效原文字幕可导出", android.widget.Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            pendingSubtitleExportContent = content
-            subtitleSrtSaver.launch(base + "_original.srt")
-        }
-    }
-
-    fun copySubtitles() {
-        val linesSnapshot = state.lines
-        if (linesSnapshot.isEmpty()) {
-            android.widget.Toast.makeText(ctx, "当前没有可复制的字幕", android.widget.Toast.LENGTH_SHORT).show()
-            return
-        }
-        subtitleExportScope.launch {
-            val text = withContext(Dispatchers.Default) {
-                // Keep copy and file export consistent: discard malformed time windows, sort
-                // chronologically, and emit Chinese first with a distinct source row underneath.
-                SubtitleParsers.toPlainText(linesSnapshot, bilingual = true)
-            }
-            if (text.isNotEmpty()) {
-                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                    as android.content.ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("subtitles", text))
-                android.widget.Toast.makeText(ctx, "字幕已复制", android.widget.Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
     val dubbingPreparationIncomplete = VideoProcessingFlowPolicy.isDubbingPreparationIncomplete(
         dubbingOn = state.dubbingOn,
         totalLines = state.totalLines,
@@ -1192,7 +1020,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 onImportTranslatedSubtitles = { translatedSubPicker.launch(arrayOf("*/*")) },
                 onEnableManualTranslation = { PlaybackService.instance?.enableManualSubtitleTranslation() },
                 onCancelManualTranslation = { PlaybackService.instance?.cancelManualSubtitleTranslation() },
-                onExportOriginalSubtitle = { requestOriginalSubtitleExport() },
+                onExportOriginalSubtitle = { subtitleExporter.requestOriginal() },
                 onImportManualTranslatedSubtitle = { manualTranslatedSubPicker.launch(arrayOf("*/*")) },
                 onDownloadSubtitle = { track -> requestSubtitleDownload(track) },
                 onGoSettings = onGoSettings,
@@ -1444,7 +1272,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
-                                copySubtitles()
+                                subtitleExporter.copyBilingual()
                             },
                         )
                         PlaybackMenuItem(
@@ -1453,7 +1281,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
-                                requestSubtitleExport(SubtitleExportFormat.CHINESE_SRT)
+                                subtitleExporter.requestExport(SubtitleExportFormat.CHINESE_SRT)
                             },
                         )
                         PlaybackMenuItem(
@@ -1462,7 +1290,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
-                                requestSubtitleExport(SubtitleExportFormat.BILINGUAL_VTT)
+                                subtitleExporter.requestExport(SubtitleExportFormat.BILINGUAL_VTT)
                             },
                         )
                         PlaybackMenuItem(
@@ -1471,7 +1299,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
-                                requestSubtitleExport(SubtitleExportFormat.BILINGUAL_SRT)
+                                subtitleExporter.requestExport(SubtitleExportFormat.BILINGUAL_SRT)
                             },
                         )
                         Divider(
@@ -8702,3 +8530,237 @@ private fun LangLabel(code: String) = when (code) {
     "es" -> "西"; "pt" -> "葡"; "ru" -> "俄"; "it" -> "意"; "auto" -> "自动"
     else -> code
 }
+
+
+/**
+ * Subtitle export/copy actions, moved out of PlayerScreen().
+ *
+ * PlayerScreen() is so large that D8 emitted an invalid register copy for a CoroutineScope on
+ * Android 9 (VerifyError "copy1 v2<-v311 type=Reference: CoroutineScope cat=1"). Keeping the
+ * scope, the file-saver launchers and these functions here removes them from that method.
+ */
+private class SubtitleExporter(
+    private val ctx: android.content.Context,
+    private val scope: kotlinx.coroutines.CoroutineScope,
+    initialState: PlayerUiState,
+) {
+    private var state: PlayerUiState = initialState
+    private var videoId: String? = null
+    private var mediaUrl: String? = null
+    private var localUri: android.net.Uri? = null
+    private var pendingContent: String? = null
+    var srtSaver: androidx.activity.compose.ManagedActivityResultLauncher<String, android.net.Uri?>? = null
+    var bilingualSrtSaver: androidx.activity.compose.ManagedActivityResultLauncher<String, android.net.Uri?>? = null
+    var bilingualVttSaver: androidx.activity.compose.ManagedActivityResultLauncher<String, android.net.Uri?>? = null
+
+    fun update(state: PlayerUiState, videoId: String?, mediaUrl: String?, localUri: android.net.Uri?) {
+        this.state = state
+        this.videoId = videoId
+        this.mediaUrl = mediaUrl
+        this.localUri = localUri
+    }
+
+    fun save(uri: android.net.Uri?) {
+        val content = pendingContent
+        pendingContent = null
+        if (uri == null || content.isNullOrBlank()) return
+        scope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    val output = ctx.contentResolver.openOutputStream(uri, "wt")
+                        ?: throw java.io.IOException("无法打开导出文件")
+                    OutputStreamWriter(output, Charsets.UTF_8).use { writer ->
+                        writer.write(content)
+                    }
+                }.exceptionOrNull()
+            }
+            if (error != null) {
+                io.translatetube.local.util.AppLogStore.error(
+                    ctx,
+                    "SubtitleExport",
+                    "字幕文件导出失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "视频来源" to when {
+                            videoId != null -> "YouTube"
+                            !mediaUrl.isNullOrBlank() -> "网页视频"
+                            localUri != null -> "本地视频"
+                            else -> "未知来源"
+                        },
+                        "导出文件 MIME 类型" to (ctx.contentResolver.getType(uri).orEmpty().ifBlank { "未提供" }),
+                        "导出内容字符数" to content.length.toString(),
+                    ),
+                )
+            }
+            val message = if (error == null) {
+                "字幕已导出"
+            } else {
+                "字幕导出失败，请检查保存位置或文件权限。"
+            }
+            android.widget.Toast.makeText(ctx, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun requestExport(format: SubtitleExportFormat) {
+        val linesSnapshot = state.lines
+        if (linesSnapshot.isEmpty()) {
+            android.widget.Toast.makeText(ctx, "当前没有可导出的字幕", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val base = state.title.ifBlank { "subtitles" }
+            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
+            .take(48)
+            .ifBlank { "subtitles" }
+        scope.launch {
+            // Large subtitle files can contain tens of thousands of cues. Build export text off
+            // the UI thread so scrolling and playback controls remain responsive.
+            val content = withContext(Dispatchers.Default) {
+                when (format) {
+                    SubtitleExportFormat.CHINESE_SRT -> SubtitleParsers.toSrt(linesSnapshot)
+                    SubtitleExportFormat.BILINGUAL_SRT -> SubtitleParsers.toSrt(linesSnapshot, bilingual = true)
+                    SubtitleExportFormat.BILINGUAL_VTT -> SubtitleParsers.toBilingualVtt(linesSnapshot)
+                }
+            }
+            if (content.isBlank()) {
+                android.widget.Toast.makeText(ctx, "没有有效字幕可导出", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            pendingContent = content
+            when (format) {
+                SubtitleExportFormat.CHINESE_SRT -> srtSaver?.launch(base + "_zh.srt")
+                SubtitleExportFormat.BILINGUAL_SRT -> bilingualSrtSaver?.launch(base + "_bilingual.srt")
+                SubtitleExportFormat.BILINGUAL_VTT -> bilingualVttSaver?.launch(base + "_bilingual.vtt")
+            }
+        }
+    }
+
+    fun requestOriginal() {
+        val linesSnapshot = state.lines.mapIndexed { index, line ->
+            line.copy(index = index, zh = null)
+        }
+        if (linesSnapshot.isEmpty()) {
+            android.widget.Toast.makeText(ctx, "当前还没有可导出的原文字幕，请等待转写阶段完成。", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val base = state.title.ifBlank { "subtitles" }
+            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
+            .take(48)
+            .ifBlank { "subtitles" }
+        scope.launch {
+            val content = withContext(Dispatchers.Default) {
+                // Drop any partial/automatic Chinese translation and export the original text only.
+                SubtitleParsers.toSrt(linesSnapshot)
+            }
+            if (content.isBlank()) {
+                android.widget.Toast.makeText(ctx, "没有有效原文字幕可导出", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            pendingContent = content
+            srtSaver?.launch(base + "_original.srt")
+        }
+    }
+
+    fun copyBilingual() {
+        val linesSnapshot = state.lines
+        if (linesSnapshot.isEmpty()) {
+            android.widget.Toast.makeText(ctx, "当前没有可复制的字幕", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        scope.launch {
+            val text = withContext(Dispatchers.Default) {
+                // Keep copy and file export consistent: discard malformed time windows, sort
+                // chronologically, and emit Chinese first with a distinct source row underneath.
+                SubtitleParsers.toPlainText(linesSnapshot, bilingual = true)
+            }
+            if (text.isNotEmpty()) {
+                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("subtitles", text))
+                android.widget.Toast.makeText(ctx, "字幕已复制", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberSubtitleExporter(
+    state: PlayerUiState,
+    videoId: String?,
+    mediaUrl: String?,
+    localUri: android.net.Uri?,
+): SubtitleExporter {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val exporter = remember(ctx, scope) { SubtitleExporter(ctx, scope, state) }
+    exporter.srtSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/x-subrip"),
+    ) { uri -> exporter.save(uri) }
+    exporter.bilingualSrtSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/x-subrip"),
+    ) { uri -> exporter.save(uri) }
+    exporter.bilingualVttSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/vtt"),
+    ) { uri -> exporter.save(uri) }
+    SideEffect { exporter.update(state, videoId, mediaUrl, localUri) }
+    return exporter
+}
+
+/**
+ * Binds the shared TextureView once the PlaybackService and the surface are both ready.
+ * Owns its coroutine scope (not rememberCoroutineScope) so PlayerScreen() holds no CoroutineScope.
+ */
+private class VideoSurfaceAttacher(private val tv: TextureView) {
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main)
+    private var job: kotlinx.coroutines.Job? = null
+    private var lastObservedSurfaceTexture: android.graphics.SurfaceTexture? = null
+
+    fun attachWhenReady() {
+        if (!tv.isAttachedToWindow) return
+        job?.cancel()
+        job = scope.launch {
+            var tries = 0
+            while (tries < 100 && tv.isAttachedToWindow) {
+                val service = PlaybackService.instance
+                val surfaceReady = tv.isAvailable && tv.width > 0 && tv.height > 0
+                if (service?.isReady == true && surfaceReady) {
+                    val currentTexture = tv.surfaceTexture
+                    val previousTexture = lastObservedSurfaceTexture
+                    if (
+                        previousTexture != null &&
+                        currentTexture != null &&
+                        currentTexture !== previousTexture
+                    ) {
+                        // A TextureView may keep the same View instance while Android replaces its
+                        // SurfaceTexture. Media3 owns the listener; invalidate only our old frame proof.
+                        service.notifyVideoSurfaceRecreated(tv)
+                    }
+                    if (currentTexture != null) lastObservedSurfaceTexture = currentTexture
+                    service.attachSurface(tv)
+                    return@launch
+                }
+                tries++
+                delay(100)
+            }
+            if (tv.isAttachedToWindow) {
+                val serviceReady = PlaybackService.instance?.isReady == true
+                android.util.Log.w(
+                    "PlayerScreen",
+                    "Video surface initialization timed out: serviceReady=" + serviceReady +
+                        ", textureAvailable=" + tv.isAvailable +
+                        ", size=" + tv.width + "x" + tv.height,
+                )
+            }
+        }
+    }
+
+    fun cancel() {
+        job?.cancel()
+        job = null
+    }
+
+    fun close() {
+        cancel()
+        scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+    }
+}
+
