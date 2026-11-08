@@ -151,4 +151,46 @@ class AppLogDiagnosticsTest {
         assertTrue(diagnosis.nextSteps.any { it.contains("Retry-After") })
     }
 
+    @Test
+    fun verifyErrorGetsTheDedicatedDexVerifierDiagnosis() {
+        val diagnosis=AppLogDiagnostics.analyze(
+            record(
+                "UncaughtException",
+                "Verifier rejected PlayerScreenKt.PlayerScreen(17 params) failed to verify: [0x4440] copy1 v2<-v311 type=Reference: kotlinx.coroutines.CoroutineScope cat=1",
+                "异常根因链：\n#0 java.lang.VerifyError: Verifier rejected PlayerScreenKt.PlayerScreen(17 params) failed to verify: [0x4440] copy1 v2<-v311 type=Reference: kotlinx.coroutines.CoroutineScope cat=1",
+            ).copy(errorClass="java.lang.VerifyError"),
+        )
+        assertEquals("字节码校验失败（编译产物问题）",diagnosis.category)
+        assertEquals("已确认",diagnosis.confidence)
+        assertTrue(diagnosis.evidence.contains("[0x4440] copy1 v2<-v311"))
+        assertTrue(diagnosis.evidence.contains("PlayerScreenKt.PlayerScreen"))
+        assertTrue(diagnosis.finding.contains("寄存器编号超过 255"))
+    }
+
+    @Test
+    fun noSuchMethodErrorGetsTheDedicatedLinkerDiagnosis() {
+        val diagnosis=AppLogDiagnostics.analyze(
+            record("UncaughtException",
+                "java.lang.NoSuchMethodError: No virtual method decode(Ljava/lang/String;Ljava/nio/charset/Charset;)Ljava/lang/String;",
+                "异常根因链：\n#0 java.lang.NoSuchMethodError: No virtual method decode in java.net.URLDecoder")
+                .copy(errorClass="java.lang.NoSuchMethodError"),
+        )
+        assertEquals("类/方法/原生库链接失败",diagnosis.category)
+        assertTrue(diagnosis.finding.contains("依赖版本冲突"))
+        assertTrue(diagnosis.evidence.contains("NoSuchMethodError"))
+    }
+
+    @Test
+    fun unsatisfiedLinkErrorGetsTheDedicatedLinkerDiagnosis() {
+        val diagnosis=AppLogDiagnostics.analyze(
+            record("NativeLoader","native library load failed",
+                "java.lang.UnsatisfiedLinkError: dlopen failed: library \"libhymt.so\" not found")
+                .copy(errorClass="java.lang.UnsatisfiedLinkError"),
+        )
+        assertEquals("类/方法/原生库链接失败",diagnosis.category)
+        assertTrue(diagnosis.evidence.contains("libhymt.so"))
+        assertTrue(diagnosis.nextSteps.any{it.contains("abiFilters")})
+    }
+
+
 }
