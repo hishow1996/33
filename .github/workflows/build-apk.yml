@@ -405,3 +405,4 @@ jobs:
 # Explicit user-requested APK build trigger marker (2026-11-08 13:49 +08:00): build latest main and publish debug/release APK artifacts.
 
 # Explicit user-requested build trigger for latest main source 705ebbbc86ed2e2eca4ce41b6e483120e3628381 (2026-11-08 17:13 +08:00).
+# Explicit user-requested APK build trigger (2026-11-08 17:28 +08:00): build latest main source after the previous kleidiai download returned HTTP 504.
