@@ -593,14 +593,22 @@ fun PlayerScreen(
                     s = null
                 }
                 if (s == null) {
+                    // 应用被完全退出后冷启动：服务创建要一会儿，这段时间界面状态是空闲，页面会
+                    // 停在「准备中 / 第一阶段」。上次没处理完的视频先直接显示它上次所在的阶段。
+                    if (!retryRequested) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            runCatching { PlaybackService.publishResumeInterimState(ctx, key) }
+                        }
+                    }
                     androidx.core.content.ContextCompat.startForegroundService(
                         ctx, android.content.Intent(ctx, PlaybackService::class.java)
                     )
                 }
                 var tries = 0
-                while (tries < 50) {
+                // 服务一就绪就继续：轮询间隔从 100ms 缩到 25ms，总等待上限仍是 5 秒。
+                while (tries < 200) {
                     if (PlaybackService.instance?.isReady == true) break
-                    delay(100)
+                    delay(25)
                     tries++
                 }
                 s = PlaybackService.instance
@@ -630,6 +638,10 @@ fun PlayerScreen(
                     ) failedState else null
                     s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, selectedWebMediaMetadata = selectedWebMediaMetadata, requestToken = requestToken)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 页面在 open() 接手之前离开：撤掉"正在恢复上次进度"的过渡状态，再把取消继续抛出。
+                PlaybackService.clearResumeInterimState(key)
+                throw e
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
                 // Compose coroutine and process. VM-fatal conditions must still propagate.

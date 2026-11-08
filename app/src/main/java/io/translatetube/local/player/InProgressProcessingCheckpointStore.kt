@@ -68,8 +68,48 @@ internal data class InProgressCheckpointLoadResult(
     val failure: Throwable? = null,
 )
 
+/**
+ * 重新进入视频时，检查点要解压、解析、校验后才能知道上次停在哪一步。这份很小的"恢复提示"
+ * 让页面不用等检查点读完，就能直接显示上次所在的阶段（只记阶段和行数，不含字幕内容）。
+ */
+internal data class InProgressResumeHint(
+    val phase: Phase,
+    val processingFlow: ProcessingFlow,
+    val totalLines: Int,
+    val translatedLines: Int,
+)
+
+/** 恢复提示的存取格式：`S|T` 阶段码、处理流程名、总行数、已有译文行数，用 `|` 分隔。 */
+internal object InProgressResumeHintCodec {
+    fun encode(
+        phase: Phase,
+        processingFlow: ProcessingFlow,
+        totalLines: Int,
+        translatedLines: Int,
+    ): String {
+        val phaseCode = if (phase == Phase.SYNTHESIZING || phase == Phase.READY) "S" else "T"
+        return "$phaseCode|${processingFlow.name}|$totalLines|$translatedLines"
+    }
+
+    fun decode(raw: String?): InProgressResumeHint? {
+        if (raw == null) return null
+        val parts = raw.split('|')
+        if (parts.size != 4) return null
+        val flow = runCatching { ProcessingFlow.valueOf(parts[1]) }.getOrNull() ?: return null
+        val total = parts[2].toIntOrNull()?.takeIf { it > 0 } ?: return null
+        val translated = (parts[3].toIntOrNull() ?: return null).coerceIn(0, total)
+        return InProgressResumeHint(
+            phase = if (parts[0] == "S") Phase.SYNTHESIZING else Phase.TRANSLATING,
+            processingFlow = flow,
+            totalLines = total,
+            translatedLines = translated,
+        )
+    }
+}
+
 internal object InProgressProcessingCheckpointStore {
     private const val DIRECTORY_NAME = "in_progress_processing"
+    private const val RESUME_HINT_PREFS = "in_progress_checkpoint_resume_hint"
     // Versions 2–5 added gzip/restart metadata; version 6 added content fingerprints.
     // Version 8 removes persisted original-audio fallback state. Version 7 remains readable;
     // its legacy fallback rows are restored as untranslated cues and retried.
@@ -946,6 +986,43 @@ internal object InProgressProcessingCheckpointStore {
             count--
         }
     }
+
+    /** 检查点保存成功后记一份阶段提示；只是显示用，真正的恢复仍以检查点文件为准。 */
+    fun rememberResumeHint(context: Context, videoKey: String, state: PlayerUiState) {
+        if (!isSupportedKey(videoKey) || state.lines.isEmpty()) return
+        val encoded = InProgressResumeHintCodec.encode(
+            phase = state.phase,
+            processingFlow = state.processingFlow,
+            totalLines = state.lines.size,
+            translatedLines = state.lines.count { !it.zh.isNullOrBlank() },
+        )
+        runCatching {
+            context.applicationContext.getSharedPreferences(RESUME_HINT_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(resumeHintName(videoKey), encoded)
+                .apply()
+        }
+    }
+
+    /**
+     * 只在这个视频确实还留着检查点文件时才返回提示（只列一次小目录，不解压、不解析）。
+     * 检查点被删除、过期清理后，提示自然失效。
+     */
+    fun peekResumeHint(context: Context, videoKey: String): InProgressResumeHint? {
+        if (!isSupportedKey(videoKey)) return null
+        return runCatching {
+            val prefix = "progress_" + sha256(videoKey).take(24) + "_"
+            val hasCheckpoint = directory(context).list()?.any { name ->
+                name.startsWith(prefix) && (name.endsWith(".json") || name.endsWith(".json.bak"))
+            } == true
+            if (!hasCheckpoint) return@runCatching null
+            val raw = context.applicationContext.getSharedPreferences(RESUME_HINT_PREFS, Context.MODE_PRIVATE)
+                .getString(resumeHintName(videoKey), null)
+            InProgressResumeHintCodec.decode(raw)
+        }.getOrNull()
+    }
+
+    private fun resumeHintName(videoKey: String): String = "hint_" + sha256(videoKey).take(24)
 
     private fun deleteFile(file: File): Boolean = runCatching {
         AtomicFile(file).delete()

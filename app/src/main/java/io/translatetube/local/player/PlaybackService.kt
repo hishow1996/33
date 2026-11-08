@@ -834,14 +834,7 @@ class PlaybackService : MediaSessionService() {
         if (sessionKey.isBlank() || totalLines <= 0) return null
         val raw = runCatching { dubbingProgressHintPrefs().getString(sessionKey, null) }
             .getOrNull() ?: return null
-        val parts = raw.split('|')
-        if (parts.size != 4 || parts[0] != engineId) return null
-        val savedTotal = parts[1].toIntOrNull() ?: return null
-        val count = parts[2].toIntOrNull() ?: return null
-        val prefix = parts[3].toIntOrNull() ?: return null
-        if (savedTotal != totalLines || count <= 0) return null
-        val safeCount = count.coerceIn(0, totalLines)
-        return safeCount to prefix.coerceIn(0, safeCount)
+        return parseDubbingProgressHint(raw, engineId, totalLines)
     }
 
     private var prepJob: Job? = null
@@ -983,6 +976,99 @@ class PlaybackService : MediaSessionService() {
             val current = ui.value
             if (current.cloudAsrSubmissionUncertain && current.key.isNotBlank()) {
                 cloudAsrResubmissionConsentKeys.add(current.key)
+            }
+        }
+
+        private const val RESUME_INTERIM_PROGRESS = "正在恢复上次进度…"
+
+        /** 是不是 publishResumeInterimState 写的过渡状态（还没有任何字幕行，也没有真正的处理会话）。 */
+        private fun isResumeInterimState(state: PlayerUiState): Boolean =
+            state.progress == RESUME_INTERIM_PROGRESS && state.lines.isEmpty()
+
+        /** 解析"上次合成进度"提示：返回 (已就绪行数, 连续前缀行数)；引擎或行数对不上视为没有。 */
+        private fun parseDubbingProgressHint(
+            raw: String?,
+            engineId: String,
+            totalLines: Int,
+        ): Pair<Int, Int>? {
+            if (raw == null || totalLines <= 0) return null
+            val parts = raw.split('|')
+            if (parts.size != 4 || parts[0] != engineId) return null
+            val savedTotal = parts[1].toIntOrNull() ?: return null
+            val count = parts[2].toIntOrNull() ?: return null
+            val prefix = parts[3].toIntOrNull() ?: return null
+            if (savedTotal != totalLines || count <= 0) return null
+            val safeCount = count.coerceIn(0, totalLines)
+            return safeCount to prefix.coerceIn(0, safeCount)
+        }
+
+        /**
+         * 重新进入一个上次没处理完的视频时，服务和检查点还在加载，界面状态是空闲，页面会停在
+         * 「准备中 / 第一阶段」不动，加载完又一下跳到第五阶段。这里按上次记下的阶段先把页面
+         * 直接放到对应阶段（只在界面空闲时生效；后面的 open() 会用真实状态整体覆盖）。
+         * 返回 true 表示这个视频确实有可恢复的检查点。
+         */
+        fun publishResumeInterimState(context: Context, sessionKey: String): Boolean {
+            if (sessionKey.isBlank()) return false
+            val app = context.applicationContext
+            val hint = InProgressProcessingCheckpointStore.peekResumeHint(app, sessionKey) ?: return false
+            if (ui.value.phase != Phase.IDLE) return true
+            var preparedCount = 0
+            var preparedUntil = 0
+            if (hint.phase == Phase.SYNTHESIZING) {
+                val engineId = DubbingConfigPreferencePolicy.normalizeEngineId(
+                    app.getSharedPreferences("settings", Context.MODE_PRIVATE).getString("tts_engine", "edge"),
+                )
+                val raw = runCatching {
+                    app.getSharedPreferences("dubbing_progress_hint", Context.MODE_PRIVATE)
+                        .getString(sessionKey, null)
+                }.getOrNull()
+                parseDubbingProgressHint(raw, engineId, hint.totalLines)?.let { (count, prefix) ->
+                    preparedCount = count
+                    preparedUntil = prefix
+                }
+            }
+            ui.update { current ->
+                if (current.phase != Phase.IDLE) {
+                    current
+                } else {
+                    current.copy(
+                        phase = hint.phase,
+                        key = sessionKey,
+                        processingFlow = hint.processingFlow,
+                        progress = RESUME_INTERIM_PROGRESS,
+                        totalLines = hint.totalLines,
+                        translatedLineCount = hint.translatedLines,
+                        preparedCount = preparedCount,
+                        preparedUntil = preparedUntil,
+                        dubbingOn = true,
+                    )
+                }
+            }
+            return true
+        }
+
+        /** 页面在 open() 真正接手之前被取消时，撤掉上面的过渡状态，别让它留在首页当成"进行中任务"。 */
+        fun clearResumeInterimState(sessionKey: String) {
+            ui.update { current ->
+                if (
+                    current.key == sessionKey &&
+                    current.progress == RESUME_INTERIM_PROGRESS &&
+                    current.lines.isEmpty()
+                ) {
+                    current.copy(
+                        phase = Phase.IDLE,
+                        key = "",
+                        progress = "",
+                        processingFlow = ProcessingFlow.AUTO,
+                        totalLines = 0,
+                        translatedLineCount = 0,
+                        preparedCount = 0,
+                        preparedUntil = 0,
+                    )
+                } else {
+                    current
+                }
             }
         }
 
@@ -1571,6 +1657,21 @@ class PlaybackService : MediaSessionService() {
                                     state.processingFlow,
                                 )
                         },
+                    )
+                }
+            }
+
+            if (
+                saved != null &&
+                (saved.status == InProgressCheckpointSaveStatus.SAVED ||
+                    saved.status == InProgressCheckpointSaveStatus.UNCHANGED)
+            ) {
+                // 供下次重新进入时，页面不用等检查点读完就能直接显示上次所在的阶段。
+                withContext(Dispatchers.IO) {
+                    InProgressProcessingCheckpointStore.rememberResumeHint(
+                        this@PlaybackService,
+                        sessionKey,
+                        state,
                     )
                 }
             }
@@ -4871,12 +4972,15 @@ class PlaybackService : MediaSessionService() {
                 "Discarded webpage source metadata because its media/session identity did not match the active request",
             )
         }
+        // 「正在恢复上次进度」的过渡状态只是让页面先显示对阶段，不是真正的旧会话：
+        // 下面所有"这个视频是不是已有会话"的判断都要把它当成没有。
+        val priorSessionUi = ui.value.takeUnless { isResumeInterimState(it) }
         val previousYouTubeProcessingFlow =
             resumeState?.processingFlow
-                ?: ui.value.takeIf { it.key == key }?.processingFlow
+                ?: priorSessionUi?.takeIf { it.key == key }?.processingFlow
                 ?: ReadyHistorySessionConfigStore.savedProcessingFlow(this, key)
         val resumeModeBaseline = resumeYouTubeSubtitleMode
-            ?: if (resumeState != null && ui.value.key == key) {
+            ?: if (resumeState != null && priorSessionUi?.key == key) {
                 activeProcessingYouTubeSubtitleMode
             } else {
                 null
@@ -4906,7 +5010,7 @@ class PlaybackService : MediaSessionService() {
         } else {
             processingCheckpointRestoreGeneration.incrementAndGet()
         }
-        val incomingSessionKey = ui.value.key
+        val incomingSessionKey = priorSessionUi?.key.orEmpty()
         if (incomingSessionKey != key) {
             playbackRecoveryInProgress = false
             playbackRecoveryMessage = null
@@ -5033,6 +5137,18 @@ class PlaybackService : MediaSessionService() {
             !refreshYouTubeSubtitleSource
         ) {
             scope.launch {
+                // 检查点要解压、解析、校验后才知道上次停在哪。在这之前先按上次记下的阶段把页面
+                // 直接放到对应阶段，不再停在「准备中 / 第一阶段」不动、读完再一下跳到第五阶段。
+                val hasResumableCheckpoint = withContext(Dispatchers.IO) {
+                    publishResumeInterimState(this@PlaybackService, key)
+                }
+                if (hasResumableCheckpoint && videoId != null && !reuseMountedMediaForRestart) {
+                    // 重新进入后挂播放器一定要 YouTube 流信息（联网）。趁检查点还在读取时并行预取，
+                    // 后面的流装配就能直接命中缓存，不再串在配音引擎创建之前干等。
+                    scope.launch(Dispatchers.IO) {
+                        runCatching { NewPipeRepo.streams(videoId) }
+                    }
+                }
                 val checkpointLoadStartedMs = android.os.SystemClock.elapsedRealtime()
                 val checkpointLoadResult = withContext(Dispatchers.IO) {
                     InProgressProcessingCheckpointStore.loadWithResult(
@@ -5366,7 +5482,8 @@ class PlaybackService : MediaSessionService() {
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
         val reuseMountedMedia = !localMediaChangedForActiveSession &&
             (effectiveResumeState != null || reuseMountedMediaForRestart) &&
-            key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
+            key == videoKey && ui.value.key == key && !isResumeInterimState(ui.value) &&
+            playerReady && ::pm.isInitialized
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
         // This service can live across many videos. Drop the prior session's interval arrays and
@@ -10457,8 +10574,18 @@ updateUiForSession(key, pipelineGeneration) {
                 val baseLines = lines ?: emptyList()
                 val importedTranslatedFlow =
                     resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                // 重新进入时：恢复来的字幕译文已经齐了，说明上次的第一句校准早就做过（保存的就是
+                // 校准后的起点）。这时只读缓存，不再为了校准联网取音频、解码测一遍，
+                // 否则第五阶段会白白等很久（测不出来还会每次都等到超时）。
+                val firstCueAlreadyCalibrated = resumeState != null &&
+                    resumeState.lines.isNotEmpty() &&
+                    resumeState.lines.none { needsSubtitleTranslation(it, srcLang) }
                 val calibratedLines = if (videoId != null && !importedTranslatedFlow) {
-                    calibrateYouTubeFirstCue(requireNotNull(videoId), baseLines)
+                    calibrateYouTubeFirstCue(
+                        requireNotNull(videoId),
+                        baseLines,
+                        allowMeasure = !firstCueAlreadyCalibrated,
+                    )
                 } else {
                     baseLines
                 }
@@ -16752,7 +16879,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
      * 只往前挪；量不出来、超时、出错都保持原样，不影响正常流程。
      * 结果按 视频ID+原起点 缓存，同一个视频只会量一次。
      */
-    private suspend fun calibrateYouTubeFirstCue(videoId: String, lines: List<SubLine>): List<SubLine> {
+    private suspend fun calibrateYouTubeFirstCue(
+        videoId: String,
+        lines: List<SubLine>,
+        // false：只用已缓存的实测结果，不再联网/解码音频重测（重新进入已处理过的视频时用）。
+        allowMeasure: Boolean = true,
+    ): List<SubLine> {
         var firstPos = -1
         for (index in lines.indices) {
             if (lines[index].text.isBlank()) continue
@@ -16773,6 +16905,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val cacheKey = "$videoId@${first.startMs}"
         val onsetMs: Long? = if (prefs.contains(cacheKey)) {
             prefs.getLong(cacheKey, -1L)
+        } else if (!allowMeasure) {
+            return lines
         } else {
             val measured = measureYouTubeFirstOnset(videoId, first.startMs)
             // 只缓存"确实量过了"的结果（含"没量出来"=-1）；超时/出错下次再试。
@@ -16793,6 +16927,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             ),
         )
         if (newStart == null) return lines
+        // 检查点/成功快照里保存的是校准后的起点；用新起点再记一份，重新进入时直接命中缓存，
+        // 不会因为键对不上又去联网重测一遍。
+        prefs.edit().putLong("$videoId@$newStart", onsetMs).apply()
         return lines.toMutableList().also { it[firstPos] = first.copy(startMs = newStart) }
     }
 
