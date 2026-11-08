@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.translatetube.local.ui.theme.*
+import io.translatetube.local.util.AppLogIncidentDocument
 import io.translatetube.local.util.AppLogRecord
 import io.translatetube.local.util.AppLogTitleResolver
 import io.translatetube.local.util.AppLogStore

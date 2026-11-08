@@ -93,7 +93,7 @@ internal data class AppLogEnvironmentSnapshot(
 
 object AppLogStore {
     /** Shared environment metadata for incident details and full exports. */
-    fun environmentSnapshot(): AppLogEnvironmentSnapshot = AppLogEnvironmentSnapshot(
+    internal fun environmentSnapshot(): AppLogEnvironmentSnapshot = AppLogEnvironmentSnapshot(
         appVersion = appVersionLabel(),
         device = (Build.MANUFACTURER + " " + Build.MODEL).trim(),
         androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",

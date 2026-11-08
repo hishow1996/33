@@ -28,7 +28,7 @@ class AppLogIncidentDocumentTest {
                 "传输/响应/网络重试轨迹" to "5→5 失败", "本次请求耗时 ms" to "4200",
             ),
             exceptionSnapshot = AppLogExceptionSnapshot(
-                "java.lang.IllegalStateException", "incomplete response",
+                "java.lang.IllegalStateException", "期望 5 条译文，实际解析 3 条",
                 listOf(AppLogStackFrame("io.translatetube.local.translate.Engines",
                     "translateBatchWithAdaptiveRecoveryInternal", "Engines.kt", 1187)),
             ),

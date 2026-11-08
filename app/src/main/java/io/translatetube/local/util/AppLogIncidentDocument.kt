@@ -132,7 +132,7 @@ internal object AppLogIncidentDocument {
         val firstFrame = record.firstAppStackFrame.ifBlank {
             appFrames.firstOrNull()?.let(AppLogAiReport::formatFrameForAi).orEmpty()
         }
-        val extraFrames = appFrames.map(AppLogAiReport::formatFrameForAi)
+        val extraFrames = appFrames.drop(1).map(AppLogAiReport::formatFrameForAi)
             .filter { it.isNotBlank() && it != firstFrame }
             .distinct().take(2).map { "应用栈帧：" + clip(it, 200) }
 
