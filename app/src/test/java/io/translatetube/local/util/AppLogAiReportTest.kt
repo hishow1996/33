@@ -502,8 +502,8 @@ class AppLogAiReportTest {
             level = "ERROR",
             tag = "PlayerManager",
             message = "视频播放失败",
-            details = "异常根因链：\\n#0 java.lang.IllegalStateException: failed\\n" +
-                "at io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)\\n" +
+            details = "异常根因链：\n#0 java.lang.IllegalStateException: failed\n" +
+                "at io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)\n" +
                 "…[中间内容过长，已截断；保留开头和末尾，供 AI 查看异常根因及最终调用帧]…",
             thread = "main",
             issueKey = issueKey,
