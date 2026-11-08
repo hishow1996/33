@@ -15028,6 +15028,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     private fun hasDubbingCatchUpCues(sessionKey: String): Boolean =
         peekDubbingCatchUpCue(sessionKey) != null
 
+    private val dubbingLagTracker = DubbingLagTracker()
+
     private fun dubbingCatchUpQueueDepth(sessionKey: String): Int = synchronized(dubbingCatchUpLock) {
         if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.size else 0
     }
@@ -15366,10 +15368,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 positionMs = catchUpLine.startMs,
                                 playerSpeed = pm.playbackSpeed(),
                                 completeCueWhenLate = true,
-                                catchUpSyncRate = DubbingRecoveryRatePolicy.rateForBacklog(
-                                    queueDepth = dubbingCatchUpQueueDepth(st.key),
-                                    latenessMs = (pm.position() - catchUpLine.startMs).coerceAtLeast(0L),
-                                ),
+                                catchUpSyncRate = (pm.position() - catchUpLine.startMs).coerceAtLeast(0L).let { lateMs ->
+                                    DubbingRecoveryRatePolicy.rateForBacklog(
+                                        queueDepth = dubbingCatchUpQueueDepth(st.key),
+                                        latenessMs = lateMs,
+                                        catchingUp = dubbingLagTracker.update(lateMs),
+                                    )
+                                },
                                 playbackAllowed = {
                                     val latest = ui.value
                                     ::pm.isInitialized &&

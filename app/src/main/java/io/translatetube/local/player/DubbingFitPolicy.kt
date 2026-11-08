@@ -16,6 +16,9 @@ internal object DubbingFitPolicy {
     /** 追赶阶段允许的额外压缩下限（0.75 ≈ 在已有基础上再快 1.33 倍）。 */
     const val MIN_CATCH_UP_RATIO = 0.8f
 
+    /** Rare, large lag (see [DubbingTiming.LARGE_LAG_MS]) may be compressed a little harder. */
+    const val MIN_CATCH_UP_RATIO_LARGE_LAG = 0.65f
+
     /** 压缩后留出的余量，避免尾音恰好贴着窗口边缘。 */
     private const val FILL = 0.97
 
@@ -62,16 +65,22 @@ internal object DubbingFitPolicy {
         durationUs: Long,
         endLimitUs: Long,
         scheduledStartUs: Long? = null,
+        /** True while a [DubbingLagTracker] says catch-up is under way (hysteresis). */
+        catchingUp: Boolean? = null,
     ): Float {
         if (durationUs <= 0L) return 1f
+        var floor = MIN_CATCH_UP_RATIO
         // Only real lateness justifies speeding speech up. A merely long sentence overruns its
         // own window instead of being rushed; the next cue is shifted back by the queue.
-        if (scheduledStartUs != null &&
-            startUs - scheduledStartUs < DubbingTiming.LAG_TOLERANCE_MS * 1_000L
-        ) return 1f
+        if (scheduledStartUs != null) {
+            val lagUs = startUs - scheduledStartUs
+            val active = catchingUp ?: (lagUs >= DubbingTiming.LAG_TOLERANCE_MS * 1_000L)
+            if (!active || lagUs < DubbingTiming.LAG_RESUME_MS * 1_000L) return 1f
+            if (lagUs > DubbingTiming.LARGE_LAG_MS * 1_000L) floor = MIN_CATCH_UP_RATIO_LARGE_LAG
+        }
         val allowedUs = endLimitUs - startUs
         if (allowedUs >= durationUs) return 1f
-        val ratio = maxOf(allowedUs.toDouble() / durationUs.toDouble(), MIN_CATCH_UP_RATIO.toDouble())
+        val ratio = maxOf(allowedUs.toDouble() / durationUs.toDouble(), floor.toDouble())
         return if (1.0 - ratio < CATCH_UP_MIN_SAVING) 1f else ratio.toFloat()
     }
 }

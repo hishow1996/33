@@ -38,6 +38,16 @@ internal object DubbingTiming {
 
     /** Dubbing may trail the picture by this much before any catch-up speed-up is used. */
     const val LAG_TOLERANCE_MS = 2_000L
+
+    /** Once catching up has started it keeps going until the lag is back under this value. */
+    const val LAG_RESUME_MS = 800L
+
+    /** Lag beyond this is rare and large; catch-up may then use a higher (still bounded) rate. */
+    const val LARGE_LAG_MS = 5_000L
+    const val LARGE_LAG_RECOVERY_SYNC_RATE = 1.7f
+
+    /** While actively catching up the rate never drops below this, so the lag really closes. */
+    const val MIN_ACTIVE_CATCH_UP_RATE = 1.15f
     private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
     private const val MIN_REMAINING_WINDOW_MS = 80L
@@ -282,5 +292,29 @@ internal object DubbingTiming {
         }
         checkActive()
         return result
+    }
+}
+
+/**
+ * Catch-up with hysteresis: starts once dubbing trails the picture by [DubbingTiming.LAG_TOLERANCE_MS]
+ * and keeps going until the lag is under [DubbingTiming.LAG_RESUME_MS], instead of stopping right
+ * at the tolerance edge and leaving a permanent two-second lag.
+ */
+internal class DubbingLagTracker {
+    @Volatile
+    private var active = false
+
+    /** Feed the current lag; returns whether catch-up should be applied now. */
+    fun update(latenessMs: Long): Boolean {
+        active = if (active) {
+            latenessMs >= DubbingTiming.LAG_RESUME_MS
+        } else {
+            latenessMs >= DubbingTiming.LAG_TOLERANCE_MS
+        }
+        return active
+    }
+
+    fun reset() {
+        active = false
     }
 }

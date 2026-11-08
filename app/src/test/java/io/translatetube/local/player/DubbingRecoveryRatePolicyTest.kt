@@ -26,6 +26,28 @@ class DubbingRecoveryRatePolicyTest {
     }
 
     @Test
+    fun rareLargeLagMayUseTheHigherCeilingButNothingBeyondIt() {
+        assertEquals(1.7f, DubbingRecoveryRatePolicy.rateForBacklog(0, 8_000L), 0.001f)
+        assertEquals(1.7f, DubbingRecoveryRatePolicy.rateForBacklog(10, 11_000L), 0.001f)
+        assertEquals(1.5f, DubbingRecoveryRatePolicy.rateForBacklog(10, 5_000L), 0.001f)
+    }
+
+    @Test
+    fun catchUpKeepsGoingBelowTheToleranceUntilTheLagIsClosed() {
+        val tracker = DubbingLagTracker()
+        assertEquals(false, tracker.update(1_500L))
+        assertEquals(true, tracker.update(2_500L))
+        // Already catching up: 1.2s of lag is still repaid, with a real (not ~1.0x) rate.
+        assertEquals(true, tracker.update(1_200L))
+        val rate = DubbingRecoveryRatePolicy.rateForBacklog(0, 1_200L, catchingUp = true)
+        assertEquals(DubbingTiming.MIN_ACTIVE_CATCH_UP_RATE, rate, 0.001f)
+        // Closed: back under the resume threshold, normal speed again and it does not restart at 1.5s.
+        assertEquals(false, tracker.update(700L))
+        assertEquals(1.0f, DubbingRecoveryRatePolicy.rateForBacklog(0, 700L, catchingUp = true), 0.001f)
+        assertEquals(false, tracker.update(1_500L))
+    }
+
+    @Test
     fun lateCuesWithinTheToleranceAreNotSpedUp() {
         assertEquals(1.0f, DubbingRecoveryRatePolicy.rateForBacklog(8, 1_999L), 0.001f)
     }

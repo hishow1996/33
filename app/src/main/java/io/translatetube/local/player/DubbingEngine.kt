@@ -3445,6 +3445,8 @@ class DubbingEngine(
      *   避免延迟越积越多。
      * - 准备晚了的句子从当前播放头之后整句播出，而不是从中间切入丢掉开头。
      */
+    private val lagTracker = DubbingLagTracker()
+
     private fun publishCueToBus(
         index: Int,
         samples: FloatArray,
@@ -3467,7 +3469,9 @@ class DubbingEngine(
         val endLimitUs = (windowEndMs - leadMs + DubbingFitPolicy.CATCH_UP_TOLERANCE_MS)
             .coerceAtLeast(0L) * 1_000L
         val catchUpRatio = DubbingFitPolicy.catchUpRatio(
-            projectedStartUs, durationUs, endLimitUs, scheduledStartUs = desiredUs,
+            projectedStartUs, durationUs, endLimitUs,
+            scheduledStartUs = desiredUs,
+            catchingUp = lagTracker.update((projectedStartUs - desiredUs) / 1_000L),
         )
         if (catchUpRatio < 1f) {
             output = try {
@@ -3703,7 +3707,10 @@ class DubbingEngine(
             // A long cue is not rushed: it overruns its window and the next cue starts later.
             // Only genuine lateness (queued late cues) may speed up, and only up to a bounded rate.
             val syncRateLimit = if (completeCueWhenLate) {
-                DubbingTiming.LAG_RECOVERY_SYNC_RATE
+                catchUpSyncRate.coerceIn(
+                    DubbingTiming.LAG_RECOVERY_SYNC_RATE,
+                    DubbingTiming.LARGE_LAG_RECOVERY_SYNC_RATE,
+                )
             } else {
                 DubbingTiming.COMFORT_SYNC_RATE
             }

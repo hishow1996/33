@@ -77,6 +77,30 @@ class DubbingFitPolicyTest {
     }
 
     @Test
+    fun largeLagMayBeCompressedAHairHarderThanModerateLag() {
+        // 晚了 6s（>5s）：下限放宽到 MIN_CATCH_UP_RATIO_LARGE_LAG
+        assertEquals(
+            DubbingFitPolicy.MIN_CATCH_UP_RATIO_LARGE_LAG,
+            DubbingFitPolicy.catchUpRatio(6_000_000, 4_000_000, 7_000_000, scheduledStartUs = 0L),
+            0.0001f,
+        )
+        // 晚了 3s：仍用普通下限
+        assertEquals(
+            DubbingFitPolicy.MIN_CATCH_UP_RATIO,
+            DubbingFitPolicy.catchUpRatio(3_000_000, 4_000_000, 4_000_000, scheduledStartUs = 0L),
+            0.0001f,
+        )
+    }
+
+    @Test
+    fun catchUpContinuesBelowToleranceOnlyWhileTheTrackerIsActive() {
+        // 晚 1.2s：未在追赶 → 不压；追赶进行中 → 继续压；晚 0.5s → 追上了，不再压
+        assertEquals(1f, DubbingFitPolicy.catchUpRatio(1_200_000, 2_000_000, 2_000_000, scheduledStartUs = 0L, catchingUp = false), 0f)
+        assertTrue(DubbingFitPolicy.catchUpRatio(1_200_000, 2_000_000, 2_000_000, scheduledStartUs = 0L, catchingUp = true) < 1f)
+        assertEquals(1f, DubbingFitPolicy.catchUpRatio(500_000, 2_000_000, 1_000_000, scheduledStartUs = 0L, catchingUp = true), 0f)
+    }
+
+    @Test
     fun tinySavingsAreSkipped() {
         assertEquals(1f, DubbingFitPolicy.catchUpRatio(0, 1_000_000, 980_000), 0f)
     }
