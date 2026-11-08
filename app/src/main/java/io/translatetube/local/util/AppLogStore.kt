@@ -86,6 +86,12 @@ data class AppLogWriterHealth(
 }
 
 object AppLogStore {
+    /** App version and source revision shown in diagnostic reports. */
+    fun appVersionLabel(): String {
+        val version = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知").ifBlank { "未知" }.ifBlank { "未知" }
+        val sha = runCatching { io.translatetube.local.BuildConfig.GIT_SHA }.getOrDefault("unknown").trim().ifBlank { "unknown" }
+        return "$version ($sha)"
+    }
     private const val LOG_DIR = "app_logs"
     private const val LOG_NAME = "runtime.jsonl"
     private const val MAX_FILE_BYTES = 2L * 1024L * 1024L
@@ -557,7 +563,7 @@ object AppLogStore {
             append("大象翻译 AI 故障诊断包\n")
             append("翻译诊断 ID：").append(normalizedId).append('\n')
             append("导出时间：").append(date).append('\n')
-            append("应用版本：").append(runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知")).append('\n')
+            append("应用版本：").append(appVersionLabel()).append('\n')
             append("设备：").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
             append("Android：").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n")
             append("关联事件数：").append(records.size).append('\n')
@@ -607,7 +613,7 @@ object AppLogStore {
         return AppLogAiReport.render(
             records = readRecent(context, MAX_READ_RECORDS),
             exportedAt = exportedAt,
-            appVersion = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"),
+            appVersion = appVersionLabel(),
             device = Build.MANUFACTURER + " " + Build.MODEL,
             androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
             writerHealth = writerHealth(),
@@ -620,7 +626,7 @@ object AppLogStore {
         return AppLogAiReport.renderCompact(
             records = readRecent(context, MAX_READ_RECORDS),
             exportedAt = exportedAt,
-            appVersion = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"),
+            appVersion = appVersionLabel(),
             device = Build.MANUFACTURER + " " + Build.MODEL,
             androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
             writerHealth = writerHealth(),
@@ -686,7 +692,7 @@ object AppLogStore {
             records = bounded,
             target = selected,
             exportedAt = exportedAt,
-            appVersion = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"),
+            appVersion = appVersionLabel(),
             device = Build.MANUFACTURER + " " + Build.MODEL,
             androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
             writerHealth = writerHealth(),
@@ -1033,7 +1039,7 @@ object AppLogStore {
             val runtime = Runtime.getRuntime()
             append("运行环境：\n")
             append("- 应用版本：")
-                .append(runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"))
+                .append(appVersionLabel())
                 .append(" (versionCode ")
                 .append(runCatching { io.translatetube.local.BuildConfig.VERSION_CODE }.getOrDefault(-1))
                 .append(")\n")
