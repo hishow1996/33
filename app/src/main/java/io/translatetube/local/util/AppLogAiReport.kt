@@ -295,131 +295,47 @@ internal object AppLogAiReport {
 
     /** Compact all-log summary for clipboard sharing; full file export keeps render(). */
     fun renderCompact(
-        records: List<AppLogRecord>,
-        exportedAt: String,
-        appVersion: String,
-        device: String,
-        androidVersion: String,
-        writerHealth: AppLogWriterHealth,
+        records: List<AppLogRecord>, exportedAt: String, appVersion: String,
+        device: String, androidVersion: String, writerHealth: AppLogWriterHealth,
     ): String {
-        val ordered = records.sortedWith(
-            compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence },
-        )
-        val fatal = ordered.count { it.level == "FATAL" }
-        val errors = ordered.count { it.level == "ERROR" }
-        val warnings = ordered.count { it.level == "WARN" }
-        val issues = ordered.filter { it.level in setOf("FATAL", "ERROR", "WARN") }
-        val sessions = ordered.map { it.sessionId }.filter { it.isNotBlank() }.distinct()
-        val unresolved = issues.filter { it.issueKey.isNotBlank() && it.recoveredAtMs == null }
-            .map { it.issueKey }.distinct().size
-        val recovered = issues.filter { it.issueKey.isNotBlank() && it.recoveredAtMs != null }
-            .map { it.issueKey }.distinct().size
-        val operationSummaries = AppLogEventRelationPolicy.operationFailureSummaries(ordered).take(8)
-        val stageSummaries = AppLogStageSummaryPolicy.summarize(ordered).take(8)
-        val operationRoles = AppLogEventRelationPolicy.operationRoles(ordered)
-        val core = buildString {
-            append("# 大象翻译 AI 修复诊断摘要\n")
-            append("report_schema: elephant-app-log/chat-v1\n")
-            append("导出：").append(exportedAt)
-                .append("；版本：").append(clipped(AppLogStore.redactForExport(appVersion), 48))
-                .append("；设备：").append(clipped(AppLogStore.redactForExport(device), 64))
-                .append("；Android：").append(clipped(AppLogStore.redactForExport(androidVersion), 32)).append('\n')
-            append("读取日志：").append(ordered.size)
-                .append("；FATAL/ERROR/WARN：").append(fatal).append("/")
-                .append(errors).append("/").append(warnings)
-                .append("；INFO/其他：").append(ordered.size - fatal - errors - warnings).append('\n')
-            append("进程会话：").append(sessions.size)
-                .append("；未恢复故障编号：").append(unresolved)
-                .append("；已有恢复记录：").append(recovered).append('\n')
-            append("时间：")
-                .append(ordered.firstOrNull()?.let { AppLogStore.formatTime(it.timestampMs) } ?: "无记录")
-                .append(" 至 ")
-                .append(ordered.lastOrNull()?.let { AppLogStore.formatTime(it.timestampMs) } ?: "无记录")
-                .append('\n')
-            append("日志写入：").append(if (writerHealth.isHealthy) "正常" else "异常")
-                .append("；累计写入失败：").append(writerHealth.failedWriteCount)
-            if (!writerHealth.isHealthy && writerHealth.lastFailureDescription.isNotBlank()) {
-                append("；最近失败：").append(clipped(AppLogStore.redactForExport(writerHealth.lastFailureDescription), 140))
+        val ordered=records.sortedWith(compareBy<AppLogRecord>{it.timestampMs}.thenBy{it.sequence})
+        val issues=ordered.filter{it.level in setOf("FATAL","ERROR","WARN")}
+            .sortedWith(compareBy<AppLogRecord>{when(it.level){"FATAL"->0;"ERROR"->1;else->2}}
+                .thenByDescending{it.timestampMs}.thenByDescending{it.sequence})
+        val ordinary=ordered.filterNot{it.level in setOf("FATAL","ERROR","WARN")}.sortedByDescending{it.timestampMs}
+        val selected=(issues+ordinary).distinctBy{AppLogEventRelationPolicy.eventKey(it)}.take(5)
+            .sortedWith(compareBy<AppLogRecord>{it.timestampMs}.thenBy{it.sequence})
+        val result=buildString{
+            append("# 大象翻译 AI 日志摘要\nreport_schema: elephant-app-log/chat-v1\n")
+            append("应用 ").append(clipForAi(AppLogStore.redactForExport(appVersion),72))
+                .append(" | ").append(clipForAi(AppLogStore.redactForExport(device),64))
+                .append(" | Android ").append(clipForAi(androidVersion,32)).append(" | ").append(exportedAt).append('\n')
+            append("日志 ").append(ordered.size).append(" 条；FATAL/ERROR/WARN ")
+                .append(issues.count{it.level=="FATAL"}).append("/")
+                .append(issues.count{it.level=="ERROR"}).append("/")
+                .append(issues.count{it.level=="WARN"}).append('\n')
+            if(!writerHealth.isHealthy) append("日志写入异常：")
+                .append(clipForAi(AppLogStore.redactForExport(writerHealth.lastFailureDescription),120)).append('\n')
+            append("关键事件（最多 5 条）：\n")
+            if(selected.isEmpty()) append("无日志记录\n")
+            selected.forEach{event->
+                val issue=event.level in setOf("FATAL","ERROR","WARN")
+                append(AppLogStore.formatTime(event.timestampMs)).append(" [").append(event.level).append("] ")
+                    .append(clipForAi(AppLogStore.redactForExport(event.tag),36)).append(": ")
+                    .append(clipForAi(AppLogStore.redactForExport(event.message),80))
+                if(issue&&event.errorClass.isNotBlank()) append(" | ").append(simpleErrorType(event.errorClass))
+                val root=rootCauseForAi(event)
+                if(issue&&root.isNotBlank()) append(" | 根因=").append(clipForAi(AppLogStore.redactForExport(root),120))
+                append('\n')
             }
-            append('\n')
-
-            if (operationSummaries.isNotEmpty()) {
-                append("\n## 1. 任务故障摘要\n")
-                operationSummaries.forEach { summary ->
-                    append("session=").append(clipped(summary.sessionId, 48))
-                        .append("；operation=").append(clipped(summary.operationId, 48))
-                        .append("；首个异常候选=").append(clipped(summary.firstAnomalyEventId, 48))
-                        .append("；异常=").append(summary.anomalyCount)
-                        .append("；后续=").append(summary.laterAnomalyCount)
-                        .append("；恢复=").append(summary.recoveryCount).append('\n')
-                }
-                append("首个异常只是当前留存日志中的候选，不等于已证实根因。\n")
-            }
-            if (stageSummaries.isNotEmpty()) {
-                append("\n## 2. 五阶段摘要\n")
-                stageSummaries.forEach { stage ->
-                    append(stage.stage).append("；事件=").append(stage.eventCount)
-                        .append("；WARN/ERROR/FATAL=").append(stage.warningCount).append("/")
-                        .append(stage.errorCount).append("/").append(stage.fatalCount)
-                    if (stage.latestProgress.isNotBlank()) {
-                        append("；最近步骤=").append(clipped(AppLogStore.redactForExport(stage.latestProgress), 100))
-                    }
-                    append('\n')
-                }
-            }
-            append("\n## 3. AI 分析要求\n")
-            append("优先分析异常级事件和最深层 cause；结合 sessionId/operationId、阶段、状态码、根因消息及首个应用栈帧定位真实代码。时间先后不等于因果；区分事实、推测和缺失证据。给出最小修复及 YouTube/网页/本地回归验证。不得吞异常、伪造成功或用原声兜底掩盖失败。\n")
-            append("本摘要为复制专用精简版；完整留存事件、详细上下文和异常树请使用“导出 AI 诊断报告”。\n")
+            if(ordered.size>selected.size) append("另有 ").append(ordered.size-selected.size).append(" 条事件未复制，完整日志请导出文件。\n")
+            append("要求：对照提交号和源码定位真实原因，给出最小修复；不得吞异常或伪造成功。\n")
         }
-
-        val priority = issues.sortedWith(
-            compareBy<AppLogRecord> {
-                when (it.level) {
-                    "FATAL" -> 0
-                    "ERROR" -> 1
-                    else -> 2
-                }
-            }.thenByDescending { it.timestampMs }.thenByDescending { it.sequence },
-        )
-        val ordinary = ordered.filterNot { it.level in setOf("FATAL", "ERROR", "WARN") }
-            .takeLast(12).asReversed()
-        val timelineHeader = "\n## 4. 关键事件（按时间升序）\n"
-        val timelineBudget = (MAX_CHAT_REPORT_CHARS - core.length - timelineHeader.length - 220)
-            .coerceAtLeast(0)
-        val selected = mutableListOf<Pair<AppLogRecord, String>>()
-        var used = 0
-        (priority + ordinary).forEach { event ->
-            val role = operationRoles[AppLogEventRelationPolicy.eventKey(event)]?.role ?: "NO_OPERATION_LINK"
-            val line = compactGlobalEventJson(event, role).toString()
-            val size = line.length + 1
-            if (used + size <= timelineBudget) {
-                selected += event to line
-                used += size
-            }
-        }
-        val selectedKeys = selected.map { AppLogEventRelationPolicy.eventKey(it.first) }.toSet()
-        val omitted = ordered.size - selected.size
-        val omittedIssues = issues.count { AppLogEventRelationPolicy.eventKey(it) !in selectedKeys }
-        val result = buildString {
-            append(core)
-            append(timelineHeader)
-            append("总 ").append(ordered.size).append(" 条；复制保留 ").append(selected.size)
-                .append(" 条；省略 ").append(omitted).append(" 条")
-            if (omittedIssues > 0) append("（其中异常级事件 ").append(omittedIssues).append(" 条）")
-            append('\n')
-            selected.sortedWith(
-                compareBy<Pair<AppLogRecord, String>> { it.first.timestampMs }.thenBy { it.first.sequence },
-            ).forEach { (_, line) -> append(line).append('\n') }
-            if (omitted > 0) {
-                append("省略说明：按 FATAL、ERROR、WARN 优先，其次保留最近过程事件；没有复制的事件仍保存在本地完整日志中。\n")
-            }
-        }
-        if (result.length <= MAX_CHAT_REPORT_CHARS) return result
-        val suffix = "\n[已达到复制长度上限；请使用完整诊断报告文件查看剩余日志]"
-        return result.take(MAX_CHAT_REPORT_CHARS - suffix.length) + suffix
+        if(result.length<=MAX_CHAT_REPORT_CHARS)return result
+        val suffix="\n[已压缩；完整日志请在日志页导出文件]"
+        return clipForAi(result,MAX_CHAT_REPORT_CHARS-suffix.length)+suffix
     }
-
-    private const val MAX_CHAT_REPORT_CHARS = 12_000
+    private const val MAX_CHAT_REPORT_CHARS=6_000
 
     private fun compactGlobalEventJson(event: AppLogRecord, relation: String): JSONObject {
         val isIssue = event.level in setOf("FATAL", "ERROR", "WARN")
@@ -457,153 +373,85 @@ internal object AppLogAiReport {
 
     /** A focused, length-bounded package for repairing the selected event. */
     fun renderIncident(
-        records: List<AppLogRecord>,
-        target: AppLogRecord,
-        exportedAt: String,
-        appVersion: String,
-        device: String,
-        androidVersion: String,
-        writerHealth: AppLogWriterHealth,
-    ): String {
-        val ordered = (records + target)
-            .distinctBy { AppLogEventRelationPolicy.eventKey(it) }
-            .sortedWith(compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence })
-        val primary = ordered.firstOrNull {
-            AppLogEventRelationPolicy.eventKey(it) == AppLogEventRelationPolicy.eventKey(target)
-        } ?: target
-        val diagnosis = AppLogDiagnostics.analyze(primary)
-        val translationDiagnosticId = TranslationDiagnosticPackPolicy.idFromRecord(primary)
-        val translationDiagnosticEventCount = translationDiagnosticId?.let { diagnosticId ->
-            ordered.count { TranslationDiagnosticPackPolicy.idFromRecord(it) == diagnosticId }
-        } ?: 0
-        val relations = AppLogEventRelationPolicy.againstSelected(ordered, primary)
-        val primaryJson = incidentPrimaryEventJson(primary, relations[AppLogEventRelationPolicy.eventKey(primary)])
-        val core = buildString {
-            append("# 大象翻译 AI 单条故障修复包\n")
-            append("report_schema: elephant-app-log/incident-v8\n")
-            append("导出时间：").append(exportedAt).append('\n')
-            append("应用：").append(clipped(AppLogStore.redactForExport(appVersion), 48)).append('\n')
-            append("设备：").append(clipped(AppLogStore.redactForExport(device), 64))
-                .append("；Android ").append(clipped(AppLogStore.redactForExport(androidVersion), 32)).append('\n')
-            append("主故障：").append(primary.level).append(" / ")
-                .append(clipped(AppLogStore.redactForExport(primary.tag), 48)).append('\n')
-            append("会话：").append(primary.sessionId.ifBlank { "旧版日志/未知" })
-            if (primary.operationId.isNotBlank()) {
-                append("；操作：").append(clipped(AppLogStore.redactForExport(primary.operationId), 64))
-            }
-            append('\n')
-            append("关联事件：").append(ordered.size)
-            if (translationDiagnosticId != null) {
-                append("；翻译诊断 ID：").append(translationDiagnosticId)
-                append("；同 ID 事件：").append(translationDiagnosticEventCount)
-            }
-            append('\n')
-            append("日志写入：").append(if (writerHealth.isHealthy) "正常" else "异常")
-                .append("；累计失败 ").append(writerHealth.failedWriteCount)
-            if (!writerHealth.isHealthy && writerHealth.lastFailureDescription.isNotBlank()) {
-                append("；最近失败：").append(clipped(AppLogStore.redactForExport(writerHealth.lastFailureDescription), 180))
-            }
-            append('\n')
-
-            append("\n## 1. 故障判断\n")
-            append("分类：").append(clipped(diagnosis.category, 100))
-                .append("；置信度：").append(clipped(diagnosis.confidence, 40)).append('\n')
-            append("判断：").append(clipped(diagnosis.finding, 420)).append('\n')
-            append("证据：").append(clipped(diagnosis.evidence, 420)).append('\n')
-            val coverage = AppLogDiagnosticCoveragePolicy.analyze(primary)
-            append("诊断证据覆盖率：").append(coverage.completenessPercent).append("%（")
-                .append(coverage.collectedEvidenceCount).append("/")
-                .append(coverage.requiredEvidenceCount).append("）；缺失：")
-                .append(coverage.missingEvidence.take(4).joinToString("、").ifBlank { "无" })
-            if (coverage.missingEvidence.size > 4) {
-                append(" 等 ").append(coverage.missingEvidence.size).append(" 项")
-            }
-            append('\n')
-            diagnosis.nextSteps.take(3).forEachIndexed { index, step ->
-                append("排查").append(index + 1).append("：").append(clipped(step, 150)).append('\n')
-            }
-
-            append("\n## 2. 主故障原始证据（仅输出一次）\n")
-            append(primaryJson.toString()).append('\n')
-
-            append("\n## 3. 关联关系\n")
-            append("时间先后不等于因果；按操作 ID/翻译诊断 ID/故障编号确认关联。缺失字段表示未采集，不得猜测。\n")
-
-            append("\n## 4. AI 修复要求\n")
-            if (translationDiagnosticId != null) {
-                append("翻译专项要求：按同一诊断 ID 还原请求、批次和字幕行；分别检查网络/HTTP、响应解析、字幕对齐、译文有效性；不要把原文回显、符号、音乐标签、人名或专有名词直接判为同一种错误。\n")
-            }
-            append("定位真实责任文件/类/方法/行号；先检查最深层 cause 和 suppressed，再核对调用位置、状态码及最后成功步骤。区分已证实事实与推测；给出最小修复和 YouTube/网页/本地回归验证。不得吞异常、伪造成功或用原声兜底掩盖失败。\n")
-            append("隐私：已执行常见凭据脱敏；发送前检查字幕片段、文件名和业务内容。\n")
+        records:List<AppLogRecord>,target:AppLogRecord,exportedAt:String,
+        appVersion:String,device:String,androidVersion:String,writerHealth:AppLogWriterHealth,
+    ):String{
+        val ordered=(records+target).distinctBy{AppLogEventRelationPolicy.eventKey(it)}
+            .sortedWith(compareBy<AppLogRecord>{it.timestampMs}.thenBy{it.sequence})
+        val primary=ordered.firstOrNull{AppLogEventRelationPolicy.eventKey(it)==AppLogEventRelationPolicy.eventKey(target)}?:target
+        val diagnosis=AppLogDiagnostics.analyze(primary)
+        val diagnosticId=TranslationDiagnosticPackPolicy.idFromRecord(primary)
+        val diagnosticCount=diagnosticId?.let{id->ordered.count{TranslationDiagnosticPackPolicy.idFromRecord(it)==id}}?:0
+        val primaryKey=AppLogEventRelationPolicy.eventKey(primary)
+        val timeline=ordered.filter{AppLogEventRelationPolicy.eventKey(it)!=primaryKey}.sortedBy{kotlin.math.abs(it.timestampMs-primary.timestampMs)}
+        val root=rootCauseForAi(primary)
+        val errorClass=primary.errorClass.ifBlank{deepestCause(primary.exceptionSnapshot)?.type.orEmpty()}
+        val appFrame=primary.firstAppStackFrame.takeIf{it.isNotBlank()}
+            ?:exceptionFrames(primary.exceptionSnapshot).firstOrNull{it.className.startsWith("io.translatetube.")}?.let(::formatFrameForAi).orEmpty()
+        val context=incidentContextLines(primary)
+        val suppressed=suppressedTypes(primary.exceptionSnapshot)
+        val chainTypes=listOfNotNull(primary.exceptionSnapshot?.type?.takeIf{it.isNotBlank()},deepestCause(primary.exceptionSnapshot)?.type?.takeIf{it.isNotBlank()})
+            .distinct().map(::simpleErrorType)
+        val frames=exceptionFrames(primary.exceptionSnapshot).filterNot(::isFrameworkNoiseFrame)
+            .sortedByDescending{it.className.startsWith("io.translatetube.")}
+            .map(::formatFrameForAi).filter{it.isNotBlank()&&it!=appFrame}.distinct()
+        fun build(count:Int,keepContext:Boolean,frameCount:Int)=buildString{
+            append("# 大象翻译故障包 v9\nreport_schema: elephant-app-log/incident-v9\n")
+            append("应用 ").append(clipForAi(AppLogStore.redactForExport(appVersion),72))
+                .append(" | ").append(clipForAi(AppLogStore.redactForExport(device),64))
+                .append(" | Android ").append(clipForAi(androidVersion,32)).append(" | ").append(exportedAt).append('\n')
+            append("故障：").append(primary.level).append(' ').append(simpleErrorType(errorClass).ifBlank{clipForAi(primary.tag,48)})
+            if(primary.thread.equals("main",true))append("（主线程）")
+            append('\n诊断：').append(clipForAi(diagnosis.category,100)).append("；").append(clipForAi(diagnosis.confidence,32)).append('\n')
+            if(diagnosis.finding.isNotBlank())append("结论：").append(clipForAi(AppLogStore.redactForExport(diagnosis.finding),360)).append('\n')
+            if(diagnosis.evidence.isNotBlank())append("诊断证据：").append(clipForAi(AppLogStore.redactForExport(diagnosis.evidence),280)).append('\n')
+            if(root.isNotBlank())append("根因：").append(clipForAi(AppLogStore.redactForExport(root),560)).append('\n')
+            else if(primary.message.isNotBlank())append("故障摘要：").append(clipForAi(AppLogStore.redactForExport(primary.message),120)).append('\n')
+            if(chainTypes.isNotEmpty())append("异常链：").append(chainTypes.joinToString(" -> ")).append('\n')
+            if(appFrame.isNotBlank())append("首个应用栈帧：").append(clipForAi(AppLogStore.redactForExport(appFrame),260)).append('\n')
+            if(frameCount>0&&frames.isNotEmpty())append("调用栈：").append(frames.take(frameCount).joinToString(" <- "){clipForAi(AppLogStore.redactForExport(it),112)}).append('\n')
+            if(suppressed.isNotEmpty())append("suppressed：").append(suppressed.joinToString(", "){simpleErrorType(it)}).append('\n')
+            if(keepContext&&context.isNotEmpty())append("上下文：").append(context.joinToString("；")).append('\n')
+            append("关联范围：同一进程会话/operationId；时间先后不代表因果。\n")
+            if(count>0&&timeline.isNotEmpty()){
+                append("关联事件（").append(minOf(count,timeline.size)).append("/").append(timeline.size).append("）：\n")
+                timeline.take(count).sortedWith(compareBy<AppLogRecord>{it.timestampMs}.thenBy{it.sequence}).forEach{event->
+                    val issue=event.level in setOf("ERROR","FATAL","WARN")
+                    append(AppLogStore.formatTime(event.timestampMs)).append(" ").append(event.level).append(" ")
+                        .append(clipForAi(AppLogStore.redactForExport(event.tag),32)).append(" ")
+                        .append(clipForAi(AppLogStore.redactForExport(event.message),80))
+                    if(issue&&event.errorClass.isNotBlank())append(" | ").append(simpleErrorType(event.errorClass))
+                    append('\n')
+                }
+            }else if(timeline.isNotEmpty())append("关联事件：").append(timeline.size).append(" 条已省略。\n")
+            if(diagnosis.nextSteps.isNotEmpty())append("下一步：")
+                .append(diagnosis.nextSteps.take(3).mapIndexed{i,step->(i+1).toString()+") "+clipForAi(AppLogStore.redactForExport(step),170)}.joinToString("；")).append('\n')
+            if(diagnosticId!=null)append("翻译专项要求：同诊断 ID ").append(diagnosticId).append("（").append(diagnosticCount).append(" 条事件）核对请求、批次和字幕行。\n")
+            append("要求：对照该提交的代码定位真实根因，给出最小修复，不吞异常。\n")
         }
-
-        val primaryKey = AppLogEventRelationPolicy.eventKey(primary)
-        val timelineCandidates = ordered.filter {
-            AppLogEventRelationPolicy.eventKey(it) != primaryKey
+        var count=minOf(5,timeline.size);var keepContext=true;var frameCount=minOf(6,frames.size)
+        var output=build(count,keepContext,frameCount);var compressed=false
+        while(output.length>MAX_INCIDENT_REPORT_CHARS&&count>0){count--;compressed=true;output=build(count,keepContext,frameCount)}
+        if(output.length>MAX_INCIDENT_REPORT_CHARS&&keepContext){keepContext=false;compressed=true;output=build(count,keepContext,frameCount)}
+        while(output.length>MAX_INCIDENT_REPORT_CHARS&&frameCount>0){frameCount--;compressed=true;output=build(count,keepContext,frameCount)}
+        if(output.length>MAX_INCIDENT_REPORT_CHARS){
+            output=buildString{
+                append("# 大象翻译故障包 v9\nreport_schema: elephant-app-log/incident-v9\n")
+                append("应用 ").append(clipForAi(appVersion,64)).append(" | ").append(clipForAi(device,48)).append(" | ").append(clipForAi(androidVersion,24)).append('\n')
+                append("故障：").append(primary.level).append(' ').append(simpleErrorType(errorClass)).append('\n')
+                append("诊断：").append(clipForAi(diagnosis.category,96)).append('\n')
+                append("结论：").append(clipForAi(diagnosis.finding,300)).append('\n')
+                append("根因：").append(clipForAi(root,420)).append('\n')
+                if(appFrame.isNotBlank())append("首个应用栈帧：").append(clipForAi(appFrame,220)).append('\n')
+                if(diagnosis.evidence.isNotBlank())append("诊断证据：").append(clipForAi(diagnosis.evidence,220)).append('\n')
+                append("要求：对照该提交的代码定位真实根因，给出最小修复，不吞异常。\n")
+            };compressed=true
         }
-        val priority = timelineCandidates.filter { it.level in setOf("FATAL", "ERROR", "WARN") }
-            .sortedWith(
-                compareBy<AppLogRecord> {
-                    when (it.level) {
-                        "FATAL" -> 0
-                        "ERROR" -> 1
-                        else -> 2
-                    }
-                }.thenBy { kotlin.math.abs(it.timestampMs - primary.timestampMs) },
-            )
-        val context = timelineCandidates.filterNot { it.level in setOf("FATAL", "ERROR", "WARN") }
-            .sortedBy { kotlin.math.abs(it.timestampMs - primary.timestampMs) }
-        val timelineHeader = "\n## 5. 关联事件时间线（主故障不重复）\n"
-        val reserveForFooter = 260
-        val timelineBudget = (MAX_INCIDENT_REPORT_CHARS - core.length - timelineHeader.length - reserveForFooter)
-            .coerceAtLeast(0)
-        val included = mutableListOf<Pair<AppLogRecord, String>>()
-        var usedChars = 0
-        (priority + context).forEach { event ->
-            val line = incidentTimelineEventJson(
-                event = event,
-                primary = primary,
-                relation = relations[AppLogEventRelationPolicy.eventKey(event)],
-            ).toString()
-            val lineCost = line.length + 1
-            if (usedChars + lineCost <= timelineBudget) {
-                included += event to line
-                usedChars += lineCost
-            }
-        }
-        val includedKeys = included.map { AppLogEventRelationPolicy.eventKey(it.first) }.toSet()
-        val omitted = timelineCandidates.size - included.size
-        val omittedPriority = timelineCandidates.count {
-            it.level in setOf("FATAL", "ERROR", "WARN") &&
-                AppLogEventRelationPolicy.eventKey(it) !in includedKeys
-        }
-        val result = buildString {
-            append(core)
-            append(timelineHeader)
-            append("时间线：总 ").append(timelineCandidates.size + 1)
-                .append(" 条（主故障 1 条已在上方完整列出）；本段保留 ")
-                .append(included.size).append(" 条")
-            if (omitted > 0) {
-                append("；省略 ").append(omitted).append(" 条")
-                if (omittedPriority > 0) append("，其中异常级事件 ").append(omittedPriority).append(" 条")
-            }
-            append('\n')
-            included.sortedWith(
-                compareBy<Pair<AppLogRecord, String>> { it.first.timestampMs }
-                    .thenBy { it.first.sequence },
-            ).forEach { (_, line) ->
-                append(line).append('\n')
-            }
-            if (omitted > 0) {
-                append("省略范围：受复制长度上限影响，优先保留 FATAL/ERROR/WARN，再保留距主故障较近的过程事件；完整记录仍保存在本地日志及“导出 AI 诊断报告”中。\n")
-            }
-        }
-        if (result.length <= MAX_INCIDENT_REPORT_CHARS) return result
-        val suffix = "\n[复制包达到长度上限；剩余内容请从本地完整诊断报告查看]"
-        return result.take(MAX_INCIDENT_REPORT_CHARS - suffix.length) + suffix
+        if(!compressed)return output
+        val suffix="\n[已压缩；完整日志请在日志页导出文件]"
+        return if(output.length+suffix.length<=MAX_INCIDENT_REPORT_CHARS)output+suffix else output.take(MAX_INCIDENT_REPORT_CHARS-suffix.length)+suffix
     }
-
-    private const val MAX_INCIDENT_REPORT_CHARS = 12_000
+    private const val MAX_INCIDENT_REPORT_CHARS=4_000
 
     private fun incidentPrimaryEventJson(
         event: AppLogRecord,
@@ -761,14 +609,77 @@ internal object AppLogAiReport {
         return result
     }
 
-    private fun clipped(value: String, maxChars: Int): String {
-        val normalized = value.trim()
-        if (normalized.length <= maxChars) return normalized
-        if (maxChars <= 1) return "…"
-        return normalized.take(maxChars - 1) + "…"
+    fun clipForAi(value:String,maxChars:Int):String{
+        if(maxChars<=0)return ""
+        var text=value.trim()
+        if(text.isEmpty())return ""
+        text=Regex("""\(([^()\r\n]{100,})\)""").replace(text){m->
+            val args=m.groupValues[1]
+            val d=Regex("""L[^;()]+;""").findAll(args).count()
+            val c=if(args.contains(','))args.count{it==','}+1 else 0
+            val n=maxOf(d,c)
+            if(n>=5)"($n params)" else m.value
+        }
+        text=Regex("""L(?:[A-Za-z0-9_$]+/)+([A-Za-z0-9_$]+);""").replace(text){it.groupValues[1]}
+        text=Regex("""(?<![\w$])(?:[A-Za-z_$][\w$]*\.)+[A-Z_$][\w$]*(?![\w$])""").replace(text){it.value.substringAfterLast('.')}
+        if(text.length<=maxChars)return text
+        if(maxChars==1)return "…"
+        val marker=Regex("""(?i)failed to verify:""").find(text)
+        if(marker!=null){
+            val important=marker.value+text.substring(marker.range.last+1).take((maxChars-marker.value.length-2).coerceAtLeast(0).coerceAtMost(300))
+            val head=(maxChars-important.length-3).coerceAtLeast(0)
+            return if(head>0)text.take(head)+"..."+important else "…"+important.take(maxChars-1)
+        }
+        val head=((maxChars-3)/2).coerceAtLeast(1)
+        val tail=(maxChars-head-3).coerceAtLeast(0)
+        return text.take(head)+"..."+text.takeLast(tail)
+    }
+    private fun simpleErrorType(value:String)=value.trim().substringBefore(':').substringAfterLast('.').substringAfterLast('/').removePrefix("L").removeSuffix(";")
+    private fun deepestCause(snapshot:AppLogExceptionSnapshot?):AppLogExceptionSnapshot?{
+        var node=snapshot?:return null
+        while(node.cause!=null)node=node.cause
+        return node
+    }
+    private fun rootCauseForAi(event:AppLogRecord):String{
+        event.rootCauseMessage.trim().takeIf{it.isNotBlank()}?.let{return it}
+        deepestCause(event.exceptionSnapshot)?.message?.trim()?.takeIf{it.isNotBlank()}?.let{return it}
+        val details=event.details.replace("\\n","\n")
+        val line=Regex("""(?m)^#\d+\s+(.+)$""").findAll(details).lastOrNull()?.groupValues?.getOrNull(1)?.trim()
+        if(!line.isNullOrBlank())return line.substringAfter(": ",line)
+        return Regex("""(?i)Verifier rejected.*""").find(details)?.value.orEmpty()
+    }
+    private fun exceptionFrames(snapshot:AppLogExceptionSnapshot?):List<AppLogStackFrame>{
+        val result=mutableListOf<AppLogStackFrame>();var node=snapshot;var depth=0
+        while(node!=null&&depth<12){result+=node.stackFrames;node=node.cause;depth++}
+        return result
+    }
+    private fun isFrameworkNoiseFrame(frame:AppLogStackFrame)=
+        frame.className.startsWith("androidx.compose.runtime.")||
+        frame.className.startsWith("kotlinx.coroutines.internal.")||
+        frame.className.startsWith("java.lang.reflect.")||
+        frame.className.startsWith("jdk.internal.reflect.")
+    private fun formatFrameForAi(frame:AppLogStackFrame):String{
+        val klass=frame.className.substringAfterLast('.').substringAfterLast('/')
+        val location=frame.fileName?.takeIf{it.isNotBlank()}?.let{if(frame.lineNumber>0)it+":"+frame.lineNumber else it}.orEmpty()
+        return if(location.isBlank())klass+"."+frame.methodName else klass+"."+frame.methodName+"("+location+")"
+    }
+    private fun suppressedTypes(snapshot:AppLogExceptionSnapshot?):List<String>{
+        val found=linkedSetOf<String>()
+        fun visit(node:AppLogExceptionSnapshot?,depth:Int){
+            if(node==null||depth>=12)return
+            node.suppressed.forEach{if(it.type.isNotBlank())found+=it.type;visit(it,depth+1)}
+            visit(node.cause,depth+1)
+        }
+        visit(snapshot,0);return found.toList()
+    }
+    private fun incidentContextLines(event:AppLogRecord):List<String>{
+        val keys=listOf("视频来源","当前处理阶段","当前处理步骤","处理流程","翻译引擎","转写引擎","配音引擎","HTTP 状态码","当前批次","批次索引","字幕行索引")
+        val values=keys.mapNotNull{key->event.diagnosticContext[key].orEmpty().trim().takeIf{it.isNotBlank()}?.let{key to it}}.toMutableList()
+        if(values.none{it.first=="HTTP 状态码"}&&event.httpStatusCode in 100..599)values+="HTTP 状态码" to event.httpStatusCode.toString()
+        return values.distinctBy{it.first}.take(8).map{(key,value)->key+"="+clipForAi(AppLogStore.redactForExport(value),80)}
     }
 
-    private fun diagnosticContextBudgetJson(record: AppLogRecord): Any {
+    private fun clipped(    private fun diagnosticContextBudgetJson(record: AppLogRecord): Any {
         val context = record.diagnosticContext
         val total = context["日志诊断字段总数"]?.toIntOrNull() ?: return JSONObject.NULL
         return JSONObject()
