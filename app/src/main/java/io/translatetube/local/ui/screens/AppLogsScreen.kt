@@ -101,13 +101,20 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         val query = incidentExportQuery.trim()
         records.asSequence()
             .filter { it.level == "ERROR" || it.level == "FATAL" }
-            .sortedWith(compareByDescending<AppLogRecord> { it.timestampMs }.thenByDescending { it.sequence })
+            .sortedWith(
+                compareBy<AppLogRecord> { if (it.level == "FATAL") 0 else 1 }
+                    .thenByDescending { it.timestampMs }
+                    .thenByDescending { it.sequence },
+            )
             .filter { record ->
                 query.isBlank() ||
                     record.tag.contains(query, ignoreCase = true) ||
                     AppLogTitleResolver.title(record.tag, record.message).contains(query, ignoreCase = true) ||
                     record.message.contains(query, ignoreCase = true) ||
                     record.errorClass.contains(query, ignoreCase = true) ||
+                    record.rootCauseMessage.contains(query, ignoreCase = true) ||
+                    record.firstAppStackFrame.contains(query, ignoreCase = true) ||
+                    record.details.contains(query, ignoreCase = true) ||
                     record.issueKey.contains(query, ignoreCase = true) ||
                     record.eventId.contains(query, ignoreCase = true)
             }
@@ -124,21 +131,29 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
+                        val report = AppLogStore.exportIncidentFullText(ctx.applicationContext, target)
                         val output = ctx.contentResolver.openOutputStream(uri, "wt")
                             ?: error("无法打开所选文件")
                         output.bufferedWriter(Charsets.UTF_8).use { writer ->
-                            writer.write(AppLogStore.exportIncidentFullText(ctx.applicationContext, target))
+                            writer.write(report)
+                            writer.flush()
                         }
                     }
                 }
-                message = if (result.isSuccess) {
-                    "单条 AI 诊断报告已导出"
+                if (result.isSuccess) {
+                    selectedIncidentForExport = null
+                    message = "单条 AI 诊断报告已保存"
                 } else {
-                    "导出失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                    selectedIncidentForExport = target
+                    incidentExportQuery = ""
+                    showIncidentExportPicker = true
+                    message = "报告保存失败，已保留所选错误，可重新导出：${result.exceptionOrNull()?.message ?: "未知错误"}"
                 }
                 exporting = false
             }
         }
+        // A null URI means the user canceled the system picker. Keep the selected event so
+        // reopening the export menu restores the same selection; cancellation is not a failure.
     }
 
     LaunchedEffect(refreshKey) {
@@ -247,7 +262,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         onClick = {
                             showActionsMenu = false
                             incidentExportQuery = ""
-                            selectedIncidentForExport = null
                             if (records.none { it.level == "ERROR" || it.level == "FATAL" }) {
                                 message = "暂无可导出的错误记录"
                             } else {
@@ -651,10 +665,14 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     ) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
-                                if (selectedIncidentForExport == null) "尚未选择错误" else "已选择 1 条错误",
+                                selectedIncidentForExport?.let { selected ->
+                                    "已选择：${selected.tag} · ${selected.level}"
+                                } ?: "尚未选择错误",
                                 color = Color(0xFF202124),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                             Text(
                                 "报告将保留该错误的完整堆栈和关联上下文",
@@ -669,7 +687,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                                 val target = selectedIncidentForExport ?: return@Button
                                 pendingIncidentExport = target
                                 showIncidentExportPicker = false
-                                selectedIncidentForExport = null
                                 exportLauncher.launch(incidentReportFileName(target))
                             },
                             colors = ButtonDefaults.buttonColors(
@@ -947,7 +964,12 @@ private fun incidentReportFileName(record: AppLogRecord): String {
         .ifBlank { "Error" }
     val time = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
         .format(Date(record.timestampMs))
-    return "AI诊断_${module}_$time.txt"
+    val level = record.level.filter { it.isLetterOrDigit() }.take(10).ifBlank { "ERROR" }
+    val identity = record.eventId.ifBlank { record.issueKey.ifBlank { "${record.timestampMs}_${record.tag}" } }
+        .filter { it.isLetterOrDigit() }
+        .takeLast(8)
+        .ifBlank { "event" }
+    return "AI诊断_${module}_${level}_${time}_${identity}.txt"
 }
 
 @Composable
@@ -996,12 +1018,18 @@ private fun IncidentExportRecordRow(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        record.level,
-                        color = levelTint,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
+                    Surface(
+                        color = if (record.level == "FATAL") Color(0xFFFFE8E6) else Color(0xFFFFF1D6),
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
+                        Text(
+                            record.level,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            color = levelTint,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                 }
                 Text(
                     "${record.tag} · ${AppLogStore.formatTime(record.timestampMs)}",
@@ -1010,6 +1038,18 @@ private fun IncidentExportRecordRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                val errorType = record.errorClass.ifBlank {
+                    record.exceptionSnapshot?.type.orEmpty()
+                }
+                if (errorType.isNotBlank()) {
+                    Text(
+                        "异常：$errorType",
+                        color = Color(0xFF68707A),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 val identifier = record.issueKey.ifBlank { record.eventId }
                 if (identifier.isNotBlank()) {
                     Text(
