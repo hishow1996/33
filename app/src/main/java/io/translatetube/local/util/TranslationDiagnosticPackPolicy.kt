@@ -43,14 +43,21 @@ internal object TranslationDiagnosticPackPolicy {
         val translationEvents = idFromRecord(selected)
             ?.let { diagnosticId -> relatedRecords(allRecords, diagnosticId) }
             .orEmpty()
-        val translationEventKeys = translationEvents.map { eventKey(it) }.toSet()
+        // Explicit recovery links are high-value evidence. Preserve them before ordinary nearby
+        // events so a busy operation cannot push its successful recovery out of the export.
+        val recoveryEvents = incidentContextRecords.filter {
+            selected.issueKey.isNotBlank() && it.resolvesIssueKey == selected.issueKey
+        }
+        val protectedKeys = (translationEvents + recoveryEvents + selected).map(::eventKey).toSet()
         val additionalContext = incidentContextRecords.asSequence()
-            .filterNot { eventKey(it) in translationEventKeys }
+            .filterNot { eventKey(it) in protectedKeys }
             .sortedBy { kotlin.math.abs(it.timestampMs - selected.timestampMs) }
-            .take((maxContextRecords - translationEvents.size).coerceAtLeast(0))
+            .take((maxContextRecords - translationEvents.size - recoveryEvents.distinctBy(::eventKey).size).coerceAtLeast(0))
             .toList()
 
-        return (translationEvents + additionalContext + selected)
+        // All matching translation events and explicit recovery links survive even when they
+        // exceed the ordinary context budget. The selected incident is always present exactly once.
+        return (translationEvents + recoveryEvents + additionalContext + selected)
             .distinctBy(::eventKey)
             .sortedWith(compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence })
     }
