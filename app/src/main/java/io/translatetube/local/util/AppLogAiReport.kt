@@ -680,7 +680,14 @@ internal object AppLogAiReport {
         return values.distinctBy{it.first}.take(8).map{(key,value)->key+"="+clipForAi(AppLogStore.redactForExport(value),80)}
     }
 
-    private fun clipped(    private fun diagnosticContextBudgetJson(record: AppLogRecord): Any {
+    private fun clipped(value: String, maxChars: Int): String {
+        val normalized = value.trim()
+        if (normalized.length <= maxChars) return normalized
+        if (maxChars <= 1) return "…"
+        return normalized.take(maxChars - 1) + "…"
+    }
+
+    private fun diagnosticContextBudgetJson(record: AppLogRecord): Any {
         val context = record.diagnosticContext
         val total = context["日志诊断字段总数"]?.toIntOrNull() ?: return JSONObject.NULL
         return JSONObject()
