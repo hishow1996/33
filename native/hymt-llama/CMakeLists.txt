@@ -25,7 +25,10 @@ set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
-set(GGML_CPU_KLEIDIAI ON CACHE BOOL "" FORCE)
+# Keep the ARM64 generic CPU/NEON backend self-contained in CI. KleidiAI is an optional
+# acceleration layer that FetchContent downloads from a separate GitHub release; network
+# failures there must not prevent the HY-MT1.5 runtime from building or running.
+set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
