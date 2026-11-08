@@ -145,8 +145,8 @@ class DubbingChunkPolicyTest {
     // ---- 块表（ChunkTable）：预先建好反向表，改语速后整体重算 ----
 
     private fun shortPair() = listOf(
-        cue(0, 0L, 1_000L, 1, "你好啊我的朋友"),
-        cue(1, 1_100L, 3_000L, 1, "今天天气真不错"),
+        cue(0, 0L, 1_000L, 1, "你好我的朋友"),
+        cue(1, 1_100L, 3_000L, 1, "今天天气真好"),
     )
 
     @Test
