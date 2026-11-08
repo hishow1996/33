@@ -14662,6 +14662,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 created.set(engine)
                 try {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    // 首句配音提速：连接/解码器/首次推理的冷启动与随后的 attach、缓存预检并行进行。
+                    runCatching { engine.warmUp() }
                     engine
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     created.compareAndSet(engine, null)

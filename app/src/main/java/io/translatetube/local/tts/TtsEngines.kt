@@ -38,7 +38,53 @@ interface TtsEngine {
         return result
     }
 
+    /**
+     * Best-effort, non-blocking preparation for the first real synthesis request (open the network
+     * connection, load codecs, prime the native runtime). Called right after the engine is created,
+     * so the cost overlaps with the dubbing session setup instead of landing on the first cue.
+     * Implementations must return quickly, do their work on a background thread, never throw, and
+     * must not change what a later synthesis call produces.
+     */
+    fun warmUp() {}
+
     fun close()
+}
+
+/**
+ * Marker for engines whose in-flight synthesis aborts promptly when [TtsEngine.close] is called
+ * (network engines cancel their call/socket). Releasing such an engine must not wait for the
+ * running request to finish: a stalled connection used to block re-entering a video for up to the
+ * provider timeout. Native on-device engines must NOT implement this: closing them under a running
+ * native call is unsafe, so their release stays deferred until the call returns.
+ */
+interface ImmediatelyInterruptibleTtsEngine
+
+/** Runs [block] on a short-lived daemon thread; warm-up failures are never allowed to propagate. */
+internal fun launchTtsWarmUp(label: String, block: () -> Unit) {
+    try {
+        Thread({
+            try {
+                block()
+            } catch (t: Throwable) {
+                android.util.Log.d("TtsWarmUp", "$label warm-up skipped: ${t.message}")
+            }
+        }, "tts-warmup-$label").apply { isDaemon = true }.start()
+    } catch (t: Throwable) {
+        android.util.Log.d("TtsWarmUp", "$label warm-up thread not started: ${t.message}")
+    }
+}
+
+/**
+ * Opens (and immediately recycles) one HTTPS connection to [url] so the TCP + TLS handshake is
+ * already in the engine's connection pool when the first real request is made. No credentials are sent.
+ */
+internal fun preconnectHttps(client: okhttp3.OkHttpClient, url: String, timeoutSeconds: Long = 6L) {
+    val probe = client.newBuilder()
+        .callTimeout(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
+        .build()
+    val request = okhttp3.Request.Builder().url(url).head().build()
+    probe.newCall(request).execute().use { /* body is empty for HEAD; closing returns the connection to the pool */ }
 }
 
 /**
@@ -133,6 +179,18 @@ class KokoroTts(
 
     override fun synthCancellable(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio =
         synthInternal(text, speed, speakerId, checkActive)
+
+    /**
+     * The first ONNX inference pays one-time costs (memory arena growth, kernel selection, lazy
+     * text-frontend setup). Run one tiny generation in the background so that cost overlaps the
+     * session setup; the guard serializes it with real synthesis, so a cue that arrives meanwhile
+     * simply waits for the (already mostly finished) warm-up. The output is discarded.
+     */
+    override fun warmUp() {
+        launchTtsWarmUp("kokoro") {
+            guard.use { tts.generate("你好", speakerId.coerceIn(0, 53), 1.0f) }
+        }
+    }
 
     private fun synthInternal(
         text: String, speed: Float, speakerId: Int, checkActive: () -> Unit,

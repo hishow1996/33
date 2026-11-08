@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 /** Microsoft Edge Read Aloud online neural TTS; distinct from System TTS and Youdao/Baidu. */
-internal class EdgeTts(context: Context) : TtsEngine {
+internal class EdgeTts(context: Context) : TtsEngine, ImmediatelyInterruptibleTtsEngine {
     private val appCtx = context.applicationContext
     override val name = "微软 Edge TTS"
     private val closed = AtomicBoolean(false)
@@ -46,6 +46,22 @@ internal class EdgeTts(context: Context) : TtsEngine {
 
     override val cacheKey: String
         get() = "$name|${TtsCacheIdentityPolicy.edgeCacheKey(VOICES.toList())}"
+
+    /**
+     * The first request used to pay the full DNS + TCP + TLS + WebSocket-upgrade handshake because the
+     * pre-connected socket was only created after a request had already started. Start that handshake
+     * as soon as the engine exists so it overlaps the dubbing session setup, and load the MP3 decoder
+     * once so the first decode does not pay the codec's cold start either.
+     */
+    override fun warmUp() {
+        if (closed.get()) return
+        warmNextSession()
+        if (!decoderPrimed.compareAndSet(false, true)) return
+        launchTtsWarmUp("edge-decoder") {
+            val codec = MediaCodec.createDecoderByType("audio/mpeg")
+            codec.release()
+        }
+    }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
         synthInternal(text, speed, speakerId) {}
@@ -699,6 +715,8 @@ internal class EdgeTts(context: Context) : TtsEngine {
         .filter { it == '\n' || it == '\r' || it == '\t' || it.code >= 0x20 }
 
     internal companion object {
+        /** The platform MP3 decoder only needs priming once per process. */
+        private val decoderPrimed = AtomicBoolean(false)
         const val TARGET_RATE_HZ = 24_000
         const val MAX_REQUEST_BYTES = 3_500
         const val SOFT_REQUEST_BYTES = 1_700

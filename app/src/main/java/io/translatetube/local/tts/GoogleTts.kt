@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 调用谷歌翻译朗读接口获取 MP3 音频流并解码为 24kHz 单声道 FloatArray PCM。
  * 多端点自动互备（tw-ob / gtx / dict-chrome-ex），无需 API Key、不占本地算力。
  */
-internal class GoogleTts(context: Context) : TtsEngine {
+internal class GoogleTts(context: Context) : TtsEngine, ImmediatelyInterruptibleTtsEngine {
     private val appCtx = context.applicationContext
 
     override val name: String = "谷歌在线语音"
@@ -40,6 +40,14 @@ internal class GoogleTts(context: Context) : TtsEngine {
         .callTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+
+    /** Pre-establish the DNS + TCP + TLS connection to the primary endpoint so cue 1 reuses it. */
+    override fun warmUp() {
+        if (closed.get()) return
+        launchTtsWarmUp("google") {
+            if (!closed.get()) preconnectHttps(client, "https://translate.google.com/")
+        }
+    }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
         synthCancellable(text, speed, speakerId) {}

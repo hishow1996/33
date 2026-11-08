@@ -173,6 +173,8 @@ class DubbingEngine(
     @Volatile var onPlaybackStarted: ((index: Int, playbackGeneration: Int) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
     private val firstSynthesisMilestoneLogged = AtomicBoolean(false)
+    /** attach() 绑定字幕的时刻，用来在首条配音日志里给出「从开始到首条成功」的总耗时。 */
+    @Volatile private var sessionBoundAtNanos = 0L
     /** Emit first-output milestones once per attached subtitle session, not once per cue. */
     private val firstPlaybackReported = AtomicBoolean(false)
     private val firstPlaybackCompletedReported = AtomicBoolean(false)
@@ -561,6 +563,7 @@ class DubbingEngine(
                 nextSpeechStartMsByLine = nextSpeechStarts
             synthesisErrorReported.set(false)
             firstSynthesisMilestoneLogged.set(false)
+            sessionBoundAtNanos = System.nanoTime()
             firstPlaybackReported.set(false)
             firstPlaybackCompletedReported.set(false)
             audioOutputPathReported.set(false)
@@ -1278,7 +1281,14 @@ class DubbingEngine(
                     var readyAudio = firstAudio
                     var effectiveSynthesisSpeed = synthesisSpeed
                     var adaptiveRetryCount = 0
-                    while (adaptiveRetryCount < DubbingSynthesisPolicy.MAX_ADAPTIVE_SYNTHESIS_RETRIES) {
+                    // 首条配音要尽快出声：第一句最多只做一次原生提速重合成（每多一次就多一整轮
+                    // 网络往返/模型推理），仍然偏长的部分由下面的时长拟合（变速不变调）兜底。
+                    val adaptiveRetryLimit = if (firstSynthesisMilestoneLogged.get()) {
+                        DubbingSynthesisPolicy.MAX_ADAPTIVE_SYNTHESIS_RETRIES
+                    } else {
+                        1
+                    }
+                    while (adaptiveRetryCount < adaptiveRetryLimit) {
                         val retrySpeed = DubbingSynthesisPolicy.recommendedSpeed(
                             baseSpeed = effectiveSynthesisSpeed,
                             sampleCount = readyAudio.samples.size,
@@ -1543,6 +1553,9 @@ class DubbingEngine(
                                     "音频时长 ms" to outputAudioDurationMs.toLong().toString(),
                                     "本句合成语速" to effectiveSynthesisSpeed.toString(),
                                     "本句合成处理耗时 ms" to synthesisElapsedMs.toString(),
+                                    "距会话绑定字幕耗时 ms" to (
+                                        (System.nanoTime() - sessionBoundAtNanos).coerceAtLeast(0L) / 1_000_000L
+                                        ).toString(),
                                     "合成实时系数" to synthesisRealtimeFactorValue.takeIf { it.isFinite() }?.toString().orEmpty().ifBlank { "尚未形成有效样本" },
                                     "是否成功写入磁盘缓存" to cachePersisted.toString(),
                                     "是否保留在内存缓存" to retainedInMemory.toString(),
@@ -4441,9 +4454,19 @@ class DubbingEngine(
         oldTtsInstances.filterIsInstance<TimelineTtsPlayback>()
             .forEach { runCatching { it.stopTimelineSpeech() } }
         val systemInstances = oldTtsInstances.filterIsInstance<io.translatetube.local.tts.SystemTts>()
-        val nativeInstances = oldTtsInstances.filterNot { it is io.translatetube.local.tts.SystemTts }
+        // 在线引擎（微软 Edge / 谷歌 / Gemini）的 close() 会立刻取消进行中的请求，可以马上关闭；
+        // 否则重新进入视频时要等上一次卡住的网络请求自然超时（最长数十秒）才能开始新的配音。
+        val interruptibleInstances = oldTtsInstances.filter {
+            it is io.translatetube.local.tts.ImmediatelyInterruptibleTtsEngine &&
+                it !is io.translatetube.local.tts.SystemTts
+        }
+        val nativeInstances = oldTtsInstances.filterNot {
+            it is io.translatetube.local.tts.SystemTts ||
+                it is io.translatetube.local.tts.ImmediatelyInterruptibleTtsEngine
+        }
         // Close latch-backed System TTS instances first so any waiting synth() call can unwind.
         systemInstances.forEach { engine -> runCatching { engine.close() } }
+        interruptibleInstances.forEach { engine -> runCatching { engine.close() } }
         when {
             nativeInstances.isEmpty() -> ttsCloseSignal.complete(Unit)
             activeSynthesis != null && !activeSynthesis.isCompleted -> {

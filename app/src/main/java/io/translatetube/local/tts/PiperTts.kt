@@ -181,6 +181,13 @@ class SherpaOfflineTts(context: Context, private val modelId: String) : TtsEngin
     override fun synthCancellable(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio =
         synthInternal(text, speed, speakerId, checkActive)
 
+    /** See [KokoroTts.warmUp]: prime the first ONNX inference off the critical path; output discarded. */
+    override fun warmUp() {
+        launchTtsWarmUp(name) {
+            guard.use { tts.generate("你好", 0, 1.0f) }
+        }
+    }
+
     private fun synthInternal(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio {
         checkActive()
         if (text.isBlank()) return TtsAudio(FloatArray(0), definition.sampleRate)

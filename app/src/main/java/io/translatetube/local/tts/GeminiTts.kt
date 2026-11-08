@@ -74,7 +74,7 @@ internal object GeminiTtsVoices {
 
 internal class GeminiTts(
     context: Context,
-) : TtsEngine {
+) : TtsEngine, ImmediatelyInterruptibleTtsEngine {
 
     private val appCtx = context.applicationContext
     override val name: String = "Gemini TTS"
@@ -102,6 +102,14 @@ internal class GeminiTts(
             apiKey = resolvedApiKey,
             modelCandidates = CANDIDATE_MODELS,
         )
+
+    /** Pre-establish DNS + TCP + TLS to the Gemini host (no API key is sent) so cue 1 reuses the connection. */
+    override fun warmUp() {
+        if (closed.get()) return
+        launchTtsWarmUp("gemini") {
+            if (!closed.get()) preconnectHttps(client, "https://generativelanguage.googleapis.com/")
+        }
+    }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
         synthCancellable(text, speed, speakerId) {}
