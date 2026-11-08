@@ -1,3 +1,4 @@
+# User-requested retry APK build trigger after minimum retry budget correction.
 # Explicit user-requested APK build trigger marker (2026-11-08 08:22 +08:00): build latest main and publish debug/release APK artifacts.
 # Explicit user-requested APK build trigger marker (2026-11-08 02:52 +08:00): build latest main and publish debug/release APK artifacts.
 # Explicit user-requested APK build trigger marker (2026-11-07 17:22 +08:00): build latest main and publish debug/release APK artifacts.
