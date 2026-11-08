@@ -49,10 +49,13 @@ internal object TranslationDiagnosticPackPolicy {
             selected.issueKey.isNotBlank() && it.resolvesIssueKey == selected.issueKey
         }
         val protectedKeys = (translationEvents + recoveryEvents + selected).map(::eventKey).toSet()
+        val protectedCount = (translationEvents + recoveryEvents + selected)
+            .distinctBy(::eventKey)
+            .size
         val additionalContext = incidentContextRecords.asSequence()
             .filterNot { eventKey(it) in protectedKeys }
             .sortedBy { kotlin.math.abs(it.timestampMs - selected.timestampMs) }
-            .take((maxContextRecords - translationEvents.size - recoveryEvents.distinctBy(::eventKey).size).coerceAtLeast(0))
+            .take((maxContextRecords - protectedCount).coerceAtLeast(0))
             .toList()
 
         // All matching translation events and explicit recovery links survive even when they
