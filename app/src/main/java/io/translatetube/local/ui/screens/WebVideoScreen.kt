@@ -31,8 +31,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
@@ -52,7 +50,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,8 +66,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
@@ -78,8 +75,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -111,6 +106,59 @@ import org.json.JSONArray
 import kotlin.math.abs
 
 private const val TAG_WEB = "WebVideoScreen"
+
+/**
+ * Native single-line EditText supplies Android's selection handles and automatic horizontal
+ * scrolling while a caret/selection handle is dragged across long URLs.
+ * Compose remains the source of truth for the address text and selection.
+ */
+private class AddressBarEditText(context: Context) : android.widget.EditText(context) {
+    var onAddressValueChanged: ((String, Int, Int) -> Unit)? = null
+    private var applyingExternalValue = false
+
+    init {
+        addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                dispatchAddressValue()
+            }
+
+            override fun afterTextChanged(s: android.text.Editable?) = Unit
+        })
+    }
+
+    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+        super.onSelectionChanged(selStart, selEnd)
+        dispatchAddressValue()
+    }
+
+    fun setExternalValue(value: TextFieldValue) {
+        val valueText = value.text
+        val valueSelectionStart = value.selection.start.coerceIn(0, valueText.length)
+        val valueSelectionEnd = value.selection.end.coerceIn(0, valueText.length)
+        applyingExternalValue = true
+        try {
+            if (text.toString() != valueText) setText(valueText)
+            if (selectionStart != valueSelectionStart || selectionEnd != valueSelectionEnd) {
+                setSelection(valueSelectionStart, valueSelectionEnd)
+            }
+        } finally {
+            applyingExternalValue = false
+        }
+        if (hasFocus()) {
+            post { bringPointIntoView(maxOf(valueSelectionStart, valueSelectionEnd)) }
+        }
+    }
+
+    private fun dispatchAddressValue() {
+        if (applyingExternalValue) return
+        val valueText = text?.toString().orEmpty()
+        val start = selectionStart.takeIf { it >= 0 }?.coerceIn(0, valueText.length) ?: return
+        val end = selectionEnd.takeIf { it >= 0 }?.coerceIn(0, valueText.length) ?: return
+        onAddressValueChanged?.invoke(valueText, start, end)
+    }
+}
 
 private fun webSourceHost(rawUrl: String): String =
     runCatching { android.net.Uri.parse(rawUrl).host }
@@ -301,24 +349,24 @@ fun WebVideoScreen(
     }
     var addressFieldHasFocus by remember(initialUrl) { mutableStateOf(false) }
     var addressEditPending by remember(initialUrl) { mutableStateOf(false) }
+    var addressEditText by remember(initialUrl) { mutableStateOf<AddressBarEditText?>(null) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     // Keep 52dp at the normal font scale; grow only when the scaled 18sp line needs more room.
     val addressBarHeight = maxOf(52f, 18f * LocalDensity.current.fontScale + 34f).dp
     fun setAddress(value: String) {
         addressEditPending = false
-        addressFieldValue = TextFieldValue(text = value, selection = TextRange(value.length))
+        val newValue = TextFieldValue(text = value, selection = TextRange(value.length))
+        addressFieldValue = newValue
+        addressEditText?.setExternalValue(newValue)
+    }
+    fun clearAddressInputFocus() {
+        addressEditText?.clearFocus()
+        focusManager.clearFocus()
     }
     fun syncAddressFromPage(value: String) {
         // A late WebView callback must not replace a draft the user is editing or has typed.
         if (!addressEditPending && !addressFieldHasFocus) setAddress(value)
-    }
-    LaunchedEffect(addressFieldHasFocus) {
-        if (addressFieldHasFocus) {
-            addressFieldValue = addressFieldValue.copy(
-                selection = TextRange(0, addressFieldValue.text.length),
-            )
-        }
     }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
@@ -1117,13 +1165,13 @@ fun WebVideoScreen(
     }
 
     fun submitAddress() {
-        val rawAddress = addressFieldValue.text.trim()
+        val rawAddress = (addressEditText?.text?.toString() ?: addressFieldValue.text).trim()
         val inputUrl = SharedLinkTextParser.extractFirstHttpUrl(rawAddress) ?: rawAddress
         // 受密码保护的分享保持官方网页原始验证流程；提取码仍由用户在网页内输入。
         pikpakPassCode = ""
         if (tryBilibiliNative(inputUrl)) {
             setAddress(inputUrl)
-            focusManager.clearFocus()
+            clearAddressInputFocus()
             keyboardController?.hide()
             return
         }
@@ -1133,7 +1181,7 @@ fun WebVideoScreen(
             return
         }
         resetForNavigation(normalized)
-        focusManager.clearFocus()
+        clearAddressInputFocus()
         keyboardController?.hide()
         pageLoadToken++
         webViewState.value?.loadUrl(normalized)
@@ -1688,7 +1736,7 @@ fun WebVideoScreen(
                                 // Use the same single-generation reset as address navigation.
                                 // onPageStarted recognizes this prepared reload and will not clear
                                 // candidates or start another detection round for the same action.
-                                focusManager.clearFocus()
+                                clearAddressInputFocus()
                                 keyboardController?.hide()
                                 resetForNavigation(currentPage)
                                 pageLoadToken++
@@ -1714,7 +1762,7 @@ fun WebVideoScreen(
                     onClick = {
                         val view = webViewState.value
                         if (view != null && view.canGoBack()) {
-                            focusManager.clearFocus()
+                            clearAddressInputFocus()
                             keyboardController?.hide()
                             view.goBack()
                         } else {
@@ -1727,46 +1775,102 @@ fun WebVideoScreen(
                         contentDescription = "返回网页上一页",
                     )
                 }
-                OutlinedTextField(
-                    value = addressFieldValue,
-                    onValueChange = { value ->
-                        val textChanged = value.text != addressFieldValue.text
-                        addressFieldValue = value
-                        if (textChanged) addressEditPending = true
+                val addressTextColor = MaterialTheme.colorScheme.onSurface
+                val addressHintColor = MaterialTheme.colorScheme.onSurfaceVariant
+                val addressBackgroundColor = MaterialTheme.colorScheme.surface
+                val addressOutlineColor = if (addressFieldHasFocus) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.outline
+                }
+                val addressDensity = LocalDensity.current
+                AndroidView(
+                    factory = { context ->
+                        AddressBarEditText(context).apply {
+                            addressEditText = this
+                            setSingleLine(true)
+                            setHorizontallyScrolling(true)
+                            maxLines = 1
+                            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                                android.text.InputType.TYPE_TEXT_VARIATION_URI
+                            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
+                            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
+                            gravity = android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
+                            val horizontalPadding = with(addressDensity) { 16.dp.roundToPx() }
+                            setPadding(horizontalPadding, 0, horizontalPadding, 0)
+                            setTextColor(addressTextColor.toArgb())
+                            setHintTextColor(addressHintColor.toArgb())
+                            hint = "输入网页地址"
+                            background = android.graphics.drawable.GradientDrawable().apply {
+                                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                                cornerRadius = with(addressDensity) { 14.dp.toPx() }
+                                setColor(addressBackgroundColor.toArgb())
+                                setStroke(
+                                    with(addressDensity) { 1.dp.roundToPx() }.coerceAtLeast(1),
+                                    addressOutlineColor.toArgb(),
+                                )
+                            }
+                            onAddressValueChanged = { text, selectionStart, selectionEnd ->
+                                val nextValue = TextFieldValue(
+                                    text = text,
+                                    selection = TextRange(selectionStart, selectionEnd),
+                                )
+                                val textChanged = text != addressFieldValue.text
+                                if (nextValue != addressFieldValue) addressFieldValue = nextValue
+                                if (textChanged) addressEditPending = true
+                            }
+                            setOnFocusChangeListener { view, hasFocus ->
+                                addressFieldHasFocus = hasFocus
+                                if (hasFocus) {
+                                    // Keep the existing select-all-on-focus behavior; native
+                                    // selection handles can then be dragged normally.
+                                    view.post {
+                                        if (view.hasFocus()) {
+                                            setSelection(0, text?.length ?: 0)
+                                            bringPointIntoView(text?.length ?: 0)
+                                        }
+                                    }
+                                }
+                            }
+                            setOnEditorActionListener { _, actionId, event ->
+                                val isGo = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
+                                    (event?.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
+                                        event.action == android.view.KeyEvent.ACTION_UP)
+                                if (isGo) {
+                                    submitAddress()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            setExternalValue(addressFieldValue)
+                        }
                     },
-                    // 保持紧凑高度；输入内容和光标在地址栏内垂直居中且完整显示。
+                    update = { editText ->
+                        editText.setTextColor(addressTextColor.toArgb())
+                        editText.setHintTextColor(addressHintColor.toArgb())
+                        editText.background = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                            cornerRadius = with(addressDensity) { 14.dp.toPx() }
+                            setColor(addressBackgroundColor.toArgb())
+                            setStroke(
+                                with(addressDensity) { 1.dp.roundToPx() }.coerceAtLeast(1),
+                                addressOutlineColor.toArgb(),
+                            )
+                        }
+                        // Only sync when text or selection differs. Re-setting identical text
+                        // during composition would reset the caret and cancel an active handle drag.
+                        if (
+                            editText.text.toString() != addressFieldValue.text ||
+                            editText.selectionStart != addressFieldValue.selection.start ||
+                            editText.selectionEnd != addressFieldValue.selection.end
+                        ) {
+                            editText.setExternalValue(addressFieldValue)
+                        }
+                    },
                     modifier = Modifier
                         .weight(1f)
-                        .height(addressBarHeight)
-                        .onFocusChanged { focusState ->
-                            addressFieldHasFocus = focusState.isFocused
-                        },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Uri,
-                        imeAction = ImeAction.Go,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onGo = { submitAddress() },
-                    ),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
-                        textAlign = TextAlign.Start,
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    placeholder = {
-                        Text(
-                            "输入网页地址",
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = 13.sp,
-                                lineHeight = 18.sp,
-                                textAlign = TextAlign.Start,
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
+                        .height(addressBarHeight),
                 )
                 IconButton(onClick = { submitAddress() }) {
                     Icon(
