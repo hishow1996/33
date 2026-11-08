@@ -127,4 +127,55 @@ class TranslationDiagnosticPackPolicyTest {
         assertEquals(80, merged.size)
         assertTrue(merged.any { it.message == selected.message })
     }
+
+    @Test
+    fun incidentMergePreservesExplicitRecoveryBeforeOrdinaryContextLimit() {
+        val selected = AppLogRecord(
+            timestampMs = 100_000L,
+            level = "ERROR",
+            tag = "PlayerManager",
+            message = "播放失败",
+            details = "selected",
+            thread = "main",
+            eventId = "selected-failure",
+            sessionId = "session-recovery",
+            sequence = 100L,
+            operationId = "playback-1",
+            issueKey = "PlayerManager:stable-issue",
+        )
+        val recovery = AppLogRecord(
+            timestampMs = 105_000L,
+            level = "INFO",
+            tag = "LogRecovery",
+            message = "播放故障已恢复",
+            details = "confirmed recovery",
+            thread = "main",
+            eventId = "recovery-event",
+            sessionId = "new-session",
+            sequence = 1L,
+            resolvesIssueKey = selected.issueKey,
+        )
+        val nearby = (1..90).map { index ->
+            selected.copy(
+                timestampMs = 100_000L + index,
+                level = "INFO",
+                message = "ordinary-context-$index",
+                eventId = "context-$index",
+                sequence = index.toLong(),
+            )
+        }
+
+        val merged = TranslationDiagnosticPackPolicy.mergeIncidentRecords(
+            allRecords = nearby + selected + recovery,
+            incidentContextRecords = nearby + selected + recovery,
+            selected = selected,
+            maxContextRecords = 80,
+        )
+
+        assertTrue(merged.any { it.eventId == "selected-failure" })
+        assertTrue(merged.any { it.eventId == "recovery-event" })
+        assertTrue(merged.size <= 82)
+        assertFalse(merged.any { it.eventId == "context-90" })
+    }
+
 }
