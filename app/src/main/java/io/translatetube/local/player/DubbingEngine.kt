@@ -1274,7 +1274,7 @@ class DubbingEngine(
                             sampleCount = readyAudio.samples.size,
                             sampleRate = readyAudio.sampleRate,
                             cueDurationMs = cueDurationMs,
-                            ceilingSpeed = synthesisSpeed * DubbingSynthesisPolicy.MAX_NATIVE_SPEEDUP,
+                            ceilingSpeed = synthesisSpeed * DubbingSynthesisPolicy.MAX_NATIVE_SPEEDUP.toFloat(),
                         )
                         if (retrySpeed <= effectiveSynthesisSpeed + 0.05f) break
 
