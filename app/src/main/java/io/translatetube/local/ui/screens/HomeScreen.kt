@@ -347,12 +347,11 @@ fun HomeScreen(
                     Spacer(Modifier.width(9.dp))
                     Text("观看并翻译", style = MaterialTheme.typography.titleLarge)
                 }
-                Box(
-                    modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(15.dp))
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp))
                         .clickable { localPicker.launch(arrayOf("video/*")) }
                         .padding(horizontal = 6.dp, vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
                         Icons.Filled.FolderOpen,
