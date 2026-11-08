@@ -8584,7 +8584,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         ),
                     )
                 }
-                val missingLocalModel = asrProvider == "local" &&
+                var missingLocalModel = asrProvider == "local" &&
                     !io.translatetube.local.data.ModelFiles.asrReady(this)
                 val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
                 // ---- 2b. 无字幕 → 先提取音频（落缓存），再判断转写引擎是否就绪 ----
@@ -8652,6 +8652,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     ?.absolutePath
                 // Reuse the selected source-card metadata; do not run a second display probe
                 // after extraction. Missing source-card fields intentionally remain absent.
+                if (missingLocalModel) {
+                    // The model may still be downloading/unpacking: wait on this stage page.
+                    awaitLocalAsrModelInstall(key, pipelineGeneration)
+                    missingLocalModel = !io.translatetube.local.data.ModelFiles.asrReady(this)
+                }
                 if (missingLocalModel || missingCloudKey) {
                     val hint = when (asrProvider) {
                         "local" -> {
@@ -8673,6 +8678,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                                 if (asrProvider == "local") "（设置 → 转写引擎 → 本地转写）" else "（设置 → 转写引擎）",
                         )
                     }
+                    if (missingLocalModel) watchLocalAsrModelReady(key, pipelineGeneration)
                     // Stop here instead of falling through with an empty transcript. Falling
                     // through skipped transcription/translation/dubbing and reached the final
                     // auto-play block, which started a local video as original-audio playback.
@@ -11398,6 +11404,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         try {
             // Run local-engine preflight before announcing translation progress or entering retries.
             // The selected engine resolves an "auto" source using the full subtitle list.
+            // An on-device translation model that is still downloading: wait here, then continue.
+            if (EngineFactory.isLocalTranslationEngine(activeId)) {
+                awaitLocalTranslationModelInstall(key, pipelineGeneration, activeId)
+            }
             var src = SourceLanguagePolicy.sourceForTranslation(srcLang)
             val selectedMlKit = engine as? MlKitEngine
             val selectedOpus = engine as? OpusMtEngine
@@ -14091,6 +14101,156 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (now - idleSinceMs > 3_000L) return
             }
             kotlinx.coroutines.delay(500L)
+        }
+    }
+
+    /** Status text while the selected on-device translation model is downloading or verifying; null otherwise. */
+    private fun localTranslationModelInstallProgress(activeId: Long): String? {
+        fun text(verifying: Boolean, percent: Int): String =
+            if (verifying) "正在校验翻译模型" else "正在下载翻译模型 ${percent.coerceIn(0, 100)}%"
+        return when (activeId) {
+            EngineFactory.ID_LOCAL_OPUS -> {
+                val main = io.translatetube.local.translate.OpusMtModelManager.state.value
+                val extra = io.translatetube.local.translate.OpusMtAdditionalModelManager.states.value.values
+                    .firstOrNull {
+                        it.status == io.translatetube.local.translate.OpusMtStatus.DOWNLOADING ||
+                            it.status == io.translatetube.local.translate.OpusMtStatus.VERIFYING
+                    }
+                val state = if (
+                    main.status == io.translatetube.local.translate.OpusMtStatus.DOWNLOADING ||
+                    main.status == io.translatetube.local.translate.OpusMtStatus.VERIFYING
+                ) main else extra
+                state?.takeIf {
+                    it.status == io.translatetube.local.translate.OpusMtStatus.DOWNLOADING ||
+                        it.status == io.translatetube.local.translate.OpusMtStatus.VERIFYING
+                }?.let { text(it.status == io.translatetube.local.translate.OpusMtStatus.VERIFYING, it.progress) }
+            }
+            // The single-pair entry runs on the shared SMaLL-100 model.
+            EngineFactory.ID_LOCAL_SMALL100, EngineFactory.ID_LOCAL_SINGLE_PAIR -> {
+                val state = io.translatetube.local.translate.Small100ModelManager.state.value
+                when (state.status) {
+                    io.translatetube.local.translate.Small100Status.DOWNLOADING -> text(false, state.progress)
+                    io.translatetube.local.translate.Small100Status.VERIFYING -> text(true, state.progress)
+                    else -> null
+                }
+            }
+            EngineFactory.ID_LOCAL_HYMT -> {
+                val state = io.translatetube.local.translate.HyMtModelManager.state.value
+                when (state.status) {
+                    io.translatetube.local.translate.HyMtStatus.DOWNLOADING -> text(false, state.progress)
+                    io.translatetube.local.translate.HyMtStatus.VERIFYING -> text(true, state.progress)
+                    else -> null
+                }
+            }
+            else -> null
+        }
+    }
+
+    /** Stage 4 waits here while its on-device model is still installing, then continues by itself. */
+    private suspend fun awaitLocalTranslationModelInstall(
+        key: String,
+        pipelineGeneration: Long,
+        activeId: Long,
+    ) {
+        val engineName = EngineFactory.localTranslationEngineName(activeId) ?: return
+        while (true) {
+            awaitProcessingResumed(key, pipelineGeneration)
+            ensureCurrentSession(key, pipelineGeneration)
+            val installText = localTranslationModelInstallProgress(activeId) ?: return
+            updateUiForSession(key, pipelineGeneration) {
+                it.copy(
+                    phase = Phase.TRANSLATING,
+                    progress = "$engineName：$installText，完成后自动开始翻译",
+                )
+            }
+            kotlinx.coroutines.delay(500L)
+        }
+    }
+
+    /** Status text while the local transcription model is downloading or unpacking; null otherwise. */
+    private fun localAsrModelInstallProgress(): String? {
+        val state = (application as io.translatetube.local.TranslateTubeApp).modelDownload.asr.value
+        return when (state.status) {
+            io.translatetube.local.data.ModelStatus.DOWNLOADING -> "正在下载转写模型 ${state.progress.coerceIn(0, 100)}%"
+            io.translatetube.local.data.ModelStatus.EXTRACTING -> "正在解压安装转写模型"
+            else -> null
+        }
+    }
+
+    /** Stage 3 waits here while the local transcription model is installing. */
+    private suspend fun awaitLocalAsrModelInstall(key: String, pipelineGeneration: Long) {
+        var sawInstall = false
+        var idleSinceMs = 0L
+        while (true) {
+            awaitProcessingResumed(key, pipelineGeneration)
+            ensureCurrentSession(key, pipelineGeneration)
+            if (io.translatetube.local.data.ModelFiles.asrReady(this)) return
+            val installText = localAsrModelInstallProgress()
+            if (installText != null) {
+                sawInstall = true
+                idleSinceMs = 0L
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.TRANSCRIBING,
+                        waitingForTranscriptionEngine = false,
+                        noModelHint = null,
+                        progress = "$installText，完成后自动开始转写",
+                    )
+                }
+            } else {
+                if (!sawInstall) return
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (idleSinceMs == 0L) idleSinceMs = now
+                if (now - idleSinceMs > 3_000L) return
+            }
+            kotlinx.coroutines.delay(500L)
+        }
+    }
+
+    private var asrModelReadyWatchJob: Job? = null
+
+    /**
+     * A session parked at "transcription engine not ready" resumes by itself once the local
+     * transcription model is usable; the extracted audio is reused from cache.
+     */
+    private fun watchLocalAsrModelReady(key: String, pipelineGeneration: Long) {
+        asrModelReadyWatchJob?.cancel()
+        asrModelReadyWatchJob = scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(1_500L)
+                val state = ui.value
+                if (videoKey != key || activePipelineGeneration != pipelineGeneration ||
+                    state.key != key || !state.waitingForTranscriptionEngine
+                ) return@launch
+                if (!io.translatetube.local.data.ModelFiles.asrReady(this@PlaybackService)) continue
+                if (localAsrModelInstallProgress() != null) continue
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackFlow",
+                    "本地转写模型已就绪，自动重新开始转写",
+                    diagnosticContext = mapOf("视频会话指纹" to safeDiagnosticSessionFingerprint(key)),
+                )
+                val restartRemoteUrl = remoteMediaUrl
+                val restartVideoId = videoId ?: if (restartRemoteUrl == null) {
+                    key.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+                } else null
+                withContext(Dispatchers.Main.immediate) {
+                    open(
+                        key = key,
+                        videoId = restartVideoId,
+                        localUri = localUri,
+                        importedLines = null,
+                        resumeState = null,
+                        remoteMediaUrl = restartRemoteUrl,
+                        remoteMediaTitle = remoteMediaTitle,
+                        remoteMediaReferrer = remoteMediaReferrer,
+                        remoteMediaCookie = remoteMediaCookie,
+                        remoteMediaUserAgent = remoteMediaUserAgent,
+                        requestToken = activeOpenRequestToken,
+                    )
+                }
+                return@launch
+            }
         }
     }
 
