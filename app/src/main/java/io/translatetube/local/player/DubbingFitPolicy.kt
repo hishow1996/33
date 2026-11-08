@@ -46,7 +46,9 @@ internal object DubbingFitPolicy {
      * 原始音频超过该预算的 1.15 倍时，WSOLA 单独压缩也放不下，才值得让 TTS 重新提速合成。
      */
     fun nativeRetryBudgetMs(windowMs: Long): Long =
-        (windowMs.coerceAtLeast(1L).toDouble() * MAX_COMPRESS).toLong().coerceAtLeast(1L)
+        kotlin.math.ceil(
+            windowMs.coerceAtLeast(1L).toDouble() * MAX_COMPRESS.toDouble()
+        ).toLong().coerceAtLeast(1L)
 
     /**
      * 句子实际开口时间 [startUs] 因排队被推迟后，是否需要额外压缩以在 [endLimitUs] 前结束。
