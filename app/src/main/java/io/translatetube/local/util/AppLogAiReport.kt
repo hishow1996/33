@@ -482,9 +482,9 @@ internal object AppLogAiReport {
         val diagnosis = AppLogDiagnostics.analyze(primary)
         val coverage = AppLogDiagnosticCoveragePolicy.analyze(primary)
         val diagnosticId = TranslationDiagnosticPackPolicy.idFromRecord(primary)
-        val storedDetailsTruncated =
-            primary.details.contains("中间内容过长，已截断；保留开头和末尾") ||
-                primary.details.length >= AppLogStore.MAX_DETAIL_CHARS
+        val storedDetailsTruncationMarker =
+            primary.details.contains("中间内容过长，已截断；保留开头和末尾")
+        val storedDetailsAtLimit = primary.details.length >= AppLogStore.MAX_DETAIL_CHARS
         var exceptionNodeCount = 0
         var exceptionFrameCount = 0
         var exceptionTreeTruncated = false
@@ -607,7 +607,13 @@ internal object AppLogAiReport {
                 .append('\n')
             append("- 原始诊断详情：")
                 .append(if (primary.details.isBlank()) "未采集" else "已按本地保存内容完整写入（${primary.details.length} 字符）")
-                .append(if (storedDetailsTruncated) "；源日志已触发 24,000 字符截断，导出不能恢复未保存部分" else "；未发现已知的 details 截断标记")
+                .append(
+                    when {
+                        storedDetailsTruncationMarker -> "；源日志明确标记已截断，导出无法恢复未保存部分"
+                        storedDetailsAtLimit -> "；内容达到 ${AppLogStore.MAX_DETAIL_CHARS} 字符采集上限，无法确认是否恰好达到上限或发生了截断"
+                        else -> "；未发现已知的 details 截断标记",
+                    },
+                )
                 .append('\n')
             append("- 原始堆栈证据：")
                 .append(if (hasStackEvidence) "已在完整诊断详情中发现异常/调用栈文本" else "未在详情中发现标准堆栈行；可能未提供 Throwable 或使用了非标准堆栈格式")
@@ -682,6 +688,7 @@ internal object AppLogAiReport {
             append("主故障只包含上文选中的一条 ERROR/FATAL 记录。以下事件仅在同一 sessionId + operationId，或符合旧版同线程近邻规则时作为上下文保留；不代表它们都是本次导出的主故障。\n")
             append("关联事件数：").append(related.size).append("（最多保留 80 条相关事件）\n")
             append("关联依据说明：每条 JSON 记录均包含 relationToSelectedEvent 和 relationEvidence；恢复记录按 resolvesIssueKey 匹配，翻译事件按诊断 ID 匹配，任务上下文按 sessionId/operationId 匹配。\n")
+            append("恢复事件采用显式 resolvesIssueKey 匹配，不会被普通 80 条上下文预算挤掉；issueKey 标识相同故障签名，不保证唯一对应某一次故障实例。\n")
             if (related.isEmpty()) {
                 append("没有找到可确认关联的其他事件。\n")
             } else {
