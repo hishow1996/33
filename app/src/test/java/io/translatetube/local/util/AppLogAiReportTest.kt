@@ -556,7 +556,7 @@ class AppLogAiReportTest {
         )
 
         assertTrue(report.contains("源日志明确标记已截断"))
-        assertTrue(report.contains("结构化异常树包含 1 个栈帧"))
+        assertTrue(report.contains("原始 details 与结构化异常树中采集到堆栈"))
         assertTrue(report.contains("省略 2 项；字段值截断 1 项"))
         assertTrue(report.contains("已记录恢复事件"))
         assertTrue(report.contains("RECOVERY_MATCHED_BY_ISSUE_KEY"))
