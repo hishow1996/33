@@ -484,7 +484,7 @@ internal object AppLogAiReport {
         val diagnosticId = TranslationDiagnosticPackPolicy.idFromRecord(primary)
         val storedDetailsTruncated =
             primary.details.contains("中间内容过长，已截断；保留开头和末尾") ||
-                primary.details.length >= 24_000
+                primary.details.length >= AppLogStore.MAX_DETAIL_CHARS
         var exceptionNodeCount = 0
         var exceptionFrameCount = 0
         var exceptionTreeTruncated = false
@@ -585,6 +585,9 @@ internal object AppLogAiReport {
             append("异常类型：").append(AppLogStore.redactForExport(errorClass)).append('\n')
             append("事件 ID：").append(AppLogStore.redactForExport(primary.eventId.ifBlank { "旧版日志未记录" })).append('\n')
             append("故障编号：").append(primary.issueKey.ifBlank { "未记录" }).append('\n')
+            append("恢复状态：")
+                .append(primary.recoveredAtMs?.let { "已记录恢复事件，时间 " + AppLogStore.formatTime(it) } ?: "没有明确恢复记录")
+                .append('\n')
             append("进程会话：").append(AppLogStore.redactForExport(primary.sessionId.ifBlank { "旧版日志未记录" })).append('\n')
             append("操作关联 ID：")
                 .append(AppLogStore.redactForExport(primary.operationId.ifBlank { diagnosticId ?: "未记录" }))
@@ -678,6 +681,7 @@ internal object AppLogAiReport {
             append("\n## 7. 同一任务的关联上下文（不是其他被选中的故障）\n")
             append("主故障只包含上文选中的一条 ERROR/FATAL 记录。以下事件仅在同一 sessionId + operationId，或符合旧版同线程近邻规则时作为上下文保留；不代表它们都是本次导出的主故障。\n")
             append("关联事件数：").append(related.size).append("（最多保留 80 条相关事件）\n")
+            append("关联依据说明：每条 JSON 记录均包含 relationToSelectedEvent 和 relationEvidence；恢复记录按 resolvesIssueKey 匹配，翻译事件按诊断 ID 匹配，任务上下文按 sessionId/operationId 匹配。\\n")
             if (related.isEmpty()) {
                 append("没有找到可确认关联的其他事件。\n")
             } else {
