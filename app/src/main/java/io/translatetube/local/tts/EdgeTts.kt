@@ -185,6 +185,25 @@ internal class EdgeTts(context: Context) : TtsEngine, ImmediatelyInterruptibleTt
                     finalFailure = false,
                 )
                 if (attempt < EMPTY_AUDIO_ATTEMPTS - 1) sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS * (attempt + 1), checkActive)
+            } catch (connection: EdgeConnectionException) {
+                // Our own close()/release cancels the socket; that is not a network fault to log or retry.
+                if (closed.get()) throw connection
+                val finalAttempt = attempt >= EMPTY_AUDIO_ATTEMPTS - 1
+                logSynthesisFailure(
+                    if (finalAttempt) "Edge TTS 连接多次中断，放弃当前片段" else "Edge TTS 连接中断（对端提前关闭/重置），正在用新连接重试",
+                    connection,
+                    part.length,
+                    voice,
+                    ratePercent,
+                    stage = "WebSocket 连接/传输",
+                    requestPartIndex = requestPartIndex,
+                    requestPartCount = requestPartCount,
+                    attempt = attempt + 1,
+                    nextAction = if (finalAttempt) "终止当前片段合成并交由上层记录字幕行失败" else "使用新 WebSocket 连接重试",
+                    finalFailure = finalAttempt,
+                )
+                if (finalAttempt) throw connection
+                sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS * (attempt + 1), checkActive)
             } catch (failure: Exception) {
                 logSynthesisFailure(
                     "Edge TTS 请求或音频解码失败",
@@ -237,6 +256,25 @@ internal class EdgeTts(context: Context) : TtsEngine, ImmediatelyInterruptibleTt
                             finalFailure = attempt == 1,
                         )
                         if (attempt == 0) sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS, checkActive)
+                    } catch (connection: EdgeConnectionException) {
+                        if (closed.get()) throw connection
+                        logSynthesisFailure(
+                            if (attempt == 0) "Edge TTS 短片段连接中断，正在用新连接重试" else "Edge TTS 短片段连接多次中断，放弃当前字幕行",
+                            connection,
+                            piece.length,
+                            voice,
+                            ratePercent,
+                            stage = "短片段 WebSocket 连接/传输",
+                            requestPartIndex = requestPartIndex,
+                            requestPartCount = requestPartCount,
+                            subPartIndex = pieceIndex + 1,
+                            subPartCount = pieces.size,
+                            attempt = attempt + 1,
+                            nextAction = if (attempt == 0) "使用新 WebSocket 连接重试" else "终止当前字幕行",
+                            finalFailure = attempt != 0,
+                        )
+                        if (attempt != 0) throw connection
+                        sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS, checkActive)
                     } catch (failure: Exception) {
                         logSynthesisFailure(
                             "Edge TTS 拆分片段请求或解码失败",
@@ -358,6 +396,13 @@ internal class EdgeTts(context: Context) : TtsEngine, ImmediatelyInterruptibleTt
     /** 服务端正常结束请求，但没有给出足够的音频数据。 */
     private class EmptyAudioException(message: String) : IllegalArgumentException(message)
 
+    /**
+     * The WebSocket broke at the transport level (peer closed without a close frame → EOFException,
+     * reset, TLS drop). This is transient and independent of the text, so the request is repeated on a
+     * fresh connection; it is logged on every attempt and surfaces unchanged once attempts run out.
+     */
+    private class EdgeConnectionException(message: String, cause: Throwable) : IllegalStateException(message, cause)
+
     /** The service did not answer in time; retrying on another connection would only double the wait. */
     private class EdgeTimeoutException(message: String) : IllegalStateException(message)
 
@@ -443,7 +488,7 @@ internal class EdgeTts(context: Context) : TtsEngine, ImmediatelyInterruptibleTt
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 failure.compareAndSet(
                     null,
-                    IllegalStateException(
+                    EdgeConnectionException(
                         "微软 Edge TTS WebSocket 连接失败${response?.code?.let { "（HTTP $it）" } ?: ""}：${t.message ?: "未知网络错误"}",
                         t,
                     ),
@@ -526,7 +571,9 @@ internal class EdgeTts(context: Context) : TtsEngine, ImmediatelyInterruptibleTt
             } catch (failure: Exception) {
                 // A pre-connected socket the server dropped before any audio arrived costs only this
                 // fallback to a fresh connection, which is exactly what every request used to do.
-                if (warm.audioBytes > 0 || closed.get()) throw failure
+                // A transport break (EOF/reset) mid-stream is also safe to redo: the whole request restarts
+                // on a fresh socket and the partial audio of the dead one is discarded with it.
+                if (closed.get() || (warm.audioBytes > 0 && failure !is EdgeConnectionException)) throw failure
                 android.util.Log.w("EdgeTts", "Pre-connected socket failed before audio; retrying on a fresh connection", failure)
             }
         }
