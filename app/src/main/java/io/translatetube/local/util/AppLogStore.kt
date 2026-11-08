@@ -715,7 +715,7 @@ object AppLogStore {
         val requiredSections = listOf(
             "report_schema: elephant-app-log/incident-full-v1",
             selectedEventId,
-            "\\"selectedIncident\\": true",
+            "\"selectedIncident\": true",
             "## 1. 本次选中的唯一故障",
             "## 2. 导出完整性核对",
             "## 6. 选中错误的完整原始诊断详情与堆栈",
