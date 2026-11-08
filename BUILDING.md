@@ -6,6 +6,8 @@
 - Gradle 8.2+
 
 ## 首次构建
+
+CI 会优先使用 `GITHUB_SHA`，将提交号前 7 位写入 `BuildConfig.GIT_SHA` 并显示在 AI 故障报告头部；本地构建尝试读取 Git 提交号，无法取得时使用 `unknown`，不会因此中断构建。
 ```bash
 # 1. 下载模型资产（大文件不入库，约 360MB）
 ./scripts/download_models.sh
