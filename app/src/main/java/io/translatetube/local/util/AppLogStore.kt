@@ -88,7 +88,7 @@ data class AppLogWriterHealth(
 object AppLogStore {
     /** App version and source revision shown in diagnostic reports. */
     fun appVersionLabel(): String {
-        val version = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知").ifBlank { "未知" }.ifBlank { "未知" }
+        val version = runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知").ifBlank { "未知" }
         val sha = runCatching { io.translatetube.local.BuildConfig.GIT_SHA }.getOrDefault("unknown").trim().ifBlank { "unknown" }
         return "$version ($sha)"
     }
