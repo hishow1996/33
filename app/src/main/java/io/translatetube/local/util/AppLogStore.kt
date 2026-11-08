@@ -634,11 +634,13 @@ object AppLogStore {
     }
 
     /**
-     * Create a small, self-contained AI repair package for one selected failure.
-     * Prefer exact operation correlation; otherwise include only nearby events from the same
-     * process session. This avoids mixing unrelated work from other sessions.
+     * Resolve exactly one selected failure and retain only its provably correlated context.
+     * The selected event remains the sole primary incident in both export formats.
      */
-    fun exportIncidentText(context: Context, target: AppLogRecord): String {
+    private fun resolveIncidentExportRecords(
+        context: Context,
+        target: AppLogRecord,
+    ): Pair<AppLogRecord, List<AppLogRecord>> {
         val all = readRecent(context, MAX_READ_RECORDS).sortedWith(
             compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence },
         )
@@ -686,7 +688,31 @@ object AppLogStore {
             selected = selected,
             maxContextRecords = 80,
         )
+        return selected to bounded
+    }
 
+    /**
+     * Export one selected error as a full diagnostic file. Unlike the clipboard repair pack,
+     * this path preserves the complete stored details and exception stack without the 4,000
+     * character chat limit.
+     */
+    fun exportIncidentFullText(context: Context, target: AppLogRecord): String {
+        val (selected, relatedRecords) = resolveIncidentExportRecords(context, target)
+        val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        return AppLogAiReport.renderIncidentFull(
+            records = relatedRecords,
+            target = selected,
+            exportedAt = exportedAt,
+            appVersion = appVersionLabel(),
+            device = Build.MANUFACTURER + " " + Build.MODEL,
+            androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+            writerHealth = writerHealth(),
+        )
+    }
+
+    /** Create a small, self-contained AI repair package for clipboard sharing. */
+    fun exportIncidentText(context: Context, target: AppLogRecord): String {
+        val (selected, bounded) = resolveIncidentExportRecords(context, target)
         val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
         return AppLogAiReport.renderIncident(
             records = bounded,
