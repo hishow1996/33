@@ -478,9 +478,30 @@ internal object AppLogAiReport {
         val related = ordered.filter {
             AppLogEventRelationPolicy.eventKey(it) != primaryKey
         }
+        val relationByEvent = AppLogEventRelationPolicy.againstSelected(ordered, primary)
         val diagnosis = AppLogDiagnostics.analyze(primary)
         val coverage = AppLogDiagnosticCoveragePolicy.analyze(primary)
         val diagnosticId = TranslationDiagnosticPackPolicy.idFromRecord(primary)
+        val storedDetailsTruncated =
+            primary.details.contains("中间内容过长，已截断；保留开头和末尾") ||
+                primary.details.length >= 24_000
+        var exceptionNodeCount = 0
+        var exceptionFrameCount = 0
+        var exceptionTreeTruncated = false
+        fun inspectException(node: AppLogExceptionSnapshot, depth: Int = 0) {
+            exceptionNodeCount++
+            exceptionFrameCount += node.stackFrames.size
+            if (node.truncated || depth >= 11) exceptionTreeTruncated = true
+            node.cause?.let { inspectException(it, depth + 1) }
+            node.suppressed.forEach { inspectException(it, depth + 1) }
+        }
+        primary.exceptionSnapshot?.let { inspectException(it) }
+        val hasStackEvidence = Regex("""(?m)^\s*(?:at\s+|#\d+\s+)""")
+            .containsMatchIn(primary.details)
+        val omittedContextFields = primary.diagnosticContext["日志诊断字段省略数"]
+            ?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        val truncatedContextFields = primary.diagnosticContext["日志诊断字段截断数"]
+            ?.toIntOrNull()?.coerceAtLeast(0) ?: 0
         val errorClass = primary.errorClass
             .ifBlank { deepestCause(primary.exceptionSnapshot)?.type.orEmpty() }
             .ifBlank { primary.tag }
@@ -524,6 +545,19 @@ internal object AppLogAiReport {
                     event.exceptionSnapshot?.let { AppLogStore.exceptionSnapshotForExport(it) }
                         ?: JSONObject.NULL,
                 )
+                .put("recoveredAtMs", event.recoveredAtMs ?: JSONObject.NULL)
+                .put(
+                    "relationToSelectedEvent",
+                    relationByEvent[AppLogEventRelationPolicy.eventKey(event)]?.role
+                        ?: "NO_RELATION_METADATA",
+                )
+                .put(
+                    "relationEvidence",
+                    AppLogStore.redactForExport(
+                        relationByEvent[AppLogEventRelationPolicy.eventKey(event)]?.evidence
+                            .orEmpty().ifBlank { "未记录可验证的关联依据" },
+                    ),
+                )
                 .put("details", AppLogStore.redactForExport(event.details.trimEnd()))
 
         return buildString {
@@ -564,7 +598,34 @@ internal object AppLogAiReport {
                 .append(AppLogStore.redactForExport(primary.firstAppStackFrame.ifBlank { "未单独提取" }))
                 .append('\n')
 
-            append("\n## 2. AI 诊断结论\n")
+            append("\n## 2. 导出完整性核对\n")
+            append("- 主错误记录：已锁定 1 条选中事件，事件 ID=")
+                .append(AppLogStore.redactForExport(primary.eventId.ifBlank { "旧版日志未记录" }))
+                .append('\n')
+            append("- 原始诊断详情：")
+                .append(if (primary.details.isBlank()) "未采集" else "已按本地保存内容完整写入（${primary.details.length} 字符）")
+                .append(if (storedDetailsTruncated) "；源日志已触发 24,000 字符截断，导出不能恢复未保存部分" else "；未发现已知的 details 截断标记")
+                .append('\n')
+            append("- 原始堆栈证据：")
+                .append(if (hasStackEvidence) "已在完整诊断详情中发现异常/调用栈文本" else "未在详情中发现标准堆栈行；可能未提供 Throwable 或使用了非标准堆栈格式")
+                .append('\n')
+            append("- 结构化异常树：")
+                .append(
+                    if (primary.exceptionSnapshot == null) "未采集 Throwable 快照"
+                    else "${exceptionNodeCount} 个异常节点、${exceptionFrameCount} 个结构化栈帧；" +
+                        if (exceptionTreeTruncated) "源异常树包含截断标记" else "保存的异常树未标记截断",
+                )
+                .append('\n')
+            append("- 结构化诊断字段：")
+                .append(primary.diagnosticContext.size).append(" 项；省略 ")
+                .append(omittedContextFields).append(" 项；字段值截断 ")
+                .append(truncatedContextFields).append(" 项\n")
+            append("- 关联上下文：").append(related.size)
+                .append(" 条；每条均附带 relationToSelectedEvent 与 relationEvidence；不能据此单独认定因果\n")
+            append("- 读取范围：当前仍保留的最近最多 800 条日志；超过保留范围或已轮转清理的事件无法恢复\n")
+            append("- 隐私处理：主事件、关联日志、诊断字段和异常树均经过常见凭据/签名参数脱敏；分享前仍需人工检查字幕、路径和业务文本\n")
+
+            append("\n## 3. AI 诊断结论\n")
             append("诊断类别：").append(diagnosis.category).append('\n')
             append("置信度：").append(diagnosis.confidence).append('\n')
             append("诊断结论：").append(AppLogStore.redactForExport(diagnosis.finding)).append('\n')
@@ -590,7 +651,7 @@ internal object AppLogAiReport {
                 }
             }
 
-            append("\n## 3. 选中错误的全部结构化诊断字段\n")
+            append("\n## 4. 选中错误的全部结构化诊断字段\n")
             if (primary.diagnosticContext.isEmpty()) {
                 append("当时没有保存结构化诊断字段。\n")
             } else {
@@ -600,7 +661,7 @@ internal object AppLogAiReport {
                 }
             }
 
-            append("\n## 4. 完整结构化异常树\n")
+            append("\n## 5. 完整结构化异常树\n")
             if (primary.exceptionSnapshot != null) {
                 append(AppLogStore.exceptionSnapshotForExport(primary.exceptionSnapshot).toString(2))
                     .append('\n')
@@ -608,13 +669,13 @@ internal object AppLogAiReport {
                 append("没有保存结构化 Throwable 快照；请以完整日志详情中的异常链/堆栈为准。\n")
             }
 
-            append("\n## 5. 选中错误的完整原始诊断详情与堆栈\n")
+            append("\n## 6. 选中错误的完整原始诊断详情与堆栈\n")
             if (primary.details.isNotBlank()) {
                 append(AppLogStore.redactForExport(primary.details.trimEnd())).append('\n')
             } else {
                 append("该记录没有保存 details 字段。\n")
             }
-            append("\n## 6. 同一任务的关联上下文（不是其他被选中的故障）\n")
+            append("\n## 7. 同一任务的关联上下文（不是其他被选中的故障）\n")
             append("主故障只包含上文选中的一条 ERROR/FATAL 记录。以下事件仅在同一 sessionId + operationId，或符合旧版同线程近邻规则时作为上下文保留；不代表它们都是本次导出的主故障。\n")
             append("关联事件数：").append(related.size).append("（最多保留 80 条相关事件）\n")
             if (related.isEmpty()) {
@@ -629,9 +690,9 @@ internal object AppLogAiReport {
                 }
             }
 
-            append("\n## 7. 主故障机器可读完整记录（JSON）\n")
+            append("\n## 8. 主故障机器可读完整记录（JSON）\n")
             append(fullEventJson(primary, selected = true).toString(2)).append('\n')
-            append("\n## 8. AI 分析约束\n")
+            append("\n## 9. AI 分析约束\n")
             append("1. 本报告的唯一主故障是第 1 节选中的事件；关联事件只能用于还原前后过程，不得擅自替换主故障。\n")
             append("2. 完整 details、异常堆栈和结构化异常树均按本地已保存内容导出；若源日志本身标记 truncated 或存在采集上限，必须明确指出，不能声称源数据原本完整。\n")
             append("3. 区分日志证实的事实、合理假设和缺失证据；时间相邻不等于存在因果关系。\n")
