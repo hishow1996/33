@@ -493,4 +493,74 @@ class AppLogAiReportTest {
         assertFalse(report.contains("已压缩"))
     }
 
+
+    @Test
+    fun fullReportLabelsTruncatedSourceAndExplicitRecoveryEvidence() {
+        val issueKey = "PlayerManager:issue-signature"
+        val target = AppLogRecord(
+            timestampMs = 120_000L,
+            level = "ERROR",
+            tag = "PlayerManager",
+            message = "视频播放失败",
+            details = "异常根因链：\\n#0 java.lang.IllegalStateException: failed\\n" +
+                "at io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)\\n" +
+                "…[中间内容过长，已截断；保留开头和末尾，供 AI 查看异常根因及最终调用帧]…",
+            thread = "main",
+            issueKey = issueKey,
+            eventId = "truncated-primary",
+            sessionId = "session-a",
+            sequence = 10L,
+            operationId = "playback-10",
+            errorClass = "java.lang.IllegalStateException",
+            rootCauseMessage = "failed",
+            firstAppStackFrame = "io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)",
+            recoveredAtMs = 130_000L,
+            diagnosticContext = mapOf(
+                "日志诊断字段省略数" to "2",
+                "日志诊断字段截断数" to "1",
+            ),
+            exceptionSnapshot = AppLogExceptionSnapshot(
+                type = "java.lang.IllegalStateException",
+                message = "failed",
+                stackFrames = listOf(
+                    AppLogStackFrame(
+                        "io.translatetube.local.playback.PlayerManager",
+                        "open",
+                        "PlayerManager.kt",
+                        88,
+                    ),
+                ),
+                truncated = true,
+            ),
+        )
+        val recovery = AppLogRecord(
+            timestampMs = 130_000L,
+            level = "INFO",
+            tag = "LogRecovery",
+            message = "播放故障已恢复",
+            details = "恢复依据：播放已确认成功",
+            thread = "main",
+            eventId = "recovery-1",
+            sessionId = "session-b",
+            sequence = 1L,
+            resolvesIssueKey = issueKey,
+        )
+        val report = AppLogAiReport.renderIncidentFull(
+            records = listOf(target, recovery),
+            target = target,
+            exportedAt = "now",
+            appVersion = "1.0.11 (efb32d1)",
+            device = "HUAWEI COR-AL10",
+            androidVersion = "9 (API 28)",
+            writerHealth = AppLogWriterHealth(0L, 0L, "", 130_000L, true),
+        )
+
+        assertTrue(report.contains("源日志明确标记已截断"))
+        assertTrue(report.contains("结构化异常树包含 1 个栈帧"))
+        assertTrue(report.contains("省略 2 项；字段值截断 1 项"))
+        assertTrue(report.contains("已记录恢复事件"))
+        assertTrue(report.contains("RECOVERY_MATCHED_BY_ISSUE_KEY"))
+        assertTrue(report.contains("resolvesIssueKey 与选中事件 issueKey 完全匹配"))
+    }
+
 }
