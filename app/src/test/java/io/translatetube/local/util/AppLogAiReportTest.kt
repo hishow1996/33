@@ -314,7 +314,7 @@ class AppLogAiReportTest {
         assertTrue(report.length <= 4_000)
         assertTrue(report.contains("response body was invalid"))
         assertTrue(report.contains("关联事件"))
-        assertTrue(report.contains("故障：ERROR IOException"))
+        assertTrue(report.contains("故障：ERROR java.io.IOException"))
     }
 
     @Test
@@ -351,8 +351,8 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("翻译诊断 ID：$diagnosticId"))
-        assertTrue(report.contains("同 ID 事件：2"))
+        assertTrue(report.contains("同诊断 ID $diagnosticId"))
+        assertTrue(report.contains("（2 条事件）"))
         assertTrue(report.contains("翻译专项要求"))
         assertTrue(report.contains("翻译任务开始"))
     }
