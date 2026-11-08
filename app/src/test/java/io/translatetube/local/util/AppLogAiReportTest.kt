@@ -119,7 +119,6 @@ class AppLogAiReportTest {
         assertTrue(report.contains("\"请求阶段\":\"提交\""))
         assertTrue(report.contains("AI 分类=HTTP 429：请求频率受限"))
         assertTrue(report.contains("\"exceptionSnapshot\""))
-        assertTrue(report.contains("\"type\":\"java.net.SocketTimeoutException\""))
         assertTrue(report.contains("\"message\":\"response close failed\""))
         assertTrue(report.contains("\"truncated\":true"))
         assertTrue(report.indexOf("\"eventId\":\"event-1\"") < report.indexOf("\"eventId\":\"event-2\""))
@@ -134,13 +133,8 @@ class AppLogAiReportTest {
         assertTrue(report.contains("FIRST_RECORDED_ANOMALY_CANDIDATE"))
         assertTrue(report.contains("不能直接认定为真实根因"))
         assertTrue(report.contains("operationFailureRole"))
-        assertTrue(report.contains("诊断证据覆盖率"))
         assertTrue(report.contains("缺失证据="))
-        assertTrue(report.contains("diagnosticCoverage"))
-        assertTrue(report.contains("证据覆盖"))
         assertTrue(report.contains("近期操作轨迹关联方式"))
-        assertTrue(report.contains("diagnosticContextBudget"))
-        assertEquals(1, report.split("failure-2").size - 1)
     }
 
     @Test
@@ -197,9 +191,9 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 80_000L, true),
         )
 
-        assertTrue(compact.length <= 12_000)
+        assertTrue(compact.length <= 6_000)
         assertTrue(compact.contains("elephant-app-log/chat-v1"))
-        assertTrue(compact.contains("compact-error-80"))
+        assertTrue(compact.contains("翻译批次故障-80"))
         assertTrue(compact.contains("省略"))
         assertTrue(full.contains("elephant-app-log/v9"))
         assertTrue(full.contains("compact-error-1"))
@@ -269,26 +263,13 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 20_000L, true),
         )
 
-        assertTrue(report.contains("report_schema: elephant-app-log/incident-v8"))
-        assertTrue(report.contains("failure-2"))
-        assertTrue(report.contains("start-1"))
-        assertTrue(report.contains("rootCauseMessage"))
-        assertTrue(report.contains("firstAppStackFrame"))
-        assertTrue(report.contains("logCallSite"))
-        assertTrue(report.contains("logCallChain"))
-        assertTrue(report.contains("exceptionCaptureStatus"))
-        assertTrue(report.contains("exceptionSnapshot"))
+        assertTrue(report.contains("report_schema: elephant-app-log/incident-v9"))
         assertTrue(report.contains("\"type\":\"java.net.SocketTimeoutException\""))
-        assertTrue(report.contains("diagnosticContext"))
         assertTrue(report.contains("HTTP 504"))
-        assertTrue(report.contains("关联事件时间线"))
-        assertTrue(report.contains("会话"))
-        assertTrue(report.contains("关联关系"))
-        assertTrue(report.contains("relationToSelectedEvent"))
-        assertTrue(report.contains("processingStage"))
-        assertTrue(report.contains("SAME_OPERATION_CONTEXT"))
-        assertTrue(report.contains("EARLIER_ANOMALY_SAME_OPERATION"))
-        assertTrue(report.contains("仅是上游候选"))
+        assertTrue(report.contains("根因：read timed out"))
+        assertTrue(report.contains("首个应用栈帧："))
+        assertTrue(report.contains("关联事件"))
+        assertTrue(report.contains("关联范围"))
         assertTrue(report.contains("诊断证据覆盖率"))
         assertTrue(report.contains("diagnosticCoverage"))
         assertTrue(report.contains("证据覆盖"))
@@ -334,10 +315,9 @@ class AppLogAiReportTest {
             writerHealth = AppLogWriterHealth(0L, 0L, "", 50_000L, true),
         )
 
-        assertTrue(report.length <= 12_000)
-        assertTrue(report.contains("primary-large"))
+        assertTrue(report.length <= 4_000)
         assertTrue(report.contains("response body was invalid"))
-        assertTrue(report.contains("省略"))
+        assertTrue(report.contains("关联事件"))
         assertEquals(1, report.split("primary-large").size - 1)
     }
 
@@ -378,7 +358,75 @@ class AppLogAiReportTest {
         assertTrue(report.contains("翻译诊断 ID：$diagnosticId"))
         assertTrue(report.contains("同 ID 事件：2"))
         assertTrue(report.contains("翻译专项要求"))
-        assertTrue(report.contains("translation-start"))
-        assertTrue(report.contains("translation-failure"))
+        assertTrue(report.contains("翻译任务开始"))
     }
+    @Test
+    fun verifyErrorIncidentKeepsDexInstructionAndBuildRevisionWithinClipboardLimit() {
+        val params=(1..17).joinToString(""){"Landroidx/compose/runtime/Composer;"}
+        val cause="Verifier rejected class Lio/translatetube/local/ui/screens/PlayerScreenKt;->PlayerScreen($params)V: failed to verify: [0x4440] copy1 v2<-v311 type=Reference: kotlinx.coroutines.CoroutineScope cat=1 (classes7.dex)"
+        val target=AppLogRecord(
+            timestampMs=1_799_000_000_000L,level="FATAL",tag="UncaughtException",
+            message=cause,details="异常根因链：\n#0 java.lang.VerifyError: $cause\n处理方式：崩溃线程名称：main",
+            thread="main",errorClass="java.lang.VerifyError",rootCauseMessage=cause,
+            firstAppStackFrame="io.translatetube.local.ui.screens.PlayerScreenKt.PlayerScreen(PlayerScreen.kt:120)",
+            exceptionSnapshot=AppLogExceptionSnapshot(
+                type="java.lang.VerifyError",message=cause,stackFrames=listOf(
+                    AppLogStackFrame("androidx.compose.runtime.ComposerImpl","startRestartGroup","Composer.kt",1),
+                    AppLogStackFrame("io.translatetube.local.ui.screens.PlayerScreenKt","PlayerScreen","PlayerScreen.kt",120),
+                ),
+            ),
+            diagnosticContext=mapOf("当前处理阶段" to "IDLE","视频来源" to "YouTube","日志调用位置" to "not useful"),
+        )
+        val result=AppLogAiReport.renderIncident(
+            records=listOf(target),target=target,exportedAt="2026-11-08 15:06",
+            appVersion="1.0.11 (efb32d1)",device="HUAWEI COR-AL10",androidVersion="Android 9",
+            writerHealth=AppLogWriterHealth(0L,0L,"",0L,true),
+        )
+        assertTrue(result.length<=4_000)
+        assertTrue(result.contains("copy1 v2<-v311"))
+        assertTrue(result.contains("PlayerScreen"))
+        assertEquals(1,Regex("Verifier rejected").findAll(result).count())
+        assertTrue(result.contains("字节码校验失败"))
+        assertTrue(result.contains("efb32d1"))
+        assertTrue(result.contains("寄存器编号超过 255"))
+        assertFalse(result.contains("logCallSite"))
+        assertFalse(result.contains("diagnosticContextBudget"))
+    }
+
+    @Test
+    fun incidentRetainsWhitelistedHttpTranslationAndBatchEvidence() {
+        val target=AppLogRecord(
+            timestampMs=1_799_000_000_000L,level="ERROR",tag="Translation",
+            message="翻译批次请求失败",details="",thread="translation-worker",
+            errorClass="java.io.IOException",rootCauseMessage="HTTP 429",httpStatusCode=429,
+            diagnosticContext=mapOf(
+                "视频来源" to "YouTube","当前处理阶段" to "TRANSLATING",
+                "翻译引擎" to "Gemini API","转写引擎" to "Whisper","配音引擎" to "Edge TTS",
+                "HTTP 状态码" to "429","批次索引" to "2/5","字幕行索引" to "41",
+                "日志调用位置" to "must be omitted",
+            ),
+        )
+        val result=AppLogAiReport.renderIncident(
+            listOf(target),target,"now","1.0.11 (1234567)","Test Device","Android 9",
+            AppLogWriterHealth(0L,0L,"",0L,true),
+        )
+        assertTrue(result.contains("HTTP 状态码=429"))
+        assertTrue(result.contains("翻译引擎=Gemini API"))
+        assertTrue(result.contains("批次索引=2/5"))
+        assertTrue(result.contains("字幕行索引=41"))
+        assertFalse(result.contains("must be omitted"))
+    }
+
+    @Test
+    fun clipForAiKeepsVerifierInstructionAndShortensLongParameterLists() {
+        val args=(1..17).joinToString(", "){"androidx.compose.runtime.Composer arg$it"}
+        val value="PlayerScreenKt.PlayerScreen($args) failed to verify: [0x4440] copy1 v2<-v311 type=Reference: CoroutineScope"
+        val clipped=AppLogAiReport.clipForAi(value,180)
+        assertTrue(clipped.contains("PlayerScreen"))
+        assertTrue(clipped.contains("17 params"))
+        assertTrue(clipped.contains("failed to verify:"))
+        assertTrue(clipped.contains("copy1 v2<-v311"))
+    }
+
+
 }
