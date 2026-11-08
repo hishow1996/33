@@ -404,7 +404,7 @@ internal object AppLogAiReport {
                 .append(" | Android ").append(clipForAi(androidVersion,32)).append(" | ").append(exportedAt).append('\n')
             append("故障：").append(primary.level).append(' ').append(clipForAi(AppLogStore.redactForExport(errorClass).ifBlank{primary.tag},120))
             if(primary.thread.equals("main",true))append("（主线程）")
-            append('\n诊断：').append(clipForAi(diagnosis.category,100)).append("；").append(clipForAi(diagnosis.confidence,32)).append('\n')
+            append("\n诊断：").append(clipForAi(diagnosis.category,100)).append("；").append(clipForAi(diagnosis.confidence,32)).append('\n')
             if(diagnosis.finding.isNotBlank())append("结论：").append(clipForAi(AppLogStore.redactForExport(diagnosis.finding),360)).append('\n')
             if(diagnosis.evidence.isNotBlank())append("诊断证据：").append(clipForAi(AppLogStore.redactForExport(diagnosis.evidence),280)).append('\n')
             if(root.isNotBlank())append("根因：").append(clipForAi(AppLogStore.redactForExport(root),560)).append('\n')
