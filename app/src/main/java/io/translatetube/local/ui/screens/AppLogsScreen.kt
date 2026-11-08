@@ -48,6 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Date
+import java.util.Locale
 
 @Composable
 fun AppLogsScreen(onBack: () -> Unit) {
@@ -71,7 +72,6 @@ fun AppLogsScreen(onBack: () -> Unit) {
 
 @Composable
 private fun AppLogsScreenContent(onBack: () -> Unit) {
-    BackHandler(onBack = onBack)
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var records by remember { mutableStateOf<List<AppLogRecord>>(emptyList()) }
@@ -84,21 +84,58 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     var searchQuery by remember { mutableStateOf("") }
     var writerHealth by remember { mutableStateOf(AppLogStore.writerHealth()) }
     var showActionsMenu by remember { mutableStateOf(false) }
+    var showIncidentExportPicker by remember { mutableStateOf(false) }
+    var incidentExportQuery by remember { mutableStateOf("") }
+    var selectedIncidentForExport by remember { mutableStateOf<AppLogRecord?>(null) }
+    var pendingIncidentExport by remember { mutableStateOf<AppLogRecord?>(null) }
+
+    BackHandler(enabled = showIncidentExportPicker) {
+        showIncidentExportPicker = false
+    }
+    BackHandler(
+        enabled = !showIncidentExportPicker && selectedRecord == null && !showClearConfirm,
+        onBack = onBack,
+    )
+
+    val incidentExportCandidates = remember(records, incidentExportQuery) {
+        val query = incidentExportQuery.trim()
+        records.asSequence()
+            .filter { it.level == "ERROR" || it.level == "FATAL" }
+            .sortedWith(compareByDescending<AppLogRecord> { it.timestampMs }.thenByDescending { it.sequence })
+            .filter { record ->
+                query.isBlank() ||
+                    record.tag.contains(query, ignoreCase = true) ||
+                    AppLogTitleResolver.title(record.tag, record.message).contains(query, ignoreCase = true) ||
+                    record.message.contains(query, ignoreCase = true) ||
+                    record.errorClass.contains(query, ignoreCase = true) ||
+                    record.issueKey.contains(query, ignoreCase = true) ||
+                    record.eventId.contains(query, ignoreCase = true)
+            }
+            .toList()
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain"),
     ) { uri ->
-        if (uri != null) {
+        val target = pendingIncidentExport
+        pendingIncidentExport = null
+        if (uri != null && target != null) {
             exporting = true
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         val output = ctx.contentResolver.openOutputStream(uri, "wt")
                             ?: error("无法打开所选文件")
-                        output.bufferedWriter(Charsets.UTF_8).use { it.write(AppLogStore.exportText(ctx.applicationContext)) }
+                        output.bufferedWriter(Charsets.UTF_8).use { writer ->
+                            writer.write(AppLogStore.exportIncidentFullText(ctx.applicationContext, target))
+                        }
                     }
                 }
-                message = if (result.isSuccess) "诊断日志已导出" else "导出失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                message = if (result.isSuccess) {
+                    "单条 AI 诊断报告已导出"
+                } else {
+                    "导出失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                }
                 exporting = false
             }
         }
@@ -209,7 +246,13 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         enabled = !exporting,
                         onClick = {
                             showActionsMenu = false
-                            exportLauncher.launch("elephant-translate-ai-diagnostics.txt")
+                            incidentExportQuery = ""
+                            selectedIncidentForExport = null
+                            if (records.none { it.level == "ERROR" || it.level == "FATAL" }) {
+                                message = "暂无可导出的错误记录"
+                            } else {
+                                showIncidentExportPicker = true
+                            }
                         },
                     )
                     DropdownMenuItem(
@@ -432,6 +475,214 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     key = { "${it.timestampMs}-${it.tag}-${it.message.hashCode()}" },
                 ) { record ->
                     LogRecordCard(record = record, onClick = { selectedRecord = record })
+                }
+            }
+        }
+    }
+
+    if (showIncidentExportPicker) {
+        Dialog(
+            onDismissRequest = {
+                showIncidentExportPicker = false
+                selectedIncidentForExport = null
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Box(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.38f))
+                        .clickable {
+                            showIncidentExportPicker = false
+                            selectedIncidentForExport = null
+                        },
+                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.9f)
+                        .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
+                        .background(Color.White)
+                        .navigationBarsPadding(),
+                ) {
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .padding(top = 12.dp, bottom = 10.dp)
+                            .size(width = 38.dp, height = 4.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Color(0xFFD8DCE2)),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 12.dp, top = 2.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                "选择要导出的错误",
+                                color = Color(0xFF202124),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "选择一条错误记录，生成完整 AI 诊断报告",
+                                color = Color(0xFF737980),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                showIncidentExportPicker = false
+                                selectedIncidentForExport = null
+                            },
+                        ) { Text("关闭") }
+                    }
+                    OutlinedTextField(
+                        value = incidentExportQuery,
+                        onValueChange = { incidentExportQuery = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 8.dp),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        placeholder = { Text("搜索模块、错误编号或内容", maxLines = 1) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null, tint = Color(0xFF8A9099))
+                        },
+                        trailingIcon = {
+                            if (incidentExportQuery.isNotBlank()) {
+                                TextButton(onClick = { incidentExportQuery = "" }) { Text("清除") }
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BrandBright,
+                            unfocusedBorderColor = Color(0xFFE0E3E7),
+                            focusedContainerColor = Color(0xFFFAFAFB),
+                            unfocusedContainerColor = Color(0xFFFAFAFB),
+                            focusedTextColor = Color(0xFF202124),
+                            unfocusedTextColor = Color(0xFF202124),
+                            cursorColor = Color(0xFF202124),
+                        ),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "错误记录",
+                            color = Color(0xFF202124),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            "仅显示 ERROR / FATAL · 最新在前",
+                            color = Color(0xFF858B93),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    if (incidentExportCandidates.isEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Info,
+                                contentDescription = null,
+                                tint = Color(0xFF9AA0A6),
+                                modifier = Modifier.size(36.dp),
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                if (incidentExportQuery.isBlank()) "暂无可导出的错误记录" else "没有找到匹配的错误",
+                                color = Color(0xFF202124),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(
+                                items = incidentExportCandidates,
+                                key = {
+                                    it.eventId.ifBlank {
+                                        "${it.timestampMs}-${it.tag}-${it.message.hashCode()}"
+                                    }
+                                },
+                            ) { record ->
+                                IncidentExportRecordRow(
+                                    record = record,
+                                    selected = selectedIncidentForExport?.let { selected ->
+                                        if (selected.eventId.isNotBlank()) {
+                                            selected.eventId == record.eventId
+                                        } else {
+                                            selected.timestampMs == record.timestampMs &&
+                                                selected.tag == record.tag &&
+                                                selected.message == record.message
+                                        }
+                                    } == true,
+                                    onClick = { selectedIncidentForExport = record },
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(color = Color(0xFFE9EAEC), thickness = 1.dp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                if (selectedIncidentForExport == null) "尚未选择错误" else "已选择 1 条错误",
+                                color = Color(0xFF202124),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                "报告将保留该错误的完整堆栈和关联上下文",
+                                color = Color(0xFF858B93),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 2,
+                            )
+                        }
+                        Button(
+                            enabled = selectedIncidentForExport != null && !exporting,
+                            onClick = {
+                                val target = selectedIncidentForExport ?: return@Button
+                                pendingIncidentExport = target
+                                showIncidentExportPicker = false
+                                selectedIncidentForExport = null
+                                exportLauncher.launch(incidentReportFileName(target))
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BrandBright,
+                                contentColor = Color.White,
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("导出完整报告")
+                        }
+                    }
                 }
             }
         }
@@ -685,6 +936,91 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("取消") } },
             containerColor = Color.White,
         )
+    }
+}
+
+private fun incidentReportFileName(record: AppLogRecord): String {
+    val module = record.tag
+        .replace(Regex("[^A-Za-z0-9_-]+"), "_")
+        .trim('_')
+        .take(36)
+        .ifBlank { "Error" }
+    val time = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+        .format(Date(record.timestampMs))
+    return "AI诊断_${module}_$time.txt"
+}
+
+@Composable
+private fun IncidentExportRecordRow(
+    record: AppLogRecord,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val levelTint = if (record.level == "FATAL") Color(0xFFB42318) else Color(0xFFD97706)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(13.dp),
+        color = if (selected) Color(0xFFF0F6FF) else Color.White,
+        border = BorderStroke(
+            1.dp,
+            if (selected) BrandBright.copy(alpha = 0.8f) else Color(0xFFE7E9EC),
+        ),
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = onClick,
+                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        AppLogTitleResolver.title(record.tag, record.message),
+                        modifier = Modifier.weight(1f),
+                        color = Color(0xFF202124),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        record.level,
+                        color = levelTint,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Text(
+                    "${record.tag} · ${AppLogStore.formatTime(record.timestampMs)}",
+                    color = Color(0xFF737980),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val identifier = record.issueKey.ifBlank { record.eventId }
+                if (identifier.isNotBlank()) {
+                    Text(
+                        "编号：$identifier",
+                        color = Color(0xFF858B93),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }
 
