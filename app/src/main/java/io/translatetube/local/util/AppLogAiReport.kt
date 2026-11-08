@@ -641,8 +641,8 @@ internal object AppLogAiReport {
         return node
     }
     private fun rootCauseForAi(event:AppLogRecord):String{
-        event.rootCauseMessage.trim().takeIf{it.isNotBlank()}?.let{return it}
         deepestCause(event.exceptionSnapshot)?.message?.trim()?.takeIf{it.isNotBlank()}?.let{return it}
+        event.rootCauseMessage.trim().takeIf{it.isNotBlank()}?.let{return it}
         val details=event.details.replace("\\n","\n")
         val line=Regex("""(?m)^#\d+\s+(.+)$""").findAll(details).lastOrNull()?.groupValues?.getOrNull(1)?.trim()
         if(!line.isNullOrBlank())return line.substringAfter(": ",line)
