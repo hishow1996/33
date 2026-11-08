@@ -74,8 +74,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -107,56 +105,68 @@ import kotlin.math.abs
 
 private const val TAG_WEB = "WebVideoScreen"
 
+private data class AddressBarAppearance(
+    val textColor: Int,
+    val hintColor: Int,
+    val backgroundColor: Int,
+    val outlineColor: Int,
+    val cornerRadiusPx: Float,
+    val strokeWidthPx: Int,
+)
+
 /**
- * Native single-line EditText supplies Android's selection handles and automatic horizontal
- * scrolling while a caret/selection handle is dragged across long URLs.
- * Compose remains the source of truth for the address text and selection.
+ * Native single-line EditText owns cursor/selection gestures and horizontal auto-scrolling.
+ * Compose synchronizes URL text only; selection stays native so dragging a handle does not
+ * trigger a Compose round-trip or reset the editor's scroll position.
  */
 private class AddressBarEditText(context: Context) : android.widget.EditText(context) {
-    var onAddressValueChanged: ((String, Int, Int) -> Unit)? = null
-    private var applyingExternalValue = false
+    var onAddressTextChanged: ((String) -> Unit)? = null
+    private var applyingExternalText = false
+    private var appliedAppearance: AddressBarAppearance? = null
 
     init {
         addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
 
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                dispatchAddressValue()
+                dispatchAddressText()
             }
 
             override fun afterTextChanged(s: android.text.Editable?) = Unit
         })
     }
 
-    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
-        super.onSelectionChanged(selStart, selEnd)
-        dispatchAddressValue()
-    }
-
-    fun setExternalValue(value: TextFieldValue) {
-        val valueText = value.text
-        val valueSelectionStart = value.selection.start.coerceIn(0, valueText.length)
-        val valueSelectionEnd = value.selection.end.coerceIn(0, valueText.length)
-        applyingExternalValue = true
+    fun setExternalText(value: String) {
+        applyingExternalText = true
         try {
-            if (text.toString() != valueText) setText(valueText)
-            if (selectionStart != valueSelectionStart || selectionEnd != valueSelectionEnd) {
-                setSelection(valueSelectionStart, valueSelectionEnd)
-            }
+            if (text.toString() != value) setText(value)
+            // External navigation intentionally places the caret at the URL end.
+            setSelection(value.length)
         } finally {
-            applyingExternalValue = false
+            applyingExternalText = false
         }
         if (hasFocus()) {
-            post { bringPointIntoView(maxOf(valueSelectionStart, valueSelectionEnd)) }
+            post {
+                if (hasFocus()) bringPointIntoView(text?.length ?: 0)
+            }
         }
     }
 
-    private fun dispatchAddressValue() {
-        if (applyingExternalValue) return
-        val valueText = text?.toString().orEmpty()
-        val start = selectionStart.takeIf { it >= 0 }?.coerceIn(0, valueText.length) ?: return
-        val end = selectionEnd.takeIf { it >= 0 }?.coerceIn(0, valueText.length) ?: return
-        onAddressValueChanged?.invoke(valueText, start, end)
+    fun applyAppearance(appearance: AddressBarAppearance) {
+        if (appliedAppearance == appearance) return
+        setTextColor(appearance.textColor)
+        setHintTextColor(appearance.hintColor)
+        background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = appearance.cornerRadiusPx
+            setColor(appearance.backgroundColor)
+            setStroke(appearance.strokeWidthPx, appearance.outlineColor)
+        }
+        appliedAppearance = appearance
+    }
+
+    private fun dispatchAddressText() {
+        if (!applyingExternalText) onAddressTextChanged?.invoke(text?.toString().orEmpty())
     }
 }
 
@@ -343,10 +353,8 @@ fun WebVideoScreen(
 ) {
     val appCtx = LocalContext.current.applicationContext
     val backgroundScope = remember(appCtx) { (appCtx as TranslateTubeApp).appScope }
-    // TextFieldValue is the single source of truth for text, cursor and selection.
-    var addressFieldValue by remember(initialUrl) {
-        mutableStateOf(TextFieldValue(text = initialUrl, selection = TextRange(initialUrl.length)))
-    }
+    // Compose tracks the current URL text; the native editor exclusively owns its cursor/selection.
+    var addressText by remember(initialUrl) { mutableStateOf(initialUrl) }
     var addressFieldHasFocus by remember(initialUrl) { mutableStateOf(false) }
     var addressEditPending by remember(initialUrl) { mutableStateOf(false) }
     var addressEditText by remember(initialUrl) { mutableStateOf<AddressBarEditText?>(null) }
@@ -356,9 +364,8 @@ fun WebVideoScreen(
     val addressBarHeight = maxOf(52f, 18f * LocalDensity.current.fontScale + 34f).dp
     fun setAddress(value: String) {
         addressEditPending = false
-        val newValue = TextFieldValue(text = value, selection = TextRange(value.length))
-        addressFieldValue = newValue
-        addressEditText?.setExternalValue(newValue)
+        addressText = value
+        addressEditText?.setExternalText(value)
     }
     fun clearAddressInputFocus() {
         addressEditText?.clearFocus()
@@ -1165,7 +1172,7 @@ fun WebVideoScreen(
     }
 
     fun submitAddress() {
-        val rawAddress = (addressEditText?.text?.toString() ?: addressFieldValue.text).trim()
+        val rawAddress = (addressEditText?.text?.toString() ?: addressText).trim()
         val inputUrl = SharedLinkTextParser.extractFirstHttpUrl(rawAddress) ?: rawAddress
         // 受密码保护的分享保持官方网页原始验证流程；提取码仍由用户在网页内输入。
         pikpakPassCode = ""
@@ -1775,15 +1782,19 @@ fun WebVideoScreen(
                         contentDescription = "返回网页上一页",
                     )
                 }
-                val addressTextColor = MaterialTheme.colorScheme.onSurface
-                val addressHintColor = MaterialTheme.colorScheme.onSurfaceVariant
-                val addressBackgroundColor = MaterialTheme.colorScheme.surface
-                val addressOutlineColor = if (addressFieldHasFocus) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.outline
-                }
                 val addressDensity = LocalDensity.current
+                val addressAppearance = AddressBarAppearance(
+                    textColor = MaterialTheme.colorScheme.onSurface.toArgb(),
+                    hintColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb(),
+                    backgroundColor = MaterialTheme.colorScheme.surface.toArgb(),
+                    outlineColor = if (addressFieldHasFocus) {
+                        MaterialTheme.colorScheme.primary.toArgb()
+                    } else {
+                        MaterialTheme.colorScheme.outline.toArgb()
+                    },
+                    cornerRadiusPx = with(addressDensity) { 14.dp.toPx() },
+                    strokeWidthPx = with(addressDensity) { 1.dp.roundToPx() }.coerceAtLeast(1),
+                )
                 AndroidView(
                     factory = { context ->
                         AddressBarEditText(context).apply {
@@ -1791,6 +1802,8 @@ fun WebVideoScreen(
                             setSingleLine(true)
                             setHorizontallyScrolling(true)
                             maxLines = 1
+                            isFocusable = true
+                            isFocusableInTouchMode = true
                             inputType = android.text.InputType.TYPE_CLASS_TEXT or
                                 android.text.InputType.TYPE_TEXT_VARIATION_URI
                             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
@@ -1798,32 +1811,19 @@ fun WebVideoScreen(
                             gravity = android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
                             val horizontalPadding = with(addressDensity) { 16.dp.roundToPx() }
                             setPadding(horizontalPadding, 0, horizontalPadding, 0)
-                            setTextColor(addressTextColor.toArgb())
-                            setHintTextColor(addressHintColor.toArgb())
                             hint = "输入网页地址"
-                            background = android.graphics.drawable.GradientDrawable().apply {
-                                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                                cornerRadius = with(addressDensity) { 14.dp.toPx() }
-                                setColor(addressBackgroundColor.toArgb())
-                                setStroke(
-                                    with(addressDensity) { 1.dp.roundToPx() }.coerceAtLeast(1),
-                                    addressOutlineColor.toArgb(),
-                                )
-                            }
-                            onAddressValueChanged = { text, selectionStart, selectionEnd ->
-                                val nextValue = TextFieldValue(
-                                    text = text,
-                                    selection = TextRange(selectionStart, selectionEnd),
-                                )
-                                val textChanged = text != addressFieldValue.text
-                                if (nextValue != addressFieldValue) addressFieldValue = nextValue
-                                if (textChanged) addressEditPending = true
+                            applyAppearance(addressAppearance)
+                            onAddressTextChanged = { text ->
+                                if (text != addressText) {
+                                    addressText = text
+                                    addressEditPending = true
+                                }
                             }
                             setOnFocusChangeListener { view, hasFocus ->
                                 addressFieldHasFocus = hasFocus
                                 if (hasFocus) {
-                                    // Keep the existing select-all-on-focus behavior; native
-                                    // selection handles can then be dragged normally.
+                                    // Select all only on the transition into focus. After that,
+                                    // the native editor owns tap placement and drag selection.
                                     view.post {
                                         if (view.hasFocus()) {
                                             setSelection(0, text?.length ?: 0)
@@ -1843,29 +1843,17 @@ fun WebVideoScreen(
                                     false
                                 }
                             }
-                            setExternalValue(addressFieldValue)
+                            setExternalText(addressText)
                         }
                     },
                     update = { editText ->
-                        editText.setTextColor(addressTextColor.toArgb())
-                        editText.setHintTextColor(addressHintColor.toArgb())
-                        editText.background = android.graphics.drawable.GradientDrawable().apply {
-                            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                            cornerRadius = with(addressDensity) { 14.dp.toPx() }
-                            setColor(addressBackgroundColor.toArgb())
-                            setStroke(
-                                with(addressDensity) { 1.dp.roundToPx() }.coerceAtLeast(1),
-                                addressOutlineColor.toArgb(),
-                            )
-                        }
-                        // Only sync when text or selection differs. Re-setting identical text
-                        // during composition would reset the caret and cancel an active handle drag.
-                        if (
-                            editText.text.toString() != addressFieldValue.text ||
-                            editText.selectionStart != addressFieldValue.selection.start ||
-                            editText.selectionEnd != addressFieldValue.selection.end
-                        ) {
-                            editText.setExternalValue(addressFieldValue)
+                        // Apply theme changes only when their resolved values actually change.
+                        // Cursor movement alone no longer asks Compose to redraw this view.
+                        editText.applyAppearance(addressAppearance)
+                        // Sync external URL changes only; never overwrite the native selection
+                        // during typing, caret movement, or selection-handle dragging.
+                        if (editText.text.toString() != addressText) {
+                            editText.setExternalText(addressText)
                         }
                     },
                     modifier = Modifier
