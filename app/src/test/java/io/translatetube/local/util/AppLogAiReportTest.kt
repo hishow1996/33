@@ -429,7 +429,7 @@ class AppLogAiReportTest {
 
     @Test
     fun fullSingleIncidentReportPreservesEntireStoredStackAndCorrelatedContext() {
-        val primaryDetails = ("at io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)\\n")
+        val primaryDetails = ("at io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)\n")
             .repeat(420) + "PRIMARY_STACK_END_MARKER"
         val target = AppLogRecord(
             timestampMs = 90_000L,
@@ -488,8 +488,8 @@ class AppLogAiReportTest {
         assertTrue(report.contains("PRIMARY_STACK_END_MARKER"))
         assertTrue(report.contains("RELATED_CONTEXT_FULL_DETAIL"))
         assertTrue(report.contains("PlayerManager.kt"))
-        assertTrue(report.contains("\"selectedIncident\":true"))
-        assertTrue(report.contains("\"selectedIncident\":false"))
+        assertTrue(report.contains("\"selectedIncident\": true"))
+        assertTrue(report.contains("\"selectedIncident\": false"))
         assertFalse(report.contains("已压缩"))
     }
 
