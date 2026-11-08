@@ -11405,7 +11405,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // Run local-engine preflight before announcing translation progress or entering retries.
             // The selected engine resolves an "auto" source using the full subtitle list.
             // An on-device translation model that is still downloading: wait here, then continue.
-            if (EngineFactory.isLocalTranslationEngine(activeId)) {
+            if (EngineFactory.isLocalTranslationEngine(activeId) && pipelineGeneration != null) {
                 awaitLocalTranslationModelInstall(key, pipelineGeneration, activeId)
             }
             var src = SourceLanguagePolicy.sourceForTranslation(srcLang)
