@@ -357,6 +357,8 @@ internal object AppLogIncidentDocument {
 
     private fun value(record: AppLogRecord, vararg aliases: String): String? {
         aliases.forEach { alias ->
+            val exact = record.diagnosticContext[alias]?.takeIf { it.isNotBlank() }
+            if (exact != null) return line(exact)
             val found = record.diagnosticContext.entries.firstOrNull { entry ->
                 entry.key.contains(alias, ignoreCase = true) && entry.value.isNotBlank()
             }?.value

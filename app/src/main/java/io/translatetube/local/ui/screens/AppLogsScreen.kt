@@ -718,6 +718,17 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             offset = start + title.length
                         }
                     }
+                    val symptomStart = documentText.indexOf("现象：")
+                    if (symptomStart >= 0) {
+                        val symptomEnd = documentText.indexOf('\n', symptomStart).let {
+                            if (it < 0) documentText.length else it
+                        }
+                        builder.addStyle(
+                            androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold),
+                            symptomStart,
+                            symptomEnd,
+                        )
+                    }
                     builder.toAnnotatedString()
                 }
 
