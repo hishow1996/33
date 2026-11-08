@@ -699,7 +699,7 @@ object AppLogStore {
     fun exportIncidentFullText(context: Context, target: AppLogRecord): String {
         val (selected, relatedRecords) = resolveIncidentExportRecords(context, target)
         val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
-        return AppLogAiReport.renderIncidentFull(
+        val report = AppLogAiReport.renderIncidentFull(
             records = relatedRecords,
             target = selected,
             exportedAt = exportedAt,
@@ -708,6 +708,33 @@ object AppLogStore {
             androidVersion = Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
             writerHealth = writerHealth(),
         )
+
+        // Fail before opening the destination document if a required section or the selected
+        // event's original stored details did not make it into the generated report.
+        val selectedEventId = selected.eventId.ifBlank { "legacy-" + selected.timestampMs }
+        val requiredSections = listOf(
+            "report_schema: elephant-app-log/incident-full-v1",
+            selectedEventId,
+            "\\"selectedIncident\\": true",
+            "## 1. 本次选中的唯一故障",
+            "## 2. 导出完整性核对",
+            "## 6. 选中错误的完整原始诊断详情与堆栈",
+            "## 8. 主故障机器可读完整记录（JSON）",
+        )
+        val missingSections = requiredSections.filterNot(report::contains).toMutableList()
+        val selectedDetails = redact(selected.details.trimEnd())
+        if (selectedDetails.isNotBlank() && !report.contains(selectedDetails)) {
+            missingSections += "选中错误的完整 details 原文"
+        }
+        if (selected.exceptionSnapshot != null &&
+            !report.contains(redact(selected.exceptionSnapshot.type))
+        ) {
+            missingSections += "选中错误的结构化异常树"
+        }
+        check(missingSections.isEmpty()) {
+            "完整 AI 诊断报告校验失败：缺少 " + missingSections.joinToString("、")
+        }
+        return report
     }
 
     /** Create a small, self-contained AI repair package for clipboard sharing. */
