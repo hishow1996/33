@@ -857,18 +857,18 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                                 exporting = true
                                 val result = withContext(Dispatchers.IO) {
                                     runCatching {
-                                        AppLogStore.exportText(ctx.applicationContext)
+                                        AppLogStore.exportIncidentFullText(ctx.applicationContext, record)
                                     }
                                 }
                                 result.onSuccess { report ->
                                     val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                     clipboard.setPrimaryClip(
-                                        android.content.ClipData.newPlainText("AI 完整日志诊断报告", report),
+                                        android.content.ClipData.newPlainText("AI 当前故障完整诊断报告", report),
                                     )
-                                    message = "全部日志已复制"
+                                    message = "当前错误完整诊断已复制"
                                     selectedRecord = null
                                 }.onFailure { failure ->
-                                    message = "完整日志报告生成失败：${failure.message ?: "未知错误"}"
+                                    message = "当前错误诊断报告生成失败：${failure.message ?: "未知错误"}"
                                 }
                                 exporting = false
                             }
@@ -881,7 +881,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     ) {
                         Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (exporting) "正在整理…" else "复制全部日志")
+                        Text(if (exporting) "正在整理…" else "复制当前错误")
                     }
                 }
             }
