@@ -612,7 +612,7 @@ internal object AppLogAiReport {
                     when {
                         storedDetailsTruncationMarker -> "；源日志明确标记已截断，导出无法恢复未保存部分"
                         storedDetailsAtLimit -> "；内容达到 ${AppLogStore.MAX_DETAIL_CHARS} 字符采集上限，无法确认是否恰好达到上限或发生了截断"
-                        else -> "；未发现已知的 details 截断标记",
+                        else -> "；未发现已知的 details 截断标记"
                     },
                 )
                 .append('\n')
