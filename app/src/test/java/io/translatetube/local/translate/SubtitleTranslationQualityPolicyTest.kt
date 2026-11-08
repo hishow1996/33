@@ -1660,4 +1660,35 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun diagnosticEvidenceReportsHanAndLatinRatios() {
+        val evidence = SubtitleTranslationQualityPolicy.diagnosticEvidence(
+            sourceText = "ですがそうだから今回Vロog撮ろうかな",
+            translatedText = "但是这样所以这次想拍Vlog",
+            sourceLanguage = "ja",
+            targetLanguage = "zh-CN",
+        )
+        assertTrue(evidence, evidence.contains("han=10"))
+        assertTrue(evidence, evidence.contains("latin=4"))
+        assertTrue(evidence, evidence.contains("hanRatio=0.71"))
+        assertTrue(evidence, evidence.contains("latinRatio=0.29"))
+    }
+
+    @Test
+    fun mismatchReasonNamesTheRuleThatFiredWithCountsOnly() {
+        val ungrounded = SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+            "Vロog撮ろうかな", "拍Vlog", "ja", "zh-CN",
+        ).orEmpty()
+        assertTrue(ungrounded, ungrounded.contains("触发规则=未出处外文名"))
+        assertTrue(ungrounded, ungrounded.contains("汉字=1"))
+        assertTrue(ungrounded, ungrounded.contains("外文名字母=4"))
+
+        val foreignHeavy = SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
+            "I think we should go now.", "我们应该go now。", "en", "zh-CN",
+        ).orEmpty()
+        assertTrue(foreignHeavy, foreignHeavy.contains("触发规则=外文字母不少于汉字"))
+        assertTrue(foreignHeavy, foreignHeavy.contains("汉字=4"))
+        assertTrue(foreignHeavy, foreignHeavy.contains("非汉字外文字母=5"))
+    }
 }

@@ -12157,6 +12157,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "源语言代码" to src,
                                 "目标语言代码" to tgt,
                                 "当前批次" to "${batchIndex + 1}/${translationTotalBatches}",
+                                "本批输入字幕行数" to batchIndices.size.toString(),
                                 "当前批次重试请求次数（含首次）" to attempt.toString(),
                                 "是否曾出现响应数量不匹配" to hadResponseCountMismatch.toString(),
                                 "最后一次请求字幕行数" to lastRequestRowCount.toString(),

@@ -1587,6 +1587,9 @@ internal object SubtitleTranslationQualityPolicy {
             append("; kana=").append(kana)
             append("; hangul=").append(hangul)
             append("; latin=").append(latin)
+            // Share of letters/digits; counts alone made it hard to see how close a line was.
+            append("; hanRatio=").append(scriptRatioText(han, lettersOrDigits))
+            append("; latinRatio=").append(scriptRatioText(latin, lettersOrDigits))
             append("; sourceEcho=").append(sourceEcho)
             append("; nonTranslatableSourceCue=").append(nonTranslatable)
             append("; punctuationOnlyOutput=").append(punctuationOnly)
@@ -1609,6 +1612,9 @@ internal object SubtitleTranslationQualityPolicy {
             append("; mismatchReason=").append(mismatch?.let { it.take(180) } ?: "无")
         }
     }
+
+    private fun scriptRatioText(count: Int, total: Int): String =
+        if (total <= 0) "无" else String.format(Locale.ROOT, "%.2f", count.toDouble() / total)
 
     /**
      * Detect common assistant-style meta replies that look like subtitles because they
@@ -1751,9 +1757,7 @@ internal object SubtitleTranslationQualityPolicy {
         if (hangul >= 2 && hangul > han) {
             return "译文韩文音节占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
         }
-        if (hasDominantForeignText(sourceText, translatedText, han, sourceLanguage)) {
-            return "译文保留过多非汉字外语文本，汉字字符占比低于质量阈值"
-        }
+        dominantForeignTextReason(sourceText, translatedText, han, sourceLanguage)?.let { return it }
         return null
     }
 
@@ -1817,12 +1821,12 @@ internal object SubtitleTranslationQualityPolicy {
      * Proper names, acronyms, model names and brands that are also present in the source are
      * excluded, so ordinary Chinese subtitles can retain terms such as Google Gemini or iPhone.
      */
-    private fun hasDominantForeignText(
+    private fun dominantForeignTextReason(
         sourceText: String,
         translatedText: String,
         hanCount: Int,
         sourceLanguage: String,
-    ): Boolean {
+    ): String? {
         val sourceTokens = splitMixedScriptTokens(sourceText)
             .map(::normalize)
             .filter { it.isNotEmpty() }
@@ -1862,9 +1866,17 @@ internal object SubtitleTranslationQualityPolicy {
         // correctly kept loanword in the translation then has no source token to match. When the
         // sentence is clearly Chinese (at least 3 Han characters and more than twice as many Han
         // characters as ungrounded name letters), such a token no longer fails the whole line.
-        val ungroundedRejected = ungroundedProperName &&
-            !(hanCount >= 3 && hanCount > ungroundedLetters * 2)
-        return ungroundedRejected || (foreignLetters >= 2 && hanCount <= foreignLetters)
+        // The reasons carry only counts (never subtitle text) so the log shows which rule fired.
+        if (ungroundedProperName && !(hanCount >= 3 && hanCount > ungroundedLetters * 2)) {
+            return "译文含原文里找不到出处的外文名/词，汉字数不足以放行" +
+                "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
+                "放行需汉字≥3 且大于外文名字母数的2倍）"
+        }
+        if (foreignLetters >= 2 && hanCount <= foreignLetters) {
+            return "译文保留过多非汉字外语文本，汉字字符占比低于质量阈值" +
+                "（触发规则=外文字母不少于汉字；汉字=$hanCount，非汉字外文字母=$foreignLetters）"
+        }
+        return null
     }
 
     private val retainedAcronyms = setOf(
