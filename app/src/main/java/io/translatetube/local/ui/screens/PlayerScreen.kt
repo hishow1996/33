@@ -1330,19 +1330,34 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         if (isFullscreen) Modifier.weight(1f)
                         else Modifier.aspectRatio(state.videoAspect),
                     )
-                    .background(Color(0xFF172033))
+                    .background(if (isFullscreen) Color.Black else Color(0xFF172033))
             ) {
-                AndroidView(
-                    factory = {
-                        // While floating, the TextureView belongs to the overlay host.
-                        // Otherwise the player may have just returned from the processing page,
-                        // where this remembered frame can still contain tv.
-                        if (!isFloating) moveTextureViewTo(frame)
-                        attachSurfaceWhenReady()
-                        frame
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                // TextureView does not letterbox by itself: Media3 stretches each frame to the
+                // view's bounds. In fullscreen the container fills the whole (often 20:9) screen,
+                // so size the video holder to the real video aspect and center it (fit, black bars).
+                // Keep a single AndroidView node here (only the modifier changes) so toggling
+                // fullscreen does not recreate the shared TextureView host.
+                val fitAspect = state.videoAspect.takeIf { it > 0.01f } ?: (16f / 9f)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .then(
+                            if (isFullscreen) Modifier.aspectRatio(fitAspect)
+                            else Modifier.fillMaxSize(),
+                        ),
+                ) {
+                    AndroidView(
+                        factory = {
+                            // While floating, the TextureView belongs to the overlay host.
+                            // Otherwise the player may have just returned from the processing page,
+                            // where this remembered frame can still contain tv.
+                            if (!isFloating) moveTextureViewTo(frame)
+                            attachSurfaceWhenReady()
+                            frame
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
                 if (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING) {
                     VideoOverlayControls(
                         state = state,
