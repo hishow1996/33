@@ -9,6 +9,9 @@ internal object DubbingSynthesisPolicy {
     /** Maximum additional renders after the first successful PCM synthesis. */
     const val MAX_ADAPTIVE_SYNTHESIS_RETRIES = 2
     private const val LONG_CUE_RATIO = 1.15
+
+    /** Largest extra speed-up a re-render may ask the TTS engine for, relative to its base speed. */
+    const val MAX_NATIVE_SPEEDUP = 1.25
     private const val TARGET_CUE_FILL = 0.90
 
 
@@ -42,6 +45,8 @@ internal object DubbingSynthesisPolicy {
         sampleCount: Int,
         sampleRate: Int,
         cueDurationMs: Long,
+        /** Absolute ceiling across all retries, so repeated passes cannot compound the speed-up. */
+        ceilingSpeed: Float = Float.MAX_VALUE,
     ): Float {
         val base = baseSpeed.takeIf { it.isFinite() }?.coerceIn(0.5f, 3.0f) ?: 1.0f
         if (sampleCount <= 0 || sampleRate !in 8_000..192_000 || cueDurationMs <= 0L) return base
@@ -53,6 +58,10 @@ internal object DubbingSynthesisPolicy {
         // Estimate a useful retry rate, leaving a little room for natural pauses. Provider output
         // may not scale linearly, so the caller accepts the retry only if it really is shorter.
         val estimate = base.toDouble() * audioDurationMs / (cueMs * TARGET_CUE_FILL)
-        return estimate.coerceIn(base.toDouble(), 3.0).toFloat()
+        // Native engine speed-up stays gentle: past this the voice turns unintelligible. A cue
+        // that still does not fit overruns its window instead (the queue absorbs it).
+        val ceiling = minOf(3.0, base.toDouble() * MAX_NATIVE_SPEEDUP, ceilingSpeed.toDouble())
+            .coerceAtLeast(base.toDouble())
+        return estimate.coerceIn(base.toDouble(), ceiling).toFloat()
     }
 }

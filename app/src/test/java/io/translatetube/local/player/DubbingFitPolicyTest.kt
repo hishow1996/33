@@ -19,10 +19,10 @@ class DubbingFitPolicyTest {
 
     @Test
     fun overlongAudioIsCompressedToLeaveASmallMargin() {
-        val ratio = DubbingFitPolicy.synthesisRatio(samples(3_000), rate, 2_400)
+        val ratio = DubbingFitPolicy.synthesisRatio(samples(2_600), rate, 2_400)
         assertTrue("should compress, got $ratio", ratio < 1f)
         // 压缩后时长 ≈ 窗口的 97%
-        assertEquals(2_400 * 0.97, 3_000 * ratio.toDouble(), 5.0)
+        assertEquals(2_400 * 0.97, 2_600 * ratio.toDouble(), 5.0)
     }
 
     @Test
@@ -69,13 +69,21 @@ class DubbingFitPolicyTest {
     }
 
     @Test
+    fun aMerelyLongSentenceIsNotRushedUnlessItIsReallyLate() {
+        // 计划 0s 开口，实际只晚 0.5s：不加速，哪怕会超出窗口
+        assertEquals(1f, DubbingFitPolicy.catchUpRatio(500_000, 2_000_000, 1_000_000, scheduledStartUs = 0L), 0f)
+        // 晚了 2.5s（超过 2 秒容忍）才允许追赶压缩
+        assertTrue(DubbingFitPolicy.catchUpRatio(2_500_000, 2_000_000, 3_000_000, scheduledStartUs = 0L) < 1f)
+    }
+
+    @Test
     fun tinySavingsAreSkipped() {
         assertEquals(1f, DubbingFitPolicy.catchUpRatio(0, 1_000_000, 980_000), 0f)
     }
 
     @Test
     fun nativeRetryBudgetScalesWithTheCompressionCap() {
-        assertEquals(3_000L, DubbingFitPolicy.nativeRetryBudgetMs(2_000))
+        assertEquals(2_300L, DubbingFitPolicy.nativeRetryBudgetMs(2_000))
         assertEquals(1L, DubbingFitPolicy.nativeRetryBudgetMs(0))
     }
 }

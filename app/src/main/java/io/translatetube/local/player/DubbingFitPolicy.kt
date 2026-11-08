@@ -11,10 +11,10 @@ package io.translatetube.local.player
  */
 internal object DubbingFitPolicy {
     /** 合成阶段的最大压缩倍数（语速加快 1.5 倍）。更快的部分交给 TTS 引擎原生提速。 */
-    const val MAX_COMPRESS = 1.5f
+    const val MAX_COMPRESS = 1.15f
 
     /** 追赶阶段允许的额外压缩下限（0.75 ≈ 在已有基础上再快 1.33 倍）。 */
-    const val MIN_CATCH_UP_RATIO = 0.75f
+    const val MIN_CATCH_UP_RATIO = 0.8f
 
     /** 压缩后留出的余量，避免尾音恰好贴着窗口边缘。 */
     private const val FILL = 0.97
@@ -53,8 +53,18 @@ internal object DubbingFitPolicy {
      * 返回 ≤ 1.0 的 WSOLA 比例；1.0 表示不需要（或收益太小）。
      * 压缩不低于 [MIN_CATCH_UP_RATIO]：宁可略有延迟也不让语速快到听不清。
      */
-    fun catchUpRatio(startUs: Long, durationUs: Long, endLimitUs: Long): Float {
+    fun catchUpRatio(
+        startUs: Long,
+        durationUs: Long,
+        endLimitUs: Long,
+        scheduledStartUs: Long? = null,
+    ): Float {
         if (durationUs <= 0L) return 1f
+        // Only real lateness justifies speeding speech up. A merely long sentence overruns its
+        // own window instead of being rushed; the next cue is shifted back by the queue.
+        if (scheduledStartUs != null &&
+            startUs - scheduledStartUs < DubbingTiming.LAG_TOLERANCE_MS * 1_000L
+        ) return 1f
         val allowedUs = endLimitUs - startUs
         if (allowedUs >= durationUs) return 1f
         val ratio = maxOf(allowedUs.toDouble() / durationUs.toDouble(), MIN_CATCH_UP_RATIO.toDouble())

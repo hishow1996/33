@@ -26,6 +26,18 @@ internal object DubbingTiming {
     const val MAX_SYNC_RATE = 1.8f
     const val MAX_CATCH_UP_SYNC_RATE = 2.1f
     const val MAX_OUTPUT_RATE = 3.0f
+
+    /**
+     * Intelligibility budget for live (timeline-driven) speech. Normal cues never play faster than
+     * this; a long cue overruns its window and the next cue simply starts later.
+     */
+    const val COMFORT_SYNC_RATE = 1.25f
+
+    /** Ceiling while repaying real lateness (see [LAG_TOLERANCE_MS]); never rushes beyond this. */
+    const val LAG_RECOVERY_SYNC_RATE = 1.5f
+
+    /** Dubbing may trail the picture by this much before any catch-up speed-up is used. */
+    const val LAG_TOLERANCE_MS = 2_000L
     private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
     private const val MIN_REMAINING_WINDOW_MS = 80L

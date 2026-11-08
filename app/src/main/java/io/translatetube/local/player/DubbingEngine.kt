@@ -1274,6 +1274,7 @@ class DubbingEngine(
                             sampleCount = readyAudio.samples.size,
                             sampleRate = readyAudio.sampleRate,
                             cueDurationMs = cueDurationMs,
+                            ceilingSpeed = synthesisSpeed * DubbingSynthesisPolicy.MAX_NATIVE_SPEEDUP,
                         )
                         if (retrySpeed <= effectiveSynthesisSpeed + 0.05f) break
 
@@ -3455,7 +3456,9 @@ class DubbingEngine(
         val windowEndMs = chunkWindowEndByFirst[playIndex] ?: cue.endMs
         val endLimitUs = (windowEndMs - leadMs + DubbingFitPolicy.CATCH_UP_TOLERANCE_MS)
             .coerceAtLeast(0L) * 1_000L
-        val catchUpRatio = DubbingFitPolicy.catchUpRatio(projectedStartUs, durationUs, endLimitUs)
+        val catchUpRatio = DubbingFitPolicy.catchUpRatio(
+            projectedStartUs, durationUs, endLimitUs, scheduledStartUs = desiredUs,
+        )
         if (catchUpRatio < 1f) {
             output = try {
                 Wsola.stretch(samples, catchUpRatio)
@@ -3687,10 +3690,12 @@ class DubbingEngine(
             )
             // Both genuinely long cues and queued late cues may use the bounded recovery cap.
             // Normal on-time System TTS stays on the lower cap to avoid rushing every sentence.
-            val syncRateLimit = if (predictedOverrun || completeCueWhenLate) {
-                DubbingTiming.MAX_CATCH_UP_SYNC_RATE
+            // A long cue is not rushed: it overruns its window and the next cue starts later.
+            // Only genuine lateness (queued late cues) may speed up, and only up to a bounded rate.
+            val syncRateLimit = if (completeCueWhenLate) {
+                DubbingTiming.LAG_RECOVERY_SYNC_RATE
             } else {
-                DubbingTiming.MAX_SYNC_RATE
+                DubbingTiming.COMFORT_SYNC_RATE
             }
             val timingRate = DubbingSyncHoldPolicy.timelineRate(
                 estimatedSpeechMs = estimatedAtEffectiveRateMs,

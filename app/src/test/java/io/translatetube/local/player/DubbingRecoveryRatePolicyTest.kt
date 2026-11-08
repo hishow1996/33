@@ -14,20 +14,26 @@ class DubbingRecoveryRatePolicyTest {
     fun rateRisesGraduallyWithTheNumberOfQueuedCues() {
         assertEquals(1.11f, DubbingRecoveryRatePolicy.rateForQueueDepth(1), 0.001f)
         assertEquals(1.55f, DubbingRecoveryRatePolicy.rateForQueueDepth(5), 0.001f)
-        assertEquals(2.1f, DubbingRecoveryRatePolicy.rateForQueueDepth(10), 0.001f)
+        assertEquals(DubbingTiming.LAG_RECOVERY_SYNC_RATE, DubbingRecoveryRatePolicy.rateForQueueDepth(10), 0.001f)
     }
 
     @Test
     fun actualTimelineDebtRaisesRecoveryRateEvenWithOneQueuedCue() {
         assertEquals(1.0f, DubbingRecoveryRatePolicy.rateForBacklog(0, -100L), 0.001f)
         assertEquals(1.5f, DubbingRecoveryRatePolicy.rateForBacklog(0, 5_000L), 0.001f)
-        assertEquals(2.05f, DubbingRecoveryRatePolicy.rateForBacklog(5, 5_000L), 0.001f)
+        assertEquals(1.5f, DubbingRecoveryRatePolicy.rateForBacklog(5, 5_000L), 0.001f)
+        assertEquals(1.3f, DubbingRecoveryRatePolicy.rateForBacklog(0, 3_000L), 0.001f)
+    }
+
+    @Test
+    fun lateCuesWithinTheToleranceAreNotSpedUp() {
+        assertEquals(1.0f, DubbingRecoveryRatePolicy.rateForBacklog(8, 1_999L), 0.001f)
     }
 
     @Test
     fun extremeBacklogsStayWithinTheCatchUpCeiling() {
         assertEquals(
-            DubbingTiming.MAX_CATCH_UP_SYNC_RATE,
+            DubbingTiming.LAG_RECOVERY_SYNC_RATE,
             DubbingRecoveryRatePolicy.rateForQueueDepth(100),
             0.001f,
         )

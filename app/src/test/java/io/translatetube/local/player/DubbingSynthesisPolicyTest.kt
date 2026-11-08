@@ -21,18 +21,20 @@ class DubbingSynthesisPolicyTest {
             sampleRate = 16_000,
             cueDurationMs = 1_000,
         )
-        assertEquals(2.7778f, speed, 0.001f)
+        assertEquals(1.25f, speed, 0.001f)
     }
 
     @Test
-    fun secondAdaptivePassCanIncreaseTheRateWhenTheFirstRetryStillDoesNotFit() {
+    fun secondAdaptivePassCannotCompoundPastTheOriginalCeiling() {
         val speed = DubbingSynthesisPolicy.recommendedSpeed(
-            baseSpeed = 2.7778f,
+            baseSpeed = 1.25f,
             sampleCount = 24_000,
             sampleRate = 16_000,
             cueDurationMs = 1_000,
+            ceilingSpeed = 1.25f,
         )
-        assertEquals(3.0f, speed, 0.001f)
+        // The first retry already reached the ceiling derived from the original speed.
+        assertEquals(1.25f, speed, 0.001f)
     }
 
     @Test
@@ -43,13 +45,13 @@ class DubbingSynthesisPolicyTest {
             sampleRate = 16_000,
             cueDurationMs = 1_000,
         )
-        assertEquals(3.0f, speed, 0.001f)
+        assertEquals(1.25f, speed, 0.001f)
     }
 
     @Test
-    fun capsRetryAtMaximumSupportedSpeechRate() {
+    fun capsRetryAtAGentleMultipleOfTheBaseSpeed() {
         assertEquals(
-            3.0f,
+            1.25f,
             DubbingSynthesisPolicy.recommendedSpeed(1.0f, 80_000, 16_000, 1_000),
             0.001f,
         )
