@@ -114,7 +114,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     record.errorClass.contains(query, ignoreCase = true) ||
                     record.rootCauseMessage.contains(query, ignoreCase = true) ||
                     record.firstAppStackFrame.contains(query, ignoreCase = true) ||
-                    record.details.contains(query, ignoreCase = true) ||
                     record.issueKey.contains(query, ignoreCase = true) ||
                     record.eventId.contains(query, ignoreCase = true)
             }
@@ -596,7 +595,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         )
                         Spacer(Modifier.weight(1f))
                         Text(
-                            "仅显示 ERROR / FATAL · 最新在前",
+                            "FATAL 优先 · 同级最新在前",
                             color = Color(0xFF858B93),
                             style = MaterialTheme.typography.labelSmall,
                         )
@@ -666,7 +665,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
                                 selectedIncidentForExport?.let { selected ->
-                                    "已选择：${selected.tag} · ${selected.level}"
+                                    AppLogTitleResolver.title(selected.tag, selected.message) + " · " + selected.level
                                 } ?: "尚未选择错误",
                                 color = Color(0xFF202124),
                                 style = MaterialTheme.typography.bodyMedium,
@@ -675,10 +674,13 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
-                                "报告将保留该错误的完整堆栈和关联上下文",
+                                selectedIncidentForExport?.let { selected ->
+                                    "${selected.tag} · ${AppLogStore.formatTime(selected.timestampMs)}"
+                                } ?: "报告将保留完整堆栈和可确认关联的上下文",
                                 color = Color(0xFF858B93),
                                 style = MaterialTheme.typography.labelSmall,
                                 maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                         Button(
@@ -1045,6 +1047,15 @@ private fun IncidentExportRecordRow(
                     Text(
                         "异常：$errorType",
                         color = Color(0xFF68707A),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (record.rootCauseMessage.isNotBlank()) {
+                    Text(
+                        record.rootCauseMessage,
+                        color = Color(0xFF737980),
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
