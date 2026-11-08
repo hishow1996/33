@@ -426,4 +426,71 @@ class AppLogAiReportTest {
     }
 
 
+
+    @Test
+    fun fullSingleIncidentReportPreservesEntireStoredStackAndCorrelatedContext() {
+        val primaryDetails = ("at io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)\\n")
+            .repeat(420) + "PRIMARY_STACK_END_MARKER"
+        val target = AppLogRecord(
+            timestampMs = 90_000L,
+            level = "FATAL",
+            tag = "PlayerManager",
+            message = "视频播放页崩溃",
+            details = primaryDetails,
+            thread = "main",
+            eventId = "full-primary",
+            sessionId = "full-session",
+            sequence = 9L,
+            operationId = "full-operation",
+            errorClass = "java.lang.VerifyError",
+            rootCauseMessage = "Verifier rejected player bytecode",
+            firstAppStackFrame = "io.translatetube.local.playback.PlayerManager.open(PlayerManager.kt:88)",
+            diagnosticContext = mapOf(
+                "当前处理阶段" to "PLAYING",
+                "设备" to "HUAWEI COR-AL10",
+                "Android" to "9 (API 28)",
+            ),
+            exceptionSnapshot = AppLogExceptionSnapshot(
+                type = "java.lang.VerifyError",
+                message = "Verifier rejected player bytecode",
+                stackFrames = listOf(
+                    AppLogStackFrame(
+                        "io.translatetube.local.playback.PlayerManager",
+                        "open",
+                        "PlayerManager.kt",
+                        88,
+                    ),
+                ),
+            ),
+        )
+        val related = target.copy(
+            timestampMs = 89_000L,
+            level = "INFO",
+            tag = "PlaybackPipeline",
+            message = "开始准备播放",
+            details = "RELATED_CONTEXT_FULL_DETAIL",
+            eventId = "full-context",
+            sequence = 8L,
+        )
+
+        val report = AppLogAiReport.renderIncidentFull(
+            records = listOf(related, target),
+            target = target,
+            exportedAt = "now",
+            appVersion = "1.0.11 (efb32d1)",
+            device = "HUAWEI COR-AL10",
+            androidVersion = "9 (API 28)",
+            writerHealth = AppLogWriterHealth(0L, 0L, "", 90_000L, true),
+        )
+
+        assertTrue(report.length > 4_000)
+        assertTrue(report.contains("elephant-app-log/incident-full-v1"))
+        assertTrue(report.contains("PRIMARY_STACK_END_MARKER"))
+        assertTrue(report.contains("RELATED_CONTEXT_FULL_DETAIL"))
+        assertTrue(report.contains("PlayerManager.kt"))
+        assertTrue(report.contains("\"selectedIncident\":true"))
+        assertTrue(report.contains("\"selectedIncident\":false"))
+        assertFalse(report.contains("已压缩"))
+    }
+
 }
