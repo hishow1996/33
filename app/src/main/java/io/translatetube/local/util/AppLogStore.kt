@@ -97,7 +97,7 @@ object AppLogStore {
     private const val MAX_FILE_BYTES = 2L * 1024L * 1024L
     private const val FILE_COUNT = 3
     private const val RETENTION_MS = 7L * 24L * 60L * 60L * 1000L
-    private const val MAX_DETAIL_CHARS = 24_000
+    internal const val MAX_DETAIL_CHARS = 24_000
     private const val MAX_READ_RECORDS = 800
     private const val MAX_EXIT_TRACE_BYTES = 48 * 1024
     private const val SESSION_PREFS = "app_log_process_session"
