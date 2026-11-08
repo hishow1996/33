@@ -247,63 +247,113 @@ if (!sherpaAarFile.isFile || sherpaAarFile.length() != sherpaStaticAarExpectedBy
     sherpaAarFile.parentFile?.mkdirs()
     val downloadUrls = listOf(
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
+        "https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/assets/555212241",
+        "https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
         "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
         "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar"
     )
+    // SHA-256 is taken from the official GitHub v1.13.8 release asset metadata.
+    val expectedSha256 = "b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471"
     var downloaded = false
     for (urlStr in downloadUrls) {
-        try {
-            logger.lifecycle("Downloading static-link sherpa-onnx AAR from $urlStr...")
-            var cur = urlStr
-            var redirects = 0
-            while (redirects < 10) {
-                val uri = URI(cur)
-                val conn = (uri.toURL().openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = false
-                    connectTimeout = 30000
-                    readTimeout = 60000
-                    setRequestProperty("User-Agent", "Mozilla/5.0")
-                }
-                val code = conn.responseCode
-                if (code in 300..399) {
-                    val loc = conn.getHeaderField("Location") ?: throw IllegalStateException("Missing Location header")
-                    cur = if (loc.startsWith("http")) loc else uri.resolve(loc).toString()
-                    conn.disconnect()
-                    redirects++
-                    continue
-                }
-                if (code in 200..299) {
-                    val temp = File(sherpaAarFile.parentFile, "sherpa-onnx-static.aar.tmp")
-                    temp.delete()
-                    conn.inputStream.use { input: InputStream ->
-                        FileOutputStream(temp).use { output: OutputStream ->
-                            input.copyTo(output)
+        for (attempt in 1..2) {
+            try {
+                logger.lifecycle("Downloading static-link sherpa-onnx AAR from $urlStr (attempt $attempt/2)...")
+                var cur = urlStr
+                var redirects = 0
+                while (redirects < 10) {
+                    val uri = URI(cur)
+                    val conn = (uri.toURL().openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = false
+                        connectTimeout = 30000
+                        readTimeout = 120000
+                        useCaches = false
+                        setRequestProperty("User-Agent", "Mozilla/5.0")
+                        setRequestProperty("Accept", "application/octet-stream")
+                        setRequestProperty("Cache-Control", "no-cache")
+                    }
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val loc = conn.getHeaderField("Location")
+                            ?: throw IOException("Missing Location header for HTTP $code")
+                        cur = if (loc.startsWith("http")) loc else uri.resolve(loc).toString()
+                        conn.disconnect()
+                        redirects++
+                        continue
+                    }
+                    if (code in 200..299) {
+                        val temp = File(sherpaAarFile.parentFile, "sherpa-onnx-static.aar.tmp")
+                        temp.delete()
+                        try {
+                            conn.inputStream.use { input: InputStream ->
+                                FileOutputStream(temp).use { output: OutputStream ->
+                                    input.copyTo(output)
+                                }
+                            }
+                        } finally {
+                            conn.disconnect()
                         }
-                    }
-                    conn.disconnect()
-                    if (temp.length() != sherpaStaticAarExpectedBytes) {
-                        val actualBytes = temp.length()
-                        temp.delete()
-                        throw IOException(
-                            "Static sherpa AAR size mismatch: expected " +
-                                sherpaStaticAarExpectedBytes + ", received " + actualBytes
+                        if (temp.length() != sherpaStaticAarExpectedBytes) {
+                            val actualBytes = temp.length()
+                            temp.delete()
+                            throw IOException(
+                                "Static sherpa AAR size mismatch: expected " +
+                                    sherpaStaticAarExpectedBytes + ", received " + actualBytes
+                            )
+                        }
+                        val actualSha256 = temp.inputStream().use { input ->
+                            val digest = java.security.MessageDigest.getInstance("SHA-256")
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                digest.update(buffer, 0, count)
+                            }
+                            digest.digest().joinToString("") { byte ->
+                                "%02x".format(byte.toInt() and 0xff)
+                            }
+                        }
+                        if (!actualSha256.equals(expectedSha256, ignoreCase = true)) {
+                            temp.delete()
+                            throw IOException(
+                                "Static sherpa AAR SHA-256 mismatch: expected " +
+                                    expectedSha256 + ", received " + actualSha256
+                            )
+                        }
+                        if (!temp.renameTo(sherpaAarFile)) {
+                            temp.copyTo(sherpaAarFile, overwrite = true)
+                            temp.delete()
+                        }
+                        logger.lifecycle(
+                            "Downloaded and SHA-256 verified static-link sherpa-onnx AAR " +
+                                "(\${sherpaAarFile.length()} bytes)."
                         )
+                        downloaded = true
+                        break
                     }
-                    if (!temp.renameTo(sherpaAarFile)) {
-                        temp.copyTo(sherpaAarFile, overwrite = true)
-                        temp.delete()
-                    }
-                    logger.lifecycle("Downloaded static-link sherpa-onnx AAR successfully (${sherpaAarFile.length()} bytes)")
-                    downloaded = true
-                    break
+                    val responseText = runCatching {
+                        conn.errorStream?.bufferedReader()?.use { it.readText().take(300) }
+                    }.getOrNull().orEmpty()
+                    val responseMessage = conn.responseMessage
+                    conn.disconnect()
+                    throw IOException(
+                        "Static sherpa AAR download failed: HTTP $code $responseMessage" +
+                            if (responseText.isBlank()) "" else " - $responseText"
+                    )
                 }
-                conn.disconnect()
-                break
+                if (redirects >= 10) {
+                    throw IOException("Static sherpa AAR download exceeded 10 redirects.")
+                }
+            } catch (e: Exception) {
+                logger.warn(
+                    "Failed to download static-link sherpa-onnx AAR from $urlStr " +
+                        "(attempt $attempt/2): \${e.message}"
+                )
+                if (attempt < 2) Thread.sleep(1500L * attempt)
             }
             if (downloaded) break
-        } catch (e: Exception) {
-            logger.warn("Failed to download static-link sherpa-onnx AAR from $urlStr: ${e.message}")
         }
+        if (downloaded) break
     }
 }
 
