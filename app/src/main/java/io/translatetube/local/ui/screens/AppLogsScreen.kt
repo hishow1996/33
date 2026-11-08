@@ -269,30 +269,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text(if (exporting) "正在整理…" else "复制 AI 修复报告") },
-                        leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
-                        enabled = !exporting,
-                        onClick = {
-                            showActionsMenu = false
-                            scope.launch {
-                                exporting = true
-                                val result = withContext(Dispatchers.IO) {
-                                    runCatching { AppLogStore.exportCompactText(ctx.applicationContext) }
-                                }
-                                result.onSuccess { report ->
-                                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(
-                                        android.content.ClipData.newPlainText("AI 修复诊断报告", report),
-                                    )
-                                    message = "AI 修复报告已复制"
-                                }.onFailure { failure ->
-                                    message = "报告生成失败：${failure.message ?: "未知错误"}"
-                                }
-                                exporting = false
-                            }
-                        },
-                    )
-                    DropdownMenuItem(
                         text = { Text("清空日志") },
                         leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null, tint = Color(0xFFB42318)) },
                         onClick = {
