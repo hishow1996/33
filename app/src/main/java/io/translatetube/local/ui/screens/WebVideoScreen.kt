@@ -120,8 +120,9 @@ private data class AddressBarAppearance(
  * trigger a Compose round-trip or reset the editor's scroll position.
  */
 private class AddressBarEditText(context: Context) : android.widget.EditText(context) {
-    var onAddressTextChanged: ((String) -> Unit)? = null
+    var onAddressTextEdited: (() -> Unit)? = null
     private var applyingExternalText = false
+    private var appliedExternalRevision = Long.MIN_VALUE
     private var appliedAppearance: AddressBarAppearance? = null
 
     init {
@@ -136,12 +137,14 @@ private class AddressBarEditText(context: Context) : android.widget.EditText(con
         })
     }
 
-    fun setExternalText(value: String) {
+    fun syncExternalText(value: String, revision: Long) {
+        if (appliedExternalRevision == revision) return
         applyingExternalText = true
         try {
             if (text.toString() != value) setText(value)
             // External navigation intentionally places the caret at the URL end.
             setSelection(value.length)
+            appliedExternalRevision = revision
         } finally {
             applyingExternalText = false
         }
@@ -166,7 +169,7 @@ private class AddressBarEditText(context: Context) : android.widget.EditText(con
     }
 
     private fun dispatchAddressText() {
-        if (!applyingExternalText) onAddressTextChanged?.invoke(text?.toString().orEmpty())
+        if (!applyingExternalText) onAddressTextEdited?.invoke()
     }
 }
 
@@ -353,8 +356,9 @@ fun WebVideoScreen(
 ) {
     val appCtx = LocalContext.current.applicationContext
     val backgroundScope = remember(appCtx) { (appCtx as TranslateTubeApp).appScope }
-    // Compose tracks the current URL text; the native editor exclusively owns its cursor/selection.
+    // Compose stores the last page URL; the native editor owns the active draft, cursor and selection.
     var addressText by remember(initialUrl) { mutableStateOf(initialUrl) }
+    var addressSyncRevision by remember(initialUrl) { mutableStateOf(0L) }
     var addressFieldHasFocus by remember(initialUrl) { mutableStateOf(false) }
     var addressEditPending by remember(initialUrl) { mutableStateOf(false) }
     var addressEditText by remember(initialUrl) { mutableStateOf<AddressBarEditText?>(null) }
@@ -365,7 +369,8 @@ fun WebVideoScreen(
     fun setAddress(value: String) {
         addressEditPending = false
         addressText = value
-        addressEditText?.setExternalText(value)
+        addressSyncRevision += 1L
+        addressEditText?.syncExternalText(value, addressSyncRevision)
     }
     fun clearAddressInputFocus() {
         addressEditText?.clearFocus()
@@ -1813,11 +1818,11 @@ fun WebVideoScreen(
                             setPadding(horizontalPadding, 0, horizontalPadding, 0)
                             hint = "输入网页地址"
                             applyAppearance(addressAppearance)
-                            onAddressTextChanged = { text ->
-                                if (text != addressText) {
-                                    addressText = text
-                                    addressEditPending = true
-                                }
+                            onAddressTextEdited = {
+                                // Do not round-trip every keystroke through Compose. The native
+                                // EditText keeps its live draft; this flag only protects it from
+                                // late WebView URL callbacks.
+                                if (!addressEditPending) addressEditPending = true
                             }
                             setOnFocusChangeListener { view, hasFocus ->
                                 addressFieldHasFocus = hasFocus
@@ -1843,18 +1848,16 @@ fun WebVideoScreen(
                                     false
                                 }
                             }
-                            setExternalText(addressText)
+                            syncExternalText(addressText, addressSyncRevision)
                         }
                     },
                     update = { editText ->
                         // Apply theme changes only when their resolved values actually change.
                         // Cursor movement alone no longer asks Compose to redraw this view.
                         editText.applyAppearance(addressAppearance)
-                        // Sync external URL changes only; never overwrite the native selection
-                        // during typing, caret movement, or selection-handle dragging.
-                        if (editText.text.toString() != addressText) {
-                            editText.setExternalText(addressText)
-                        }
+                        // Only a programmatic page-URL revision can replace the native draft.
+                        // Ordinary recomposition never writes stale Compose text back into it.
+                        editText.syncExternalText(addressText, addressSyncRevision)
                     },
                     modifier = Modifier
                         .weight(1f)
