@@ -93,10 +93,16 @@ object AppLogDiagnostics {
             val missingClass = Regex("""(?i)(?:NoClassDefFoundError|ClassNotFoundException)\s*:\s*([^\s;]+)""")
                 .find(raw)?.groupValues?.getOrNull(1)
             val library = Regex("""(?i)lib[A-Za-z0-9_.+-]+\.so""").find(raw)?.value
+            val methodSignature = Regex("""(?i)(?:No virtual method|No static method|No interface method|method)\s+([^\s]+)""")
+                .find(raw)?.groupValues?.getOrNull(1)
+            val ownerClass = Regex("""(?i)\bin class L?([^;\s]+);""")
+                .find(raw)?.groupValues?.getOrNull(1)?.replace('/', '.')
             val target = when {
                 !library.isNullOrBlank() -> "缺失原生库：$library"
                 !missingClass.isNullOrBlank() -> "缺失类：$missingClass"
-                !line.isNullOrBlank() -> line.take(260)
+                !methodSignature.isNullOrBlank() -> "缺失方法：$methodSignature" +
+                    ownerClass?.let { "；所属类：$it" }.orEmpty()
+                !line.isNullOrBlank() -> line.substringAfter(':', line).take(220)
                 else -> linkerType
             }
             return AppLogDiagnosis(
