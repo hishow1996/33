@@ -801,6 +801,49 @@ class PlaybackService : MediaSessionService() {
             retiringDubbingEngines.remove(previous)
         }
     }
+    /**
+     * 记住每个视频最近一次"真实"的配音合成进度（只在缓存预检完成后写入）。重新进入视频时，
+     * 引擎要等 TTS 创建和缓存预检完成才能报进度；先把这个提示值显示出来，预检完成后以真实值为准。
+     */
+    private fun dubbingProgressHintPrefs() =
+        getSharedPreferences("dubbing_progress_hint", MODE_PRIVATE)
+
+    private fun saveDubbingProgressHint(
+        sessionKey: String,
+        engineId: String,
+        totalLines: Int,
+        preparedCount: Int,
+        preparedUntil: Int,
+    ) {
+        if (sessionKey.isBlank() || totalLines <= 0) return
+        val count = preparedCount.coerceIn(0, totalLines)
+        val prefix = preparedUntil.coerceIn(0, count)
+        runCatching {
+            dubbingProgressHintPrefs().edit()
+                .putString(sessionKey, "$engineId|$totalLines|$count|$prefix")
+                .apply()
+        }
+    }
+
+    /** 返回 (已就绪行数, 连续前缀行数)；引擎或字幕行数对不上时视为没有提示。 */
+    private fun loadDubbingProgressHint(
+        sessionKey: String,
+        engineId: String,
+        totalLines: Int,
+    ): Pair<Int, Int>? {
+        if (sessionKey.isBlank() || totalLines <= 0) return null
+        val raw = runCatching { dubbingProgressHintPrefs().getString(sessionKey, null) }
+            .getOrNull() ?: return null
+        val parts = raw.split('|')
+        if (parts.size != 4 || parts[0] != engineId) return null
+        val savedTotal = parts[1].toIntOrNull() ?: return null
+        val count = parts[2].toIntOrNull() ?: return null
+        val prefix = parts[3].toIntOrNull() ?: return null
+        if (savedTotal != totalLines || count <= 0) return null
+        val safeCount = count.coerceIn(0, totalLines)
+        return safeCount to prefix.coerceIn(0, safeCount)
+    }
+
     private var prepJob: Job? = null
     private val manualTranslationRequestedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val manualTranslationWaiters =
@@ -4990,6 +5033,7 @@ class PlaybackService : MediaSessionService() {
             !refreshYouTubeSubtitleSource
         ) {
             scope.launch {
+                val checkpointLoadStartedMs = android.os.SystemClock.elapsedRealtime()
                 val checkpointLoadResult = withContext(Dispatchers.IO) {
                     InProgressProcessingCheckpointStore.loadWithResult(
                         this@PlaybackService,
@@ -4997,6 +5041,18 @@ class PlaybackService : MediaSessionService() {
                         readySnapshotIdentityKey,
                     )
                 }
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackResume",
+                    "恢复配音耗时：处理中间检查点加载完成",
+                    diagnosticContext = mapOf(
+                        "检查点加载耗时 ms" to
+                            (android.os.SystemClock.elapsedRealtime() - checkpointLoadStartedMs).toString(),
+                        "恢复状态" to checkpointLoadResult.status.name,
+                        "文件大小字节" to checkpointLoadResult.fileBytes?.toString().orEmpty(),
+                        "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    ),
+                )
                 val checkpoint = checkpointLoadResult.checkpoint
                 if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
                     return@launch
@@ -10451,6 +10507,38 @@ updateUiForSession(key, pipelineGeneration) {
                         "处理代数" to pipelineGeneration.toString(),
                     ),
                 )
+                val resumeStepStartedMs = android.os.SystemClock.elapsedRealtime()
+                fun logResumeStep(step: String) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackResume",
+                        "恢复配音耗时：$step",
+                        diagnosticContext = mapOf(
+                            "步骤" to step,
+                            "距进入流装配阶段 ms" to
+                                (android.os.SystemClock.elapsedRealtime() - resumeStepStartedMs).toString(),
+                            "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                        ),
+                    )
+                }
+                // 重新进入视频：先显示上次记住的合成进度，不必等 TTS 创建和缓存预检。
+                // 引擎预检完成后会用真实值覆盖；强制重新合成时不显示。
+                if (ui.value.phase == Phase.SYNTHESIZING && finalLines.isNotEmpty()) {
+                    val hintEngineId = DubbingConfigPreferencePolicy.normalizeEngineId(
+                        getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+                    )
+                    val forceFreshNow = forceFreshPcmSynthesisForThisRun ||
+                        forceFreshDubbingPipelineGeneration == pipelineGeneration
+                    if (!forceFreshNow) {
+                        loadDubbingProgressHint(key, hintEngineId, finalLines.size)?.let { (hintCount, hintPrefix) ->
+                            updateUiForSession(key, pipelineGeneration) { state ->
+                                if (state.preparedCount >= hintCount) state
+                                else state.copy(preparedCount = hintCount, preparedUntil = hintPrefix)
+                            }
+                            logResumeStep("已显示上次记住的合成进度 $hintCount/${finalLines.size}")
+                        }
+                    }
+                }
                 // ---- 4. 流装配 ----
                 if (!reuseMountedMedia) {
                 if (videoId != null) {
@@ -10507,6 +10595,7 @@ updateUiForSession(key, pipelineGeneration) {
                     }
                 }
                 } // Keep the existing stream for a selective stage restart.
+                logResumeStep("流装配完成")
 
                 // Drain any retired speech engine and unload the native ASR model before
                 // allocating the selected TTS runtime. Reopening a history item can reuse ASR and
@@ -10515,6 +10604,7 @@ updateUiForSession(key, pipelineGeneration) {
                 awaitRetiredDubbingEngines()
                 releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
                 awaitProcessingResumed(key, pipelineGeneration)
+                logResumeStep("旧引擎退出与本地 ASR 卸载完成")
 
                 // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
                 dubbingStageEntered = true
@@ -10561,6 +10651,7 @@ updateUiForSession(key, pipelineGeneration) {
                             // Pass the saved selection explicitly so a settings change during parsing
                             // cannot cause the readiness check and actual engine to disagree.
                             val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
+                            logResumeStep("TTS 引擎创建完成：$selectedTts")
                             try {
                                 ensureCurrentSession(key, pipelineGeneration)
                             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -10598,6 +10689,7 @@ updateUiForSession(key, pipelineGeneration) {
                             sourceLanguage = srcLang,
                             forceRegenerateDubbing = forceFreshForCurrentGeneration,
                         )
+                                logResumeStep("attach 已返回，缓存预检转入后台")
                             } catch (e: Exception) {
                                 retireDubbing(d)
                                 runCatching { tts.close() }
@@ -10625,11 +10717,22 @@ updateUiForSession(key, pipelineGeneration) {
                                 )
                             }
                             dubCollectJob = scope.launch {
-                                kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount) { prefix, readyCount, audioReadyCount -> Triple(prefix, readyCount, audioReadyCount) }
+                                var lastProgressHintSaveMs = 0L
+                                kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount, d.audioReadyCount, d.cacheScanDone) { prefix, readyCount, audioReadyCount, scanDone -> DubbingProgressTick(prefix, readyCount, audioReadyCount, scanDone) }
                                     .conflate()
-                                    .collect { (prefix, readyCount, audioReadyCount) ->
+                                    .collect { (prefix, readyCount, audioReadyCount, scanDone) ->
                                         updateUiForCurrentDubbingEngine(d, key) {
-                                            it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
+                                            // 缓存预检没跑完时引擎报的是扫描途中的局部值：低于已显示的"上次进度"就先忽略。
+                                            if (!scanDone && readyCount < it.preparedCount) it
+                                            else it.copy(preparedUntil = prefix, preparedCount = readyCount, audioReadyCount = audioReadyCount)
+                                        }
+                                        if (scanDone) {
+                                            // 只记录预检完成后的真实进度，并限频写盘。
+                                            val nowMs = android.os.SystemClock.elapsedRealtime()
+                                            if (nowMs - lastProgressHintSaveMs >= 1_500L || readyCount >= finalLines.size) {
+                                                lastProgressHintSaveMs = nowMs
+                                                saveDubbingProgressHint(key, selectedTts, finalLines.size, readyCount, prefix)
+                                            }
                                         }
                                         val currentState = ui.value
                                         if (
@@ -17256,3 +17359,11 @@ object NotificationManagerCompat_c {
 }
 
 private typealias NotificationManager = android.app.NotificationManager
+
+/** 配音进度快照：scanDone=false 表示引擎的首次缓存预检还没结束，数字只是局部值。 */
+private data class DubbingProgressTick(
+    val prefix: Int,
+    val readyCount: Int,
+    val audioReadyCount: Int,
+    val scanDone: Boolean,
+)

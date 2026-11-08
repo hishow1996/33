@@ -322,6 +322,12 @@ class DubbingEngine(
     private val _audioReadyCount = MutableStateFlow(0)
     /** Rows with playable audio; direct System TTS cues count as available without prebuilt PCM. */
     val audioReadyCount: StateFlow<Int> = _audioReadyCount
+    private val _cacheScanDone = MutableStateFlow(false)
+    /**
+     * attach() 之后到首次缓存预检结束之前为 false：这段时间上面的进度数字只是扫描途中的局部值，
+     * 播放服务据此避免把"上次进度"提示冲回 0。预检结束（或失败回退）后为 true。
+     */
+    val cacheScanDone: StateFlow<Boolean> = _cacheScanDone
     private val _totalLines = MutableStateFlow(0)
     val totalLines: StateFlow<Int> = _totalLines
 
@@ -564,6 +570,7 @@ class DubbingEngine(
             synthesisTimelineLagSampleCountValue = 0
             _totalLines.value = this.lines.size
             readinessProgress.clear(this.lines.size, ::publishReadinessProgress)
+            _cacheScanDone.value = false
             pending.clear()
             priorityTarget = -1
             priorityQueueWindowStart = -1
@@ -694,6 +701,7 @@ class DubbingEngine(
                             }
                         }
                         bumpPrepared()
+                        _cacheScanDone.value = true
                         logDubbingInfo(
                             "系统 TTS 即时配音初始化完成",
                             mapOf(
@@ -820,6 +828,7 @@ class DubbingEngine(
                     }
                     if (!released && generation == cacheInitGeneration.get()) {
                         bumpPrepared()
+                        _cacheScanDone.value = true
                         logDubbingInfo(
                             "配音 PCM 缓存预检完成",
                             mapOf(
@@ -883,6 +892,7 @@ class DubbingEngine(
                             .filterNot { isSpeechCue(it) }
                             .forEach { markCuePrepared(it, hasAudio = false) }
                         bumpPrepared()
+                        _cacheScanDone.value = true
                         startSynthLoop()
                     }
                 }
