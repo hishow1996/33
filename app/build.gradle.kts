@@ -46,6 +46,12 @@ val hyMtLlamaJniLibs = layout.buildDirectory.dir("generated/hymt/jniLibs")
 val hyMtLlamaNativeLibrary = layout.buildDirectory.file("generated/hymt/jniLibs/arm64-v8a/libhymt.so")
 val hyMtLlamaSourceDir = rootProject.file("native/hymt-llama")
 
+// Git metadata is optional and must not prevent local or CI builds.
+val gitSha = System.getenv("GITHUB_SHA")?.trim()?.takeIf { it.isNotBlank() }?.take(7)
+    ?: runCatching {
+        providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim()
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: "unknown"
+
 android {
     sourceSets.getByName("main").jniLibs.srcDir(opusMtCt2JniLibs)
     sourceSets.getByName("main").jniLibs.srcDir(hyMtLlamaJniLibs)
@@ -58,6 +64,7 @@ android {
         targetSdk = 34
         versionCode = 13
         versionName = "1.0.11"
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
         ndk {
             abiFilters += "arm64-v8a"
         }
