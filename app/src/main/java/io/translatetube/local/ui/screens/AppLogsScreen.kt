@@ -712,8 +712,18 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 ) {
                     androidx.compose.foundation.text.selection.SelectionContainer {
                         Column(verticalArrangement = Arrangement.spacedBy(17.dp)) {
-                            document.sections().forEach { section ->
-                                IncidentDetailSection(section.title, section.content)
+                            document.sections().forEachIndexed { index, section ->
+                                if (index == 0) {
+                                    Text(
+                                        section.content,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = Color(0xFF202124),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                } else {
+                                    IncidentDetailSection(section.title, section.content)
+                                }
                             }
                         }
                     }
