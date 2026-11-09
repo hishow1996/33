@@ -786,7 +786,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     ) {
                         Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("复制 · 约 " + documentCharCount + " 字")
+                        Text("复制")
                     }
                 }
             }
