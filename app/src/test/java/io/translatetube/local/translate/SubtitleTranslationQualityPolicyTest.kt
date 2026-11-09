@@ -232,7 +232,27 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
 
-        // Kana-dominant Japanese output and a punctuation-only model response remain invalid.
+        // Even five kana may remain when they are only a short ending beside Chinese text.
+        val longerMixedChinese = "好吃ですねです。"
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, longerMixedChinese, "ja", "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                source, longerMixedChinese, "ja", "zh-CN",
+            ),
+        )
+
+        // A substantial kana-heavy fragment is still rejected.
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, "好吃ですねですね。", "ja", "zh-CN",
+            ),
+        )
+
+        // A complete Japanese sentence and a punctuation-only model response remain invalid.
         assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "今日はいい天気ですね。",
