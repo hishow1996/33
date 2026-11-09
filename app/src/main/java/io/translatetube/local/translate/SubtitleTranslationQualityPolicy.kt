@@ -1817,8 +1817,9 @@ internal object SubtitleTranslationQualityPolicy {
         val hangulRuns = scriptRunStats(scriptCheckedText, Character.UnicodeScript.HANGUL)
         // A short Korean greeting or ending can remain in mixed Chinese. Repeated or long
         // Hangul fragments still fail when they dominate the Chinese content.
-        if (hangul >= 8 && hangul > han * 3 &&
-            (hangulRuns.longestRun >= 5 || hangulRuns.runCount >= 3)
+        if (hangul > han * 3 &&
+            ((hangul >= 8 && hangulRuns.longestRun >= 8) ||
+                (hangul >= 12 && (hangulRuns.longestRun >= 5 || hangulRuns.runCount >= 3)))
         ) {
             return "译文韩文音节明显占主导（汉字=$han，韩文音节=$hangul，最长连续韩文=" +
                 hangulRuns.longestRun + "）"

@@ -891,7 +891,7 @@ class SubtitleTranslationQualityPolicyTest {
     @Test
     fun acceptsSeparatedJapaneseParticlesInChineseRichOutputButRejectsJapaneseDominantOutput() {
         val source = "この料理はとても美味しそうですね。"
-        val mixed = "好吃呢，ですね、かな、だよ、そう。"
+        val mixed = "好吃呢，ですね、かな、だよ、そう、ですね。"
         assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 source, mixed, "ja", "zh-CN",
