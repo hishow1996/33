@@ -9,6 +9,14 @@ import org.junit.Test
 
 class ModelTranslationParserTest {
     @Test
+    fun acceptsJsonStringArrayForFormatRepairResponses() {
+        assertEquals(
+            listOf("第一条译文", "第二条译文"),
+            parseModelTranslations("""["第一条译文","第二条译文"]""", 2),
+        )
+    }
+
+    @Test
     fun acceptsObjectWrappedJsonTranslationArrays() {
         assertEquals(
             listOf("第一条译文", "第二条译文"),
