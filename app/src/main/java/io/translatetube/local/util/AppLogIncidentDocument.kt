@@ -13,13 +13,18 @@ internal data class IncidentDocumentPrevious(
     val scopeLine: String,
     val events: List<String>,
     val recoveryLine: String?,
+    val includeCodeLocationGuidance: Boolean = true,
 ) {
     fun renderLines(): List<String> = buildList {
         add(scopeLine)
         if (events.isEmpty()) add("前序事件：未找到可确认的更早记录")
         else events.forEach { add("前序：" + it) }
         recoveryLine?.let { add(it) }
-        add("要求：对照该 Git SHA 的代码定位真实根因，给出文件、方法和最小改动及验证方式。")
+        if (includeCodeLocationGuidance) {
+            add("要求：对照该 Git SHA 的代码定位真实根因，给出文件、方法和最小改动及验证方式。")
+        } else {
+            add("要求：依据已记录的处理上下文核对行为，不把普通状态信息推断为故障。")
+        }
         add("区分已证实的事实与推断；\"未采集\"项不要猜；不要用吞异常/空结果/伪造成功掩盖故障。")
     }
 }
@@ -414,7 +419,12 @@ internal object AppLogIncidentDocument {
                 .minByOrNull { it.timestampMs }?.timestampMs
             if (recovered == null) "尚无恢复记录" else "已恢复 " + AppLogStore.formatTime(recovered)
         } else null
-        return IncidentDocumentPrevious(scope, candidates, recovery)
+        return IncidentDocumentPrevious(
+            scopeLine = scope,
+            events = candidates,
+            recoveryLine = recovery,
+            includeCodeLocationGuidance = selected.level.uppercase() in setOf("WARN", "ERROR", "FATAL"),
+        )
     }
 
     private fun sameThread(a: AppLogRecord, b: AppLogRecord): Boolean {
