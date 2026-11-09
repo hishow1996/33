@@ -1,3 +1,4 @@
+# Explicit user-requested APK build trigger marker (2026-11-09 08:01 +08:00): build latest main source and publish debug/release APK artifacts.
 # Explicit one-time APK rebuild requested after fixing Kotlin compilation and unit-test expectations.
 # User-requested retry APK build trigger after minimum retry budget correction.
 # Explicit user-requested APK build trigger marker (2026-11-08 08:22 +08:00): build latest main and publish debug/release APK artifacts.
