@@ -414,7 +414,7 @@ class TranslationBatchResultTest {
     }
  
     @Test
-    fun rejectsCommonShortPhraseEchoesAndMixedLanguagePartialOutput() {
+    fun rejectsCommonShortPhraseEchoesButAcceptsShortMixedLanguageOutput() {
         val source = listOf(
             "No Way",
             "Hello World",
@@ -437,9 +437,9 @@ class TranslationBatchResultTest {
             acceptShortUnchanged = true,
         )
 
-        assertTrue(result.translations.isEmpty())
-        assertEquals(source.indices.toList(), result.missingIndices)
-        assertEquals(5, result.rejectedRows.size)
+        assertEquals(mapOf(4 to "你好 hello"), result.translations)
+        assertEquals(listOf(0, 1, 2, 3), result.missingIndices)
+        assertEquals(4, result.rejectedRows.size)
     } 
     @Test
     fun rejectsConsonantOnlyAcronymEchoInsteadOfReplacingItWithAnInterjection() {

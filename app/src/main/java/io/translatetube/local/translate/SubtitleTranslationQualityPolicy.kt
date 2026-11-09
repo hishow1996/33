@@ -1756,9 +1756,9 @@ internal object SubtitleTranslationQualityPolicy {
         // mixed-script phrases. Do not apply that tolerance to other source languages.
         val japaneseSource = isJapaneseSourceLanguage(sourceText, sourceLanguage)
         val kanaDominates = if (japaneseSource) {
-            // Allow longer colloquial Japanese endings to remain in mixed Chinese output.
-            // Reject only when a substantial kana run overwhelmingly outweighs the Han text.
-            kana >= 12 && kana > han * 4
+            // Allow short colloquial Japanese endings, but still reject a full kana-heavy sentence.
+            // Require a substantial kana run that clearly outweighs the Han text.
+            kana >= 8 && kana > han * 3
         } else {
             kana >= 2 && kana > han
         }
@@ -1863,6 +1863,7 @@ internal object SubtitleTranslationQualityPolicy {
             }
             val normalized = normalize(token)
             val properNameShape = isTitleCasedNameToken(token, allowInitials = true) ||
+                (letters.first().isUpperCase() && letters.drop(1).any { it.isUpperCase() }) ||
                 (letters.first().isLowerCase() && letters.drop(1).any { it.isUpperCase() }) ||
                 (letters.length >= 2 && letters.all { it.isUpperCase() })
             if (properNameShape && letters.length >= 3 &&

@@ -180,7 +180,7 @@ class SubtitleTranslationQualityPolicyTest {
                 "こんにちは、元気ですか。",
                 "ja",
                 "zh-CN",
-            ).orEmpty().contains("日文假名占主导"),
+            ).orEmpty().contains("日文假名明显占主导"),
         )
         assertTrue(
             SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
@@ -430,7 +430,7 @@ class SubtitleTranslationQualityPolicyTest {
                 "I watched Netflix.", "我看了Netflix。", "en", "zh-CN",
             ),
         )
-        assertTrue(
+        assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "I think we should go now.", "我们应该go now。", "en", "zh-CN",
             ),
@@ -462,9 +462,14 @@ class SubtitleTranslationQualityPolicyTest {
 
         val japanese = "今日は学校へ行きます。"
         assertTrue(SubtitleTranslationQualityPolicy.isSourceEcho(japanese, japanese, "auto"))
-        assertTrue(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+        assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
             japanese, japanese, "auto", "zh-CN",
         ))
+        val japaneseEchoDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            japanese, japanese, "auto", "zh-CN",
+        )
+        assertFalse(japaneseEchoDecision.accepted)
+        assertEquals("SOURCE_ECHO", japaneseEchoDecision.reasonCode)
     }
 
     @Test
@@ -791,8 +796,8 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
-    fun rejectsShortEnglishFragmentsInsideOtherwiseChineseTranslations() {
-        assertTrue(
+    fun acceptsShortEnglishFragmentsButRejectsLongForeignRemainders() {
+        assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "Hello there, how are you?",
                 "你好 hello",
@@ -800,7 +805,7 @@ class SubtitleTranslationQualityPolicyTest {
                 "zh-CN",
             ),
         )
-        assertTrue(
+        assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "I do not agree.",
                 "我 no",
@@ -808,7 +813,7 @@ class SubtitleTranslationQualityPolicyTest {
                 "zh-CN",
             ),
         )
-        assertTrue(
+        assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "Thank you very much.",
                 "这是 thanks",
@@ -820,6 +825,14 @@ class SubtitleTranslationQualityPolicyTest {
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 "The new iPhone model is available.",
                 "新款 iPhone 已经上市。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should go now.",
+                "我们应该先停一下，perhaps maybe this is actually happening today。",
                 "en",
                 "zh-CN",
             ),
@@ -1802,10 +1815,13 @@ class SubtitleTranslationQualityPolicyTest {
         assertTrue(ungrounded, ungrounded.contains("外文名字母=4"))
 
         val foreignHeavy = SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
-            "I think we should go now.", "我们应该go now。", "en", "zh-CN",
+            "I think we should go now.",
+            "我们应该先停一下，perhaps maybe this is actually happening today。",
+            "en",
+            "zh-CN",
         ).orEmpty()
-        assertTrue(foreignHeavy, foreignHeavy.contains("触发规则=外文字母不少于汉字"))
-        assertTrue(foreignHeavy, foreignHeavy.contains("汉字=4"))
-        assertTrue(foreignHeavy, foreignHeavy.contains("非汉字外文字母=5"))
+        assertTrue(foreignHeavy, foreignHeavy.contains("触发规则=外文残留达到8字且超过汉字3倍"))
+        assertTrue(foreignHeavy, foreignHeavy.contains("汉字=8"))
+        assertTrue(foreignHeavy, foreignHeavy.contains("非汉字外文字母=40"))
     }
 }
