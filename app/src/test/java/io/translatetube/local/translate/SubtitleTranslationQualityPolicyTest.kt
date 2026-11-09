@@ -209,6 +209,46 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun japaneseToChineseAllowsSmallKanaMixButKeepsStrongRejectionGates() {
+        val source = "この料理はとても美味しそうですね。"
+        val mixedChinese = "好吃ですね。"
+
+        // Three retained kana are acceptable beside a short but meaningful Chinese phrase.
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, mixedChinese, "ja", "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                source, mixedChinese, "ja", "zh-CN",
+            ),
+        )
+
+        // The same relaxation also applies when Japanese is confidently detected from auto.
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, mixedChinese, "auto", "zh-CN",
+            ),
+        )
+
+        // Kana-dominant Japanese output and a punctuation-only model response remain invalid.
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "今日はいい天気ですね。",
+                "こんにちは、元気ですか。",
+                "ja",
+                "zh-CN",
+            ),
+        )
+        val punctuationOnly = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            source, "。", "ja", "zh-CN",
+        )
+        assertFalse(punctuationOnly.accepted)
+        assertEquals("UNSPEAKABLE_TRANSLATION", punctuationOnly.reasonCode)
+    }
+
+    @Test
     fun acceptsChineseOutputAndLegitimateUntranslatedNamesAndNumbers() {
         assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(

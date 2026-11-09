@@ -244,6 +244,17 @@ internal object SubtitleTranslationQualityPolicy {
         return sourceText.any { it in distinctiveChineseSourceCharacters }
     }
 
+    /**
+     * Japanese subtitles may contain a small amount of kana in otherwise Chinese output,
+     * especially in short colloquial fragments and mixed-script expressions. Apply this
+     * relaxation only when the source is known or confidently detected as Japanese.
+     */
+    private fun isJapaneseSourceLanguage(sourceText: String, sourceLanguage: String): Boolean {
+        if (SourceLanguagePolicy.canonicalPrimaryCode(sourceLanguage) == "ja") return true
+        return SourceLanguagePolicy.isUndetermined(sourceLanguage) &&
+            SubtitleLanguageDetector.detect(sourceText) == "ja"
+    }
+
     fun isSourceEcho(sourceText: String?, translatedText: String?, sourceLanguage: String): Boolean {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
         val language = SourceLanguagePolicy.normalizeTag(sourceLanguage)
@@ -1741,21 +1752,24 @@ internal object SubtitleTranslationQualityPolicy {
             }
         }
         if (lettersOrDigits == 0) return null
-        // Prefer script-specific diagnostics before the generic no-Han fallback.
-        if (kana >= 2 && kana > han) {
-            return "译文日文假名占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+        // Japanese-to-Chinese output can legitimately retain a few kana in colloquial or
+        // mixed-script phrases. Do not apply that tolerance to other source languages.
+        val japaneseSource = isJapaneseSourceLanguage(sourceText, sourceLanguage)
+        val kanaDominates = if (japaneseSource) {
+            // A Japanese-script response is still rejected when kana clearly outweighs a
+            // meaningful Chinese portion; one or two retained kana should not fail a row.
+            kana >= 3 && (han < 2 || kana > han + 2)
+        } else {
+            kana >= 2 && kana > han
+        }
+        if (kanaDominates) {
+            return "译文日文假名明显占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
         }
         if (hangul >= 2 && hangul > han) {
             return "译文韩文音节占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
         }
         if (han == 0) {
             return "未检测到汉字（汉字=0，日文假名=$kana，韩文音节=$hangul，字母/数字=$lettersOrDigits）"
-        }
-        if (kana >= 2 && kana > han) {
-            return "译文日文假名占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
-        }
-        if (hangul >= 2 && hangul > han) {
-            return "译文韩文音节占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
         }
         dominantForeignTextReason(sourceText, translatedText, han, sourceLanguage)?.let { return it }
         return null
@@ -1836,6 +1850,7 @@ internal object SubtitleTranslationQualityPolicy {
         var foreignLetters = 0
         var ungroundedProperName = false
         var ungroundedLetters = 0
+        val japaneseSource = isJapaneseSourceLanguage(sourceText, sourceLanguage)
         splitMixedScriptTokens(translatedText).forEach { token ->
             val letters = token.filter { it.isLetter() }
             if (letters.isEmpty() || isLikelyRetainedTerm(
@@ -1856,8 +1871,12 @@ internal object SubtitleTranslationQualityPolicy {
                 ungroundedProperName = true
                 ungroundedLetters += letters.length
             }
-            foreignLetters += letters.count {
-                Character.UnicodeScript.of(it.code) != Character.UnicodeScript.HAN
+            foreignLetters += letters.count { char ->
+                val script = Character.UnicodeScript.of(char.code)
+                script != Character.UnicodeScript.HAN &&
+                    !(japaneseSource &&
+                        (script == Character.UnicodeScript.HIRAGANA ||
+                            script == Character.UnicodeScript.KATAKANA))
             }
         }
         // Even a short untranslated fragment (for example "你好 hello") is not a Chinese
