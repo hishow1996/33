@@ -71,6 +71,14 @@ object SubtitleParsers {
         return String.format(Locale.ROOT, "%02d:%02d:%02d", t / 3600, (t % 3600) / 60, t % 60)
     }
 
+    private val wordTimingTagRegex = Regex("""<\d{2,}:\d{2}:\d{2}[.,]\d{1,6}>""")
+
+    /**
+     * 诊断用：统计原始 VTT 里的逐词时间标签（<00:00:01.200>）数量。
+     * 解析时这些标签会被删掉，所以必须在解析前对原始响应统计；只用于日志，不影响任何行为。
+     */
+    fun countWordTimingTags(src: String): Int = wordTimingTagRegex.findAll(src).count()
+
     /** WebVTT → 行列表（YouTube timedtext 返回 vtt） */
     fun parseVtt(src: String): List<SubLine> = parseVtt(src) {}
 
