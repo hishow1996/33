@@ -916,6 +916,27 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun rejectsLongForeignRemaindersAcrossLatinCyrillicGreekArabicHebrewIndicAndThaiScripts() {
+        val cases = listOf(
+            Triple("Estoy muy contento hoy.", "当然，estoy muy feliz de verte hoy。", "es"),
+            Triple("Я сегодня очень рад.", "当然，сегодня я действительно очень счастлив。", "ru"),
+            Triple("Είμαι πολύ χαρούμενος.", "当然，σήμερα είμαι πραγματικά πολύ χαρούμενος。", "el"),
+            Triple("أنا سعيد اليوم.", "当然، اليوم أنا سعيد جدا بلقائك。", "ar"),
+            Triple("אני שמח היום.", "当然，אני מאוד שמח לראות אותך היום。", "he"),
+            Triple("मैं आज बहुत खुश हूँ।", "当然，मैं आज वास्तव में बहुत खुश हूं。", "hi"),
+            Triple("วันนี้ฉันมีความสุขมาก", "当然，วันนี้ฉันมีความสุขมากจริงๆ。", "th"),
+        )
+        cases.forEach { (source, translated, language) ->
+            assertTrue(
+                "$language long untranslated residue should be rejected",
+                SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                    source, translated, language, "zh-CN",
+                ),
+            )
+        }
+    }
+
+    @Test
     fun allowsShortKoreanEndingButRejectsRepeatedKoreanSentenceFragments() {
         assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
