@@ -56,12 +56,6 @@ internal data class IncidentDocument(
     }
 }
 
-internal data class AppLogEnvironmentSnapshot(
-    val appVersion: String,
-    val device: String,
-    val androidVersion: String,
-)
-
 internal object AppLogIncidentDocument {
     private const val MAX_CHARS = 3_000
     private const val THREAD_WINDOW_MS = 120_000L
