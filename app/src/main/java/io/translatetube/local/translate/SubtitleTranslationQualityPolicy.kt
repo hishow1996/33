@@ -1713,6 +1713,46 @@ internal object SubtitleTranslationQualityPolicy {
         return null
     }
 
+    private data class ScriptRunStats(
+        val total: Int,
+        val longestRun: Int,
+        val runCount: Int,
+    )
+
+    /**
+     * Count contiguous runs of selected writing systems. A few short fragments separated by
+     * Chinese text are not treated the same as one long untranslated sentence.
+     */
+    private fun scriptRunStats(
+        value: String,
+        vararg scripts: Character.UnicodeScript,
+    ): ScriptRunStats {
+        val expected = scripts.toSet()
+        var total = 0
+        var currentRun = 0
+        var longestRun = 0
+        var runCount = 0
+
+        fun finishRun() {
+            if (currentRun > 0) {
+                runCount++
+                longestRun = maxOf(longestRun, currentRun)
+                currentRun = 0
+            }
+        }
+
+        value.forEach { char ->
+            if (char.isLetter() && Character.UnicodeScript.of(char.code) in expected) {
+                total++
+                currentRun++
+            } else {
+                finishRun()
+            }
+        }
+        finishRun()
+        return ScriptRunStats(total, longestRun, runCount)
+    }
+
     /** Content-free explanation for a rejected Chinese-target response; subtitle text is not logged. */
     fun targetLanguageMismatchReason(
         sourceText: String?,
@@ -1752,23 +1792,36 @@ internal object SubtitleTranslationQualityPolicy {
             }
         }
         if (lettersOrDigits == 0) return null
-        // Japanese-to-Chinese output can legitimately retain a few kana in colloquial or
-        // mixed-script phrases. Do not apply that tolerance to other source languages.
+        // Judge the length and distribution of each foreign-script fragment, not only its
+        // aggregate character count. This tolerates several short spoken particles in Chinese.
         val japaneseSource = isJapaneseSourceLanguage(sourceText, sourceLanguage)
+        val kanaRuns = scriptRunStats(
+            scriptCheckedText,
+            Character.UnicodeScript.HIRAGANA,
+            Character.UnicodeScript.KATAKANA,
+        )
         val kanaDominates = if (japaneseSource) {
-            // Allow short colloquial Japanese endings, but still reject a full kana-heavy sentence.
-            // Require a substantial kana run that clearly outweighs the Han text.
-            kana >= 8 && kana > han * 3
+            // Preserve the existing guard for a Japanese-looking full sentence, including
+            // kanji-heavy Japanese. When the Chinese portion is substantial, short separated
+            // kana fragments are tolerated unless one fragment itself becomes long.
+            kana >= 8 && kana > han * 3 && (han <= 2 || kanaRuns.longestRun >= 6)
         } else {
-            kana >= 2 && kana > han
+            // Other source languages may naturally quote a short Japanese word or ending.
+            // Reject only a longer kana run that clearly outweighs the Chinese portion.
+            kana >= 6 && kana > han * 2 && kanaRuns.longestRun >= 4
         }
         if (kanaDominates) {
-            return "译文日文假名明显占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+            return "译文日文假名明显占主导（汉字=$han，日文假名=$kana，最长连续假名=" +
+                kanaRuns.longestRun + "）"
         }
-        // Korean output may retain a short spoken ending or expression in mixed Chinese.
-        // Reject only a substantial Hangul fragment that clearly outweighs the Chinese text.
-        if (hangul >= 8 && hangul > han * 3) {
-            return "译文韩文音节明显占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+        val hangulRuns = scriptRunStats(scriptCheckedText, Character.UnicodeScript.HANGUL)
+        // A short Korean greeting or ending can remain in mixed Chinese. Repeated or long
+        // Hangul fragments still fail when they dominate the Chinese content.
+        if (hangul >= 8 && hangul > han * 3 &&
+            (hangulRuns.longestRun >= 5 || hangulRuns.runCount >= 3)
+        ) {
+            return "译文韩文音节明显占主导（汉字=$han，韩文音节=$hangul，最长连续韩文=" +
+                hangulRuns.longestRun + "）"
         }
         if (han == 0) {
             return "未检测到汉字（汉字=0，日文假名=$kana，韩文音节=$hangul，字母/数字=$lettersOrDigits）"
@@ -1850,6 +1903,8 @@ internal object SubtitleTranslationQualityPolicy {
         val sourceProperNameTokens = sourceProperNameTokens(sourceText, sourceLanguage)
         val sourceIdentifiers = sourceIdentifierTokens(sourceText)
         var foreignLetters = 0
+        var foreignTokenCount = 0
+        var longestForeignTokenLetters = 0
         var ungroundedProperName = false
         var ungroundedProperNameTokenCount = 0
         var ungroundedLetters = 0
@@ -1876,24 +1931,27 @@ internal object SubtitleTranslationQualityPolicy {
                 ungroundedProperNameTokenCount++
                 ungroundedLetters += letters.length
             }
-            foreignLetters += letters.count { char ->
+            val tokenForeignLetters = letters.count { char ->
                 val script = Character.UnicodeScript.of(char.code)
                 script != Character.UnicodeScript.HAN &&
                     !(japaneseSource &&
                         (script == Character.UnicodeScript.HIRAGANA ||
                             script == Character.UnicodeScript.KATAKANA))
             }
+            if (tokenForeignLetters > 0) {
+                foreignTokenCount++
+                longestForeignTokenLetters = maxOf(longestForeignTokenLetters, tokenForeignLetters)
+                foreignLetters += tokenForeignLetters
+            }
         }
-        // Short foreign fragments can be natural in spoken subtitles and mixed-language dialogue.
-        // Keep the ratio check for longer untranslated spans so a mostly foreign sentence cannot
-        // pass merely because it contains a small Chinese prefix. Source-grounded names and terms
-        // are still handled separately above. The reasons carry counts only, never subtitle text.
-        // Allow one embedded, ungrounded proper-name token in an otherwise substantial Chinese
-        // sentence. This does not excuse additional foreign words or multiple invented names.
+        // Short foreign fragments and two- or three-word expressions can be natural in spoken
+        // subtitles. Do not reject them solely because their letters add up. A long untranslated
+        // word, a genuinely long phrase, or several foreign words still fails the content gate.
+        // Source-grounded names and terms are excluded before these measurements.
         val singleEmbeddedProperNameAccepted =
             ungroundedProperNameTokenCount == 1 &&
-                hanCount >= 8 &&
-                hanCount >= ungroundedLetters &&
+                hanCount >= 6 &&
+                ungroundedLetters <= 8 &&
                 foreignLetters == ungroundedLetters
         if (ungroundedProperName &&
             !(hanCount >= 3 && hanCount > ungroundedLetters * 2) &&
@@ -1901,11 +1959,17 @@ internal object SubtitleTranslationQualityPolicy {
         ) {
             return "译文含原文里找不到出处的外文名/词，汉字数不足以放行" +
                 "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
-                "放行需汉字≥3 且大于外文名字母数的2倍）"
+                "放行需汉字≥3且超过外文名字母2倍，或单个≤8字母外文名且汉字≥6）"
         }
-        if (foreignLetters >= 8 && foreignLetters > hanCount * 3) {
+        val longForeignRemainder =
+            longestForeignTokenLetters >= 8 ||
+                (foreignTokenCount >= 3 && foreignLetters >= 18) ||
+                (foreignTokenCount >= 4 && foreignLetters >= 14)
+        if (foreignLetters >= 8 && foreignLetters > hanCount * 3 && longForeignRemainder) {
             return "译文仍保留较长外语片段，外文字母明显多于中文汉字" +
-                "（触发规则=外文残留达到8字且超过汉字3倍；汉字=$hanCount，非汉字外文字母=$foreignLetters）"
+                "（触发规则=外文残留达到8字且超过汉字3倍，并含长外语词/长短语；" +
+                "汉字=$hanCount，非汉字外文字母=$foreignLetters，" +
+                "最长外语词=$longestForeignTokenLetters，外语词数=$foreignTokenCount）"
         }
         return null
     }

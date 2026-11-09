@@ -839,6 +839,117 @@ class SubtitleTranslationQualityPolicyTest {
         )
     }
 
+
+    @Test
+    fun allowsTwoShortForeignWordsInSubstantialChineseButStillRejectsLongForeignSentences() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should agree.",
+                "好吧，hello there。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should agree.",
+                "当然，perhaps maybe this is actually happening today。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should agree.",
+                "很好，unbelievable。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun permitsOneShortUngroundedNameInsideMeaningfulChineseButNotSeveralNames() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I met a friend yesterday.",
+                "我昨天遇到了Morgan。",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I met a friend yesterday.",
+                "我昨天遇到了MorganTaylor。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun acceptsSeparatedJapaneseParticlesInChineseRichOutputButRejectsJapaneseDominantOutput() {
+        val source = "この料理はとても美味しそうですね。"
+        val mixed = "好吃呢，ですね、かな、だよ、そう。"
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, mixed, "ja", "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "今日はいい天気ですね。",
+                "こんにちは、元気ですか。",
+                "ja",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source,
+                "好吃ですねですねですねですね。",
+                "ja",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun allowsShortKoreanEndingButRejectsRepeatedKoreanSentenceFragments() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "오늘은 날씨가 좋네요.",
+                "天气真好 안녕하세요。",
+                "ko",
+                "zh-CN",
+            ),
+        )
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "오늘은 날씨가 좋네요.",
+                "好 안녕하세요 만나서 반가워요。",
+                "ko",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun semanticAndNumericChecksRemainIndependentOfMixedLanguageTolerance() {
+        val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "I do not agree and it costs 5 dollars.",
+            "我同意 hello there，费用为 6 美元。",
+            "en",
+            "zh-CN",
+        )
+        assertTrue(decision.semanticMismatchReason.orEmpty().startsWith("SEMANTIC_POLARITY_MISMATCH"))
+        assertTrue(decision.numericMismatchReason != null)
+        assertTrue(
+            decision.numericUnitAssociationMismatchReason != null || decision.unitMismatchReason != null,
+        )
+    }
+
     @Test
     fun exactAcronymsAndProperNamesRemainEligibleButAreNotExpandedAsPhrases() {
         listOf("NASA", "TV", "H-1B", "COVID-19", "iPhone 15", "Elon Musk", "Silicon Valley", "J. K. Rowling", "YouTube", "OK").forEach {
