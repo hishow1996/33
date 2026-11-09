@@ -1756,9 +1756,9 @@ internal object SubtitleTranslationQualityPolicy {
         // mixed-script phrases. Do not apply that tolerance to other source languages.
         val japaneseSource = isJapaneseSourceLanguage(sourceText, sourceLanguage)
         val kanaDominates = if (japaneseSource) {
-            // Allow short Japanese particles and colloquial endings to remain in an
-            // otherwise Chinese translation. Reject only a substantial kana-heavy fragment.
-            kana >= 6 && kana > han * 2
+            // Allow longer colloquial Japanese endings to remain in mixed Chinese output.
+            // Reject only when a substantial kana run overwhelmingly outweighs the Han text.
+            kana >= 12 && kana > han * 4
         } else {
             kana >= 2 && kana > han
         }

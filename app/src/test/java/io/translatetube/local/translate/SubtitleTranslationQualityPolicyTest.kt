@@ -232,8 +232,8 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
 
-        // Even five kana may remain when they are only a short ending beside Chinese text.
-        val longerMixedChinese = "好吃ですねです。"
+        // Even six kana may remain when they are part of a mixed colloquial subtitle.
+        val longerMixedChinese = "好吃ですねですね。"
         assertFalse(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
                 source, longerMixedChinese, "ja", "zh-CN",
@@ -245,10 +245,10 @@ class SubtitleTranslationQualityPolicyTest {
             ),
         )
 
-        // A substantial kana-heavy fragment is still rejected.
+        // A large kana run that overwhelmingly outweighs the Chinese portion is still rejected.
         assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
-                source, "好吃ですねですね。", "ja", "zh-CN",
+                source, "好吃ですねですねですねですね。", "ja", "zh-CN",
             ),
         )
 
