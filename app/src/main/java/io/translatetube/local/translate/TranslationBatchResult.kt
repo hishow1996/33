@@ -26,6 +26,12 @@ internal data class TranslationBatchResult(
     val missingIndices: List<Int>,
     /** Per-row reasons for rows rejected by subtitle quality/alignment validation. */
     val rejectedRows: List<TranslationRowRejection> = emptyList(),
+    /**
+     * Valid translations that were held back only because an overlong row came before them, or
+     * because the row itself was overlong. The caller keeps them as a last resort so a retry that
+     * does not improve things can never leave a row emptier than it was.
+     */
+    val heldBackTranslations: Map<Int, String> = emptyMap(),
 ) {
     companion object {
         fun from(
@@ -39,6 +45,14 @@ internal data class TranslationBatchResult(
              * 首次返回即可保留。普通词语和短语不使用此例外。
              */
             acceptShortUnchanged: Boolean = false,
+            /**
+             * 译文比原文长得多，说明模型把后面几行的意思翻进了这一行，这一行之后的译文通常也整体错位。
+             * 开启时：过长的行及其后的所有行都按未通过处理（同一次回复内），交给重试；
+             * 重试的最后一次应关闭，保留模型的结果。
+             */
+            rejectOverlong: Boolean = false,
+            /** 本视频已译行的正常「译文/原文」长度比；为空时按原文文字类型取默认值。 */
+            overlongBaselineRatio: Double? = null,
         ): TranslationBatchResult {
             // Positional output is safe only when every requested cue has exactly one result.
             // A short/long response has no reliable row mapping, so retry the complete set.
@@ -61,6 +75,8 @@ internal data class TranslationBatchResult(
             val translated = linkedMapOf<Int, String>()
             val missing = linkedSetOf<Int>()
             val rejectionByIndex = linkedMapOf<Int, TranslationRowRejection>()
+            val heldBack = linkedMapOf<Int, String>()
+            var firstOverlongPosition = -1
             indices.forEachIndexed { position, sourceIndex ->
                 if (sourceIndex < 0) return@forEachIndexed
                 val rawValue = rawTranslations.getOrNull(position)
@@ -168,20 +184,79 @@ internal data class TranslationBatchResult(
                         val acceptedValue = requireNotNull(value) {
                             "Accepted subtitle translation must not be null"
                         }
-                        if (translated[sourceIndex].isNullOrEmpty()) {
-                            translated[sourceIndex] = acceptedValue
+                        val overlongMultiple = if (rejectOverlong && sourceIndex !in translated) {
+                            SubtitleTranslationOverlongPolicy.overlongMultiple(
+                                sourceText, acceptedValue, overlongBaselineRatio,
+                            )
                         } else {
-                            translated.putIfAbsent(sourceIndex, acceptedValue)
+                            null
                         }
-                        missing.remove(sourceIndex)
-                        rejectionByIndex.remove(sourceIndex)
+                        if (overlongMultiple != null) {
+                            if (firstOverlongPosition < 0) firstOverlongPosition = position
+                            heldBack[sourceIndex] = acceptedValue
+                            missing += sourceIndex
+                            rejectionByIndex.putIfAbsent(
+                                sourceIndex,
+                                TranslationRowRejection(
+                                    sourceIndex = sourceIndex,
+                                    reasonCode = "TRANSLATION_OVERLONG",
+                                    sourceCharCount = sourceText?.length ?: 0,
+                                    rawOutputCharCount = rawValue?.length ?: 0,
+                                    rawOutputPreview = rawValue?.let {
+                                        TranslationFailureDiagnosticPolicy.safeSnippet(it, 120)
+                                    },
+                                    diagnosticReason = "译文 ${SubtitleTranslationOverlongPolicy.units(acceptedValue)} 字，" +
+                                        "原文 ${SubtitleTranslationOverlongPolicy.units(sourceText)} 字，" +
+                                        "是本视频正常长度比的 ${String.format(java.util.Locale.ROOT, "%.1f", overlongMultiple)} 倍；" +
+                                        "疑似把相邻行的内容翻进了这一行，这一行之后的译文可能整体错位",
+                                ),
+                            )
+                        } else {
+                            if (translated[sourceIndex].isNullOrEmpty()) {
+                                translated[sourceIndex] = acceptedValue
+                            } else {
+                                translated.putIfAbsent(sourceIndex, acceptedValue)
+                            }
+                            missing.remove(sourceIndex)
+                            rejectionByIndex.remove(sourceIndex)
+                        }
                     }
                 }
             }
+            // A row that swallowed its neighbours shifts every later row of the same answer, so the
+            // rows after it cannot be trusted either. Hold them back (the caller can still fall
+            // back to them) and let the retry translate the whole tail again.
+            var demotedAny = false
+            if (firstOverlongPosition >= 0) {
+                for (position in firstOverlongPosition + 1 until indices.size) {
+                    val sourceIndex = indices[position]
+                    if (sourceIndex < 0 || indices.indexOf(sourceIndex) != position) continue
+                    val kept = translated.remove(sourceIndex) ?: continue
+                    heldBack[sourceIndex] = kept
+                    missing += sourceIndex
+                    rejectionByIndex.putIfAbsent(
+                        sourceIndex,
+                        TranslationRowRejection(
+                            sourceIndex = sourceIndex,
+                            reasonCode = "AFTER_OVERLONG_ROW",
+                            sourceCharCount = sourceTexts[sourceIndex]?.length ?: 0,
+                            rawOutputCharCount = kept.length,
+                            diagnosticReason = "位于过长译文行之后；该行译文本身有效，但这一批回复可能已整体错位，需要从过长行起一起重翻",
+                        ),
+                    )
+                    demotedAny = true
+                }
+            }
+            val orderedMissing = if (demotedAny) {
+                indices.filter { it in missing }.distinct()
+            } else {
+                missing.toList()
+            }
             return TranslationBatchResult(
                 translations = translated,
-                missingIndices = missing.toList(),
-                rejectedRows = missing.mapNotNull(rejectionByIndex::get),
+                missingIndices = orderedMissing,
+                rejectedRows = orderedMissing.mapNotNull(rejectionByIndex::get),
+                heldBackTranslations = heldBack,
             )
         }
     }

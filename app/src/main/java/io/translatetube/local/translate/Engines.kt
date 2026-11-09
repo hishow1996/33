@@ -1812,6 +1812,9 @@ private fun buildOpenAiSubtitlePrompts(
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
             }
+            TranslationRetryNoticeHolder.current()?.takeIf { it.isNotBlank() }?.let { notice ->
+                append(notice)
+            }
             append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
             append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
         }
@@ -2470,6 +2473,9 @@ private fun buildGeminiSubtitlePrompts(
             append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
+            }
+            TranslationRetryNoticeHolder.current()?.takeIf { it.isNotBlank() }?.let { notice ->
+                append(notice)
             }
             append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
             append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")

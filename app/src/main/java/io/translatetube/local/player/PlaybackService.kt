@@ -11824,6 +11824,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 var lastSentRowsText = "无"
                 var lastSentContextText = "无"
                 var lastSentLookaheadText = "无"
+                // 因「译文过长/排在过长行之后」被挡下的译文：重试仍无法得到更好的结果时保留它们，
+                // 保证这个检查只会让字幕更准，不会让任何一行比原来更差。
+                val heldTranslations = linkedMapOf<Int, String>()
                 val attemptHistory = ArrayList<String>(3)
                 // An unrepaired malformed/short/long response makes this batch fail.
                 var hadResponseCountMismatch = false
@@ -11840,6 +11843,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             "MODEL_META_RESPONSE" -> "模型/接口返回说明、拒绝答复或服务状态，不是字幕译文"
                             "SOURCE_ECHO_AND_TARGET_LANGUAGE_MISMATCH" -> "返回原文，未生成中文译文"
                             "SOURCE_ECHO" -> "译文与原文实质相同"
+                            "TRANSLATION_OVERLONG" -> "译文比原文长得多，疑似把相邻行的内容翻进了这一行"
+                            "AFTER_OVERLONG_ROW" -> "位于过长译文行之后，这批回复可能整体错位，需要一并重翻"
                             else -> row.reasonCode
                         }.let { baseReason ->
                             row.diagnosticReason?.takeIf { it.isNotBlank() }
@@ -11896,15 +11901,27 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     }
                     val directLookahead = lookaheadAfter(rowIndices.maxOrNull() ?: lastBatchIndex)
+                    // 因译文吞行（过长）进入小批重译时，同样明确告诉模型：每行只翻自己的内容。
+                    val directRetryNotice = if (lastRejectedRows.any {
+                            it.reasonCode == "TRANSLATION_OVERLONG" || it.reasonCode == "AFTER_OVERLONG_ROW"
+                        }
+                    ) {
+                        io.translatetube.local.translate.TranslationRetryNoticeHolder.OVERLONG_RETRY_NOTICE
+                    } else {
+                        null
+                    }
                     val directRaced = try {
                         runUntilInterrupted(
                             manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
                         ) {
                             io.translatetube.local.translate.TranslationDiagnosticContextHolder
                                 .withDiagnosticContext(traceContext) {
-                                    engine!!.translateWithContext(
-                                        rowSources, src, tgt, directContext, directLookahead, translationVideoTitle,
-                                    )
+                                    io.translatetube.local.translate.TranslationRetryNoticeHolder
+                                        .withNotice(directRetryNotice) {
+                                            engine!!.translateWithContext(
+                                                rowSources, src, tgt, directContext, directLookahead, translationVideoTitle,
+                                            )
+                                        }
                                 }
                         }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
@@ -12014,6 +12031,15 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     }
                     val lookaheadSource = lookaheadAfter(unresolvedIndices.maxOrNull() ?: lastBatchIndex)
+                    // 上一次是因为译文吞行被打回的，这次请求里明确告诉模型：每行只翻自己的内容。
+                    val retryNotice = if (lastRejectedRows.any {
+                            it.reasonCode == "TRANSLATION_OVERLONG" || it.reasonCode == "AFTER_OVERLONG_ROW"
+                        }
+                    ) {
+                        io.translatetube.local.translate.TranslationRetryNoticeHolder.OVERLONG_RETRY_NOTICE
+                    } else {
+                        null
+                    }
                     run {
                         val diag = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy
                         lastSentRowsText = batch.take(12).mapIndexed { position, text ->
@@ -12040,9 +12066,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         ) {
                             io.translatetube.local.translate.TranslationDiagnosticContextHolder
                                 .withDiagnosticContext(traceContext) {
-                                    engine!!.translateWithContext(
-                                        batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
-                                    )
+                                    io.translatetube.local.translate.TranslationRetryNoticeHolder
+                                        .withNotice(retryNotice) {
+                                            engine!!.translateWithContext(
+                                                batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
+                                            )
+                                        }
                                 }
                         }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
@@ -12175,6 +12204,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     val batchTranslations = (racedBatch as InterruptibleResult.Done).value
 
                     val attemptedIndices = unresolvedIndices.toList()
+                    // 以本视频已经译好的行为准，算出"译文/原文"的正常长度比，用来识别吞行。
+                    val overlongBaselineRatio = io.translatetube.local.translate.SubtitleTranslationOverlongPolicy
+                        .baselineRatio(
+                            updatedLines.asSequence().mapIndexedNotNull { index, line ->
+                                val translatedText = line.zh
+                                val sourceText = plain.getOrNull(index)
+                                if (translatedText.isNullOrBlank() || sourceText.isNullOrBlank() ||
+                                    translatedText == sourceText
+                                ) {
+                                    null
+                                } else {
+                                    sourceText.orEmpty() to translatedText.orEmpty()
+                                }
+                            },
+                        )
                     val rawParsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
                         indices = attemptedIndices,
                         rawTranslations = batchTranslations,
@@ -12183,6 +12227,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         targetLanguage = tgt,
                         // 第一次返回仍严格校验；同一行重试后仍是人名/品牌/外来词原样返回，说明没有可翻内容，接受它。
                         acceptShortUnchanged = attempt >= 1,
+                        // 前两次请求里，译文过长（吞了后面几行）的行及其后的行都打回重翻；
+                        // 第三次（循环的最后一次，attempt == 2）不再挡，保留模型结果，绝不因此让整个翻译失败。
+                        rejectOverlong = attempt < 2,
+                        overlongBaselineRatio = overlongBaselineRatio,
                     )
                     // 对位校验：逐行校验只看"这行是不是合格的中文"，看不出译文是否对应这行原文。
                     // 模型合并相邻碎句时内容会前移，前面的行仍是合格中文，只有尾部行为空；
@@ -12199,6 +12247,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     } else {
                         alignedBatch
                     }
+                    heldTranslations.putAll(parsedBatch.heldBackTranslations)
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices
                     lastRejectedRows = parsedBatch.rejectedRows
@@ -12381,6 +12430,37 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 "处理代数" to (pipelineGeneration ?: -1L).toString(),
                             ),
                         )
+                    }
+                }
+
+                // 因"译文过长/排在过长行之后"被挡下、重试后仍没有得到有效结果的行：保留当初那份有效译文，
+                // 不让这个检查导致整个翻译失败，也不让这些行比原来更差。
+                if (unresolvedIndices.isNotEmpty() && heldTranslations.isNotEmpty()) {
+                    val rescuedIndices = unresolvedIndices.filter { heldTranslations.containsKey(it) }
+                    if (rescuedIndices.isNotEmpty()) {
+                        val rescuedTranslations = rescuedIndices.associateWith { heldTranslations.getValue(it) }
+                        resolvedBatch.putAll(rescuedTranslations)
+                        updatedLines = updatedLines.mapIndexed { index, line ->
+                            rescuedTranslations[index]?.let { line.copy(zh = it) } ?: line
+                        }
+                        val rescuedSet = rescuedIndices.toSet()
+                        unresolvedIndices = unresolvedIndices.filter { it !in rescuedSet }
+                        withContext(Dispatchers.IO) {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                this@PlaybackService,
+                                "Translation",
+                                "译文偏长的字幕行重试后仍无更好结果，已保留原译文",
+                                diagnosticContext = mapOf(
+                                    "翻译诊断 ID" to diagnosticId,
+                                    "翻译引擎名称" to engineName,
+                                    "当前批次" to "${batchIndex + 1}/${translationTotalBatches}",
+                                    "保留原译文的字幕行号（从1开始）" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy
+                                        .summarizeIndices(rescuedIndices),
+                                    "说明" to "这些行最初被判定为译文过长或排在过长行之后，重试请求没有返回有效译文，因此保留最初的有效译文；不影响翻译继续",
+                                    "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                                ),
+                            )
+                        }
                     }
                 }
 
