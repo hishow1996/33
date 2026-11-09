@@ -188,7 +188,7 @@ class SubtitleTranslationQualityPolicyTest {
                 "안녕하세요, 만나서 반가워요.",
                 "ko",
                 "zh-CN",
-            ).orEmpty().contains("韩文音节占主导"),
+            ).orEmpty().contains("韩文音节明显占主导"),
         )
         assertTrue(
             SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
