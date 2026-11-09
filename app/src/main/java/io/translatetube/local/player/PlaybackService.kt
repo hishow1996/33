@@ -11799,8 +11799,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 }
                 val batchStartedAtNanos = System.nanoTime()
                 val lastBatchIndex = batchIndices.maxOrNull() ?: -1
-                val lookaheadSource = updatedLines.asSequence()
-                    .drop(lastBatchIndex + 1)
+                // 后文提示跟着本次请求的最后一行走：首次请求等同于整批之后的 3 行；
+                // 重试时是失败行之后的 3 行，而不是整批末尾之后，这样碎片行能看到紧跟它的原文。
+                fun lookaheadAfter(lastIndex: Int): List<String> = updatedLines.asSequence()
+                    .drop(lastIndex + 1)
                     .map { it.text }
                     .filter { it.isNotBlank() }
                     .take(3)
@@ -11816,6 +11818,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 var lastRequestRowCount = 0
                 var lastResponseRowCount = 0
                 var lastResponsePreview = "无"
+                // 最近一次请求实际发给模型的内容（仅本机日志），用于判断失败行是否被正确发送。
+                var lastSentRowsText = "无"
+                var lastSentContextText = "无"
+                var lastSentLookaheadText = "无"
                 val attemptHistory = ArrayList<String>(3)
                 // An unrepaired malformed/short/long response makes this batch fail.
                 var hadResponseCountMismatch = false
@@ -11892,6 +11898,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     )
                             },
                         )
+                    }
+                    val lookaheadSource = lookaheadAfter(unresolvedIndices.maxOrNull() ?: lastBatchIndex)
+                    run {
+                        val diag = io.translatetube.local.translate.TranslationFailureDiagnosticPolicy
+                        lastSentRowsText = batch.take(12).mapIndexed { position, text ->
+                            "${unresolvedIndices[position] + 1}行(${text.length}字符)=「" +
+                                diag.safeSnippet(text, 200) + "」"
+                        }.joinToString("；").let { shown ->
+                            if (unresolvedIndices.size > 12) shown + "；另有 ${unresolvedIndices.size - 12} 行未展开" else shown
+                        }
+                        lastSentContextText = retryContext?.let { (contextSources, contextTranslations) ->
+                            contextSources.indices.joinToString(" | ") { i ->
+                                "「" + diag.safeSnippet(contextSources[i], 60) + "」→「" +
+                                    diag.safeSnippet(contextTranslations.getOrNull(i), 60) + "」"
+                            }
+                        }.orEmpty().ifBlank { "无" }
+                        lastSentLookaheadText = lookaheadSource
+                            .joinToString(" | ") { "「" + diag.safeSnippet(it, 60) + "」" }
+                            .ifBlank { "无" }
                     }
                     // 请求可能要几十秒：用户这时启用外部翻译，就放弃等待这一批，立刻进入"等待外部译文"。
                     val requestStartedAtNanos = System.nanoTime()
@@ -12111,6 +12136,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "失败字幕索引（0-based）" to parsedBatch.rejectedRows.joinToString(",") { it.sourceIndex.toString() },
                                     "失败字幕行号（从1开始）" to parsedBatch.rejectedRows.joinToString(",") { (it.sourceIndex + 1).toString() },
                                     "逐行失败原因及模型原始返回片段" to describeRejectedTranslationRows(parsedBatch.rejectedRows),
+                                    "本次请求实际发送的字幕原文（仅本机日志）" to lastSentRowsText,
+                                    "本次请求实际发送的前文上下文（原文→译文，仅本机日志）" to lastSentContextText,
+                                    "本次请求实际发送的后文提示（仅本机日志）" to lastSentLookaheadText,
                                     "本轮失败行数" to parsedBatch.rejectedRows.size.toString(),
                                     "尝试序号（含首次）" to (attempt + 1).toString(),
                                     "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
@@ -12180,6 +12208,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     reasonByIndex = finalRejections.associate { it.sourceIndex to it.reasonCode + "；" + it.diagnosticReason.orEmpty() },
                                     maxRows = 8,
                                 ),
+                                "最后一次请求实际发送的字幕原文（仅本机日志）" to lastSentRowsText,
+                                "最后一次请求实际发送的前文上下文（原文→译文，仅本机日志）" to lastSentContextText,
+                                "最后一次请求实际发送的后文提示（仅本机日志）" to lastSentLookaheadText,
                                 "最后一次模型原始响应前8行（条数不匹配时不可按位置对应）" to lastResponsePreview,
                                 "逐次请求与响应统计" to attemptHistory.joinToString(" || ").take(4_000).ifBlank { "没有收到完整模型响应" },
                                 "最终失败分类" to if (hadResponseCountMismatch) "RESPONSE_ROW_COUNT_MISMATCH" else "TRANSLATION_QUALITY_REJECTED",
