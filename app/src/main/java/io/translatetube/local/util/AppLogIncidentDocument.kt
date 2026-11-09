@@ -2,6 +2,8 @@ package io.translatetube.local.util
 
 internal data class IncidentDocumentField(val name: String, val value: String)
 
+internal data class IncidentDocumentSection(val title: String, val content: String)
+
 internal data class IncidentDocumentCodeLocation(
     val lines: List<String>,
     val additionalFrames: List<String> = emptyList(),
@@ -20,6 +22,7 @@ internal data class IncidentDocumentPrevious(
         if (events.isEmpty()) add("前序事件：未找到可确认的更早记录")
         else events.forEach { add("前序：" + it) }
         recoveryLine?.let { add(it) }
+        add("注意：时间先后或时间接近只能说明顺序/邻近，不能证明因果；其他 ERROR 不自动视为当前故障原因。")
         if (includeCodeLocationGuidance) {
             add("要求：对照该 Git SHA 的代码定位真实根因，给出文件、方法和最小改动及验证方式。")
         } else {
@@ -44,36 +47,49 @@ internal data class IncidentDocument(
     val sceneFields: List<IncidentDocumentField>,
     val previous: IncidentDocumentPrevious,
 ) {
-    fun blockTitles(): List<String> = buildList {
-        add("故障问题")
-        add("现象")
-        add("失败位置")
-        add("关键原因")
-        add("故障性质")
-        add("基本信息")
-        if (diagnosticEvidence.isNotEmpty()) add("关键证据")
-        if (codeLocation != null) add("代码定位")
-        add("现场参数")
-        add("关联上下文")
+    fun sections(): List<IncidentDocumentSection> = buildList {
+        add(IncidentDocumentSection("故障问题", problemTitle))
+        add(IncidentDocumentSection("现象", symptom))
+        add(IncidentDocumentSection("失败位置", failureLocation))
+        add(IncidentDocumentSection("关键原因", directCause))
+        add(
+            IncidentDocumentSection(
+                "故障性质",
+                faultNature + "\n诊断可信度：" + diagnosisConfidence,
+            ),
+        )
+        add(
+            IncidentDocumentSection(
+                "基本信息",
+                (listOf(headerLine) + faultLines).joinToString("\n"),
+            ),
+        )
+        if (diagnosticEvidence.isNotEmpty()) {
+            add(IncidentDocumentSection("关键证据", diagnosticEvidence.joinToString("\n")))
+        }
+        codeLocation?.let {
+            add(IncidentDocumentSection("代码定位", it.renderLines().joinToString("\n")))
+        }
+        add(
+            IncidentDocumentSection(
+                "现场参数",
+                sceneFields.joinToString("\n") { it.name + "：" + it.value },
+            ),
+        )
+        add(IncidentDocumentSection("关联上下文", previous.renderLines().joinToString("\n")))
     }
+
+    fun blockTitles(): List<String> = sections().map { it.title }
 
     fun toPlainText(): String {
         val output = StringBuilder()
-        fun block(title: String, lines: List<String>) {
+        sections().forEach { section ->
             if (output.isNotEmpty()) output.append("\n\n")
-            output.append(title)
-            lines.filter { it.isNotBlank() }.forEach { output.append('\n').append(it) }
+            output.append(section.title)
+            section.content.lineSequence()
+                .filter { it.isNotBlank() }
+                .forEach { output.append('\n').append(it) }
         }
-        block("故障问题", listOf(problemTitle))
-        block("现象", listOf(symptom))
-        block("失败位置", listOf(failureLocation))
-        block("关键原因", listOf(directCause))
-        block("故障性质", listOf(faultNature, "诊断可信度：" + diagnosisConfidence))
-        block("基本信息", listOf(headerLine) + faultLines)
-        if (diagnosticEvidence.isNotEmpty()) block("关键证据", diagnosticEvidence)
-        codeLocation?.let { block("代码定位", it.renderLines()) }
-        block("现场参数", sceneFields.map { it.name + "：" + it.value })
-        block("关联上下文", previous.renderLines())
         return AppLogStore.redactForExport(output.toString())
     }
 }
@@ -91,23 +107,24 @@ internal object AppLogIncidentDocument {
         val stage = value(record, "当前处理阶段", "失败阶段", "故障阶段", "处理阶段", "当前 UI 阶段", "阶段")
         val engine = engine(record, domain)
         val batch = if (domain == "字幕翻译") translationBatch(record) else null
-        val engineBatch = listOfNotNull(engine, batch).joinToString(" / ").ifBlank { "未采集" }
         val module = record.category.ifBlank { AppLogTitleResolver.featureLabel(record.tag, record.message) }
         val diagnosis = AppLogDiagnostics.analyze(record)
 
-        val header = "应用 " + clip(env.appVersion, 80) +
-            " | " + clip(env.device, 64) +
-            " Android " + clip(env.androidVersion, 40) +
-            " | " + clip(AppLogStore.formatTime(record.timestampMs), 32) +
-            " | " + clip(record.eventId.ifBlank { "旧版日志未记录" }, 48)
+        val header = listOf(
+            "应用版本：" + clip(env.appVersion.ifBlank { "未采集" }, 80),
+            "设备：" + clip(env.device.ifBlank { "未采集" }, 64),
+            "Android：" + clip(env.androidVersion.ifBlank { "未采集" }, 40),
+            "发生时间：" + clip(AppLogStore.formatTime(record.timestampMs), 32),
+            "事件 ID：" + clip(record.eventId.ifBlank { "旧版日志未记录" }, 48),
+        ).joinToString("\n")
 
         val fault = buildList {
-            add(
-                clip(record.level.ifBlank { "未采集" }, 12) + " · " +
-                    clip(module, 48) + " · " +
-                    clip(stage ?: "未采集", 48) + " · " +
-                    clip(engineBatch, 80),
-            )
+            add("日志级别：" + clip(record.level.ifBlank { "未采集" }, 12))
+            add("模块：" + clip(module, 48))
+            add("处理阶段：" + clip(stage ?: "未采集", 48))
+            add("处理引擎/模型：" + clip(engine ?: "未采集", 80))
+            batch?.let { add("翻译批次：" + clip(it, 48)) }
+            add("线程：" + clip(record.thread.ifBlank { "未采集" }, 80))
             if (!record.level.equals("INFO", true)) {
                 val deepest = AppLogAiReport.deepestCause(record.exceptionSnapshot)
                 val type = deepest?.type?.takeIf { it.isNotBlank() }
@@ -131,11 +148,8 @@ internal object AppLogIncidentDocument {
         return fit(
             IncidentDocument(
                 headerLine = header,
-                problemTitle = if (record.level.equals("INFO", true)) {
-                    "运行状态记录"
-                } else {
-                    AppLogTitleResolver.incidentTitle(record.tag, record.message, diagnosis.category)
-                },
+                // Keep the exact same title resolver used by the log list.
+                problemTitle = AppLogTitleResolver.title(record.tag, record.message),
                 symptom = clip(symptom, 420),
                 failureLocation = clip(failureLocation, 300),
                 directCause = if (record.level.equals("INFO", true)) {
@@ -181,10 +195,27 @@ internal object AppLogIncidentDocument {
     private fun codeLocation(record: AppLogRecord): IncidentDocumentCodeLocation {
         val snapshot = record.exceptionSnapshot
         if (snapshot == null) {
-            val callSite = value(record, "日志调用位置", "日志调用点", "调用位置") ?: "未采集"
-            return IncidentDocumentCodeLocation(
-                lines = listOf("无异常对象；位置仅为日志调用点：" + clip(callSite, 240)),
-            )
+            val firstFrame = record.firstAppStackFrame.takeIf { it.isNotBlank() }
+            val callSite = value(record, "日志调用位置", "日志调用点", "调用位置")
+            val lines = buildList {
+                if (firstFrame != null) {
+                    add(
+                        "已记录的首个应用栈帧（未采集异常快照）：" +
+                            clip(firstFrame, 240) +
+                            "；可辅助定位，但无法单凭此字段确认真实抛出点。",
+                    )
+                }
+                if (callSite != null) {
+                    add(
+                        "日志调用位置（不是异常抛出位置）：" +
+                            clip(callSite, 240),
+                    )
+                }
+                if (firstFrame == null && callSite == null) {
+                    add("未采集异常对象、应用栈帧和日志调用位置，暂无法定位。")
+                }
+            }
+            return IncidentDocumentCodeLocation(lines = lines)
         }
 
         val appFrames = AppLogAiReport.exceptionFrames(snapshot).filter {
@@ -211,7 +242,14 @@ internal object AppLogIncidentDocument {
         }
 
         val lines = mutableListOf<String>()
-        lines.add("首个应用栈帧：" + clip(firstFrame.ifBlank { "未采集" }, 240))
+        if (firstFrame.isNotBlank()) {
+            lines.add("首个应用栈帧：" + clip(firstFrame, 240))
+        } else {
+            lines.add("异常快照中未找到可识别的应用栈帧。")
+        }
+        value(record, "日志调用位置", "日志调用点", "调用位置")?.let { callSite ->
+            lines.add("日志调用位置（不是异常抛出位置）：" + clip(callSite, 240))
+        }
         if (chain.isNotEmpty()) lines.add("异常链：" + clip(chain.distinct().joinToString(" → "), 180))
         val suppressed = AppLogAiReport.suppressedTypes(snapshot)
             .map(AppLogAiReport::simpleErrorType).distinct().take(4)
@@ -439,40 +477,60 @@ internal object AppLogIncidentDocument {
     }
 
     private fun previous(selected: AppLogRecord, all: List<AppLogRecord>): IncidentDocumentPrevious {
-        val candidates = all.asSequence()
-            .filter { AppLogEventRelationPolicy.eventKey(it) != AppLogEventRelationPolicy.eventKey(selected) }
-            .filter {
-                it.timestampMs < selected.timestampMs ||
-                    (it.timestampMs == selected.timestampMs && it.sequence < selected.sequence)
+        val selectedKey = AppLogEventRelationPolicy.eventKey(selected)
+        val earlier = all.filter { event ->
+            AppLogEventRelationPolicy.eventKey(event) != selectedKey &&
+                (event.timestampMs < selected.timestampMs ||
+                    (event.timestampMs == selected.timestampMs && event.sequence < selected.sequence))
+        }
+        val relations = AppLogEventRelationPolicy.againstSelected(all, selected)
+
+        fun relationLabel(event: AppLogRecord): String? =
+            when (relations[AppLogEventRelationPolicy.eventKey(event)]?.role) {
+                "SAME_TRANSLATION_DIAGNOSTIC" -> "同一翻译诊断 ID"
+                "EARLIER_ANOMALY_SAME_OPERATION",
+                "SAME_OPERATION_CONTEXT" -> "同一任务标识"
+                "SAME_ISSUE_SIGNATURE_SAME_OPERATION" -> "同一任务且同一故障签名"
+                "SAME_ISSUE_SIGNATURE" -> "同一故障签名"
+                "RECOVERY_MATCHED_BY_ISSUE_KEY" -> "同一故障编号的恢复记录"
+                "SAME_SESSION_CONTEXT" -> "同一会话，仅上下文"
+                else -> null
             }
-            .let { events ->
-                when {
-                    selected.sessionId.isNotBlank() && selected.operationId.isNotBlank() ->
-                        events.filter {
-                            it.sessionId == selected.sessionId && it.operationId == selected.operationId
-                        }
-                    selected.operationId.isBlank() -> {
-                        val cutoff = selected.timestampMs - THREAD_WINDOW_MS
-                        events.filter { it.timestampMs in cutoff..selected.timestampMs && sameThread(selected, it) }
-                    }
-                    else -> events.filter { false }
-                }
-            }
-            .sortedWith(compareBy<AppLogRecord> { it.timestampMs }.thenBy { it.sequence })
-            .toList()
+
+        val explicitlyLinked = earlier.mapNotNull { event ->
+            relationLabel(event)?.let { event to it }
+        }
+        val hasStrongIdentifier = explicitlyLinked.any { (_, label) ->
+            label != "同一会话，仅上下文"
+        }
+        val weakThreadContext = if (explicitlyLinked.isEmpty()) {
+            val cutoff = selected.timestampMs - THREAD_WINDOW_MS
+            earlier.filter {
+                it.timestampMs in cutoff..selected.timestampMs && sameThread(selected, it)
+            }.map { it to "同线程且时间接近（弱关联）" }
+        } else {
+            emptyList()
+        }
+        val chosen = (explicitlyLinked.ifEmpty { weakThreadContext })
+            .sortedWith(compareBy<Pair<AppLogRecord, String>> { it.first.timestampMs }.thenBy { it.first.sequence })
             .takeLast(3)
-            .map { event ->
-                AppLogStore.formatTime(event.timestampMs) + " " +
-                    clip(event.level, 12) + " " + clip(event.tag, 32) + " " + clip(event.message, 80)
+            .map { (event, label) ->
+                "[$label] " +
+                    AppLogStore.formatTime(event.timestampMs) + " · " +
+                    clip(event.level, 12) + " · " +
+                    clip(event.tag, 32) + " · " +
+                    clip(event.message, 80)
             }
 
         val scope = when {
-            selected.sessionId.isNotBlank() && selected.operationId.isNotBlank() ->
-                "前序范围：同 sessionId + operationId"
-            selected.operationId.isBlank() ->
-                "前序范围：仅同线程（operationId 未记录，时间窗 2 分钟）"
+            hasStrongIdentifier ->
+                "关联依据：下面记录按翻译诊断 ID、sessionId/operationId 或 issueKey 匹配；它们提供同任务/同故障上下文，不自动证明根因。"
+            explicitlyLinked.isNotEmpty() ->
+                "弱关联：仅匹配到相同 sessionId，没有匹配到同一 operationId 或 issueKey；只能作为会话上下文。"
+            weakThreadContext.isNotEmpty() ->
+                "弱关联：仅同线程且时间相差不超过 2 分钟；不代表同一任务或根因。"
             else ->
-                "前序范围：sessionId 未记录，无法验证同一任务"
+                "无直接关联：没有找到可核验的相同故障编号、翻译诊断 ID 或同一任务标识。"
         }
         val recovery = if (
             selected.level.uppercase() in setOf("WARN", "ERROR", "FATAL") && selected.issueKey.isNotBlank()
@@ -484,7 +542,7 @@ internal object AppLogIncidentDocument {
         } else null
         return IncidentDocumentPrevious(
             scopeLine = scope,
-            events = candidates,
+            events = chosen,
             recoveryLine = recovery,
             includeCodeLocationGuidance = selected.level.uppercase() in setOf("WARN", "ERROR", "FATAL"),
         )

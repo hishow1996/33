@@ -35,7 +35,11 @@ class AppLogIncidentDocumentTest {
         )
         val document = AppLogIncidentDocument.build(record, listOf(record), env)
         val text = document.toPlainText()
-        assertTrue(text.contains("ERROR · 字幕翻译 · TRANSLATING · 智谱 glm / 1/242"))
+        assertTrue(text.contains("日志级别：ERROR"))
+        assertTrue(text.contains("模块：字幕翻译"))
+        assertTrue(text.contains("处理阶段：TRANSLATING"))
+        assertTrue(text.contains("处理引擎/模型：智谱 glm"))
+        assertTrue(text.contains("翻译批次：1/242"))
         assertTrue(text.contains("输入字幕行数：5"))
         assertTrue(text.contains("有效译文数/拒绝行数"))
         assertTrue(text.contains("HTTP 状态码：200"))
@@ -124,6 +128,169 @@ class AppLogIncidentDocumentTest {
         assertTrue(document.faultNature.contains("不支持"))
     }
 
+
+    @Test
+    fun detailUsesTheExistingLogTitleAndDoesNotInventACompletedRetry() {
+        val record = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "Translation",
+            category = "字幕翻译",
+            message = "第 7 批翻译失败：第 211 行未通过译文质量校验",
+            details = "专有名词 Google 被保留；汉字数=10，外文字母数=6。",
+            thread = "worker",
+            eventId = "quality-without-retry-proof",
+            httpStatusCode = 200,
+            rootCauseMessage = "汉字数 10、外文字母数 6，未满足质量规则。",
+        )
+        val document = AppLogIncidentDocument.build(record, listOf(record), env)
+
+        assertEquals(AppLogTitleResolver.title(record.tag, record.message), document.problemTitle)
+        assertFalse(document.problemTitle.contains("重试后任务停止"))
+        assertTrue(document.problemTitle.contains("质量校验"))
+    }
+
+    @Test
+    fun persistedApplicationFrameIsShownWithoutSnapshotAndCallSiteIsNotMislabelled() {
+        val record = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "PlaybackPipeline",
+            message = "视频处理流程失败",
+            details = "",
+            thread = "worker",
+            firstAppStackFrame = "io.translatetube.local.player.PlaybackService.translateLinesInternal(PlaybackService.kt:12193)",
+            diagnosticContext = mapOf(
+                "日志调用位置" to "io.translatetube.local.util.LogWriter.record(LogWriter.kt:87)",
+            ),
+        )
+        val document = AppLogIncidentDocument.build(record, listOf(record), env)
+        val codeLines = document.codeLocation?.renderLines().orEmpty()
+
+        assertTrue(document.failureLocation.contains("PlaybackService.kt:12193"))
+        assertFalse(document.failureLocation.contains("日志调用位置"))
+        assertTrue(codeLines.any { it.contains("日志调用位置（不是异常抛出位置）") && it.contains("LogWriter.kt:87") })
+        assertTrue(document.toPlainText().contains("PlaybackService.kt:12193"))
+    }
+
+    @Test
+    fun relatedEventsAreLabelledByIdentifiersAndUnrelatedErrorsAreExcluded() {
+        val selected = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "Translation",
+            message = "当前选中的翻译故障",
+            details = "",
+            thread = "translation-worker",
+            eventId = "selected-event",
+            sessionId = "session-a",
+            operationId = "operation-a",
+            issueKey = "translation-signature",
+        )
+        val sameOperation = selected.copy(
+            timestampMs = selected.timestampMs - 1_000L,
+            level = "INFO",
+            tag = "Translation",
+            message = "同一任务的处理记录",
+            eventId = "same-operation",
+            issueKey = "",
+        )
+        val sameSignature = selected.copy(
+            timestampMs = selected.timestampMs - 2_000L,
+            message = "相同故障签名的另一条记录",
+            eventId = "same-signature",
+            sessionId = "session-b",
+            operationId = "operation-b",
+        )
+        val sameSession = selected.copy(
+            timestampMs = selected.timestampMs - 3_000L,
+            message = "同会话中的其他处理记录",
+            eventId = "same-session",
+            operationId = "operation-other",
+            issueKey = "",
+        )
+        val unrelated = selected.copy(
+            timestampMs = selected.timestampMs - 4_000L,
+            message = "UNRELATED_ERROR_MUST_NOT_APPEAR",
+            eventId = "unrelated-error",
+            sessionId = "session-unrelated",
+            operationId = "operation-unrelated",
+            issueKey = "unrelated-signature",
+            thread = "different-worker",
+        )
+
+        val document = AppLogIncidentDocument.build(
+            selected,
+            listOf(unrelated, sameSession, sameSignature, sameOperation, selected),
+            env,
+        )
+        val text = document.toPlainText()
+
+        assertTrue(text.contains("[同一任务标识]"))
+        assertTrue(text.contains("[同一故障签名]"))
+        assertTrue(text.contains("[同一会话，仅上下文]"))
+        assertFalse(text.contains("UNRELATED_ERROR_MUST_NOT_APPEAR"))
+        assertTrue(text.contains("不自动证明根因"))
+    }
+
+    @Test
+    fun nearbySameThreadEventsAreMarkedAsWeakContextOnly() {
+        val selected = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "PlaybackPipeline",
+            message = "选中的播放故障",
+            details = "",
+            thread = "worker-a",
+            eventId = "selected-no-ids",
+        )
+        val nearby = selected.copy(
+            timestampMs = selected.timestampMs - 1_000L,
+            level = "INFO",
+            message = "同线程附近状态",
+            eventId = "nearby-same-thread",
+        )
+        val otherThread = nearby.copy(
+            thread = "worker-b",
+            message = "OTHER_THREAD_CONTEXT_MUST_NOT_APPEAR",
+            eventId = "other-thread",
+        )
+        val text = AppLogIncidentDocument.build(
+            selected,
+            listOf(nearby, otherThread, selected),
+            env,
+        ).toPlainText()
+
+        assertTrue(text.contains("[同线程且时间接近（弱关联）]"))
+        assertTrue(text.contains("不代表同一任务或根因"))
+        assertFalse(text.contains("OTHER_THREAD_CONTEXT_MUST_NOT_APPEAR"))
+    }
+
+    @Test
+    fun displayedAndCopiedIncidentSectionsShareTheSameOrderAndTitles() {
+        val record = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "Translation",
+            category = "字幕翻译",
+            message = "字幕翻译失败",
+            details = "",
+            thread = "worker",
+            eventId = "section-parity",
+        )
+        val document = AppLogIncidentDocument.build(record, listOf(record), env)
+        val sections = document.sections()
+        val copied = document.toPlainText()
+
+        assertEquals(document.blockTitles(), sections.map { it.title })
+        sections.forEach { section ->
+            assertTrue("复制内容缺少分区：" + section.title, copied.contains(section.title))
+        }
+        assertTrue(copied.contains("发生时间："))
+        assertTrue(copied.contains("事件 ID："))
+        assertTrue(copied.contains("日志级别：ERROR"))
+    }
+
     @Test
     fun fatalWithExceptionSnapshotShowsCauseSuppressedAndAppFrames() {
         val record = AppLogRecord(
@@ -161,7 +328,7 @@ class AppLogIncidentDocumentTest {
             diagnosticContext = mapOf("日志调用位置" to "Pipeline.kt:128"),
         )
         val text = AppLogIncidentDocument.build(record, listOf(record), env).toPlainText()
-        assertTrue(text.contains("无异常对象；位置仅为日志调用点：Pipeline.kt:128"))
+        assertTrue(text.contains("日志调用位置（不是异常抛出位置）：Pipeline.kt:128"))
         assertTrue(text.contains("异常类型：未采集：未采集"))
     }
 
@@ -188,7 +355,7 @@ class AppLogIncidentDocumentTest {
         val text = document.toPlainText()
         assertNull(document.codeLocation)
         assertFalse(text.contains("代码定位"))
-        assertTrue(text.contains("INFO ·"))
+        assertTrue(text.contains("日志级别：INFO"))
         assertTrue(text.contains("现象"))
         assertFalse(text.contains("异常类型："))
     }

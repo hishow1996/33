@@ -712,38 +712,9 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 ) {
                     androidx.compose.foundation.text.selection.SelectionContainer {
                         Column(verticalArrangement = Arrangement.spacedBy(17.dp)) {
-                            Text(
-                                document.problemTitle,
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Color(0xFF202124),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            IncidentDetailSection("现象", document.symptom)
-                            IncidentDetailSection("失败位置", document.failureLocation)
-                            IncidentDetailSection("关键原因", document.directCause)
-                            IncidentDetailSection(
-                                "故障性质",
-                                document.faultNature + "\n诊断可信度：" + document.diagnosisConfidence,
-                            )
-                            IncidentDetailSection(
-                                "基本信息",
-                                (listOf(document.headerLine) + document.faultLines).joinToString("\n"),
-                            )
-                            if (document.diagnosticEvidence.isNotEmpty()) {
-                                IncidentDetailSection("关键证据", document.diagnosticEvidence.joinToString("\n"))
+                            document.sections().forEach { section ->
+                                IncidentDetailSection(section.title, section.content)
                             }
-                            document.codeLocation?.let {
-                                IncidentDetailSection("异常调用栈", it.renderLines().joinToString("\n"))
-                            }
-                            IncidentDetailSection(
-                                "现场参数",
-                                document.sceneFields.joinToString("\n") { it.name + "：" + it.value },
-                            )
-                            IncidentDetailSection(
-                                "关联上下文",
-                                document.previous.renderLines().joinToString("\n"),
-                            )
                         }
                     }
                 }
