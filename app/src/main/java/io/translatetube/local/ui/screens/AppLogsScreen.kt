@@ -703,7 +703,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     AppLogIncidentDocument.build(record, records, AppLogStore.environmentSnapshot())
                 }
                 val documentText = remember(document) { document.toPlainText() }
-                val documentCharCount = documentText.codePointCount(0, documentText.length)
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -773,7 +772,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             )
                             android.widget.Toast.makeText(
                                 ctx,
-                                "已复制 " + documentCharCount + " 字",
+                                "已复制",
                                 android.widget.Toast.LENGTH_SHORT,
                             ).show()
                         },
