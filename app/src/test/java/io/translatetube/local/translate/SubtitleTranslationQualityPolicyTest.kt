@@ -209,6 +209,63 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun allowsShortMixedForeignFragmentsAcrossLanguagesButRejectsLongRemainders() {
+        val cases = listOf(
+            Triple("I am very happy today.", "今天很开心 hello。", "en"),
+            Triple("Estoy muy contento hoy.", "今天很开心 amigo。", "es"),
+            Triple("Я сегодня очень рад.", "今天很开心 привет。", "ru"),
+            Triple("Είμαι πολύ χαρούμενος.", "今天很好 φίλε。", "el"),
+            Triple("أنا سعيد اليوم.", "今天很开心 مرحبا。", "ar"),
+            Triple("אני שמח היום.", "今天很开心 שלום。", "he"),
+            Triple("मैं आज बहुत खुश हूँ।", "今天很好 नमस्ते。", "hi"),
+            Triple("วันนี้ฉันมีความสุขมาก", "今天很好 สวัสดี。", "th"),
+        )
+
+        cases.forEach { (source, translated, language) ->
+            assertTrue(
+                "$language short mixed-language phrase should be accepted: $translated",
+                SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                    source, translated, language, "zh-CN",
+                ),
+            )
+        }
+
+        // A longer untranslated Latin fragment still exceeds the relaxed threshold.
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "I think we should leave now.",
+                "当然，I think we should leave now。",
+                "en",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
+    fun koreanToChineseAllowsShortHangulMixButRejectsLongHangulRemainder() {
+        val source = "오늘은 날씨가 좋네요."
+
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                source, "天气真好 안녕하세요。", "ko", "zh-CN",
+            ),
+        )
+
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, "好 안녕하세요 만나서 반가워요。", "ko", "zh-CN",
+            ),
+        )
+
+        // A translation with no Chinese characters remains invalid, regardless of length.
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, "좋아요。", "ko", "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun japaneseToChineseAllowsSmallKanaMixButKeepsStrongRejectionGates() {
         val source = "この料理はとても美味しそうですね。"
         val mixedChinese = "好吃ですね。"

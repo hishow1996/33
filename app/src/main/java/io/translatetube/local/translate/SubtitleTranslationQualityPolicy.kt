@@ -1765,8 +1765,10 @@ internal object SubtitleTranslationQualityPolicy {
         if (kanaDominates) {
             return "译文日文假名明显占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
         }
-        if (hangul >= 2 && hangul > han) {
-            return "译文韩文音节占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
+        // Korean output may retain a short spoken ending or expression in mixed Chinese.
+        // Reject only a substantial Hangul fragment that clearly outweighs the Chinese text.
+        if (hangul >= 8 && hangul > han * 3) {
+            return "译文韩文音节明显占主导（汉字=$han，日文假名=$kana，韩文音节=$hangul）"
         }
         if (han == 0) {
             return "未检测到汉字（汉字=0，日文假名=$kana，韩文音节=$hangul，字母/数字=$lettersOrDigits）"
@@ -1879,21 +1881,18 @@ internal object SubtitleTranslationQualityPolicy {
                             script == Character.UnicodeScript.KATAKANA))
             }
         }
-        // Even a short untranslated fragment (for example "你好 hello") is not a Chinese
-        // translation. Known names/terms are exempt only when grounded in the source text.
-        // The ASR/OCR source can garble a foreign term (for example "Vロog" for "Vlog"), so a
-        // correctly kept loanword in the translation then has no source token to match. When the
-        // sentence is clearly Chinese (at least 3 Han characters and more than twice as many Han
-        // characters as ungrounded name letters), such a token no longer fails the whole line.
-        // The reasons carry only counts (never subtitle text) so the log shows which rule fired.
+        // Short foreign fragments can be natural in spoken subtitles and mixed-language dialogue.
+        // Keep the ratio check for longer untranslated spans so a mostly foreign sentence cannot
+        // pass merely because it contains a small Chinese prefix. Source-grounded names and terms
+        // are still handled separately above. The reasons carry counts only, never subtitle text.
         if (ungroundedProperName && !(hanCount >= 3 && hanCount > ungroundedLetters * 2)) {
             return "译文含原文里找不到出处的外文名/词，汉字数不足以放行" +
                 "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
                 "放行需汉字≥3 且大于外文名字母数的2倍）"
         }
-        if (foreignLetters >= 2 && hanCount <= foreignLetters) {
-            return "译文保留过多非汉字外语文本，汉字字符占比低于质量阈值" +
-                "（触发规则=外文字母不少于汉字；汉字=$hanCount，非汉字外文字母=$foreignLetters）"
+        if (foreignLetters >= 8 && foreignLetters > hanCount * 3) {
+            return "译文仍保留较长外语片段，外文字母明显多于中文汉字" +
+                "（触发规则=外文残留达到8字且超过汉字3倍；汉字=$hanCount，非汉字外文字母=$foreignLetters）"
         }
         return null
     }
