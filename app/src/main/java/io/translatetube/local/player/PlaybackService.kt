@@ -11986,8 +11986,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             detail.contains("Function", ignoreCase = true) &&
                             detail.contains("Not found for account", ignoreCase = true)
                         val contentFiltered = io.translatetube.local.translate.isProviderContentFilterRejection(e)
+                        val responseFormatFailure =
+                            errorCategory == "RESPONSE_FORMAT_OR_PARSE" ||
+                                detail.contains("混用了0起始和1起始边界") ||
+                                detail.contains("响应格式不完整")
                         val message = if (contentFiltered) {
                             "字幕翻译失败：安全过滤拒绝翻译（" + (active?.name ?: "当前翻译引擎") + "：服务商的内容安全过滤拒绝了本次请求）。请更换翻译引擎后重试。原始响应：" + detail
+                        } else if (responseFormatFailure) {
+                            "字幕翻译失败：模型返回的字幕编号或响应格式异常，自动恢复后仍无法安全对齐。请重试或更换翻译模型。原始诊断：" + detail.take(400)
                         } else if (active != null) {
                             if (functionMissing) {
                                 "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail

@@ -189,6 +189,11 @@ internal object TranslationFailureDiagnosticPolicy {
         if (status != null && status >= 500) return "PROVIDER_SERVER_ERROR"
         val types = chain.joinToString(" ") { it.javaClass.name }.lowercase(Locale.ROOT)
         val messages = chain.joinToString(" ") { it.message.orEmpty() }.lowercase(Locale.ROOT)
+        val responseFormatFailure =
+            chain.filterIsInstance<IllegalStateException>().any {
+                translationBatchFailureKind(it) == ApiSubtitleBatchFailureKind.RESPONSE_FORMAT
+            } || messages.contains("响应格式不完整")
+        if (responseFormatFailure) return "RESPONSE_FORMAT_OR_PARSE"
         return when {
             "unknownhostexception" in types || "no address associated" in messages -> "DNS_OR_HOST_UNREACHABLE"
             "sockettimeoutexception" in types || "timed out" in messages || "timeout" in messages -> "REQUEST_TIMEOUT"

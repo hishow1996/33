@@ -147,6 +147,8 @@ internal object ProcessingErrorDisplayPolicy {
             status != null && status in 500..599 -> "服务端异常"
             isNetworkFailure(raw) -> "网络连接异常"
             isModelFailure(raw) -> "模型不可用"
+            "响应格式" in raw || "字幕编号" in raw || "无法安全对齐" in raw ->
+                "模型响应格式异常"
             else -> when (phase) {
                 Phase.PARSING -> when {
                     "blob:" in raw || "mse" in raw || "drm" in raw ->
@@ -365,6 +367,8 @@ internal object ProcessingErrorDisplayPolicy {
             serviceStatusReason(status) != null -> serviceStatusReason(status)!!
             isNetworkFailure(raw) -> "翻译服务请求中断或超时"
             isModelFailure(raw) -> "所选翻译模型未就绪"
+            "响应格式" in raw || "字幕编号" in raw || "无法安全对齐" in raw ->
+                "模型返回的字幕编号或格式异常，自动恢复后仍无法安全对齐"
             "empty response" in raw || "invalid response" in raw ||
                 "无效译文" in raw || "未生成译文" in raw ->
                 "未能生成有效中文译文"

@@ -1851,6 +1851,7 @@ internal object SubtitleTranslationQualityPolicy {
         val sourceIdentifiers = sourceIdentifierTokens(sourceText)
         var foreignLetters = 0
         var ungroundedProperName = false
+        var ungroundedProperNameTokenCount = 0
         var ungroundedLetters = 0
         val japaneseSource = isJapaneseSourceLanguage(sourceText, sourceLanguage)
         splitMixedScriptTokens(translatedText).forEach { token ->
@@ -1872,6 +1873,7 @@ internal object SubtitleTranslationQualityPolicy {
                 // An ungrounded proper-looking Latin/Cyrillic/Greek token can be a changed name
                 // or an invented entity. Do not let a long Chinese prefix hide that substitution.
                 ungroundedProperName = true
+                ungroundedProperNameTokenCount++
                 ungroundedLetters += letters.length
             }
             foreignLetters += letters.count { char ->
@@ -1886,7 +1888,17 @@ internal object SubtitleTranslationQualityPolicy {
         // Keep the ratio check for longer untranslated spans so a mostly foreign sentence cannot
         // pass merely because it contains a small Chinese prefix. Source-grounded names and terms
         // are still handled separately above. The reasons carry counts only, never subtitle text.
-        if (ungroundedProperName && !(hanCount >= 3 && hanCount > ungroundedLetters * 2)) {
+        // Allow one embedded, ungrounded proper-name token in an otherwise substantial Chinese
+        // sentence. This does not excuse additional foreign words or multiple invented names.
+        val singleEmbeddedProperNameAccepted =
+            ungroundedProperNameTokenCount == 1 &&
+                hanCount >= 8 &&
+                hanCount >= ungroundedLetters &&
+                foreignLetters == ungroundedLetters
+        if (ungroundedProperName &&
+            !(hanCount >= 3 && hanCount > ungroundedLetters * 2) &&
+            !singleEmbeddedProperNameAccepted
+        ) {
             return "译文含原文里找不到出处的外文名/词，汉字数不足以放行" +
                 "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
                 "放行需汉字≥3 且大于外文名字母数的2倍）"

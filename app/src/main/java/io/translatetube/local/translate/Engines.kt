@@ -139,7 +139,8 @@ internal fun translationBatchFailureKind(
 
     val malformedTranslation = listOf(
         "重复返回字幕编号", "超出本批范围的字幕编号", "混入未编号内容",
-        "编号不完整", "格式不完整", "无法解析为字幕行",
+        "混用了0起始和1起始边界", "编号不完整", "格式不完整",
+        "响应格式不完整", "无法解析为字幕行",
     ).any(detail::contains)
     return if (malformedTranslation) ApiSubtitleBatchFailureKind.RESPONSE_FORMAT else null
 }
@@ -1782,6 +1783,7 @@ private fun buildOpenAiSubtitlePrompts(
     lookaheadSource: List<String>,
     videoTitle: String?,
     forceTranslate: Boolean,
+    jsonArrayResponse: Boolean = false,
 ): ApiSubtitlePrompts {
         val src = LangMap.display(srcLang)
         val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
@@ -1789,8 +1791,13 @@ private fun buildOpenAiSubtitlePrompts(
         val sys = buildString {
             append("You are a professional subtitle translator. These numbered lines are consecutive subtitle cues from one video. ")
             append("Translate each numbered line from $src to $tgt. ")
-            append("Reply with the exact same `index|translation` format, one per line, nothing else. ")
-            append("Include every input index exactly once; never return progress/status text. ")
+            if (jsonArrayResponse) {
+                append("For this format-repair request, reply with exactly one valid JSON array of strings in the same order as the input lines. ")
+                append("The array must contain exactly ${lines.size} string items. Do not include indexes, Markdown fences, explanations or any text outside the JSON array. ")
+            } else {
+                append("Reply with the exact same `index|translation` format, one per line, nothing else. ")
+                append("Include every input index exactly once; never return progress/status text. ")
+            }
             append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
             append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
             if (forceTranslate) {
@@ -2246,9 +2253,9 @@ class OpenAiCompatEngine(
                     retryMalformedBatch = { rows, cueContext ->
                         translateBatch(
                             rows, srcLang, tgtLang, cueContext,
-                            forceTranslate = true,
                             lookaheadSource = lookaheadSource,
                             videoTitle = videoTitle,
+                            jsonArrayResponse = true,
                         )
                     },
                     onRecoverySummary = { recoverySummary = it },
@@ -2327,6 +2334,7 @@ class OpenAiCompatEngine(
         forceTranslate: Boolean = false,
         lookaheadSource: List<String> = emptyList(),
         videoTitle: String? = null,
+        jsonArrayResponse: Boolean = false,
     ): List<String> {
         if (apiKey.isBlank()) {
             throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
@@ -2334,6 +2342,7 @@ class OpenAiCompatEngine(
         val batchLearning = batchLearningFor(srcLang, tgtLang)
         val prompts = buildOpenAiSubtitlePrompts(
             lines, srcLang, tgtLang, context, lookaheadSource, videoTitle, forceTranslate,
+            jsonArrayResponse,
         )
         val sys = prompts.system
         val user = prompts.user

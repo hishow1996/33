@@ -73,6 +73,25 @@ class ProcessingErrorDisplayPolicyTest {
     }
 
     @Test
+    fun responseFormatFailureIsNotMisreportedAsAuthorizationFailure() {
+        val raw = "模型返回的字幕编号或响应格式异常，自动恢复后仍无法安全对齐"
+        val message = ProcessingErrorDisplayPolicy.message(
+            sessionKey = "local:video",
+            phase = Phase.TRANSLATING,
+            progress = "正在翻译字幕",
+            error = raw,
+        )
+        assertTrue(message.contains("自动恢复后仍无法安全对齐"))
+        assertFalse(message.contains("配置或授权不可用"))
+        assertEquals(
+            "模型响应格式异常",
+            ProcessingErrorDisplayPolicy.errorCategory(
+                "local:video", Phase.TRANSLATING, "正在翻译字幕", raw,
+            ),
+        )
+    }
+
+    @Test
     fun synthesisMessageIdentifiesFailedSubtitle() {
         val message = ProcessingErrorDisplayPolicy.message(
             sessionKey = "youtube:video-id",

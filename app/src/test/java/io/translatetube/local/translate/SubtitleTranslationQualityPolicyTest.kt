@@ -1778,6 +1778,29 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun allowsOneEmbeddedBrandNameInSubstantialChineseButNotMultipleUngroundedNames() {
+        val source = "I use the map to find a good route."
+        val retainedBrand = "我用Google地图查了好多，但是，"
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isUsableChineseTranslation(
+                source, retainedBrand, "en", "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, retainedBrand, "en", "zh-CN",
+            ),
+        )
+
+        val multipleNames = "我用GoogleMaps和OpenAI地图工具查了好多地方。"
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, multipleNames, "en", "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun stillRejectsUngroundedNamesWhenChineseTextIsTooShort() {
         assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(

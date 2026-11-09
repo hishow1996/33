@@ -73,6 +73,12 @@ class AdaptiveTranslationRecoveryPolicyTest {
                 IllegalStateException("翻译服务在编号译文中混入未编号内容")
             )
         )
+        assertEquals(
+            ApiSubtitleBatchFailureKind.RESPONSE_FORMAT,
+            translationBatchFailureKind(
+                IllegalStateException("翻译服务返回的字幕编号混用了0起始和1起始边界，已拒绝可能错位的译文")
+            ),
+        )
     }
 
     @Test
@@ -119,6 +125,38 @@ class AdaptiveTranslationRecoveryPolicyTest {
         assertTrue(summary?.failureKinds?.contains(ApiSubtitleBatchFailureKind.RESPONSE_FORMAT) == true)
         assertTrue(summary?.hadRecoverableFailure == true)
         assertEquals(false, summary?.recoveredBySplitting)
+    }
+
+    @Test
+    fun mixedIndexBaseRetriesAsJsonThenSplitsOnlyTheFailedBatch() = runBlocking {
+        val lines = List(30) { "subtitle-$it" }
+        val originalRequests = mutableListOf<Int>()
+        val jsonRepairRequests = mutableListOf<Int>()
+        var summary: TranslationRecoverySummary? = null
+
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = lines,
+            retryMalformedBatch = { rows, _ ->
+                jsonRepairRequests += rows.size
+                throw IllegalStateException("翻译服务返回的字幕编号混用了0起始和1起始边界")
+            },
+            onRecoverySummary = { summary = it },
+            splitOnPersistentFormatFailure = true,
+            translate = { rows, _ ->
+                originalRequests += rows.size
+                if (rows.size == 30) {
+                    throw IllegalStateException("翻译服务返回的字幕编号混用了0起始和1起始边界")
+                }
+                rows.map { "译文：$it" }
+            },
+        )
+
+        assertEquals(listOf(30, 15, 15), originalRequests)
+        assertEquals(listOf(30), jsonRepairRequests)
+        assertEquals(lines.map { "译文：$it" }, result)
+        assertTrue(summary?.recoveredBySplitting == true)
+        assertEquals(15, summary?.largestSuccessfulBatchRows)
+        assertEquals(30, FIXED_API_TRANSLATION_BATCH_ROWS)
     }
 
     @Test
