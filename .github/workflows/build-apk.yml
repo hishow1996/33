@@ -1,3 +1,4 @@
+# Explicit user-requested APK build retry marker (2026-11-09 08:18 +08:00): rerun tests after severity-specific incident guidance fix.
 # Explicit user-requested APK build retry marker (2026-11-09 08:09 +08:00): rebuild latest main after removing duplicate AppLogEnvironmentSnapshot declaration.
 # Explicit user-requested APK build trigger marker (2026-11-09 08:01 +08:00): build latest main source and publish debug/release APK artifacts.
 # Explicit one-time APK rebuild requested after fixing Kotlin compilation and unit-test expectations.
