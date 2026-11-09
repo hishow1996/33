@@ -11814,6 +11814,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 var unresolvedIndices: List<Int> = batchIndices
                 val resolvedBatch = linkedMapOf<Int, String>()
                 var attempt = 0
+                // 检测到"译文整体前移错位"后置为 true：不再用整批重试，直接进入小批重译。
+                var forceSmallChunks = false
                 var lastRejectedRows = emptyList<io.translatetube.local.translate.TranslationRowRejection>()
                 var lastRequestRowCount = 0
                 var lastResponseRowCount = 0
@@ -11856,7 +11858,119 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     return shown + if (omitted > 0) "；另有 $omitted 行未展开" else ""
                 }
 
-                while (unresolvedIndices.isNotEmpty() && attempt < 3) {
+
+                // 对一组行单独发起翻译请求，小批重译和逐行兜底共用。
+                // 请求失败按"这些行仍未解决"处理：主循环的首次请求已经验证过鉴权和网络可用，
+                // 这里的失败只会让缺失行留到原有的报错分支；取消则原样抛出。
+                suspend fun translateRowsDirect(
+                    rowIndices: List<Int>,
+                    alignmentChecks: Boolean,
+                ): io.translatetube.local.translate.TranslationBatchResult {
+                    val rowSources = rowIndices.map { plain[it] }
+                    val directContext = rowIndices.firstOrNull()?.let { firstIndex ->
+                        io.translatetube.local.translate.TranslationContextPolicy.mostRecentPairsWithTermContinuityBefore(
+                            size = updatedLines.size,
+                            beforeIndex = firstIndex,
+                            currentSourceCues = rowSources,
+                            sourceLanguage = src,
+                            maxRows = io.translatetube.local.translate.TranslationContextPolicy.MAX_CONTEXT_ROWS,
+                            checkActive = { translationJob?.ensureActive() },
+                            sourceAt = { index -> updatedLines[index].text },
+                            translationAt = { index ->
+                                if (resolvedBatch.containsKey(index)) {
+                                    SubtitleParsers.cleanTranslatedText(resolvedBatch[index])
+                                } else {
+                                    SubtitleParsers.cleanTranslatedText(updatedLines[index].zh)
+                                }
+                            },
+                            isUsable = { source, translated ->
+                                io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+                                    .isUsableChineseTranslation(
+                                        sourceText = source,
+                                        translatedText = translated,
+                                        sourceLanguage = src,
+                                        targetLanguage = tgt,
+                                        acceptShortUnchanged = true,
+                                    )
+                            },
+                        )
+                    }
+                    val directLookahead = lookaheadAfter(rowIndices.maxOrNull() ?: lastBatchIndex)
+                    val directRaced = try {
+                        runUntilInterrupted(
+                            manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
+                        ) {
+                            io.translatetube.local.translate.TranslationDiagnosticContextHolder
+                                .withDiagnosticContext(traceContext) {
+                                    engine!!.translateWithContext(
+                                        rowSources, src, tgt, directContext, directLookahead, translationVideoTitle,
+                                    )
+                                }
+                        }.also { translationJob?.ensureActive() }
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Direct translation of ${rowIndices.size} subtitle rows failed: ${e.javaClass.simpleName}",
+                        )
+                        null
+                    }
+                    val directTranslations = when (directRaced) {
+                        is InterruptibleResult.Done -> directRaced.value
+                        else -> emptyList()
+                    }
+                    val directSourceTexts = rowIndices.associateWith { plain[it] }
+                    val directParsed = io.translatetube.local.translate.TranslationBatchResult.from(
+                        indices = rowIndices,
+                        rawTranslations = directTranslations,
+                        sourceTexts = directSourceTexts,
+                        sourceLanguage = src,
+                        targetLanguage = tgt,
+                        acceptShortUnchanged = true,
+                    )
+                    return if (alignmentChecks) {
+                        io.translatetube.local.translate.TranslationAlignmentPolicy
+                            .applyAlignmentChecks(directParsed, rowIndices, directSourceTexts)
+                    } else {
+                        directParsed
+                    }
+                }
+
+                // 发布恢复阶段通过校验的行：写入 resolvedBatch / updatedLines，并刷新界面预览。
+                suspend fun acceptRecoveredRows(
+                    parsed: io.translatetube.local.translate.TranslationBatchResult,
+                ): Int {
+                    val recovered = parsed.translations.filterValues { it.isNotBlank() }
+                    if (recovered.isEmpty()) return 0
+                    resolvedBatch.putAll(recovered)
+                    updatedLines = updatedLines.mapIndexed { index, line ->
+                        recovered[index]?.let { line.copy(zh = it) } ?: line
+                    }
+                    val processedRows = (completed + resolvedBatch.size).coerceAtMost(updatedLines.size)
+                    appendTranslationPreview(
+                        recovered.keys.sorted().mapNotNull { rowIndex ->
+                            val acceptedLine = updatedLines.getOrNull(rowIndex) ?: return@mapNotNull null
+                            SubtitleParsers.preferredTranslationText(acceptedLine)
+                                ?.let { acceptedLine.copy(zh = it) }
+                        },
+                    )
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            lines = updatedLines,
+                            totalLines = updatedLines.size,
+                            translationPreviewLines = translationPreviewRows.toList(),
+                            translatedLineCount = processedRows,
+                            sourceLang = src,
+                            translationCurrentBatch = batchIndex + 1,
+                            translationTotalBatches = translationTotalBatches,
+                            translationRetryCount = attempt,
+                            progress = "正在处理第 ${batchIndex + 1} 批 · 已确认 ${processedRows}/${updatedLines.size} 行",
+                        )
+                    }
+                    return recovered.size
+                }
+
+                while (unresolvedIndices.isNotEmpty() && attempt < 3 && !forceSmallChunks) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     val batch = unresolvedIndices.map { plain[it] }
                     updateUiForSession(key, pipelineGeneration) { state ->
@@ -12061,7 +12175,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     val batchTranslations = (racedBatch as InterruptibleResult.Done).value
 
                     val attemptedIndices = unresolvedIndices.toList()
-                    val parsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
+                    val rawParsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
                         indices = attemptedIndices,
                         rawTranslations = batchTranslations,
                         sourceTexts = unresolvedIndices.associateWith { plain[it] },
@@ -12070,6 +12184,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         // 第一次返回仍严格校验；同一行重试后仍是人名/品牌/外来词原样返回，说明没有可翻内容，接受它。
                         acceptShortUnchanged = attempt >= 1,
                     )
+                    // 对位校验：逐行校验只看"这行是不是合格的中文"，看不出译文是否对应这行原文。
+                    // 模型合并相邻碎句时内容会前移，前面的行仍是合格中文，只有尾部行为空；
+                    // 这里按行与行之间的关系剔除可疑行，并在出现"尾部连续缺失"特征时丢弃整次响应里已接受的行。
+                    val alignmentSourceTexts = attemptedIndices.associateWith { plain[it] }
+                    val alignedBatch = io.translatetube.local.translate.TranslationAlignmentPolicy
+                        .applyAlignmentChecks(rawParsedBatch, attemptedIndices, alignmentSourceTexts)
+                    val frontLoadedMerge = io.translatetube.local.translate.TranslationAlignmentPolicy
+                        .hasFrontLoadedMergeSignature(attemptedIndices, alignedBatch.missingIndices)
+                    val parsedBatch = if (frontLoadedMerge) {
+                        forceSmallChunks = true
+                        io.translatetube.local.translate.TranslationAlignmentPolicy
+                            .discardAcceptedRows(alignedBatch, attemptedIndices, alignmentSourceTexts)
+                    } else {
+                        alignedBatch
+                    }
                     resolvedBatch.putAll(parsedBatch.translations)
                     unresolvedIndices = parsedBatch.missingIndices
                     lastRejectedRows = parsedBatch.rejectedRows
@@ -12151,12 +12280,107 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }
                     }
                     attempt += 1
-                    if (unresolvedIndices.isNotEmpty() && attempt < 3) {
+                    if (unresolvedIndices.isNotEmpty() && attempt < 3 && !forceSmallChunks) {
                         android.util.Log.w(
                             "PlaybackService",
                             "Retrying incomplete translation response for ${unresolvedIndices.size} subtitle rows",
                         )
                         kotlinx.coroutines.delay(if (attempt == 1) 350L else 700L)
+                    }
+                }
+
+
+                // 恢复阶段：批量重试仍有缺失行，或检测到译文整体前移错位时，先小批重译，再逐行兜底。
+                // 两个阶段都只请求仍未解决的行，已通过校验的行不会被改动；全部失败才走下面原有的报错分支。
+                if (unresolvedIndices.isNotEmpty()) {
+                    val recoveryStartedAtNanos = System.nanoTime()
+                    val rowsBeforeRecovery = unresolvedIndices.size
+
+                    // 阶段 A：小批重译。每块最多 CHUNK_RECOVERY_ROWS 行，同一块最多 2 次。
+                    if (forceSmallChunks || unresolvedIndices.size > io.translatetube.local.translate.TranslationAlignmentPolicy.MIN_TAIL_MISSING_ROWS) {
+                        val chunks = unresolvedIndices.sorted().chunked(io.translatetube.local.translate.TranslationAlignmentPolicy.CHUNK_RECOVERY_ROWS)
+                        chunks.forEachIndexed { chunkPosition, chunk ->
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            updateUiForSession(key, pipelineGeneration) { state ->
+                                state.copy(
+                                    translationCurrentBatch = batchIndex + 1,
+                                    translationTotalBatches = translationTotalBatches,
+                                    translationRetryCount = attempt,
+                                    progress = "第 ${batchIndex + 1} 批译文疑似错位，正在分小批重译（${chunkPosition + 1}/${chunks.size}）",
+                                )
+                            }
+                            var pending = chunk
+                            var chunkAttempt = 0
+                            while (pending.isNotEmpty() && chunkAttempt < 2) {
+                                val attemptedNow = pending.toHashSet()
+                                val parsed = translateRowsDirect(pending, alignmentChecks = true)
+                                acceptRecoveredRows(parsed)
+                                pending = parsed.missingIndices
+                                lastRejectedRows = lastRejectedRows.filterNot { it.sourceIndex in attemptedNow } +
+                                    parsed.rejectedRows
+                                attemptHistory += "小批重译 第${chunkPosition + 1}块 尝试${chunkAttempt + 1}: " +
+                                    "请求 ${attemptedNow.size} 行，有效 ${parsed.translations.size} 行，缺失 ${parsed.missingIndices.size} 行"
+                                chunkAttempt += 1
+                                if (pending.isNotEmpty() && chunkAttempt < 2) kotlinx.coroutines.delay(350L)
+                            }
+                        }
+                        unresolvedIndices = unresolvedIndices.filter { !resolvedBatch.containsKey(it) }
+                    }
+
+                    // 阶段 B：逐行兜底。一次只请求 1 行，没有相邻行可供模型合并。
+                    if (unresolvedIndices.isNotEmpty()) {
+                        val filteredCount = unresolvedIndices.count { traceContext.isContentFilteredCue(plain[it]) }
+                        if (io.translatetube.local.translate.TranslationSingleRowFallbackPolicy.shouldRun(unresolvedIndices.size, filteredCount)) {
+                            val singleRows = unresolvedIndices.sorted()
+                            singleRows.forEachIndexed { position, rowIndex ->
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                updateUiForSession(key, pipelineGeneration) { state ->
+                                    state.copy(
+                                        translationCurrentBatch = batchIndex + 1,
+                                        translationTotalBatches = translationTotalBatches,
+                                        translationRetryCount = attempt,
+                                        progress = "第 ${batchIndex + 1} 批仍有 ${singleRows.size} 行缺失，正在逐行补译（${position + 1}/${singleRows.size}）",
+                                    )
+                                }
+                                var rowAttempt = 0
+                                var rowDone = false
+                                while (!rowDone && rowAttempt < io.translatetube.local.translate.TranslationSingleRowFallbackPolicy.MAX_ATTEMPTS_PER_ROW) {
+                                    val parsed = translateRowsDirect(listOf(rowIndex), alignmentChecks = false)
+                                    acceptRecoveredRows(parsed)
+                                    rowDone = parsed.translations[rowIndex]?.isNotBlank() == true
+                                    lastRejectedRows = lastRejectedRows.filterNot { it.sourceIndex == rowIndex } +
+                                        parsed.rejectedRows
+                                    attemptHistory += "单行兜底 第${rowIndex + 1}行 尝试${rowAttempt + 1}: " +
+                                        if (rowDone) "成功" else "仍未通过校验"
+                                    rowAttempt += 1
+                                    if (!rowDone && rowAttempt < io.translatetube.local.translate.TranslationSingleRowFallbackPolicy.MAX_ATTEMPTS_PER_ROW) {
+                                        kotlinx.coroutines.delay(if (rowAttempt == 1) 350L else 700L)
+                                    }
+                                }
+                            }
+                            unresolvedIndices = unresolvedIndices.filter { !resolvedBatch.containsKey(it) }
+                        }
+                    }
+
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "Translation",
+                            "批量重试后仍有缺失行，已执行小批重译和逐行兜底",
+                            diagnosticContext = mapOf(
+                                "翻译诊断 ID" to diagnosticId,
+                                "当前批次" to "${batchIndex + 1}/${translationTotalBatches}",
+                                "恢复前缺失行数" to rowsBeforeRecovery.toString(),
+                                "恢复后仍缺失行数" to unresolvedIndices.size.toString(),
+                                "是否检测到前移合并特征" to forceSmallChunks.toString(),
+                                "仍缺失字幕索引（0-based）" to unresolvedIndices.joinToString(","),
+                                "恢复耗时 ms" to ((System.nanoTime() - recoveryStartedAtNanos) / 1_000_000L).toString(),
+                                "逐次请求与响应统计" to attemptHistory.joinToString(" || ").take(4_000),
+                                "翻译引擎名称" to engineName,
+                                "视频来源" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy.sourceType(key),
+                                "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                            ),
+                        )
                     }
                 }
 
