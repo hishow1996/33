@@ -196,7 +196,7 @@ class SubtitleTranslationQualityPolicyTest {
                 "当然，I think we should leave now.",
                 "en",
                 "zh-CN",
-            ).orEmpty().contains("外语文本"),
+            ).orEmpty().contains("外语片段"),
         )
         assertTrue(
             SubtitleTranslationQualityPolicy.targetLanguageMismatchReason(
