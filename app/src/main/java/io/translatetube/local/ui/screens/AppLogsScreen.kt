@@ -704,34 +704,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 }
                 val documentText = remember(document) { document.toPlainText() }
                 val documentCharCount = documentText.codePointCount(0, documentText.length)
-                val annotatedDocument = remember(document, documentText) {
-                    val builder = androidx.compose.ui.text.AnnotatedString.Builder(documentText)
-                    var offset = 0
-                    document.blockTitles().forEach { title ->
-                        val start = documentText.indexOf(title, offset)
-                        if (start >= 0) {
-                            builder.addStyle(
-                                androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold),
-                                start,
-                                start + title.length,
-                            )
-                            offset = start + title.length
-                        }
-                    }
-                    val symptomStart = documentText.indexOf("现象：")
-                    if (symptomStart >= 0) {
-                        val symptomEnd = documentText.indexOf('\n', symptomStart).let {
-                            if (it < 0) documentText.length else it
-                        }
-                        builder.addStyle(
-                            androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold),
-                            symptomStart,
-                            symptomEnd,
-                        )
-                    }
-                    builder.toAnnotatedString()
-                }
-
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -740,13 +712,40 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         .padding(horizontal = 20.dp, vertical = 18.dp),
                 ) {
                     androidx.compose.foundation.text.selection.SelectionContainer {
-                        Text(
-                            text = annotatedDocument,
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Color(0xFF3F4650),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(17.dp)) {
+                            Text(
+                                document.problemTitle,
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF202124),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            IncidentDetailSection("现象", document.symptom)
+                            IncidentDetailSection("失败位置", document.failureLocation)
+                            IncidentDetailSection("关键原因", document.directCause)
+                            IncidentDetailSection(
+                                "故障性质",
+                                document.faultNature + "\n诊断可信度：" + document.diagnosisConfidence,
+                            )
+                            IncidentDetailSection(
+                                "基本信息",
+                                (listOf(document.headerLine) + document.faultLines).joinToString("\n"),
+                            )
+                            if (document.diagnosticEvidence.isNotEmpty()) {
+                                IncidentDetailSection("关键证据", document.diagnosticEvidence.joinToString("\n"))
+                            }
+                            document.codeLocation?.let {
+                                IncidentDetailSection("异常调用栈", it.renderLines().joinToString("\n"))
+                            }
+                            IncidentDetailSection(
+                                "现场参数",
+                                document.sceneFields.joinToString("\n") { it.name + "：" + it.value },
+                            )
+                            IncidentDetailSection(
+                                "关联上下文",
+                                document.previous.renderLines().joinToString("\n"),
+                            )
+                        }
                     }
                 }
 
@@ -810,6 +809,25 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("取消") } },
             containerColor = Color.White,
+        )
+    }
+}
+
+@Composable
+private fun IncidentDetailSection(title: String, content: String) {
+    if (content.isBlank()) return
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(
+            title,
+            color = Color(0xFF202124),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            content,
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFF3F4650),
+            style = MaterialTheme.typography.bodyMedium,
         )
     }
 }

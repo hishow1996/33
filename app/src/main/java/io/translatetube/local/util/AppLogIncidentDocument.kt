@@ -32,17 +32,29 @@ internal data class IncidentDocumentPrevious(
 /** Immutable shared content for both the detail screen and clipboard. */
 internal data class IncidentDocument(
     val headerLine: String,
+    val problemTitle: String,
+    val symptom: String,
+    val failureLocation: String,
+    val directCause: String,
+    val faultNature: String,
+    val diagnosisConfidence: String,
+    val diagnosticEvidence: List<String>,
     val faultLines: List<String>,
     val codeLocation: IncidentDocumentCodeLocation?,
     val sceneFields: List<IncidentDocumentField>,
     val previous: IncidentDocumentPrevious,
 ) {
     fun blockTitles(): List<String> = buildList {
+        add("故障问题")
+        add("现象")
+        add("失败位置")
+        add("关键原因")
+        add("故障性质")
         add("基本信息")
-        add("故障")
+        if (diagnosticEvidence.isNotEmpty()) add("关键证据")
         if (codeLocation != null) add("代码定位")
-        add("现场")
-        add("前序与要求")
+        add("现场参数")
+        add("关联上下文")
     }
 
     fun toPlainText(): String {
@@ -50,19 +62,24 @@ internal data class IncidentDocument(
         fun block(title: String, lines: List<String>) {
             if (output.isNotEmpty()) output.append("\n\n")
             output.append(title)
-            lines.forEach { output.append('\n').append(it) }
+            lines.filter { it.isNotBlank() }.forEach { output.append('\n').append(it) }
         }
-        block("基本信息", listOf(headerLine))
-        block("故障", faultLines)
+        block("故障问题", listOf(problemTitle))
+        block("现象", listOf(symptom))
+        block("失败位置", listOf(failureLocation))
+        block("关键原因", listOf(directCause))
+        block("故障性质", listOf(faultNature, "诊断可信度：" + diagnosisConfidence))
+        block("基本信息", listOf(headerLine) + faultLines)
+        if (diagnosticEvidence.isNotEmpty()) block("关键证据", diagnosticEvidence)
         codeLocation?.let { block("代码定位", it.renderLines()) }
-        block("现场", sceneFields.map { it.name + "：" + it.value })
-        block("前序与要求", previous.renderLines())
+        block("现场参数", sceneFields.map { it.name + "：" + it.value })
+        block("关联上下文", previous.renderLines())
         return AppLogStore.redactForExport(output.toString())
     }
 }
 
 internal object AppLogIncidentDocument {
-    private const val MAX_CHARS = 3_000
+    private const val MAX_CHARS = 5_000
     private const val THREAD_WINDOW_MS = 120_000L
 
     fun build(
@@ -76,6 +93,7 @@ internal object AppLogIncidentDocument {
         val batch = if (domain == "字幕翻译") translationBatch(record) else null
         val engineBatch = listOfNotNull(engine, batch).joinToString(" / ").ifBlank { "未采集" }
         val module = record.category.ifBlank { AppLogTitleResolver.featureLabel(record.tag, record.message) }
+        val diagnosis = AppLogDiagnostics.analyze(record)
 
         val header = "应用 " + clip(env.appVersion, 80) +
             " | " + clip(env.device, 64) +
@@ -90,7 +108,6 @@ internal object AppLogIncidentDocument {
                     clip(stage ?: "未采集", 48) + " · " +
                     clip(engineBatch, 80),
             )
-            add("现象：" + clip(AppLogTitleResolver.title(record.tag, record.message), 112))
             if (!record.level.equals("INFO", true)) {
                 val deepest = AppLogAiReport.deepestCause(record.exceptionSnapshot)
                 val type = deepest?.type?.takeIf { it.isNotBlank() }
@@ -104,15 +121,61 @@ internal object AppLogIncidentDocument {
             codeLocation(record)
         } else null
 
+        val symptom = AppLogTitleResolver.title(record.tag, record.message)
+        val failureLocation = code?.lines?.firstOrNull()
+            ?: "未记录失败调用位置（普通状态日志）"
+        val nature = faultNature(record, diagnosis)
+        val evidenceLines = listOf(diagnosis.evidence)
+            .filter { it.isNotBlank() }
+            .map { clip(it, 900) }
         return fit(
             IncidentDocument(
                 headerLine = header,
+                problemTitle = if (record.level.equals("INFO", true)) {
+                    "运行状态记录"
+                } else {
+                    AppLogTitleResolver.incidentTitle(record.tag, record.message, diagnosis.category)
+                },
+                symptom = clip(symptom, 420),
+                failureLocation = clip(failureLocation, 300),
+                directCause = if (record.level.equals("INFO", true)) {
+                    "这是一条普通状态记录，不表示处理失败。"
+                } else {
+                    clip(diagnosis.finding, 1_000)
+                },
+                faultNature = if (record.level.equals("INFO", true)) {
+                    "普通运行状态"
+                } else {
+                    clip(nature, 520)
+                },
+                diagnosisConfidence = diagnosis.confidence,
+                diagnosticEvidence = evidenceLines,
                 faultLines = fault,
                 codeLocation = code,
                 sceneFields = scene(record, domain),
                 previous = previous(record, allRecords),
             ),
         )
+    }
+
+    private fun faultNature(record: AppLogRecord, diagnosis: AppLogDiagnosis): String {
+        val status = record.httpStatusCode.takeIf { it in 100..599 }
+            ?: Regex("""(?i)\bHTTP(?:\s*状态码)?\s*[:：]?\s*(\d{3})\b""")
+                .find(record.message + "\n" + record.details + "\n" +
+                    record.diagnosticContext.entries.joinToString(" ") { it.key + ":" + it.value })
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return when (diagnosis.category) {
+            "字幕译文质量校验失败", "字幕响应编号/格式异常" -> if (status != null && status in 200..299) {
+                "HTTP $status：服务端已返回响应。失败发生在收到响应后的字幕质量校验或编号/格式解析阶段；现有证据不支持将本次故障归类为网络连接中断或 HTTP 授权失败。"
+            } else if (status != null) {
+                "HTTP $status：同时记录到 HTTP 状态异常和字幕响应处理问题；需要以完整异常链和请求阶段确定首要故障。"
+            } else {
+                "已定位为字幕内容校验或响应格式处理问题，但没有可用 HTTP 状态证据；不推断网络或授权是否正常。"
+            }
+            "域名解析失败", "HTTPS/TLS 证书校验失败", "请求或处理超时" ->
+                diagnosis.category + "；" + diagnosis.confidence
+            else -> diagnosis.category + "；" + diagnosis.confidence
+        }
     }
 
     private fun codeLocation(record: AppLogRecord): IncidentDocumentCodeLocation {
@@ -440,7 +503,13 @@ internal object AppLogIncidentDocument {
             out = out.copy(previous = out.previous.copy(events = out.previous.events.takeLast(eventCount)))
         }
         if (out.toPlainText().length > MAX_CHARS) {
-            out = out.copy(sceneFields = out.sceneFields.map { it.copy(value = clip(it.value, 80)) })
+            out = out.copy(
+                diagnosticEvidence = out.diagnosticEvidence.take(3).map { clip(it, 320) },
+                sceneFields = out.sceneFields.map { it.copy(value = clip(it.value, 80)) },
+                symptom = clip(out.symptom, 320),
+                directCause = clip(out.directCause, 720),
+                faultNature = clip(out.faultNature, 360),
+            )
         }
         if (out.toPlainText().length > MAX_CHARS) {
             out = out.copy(codeLocation = out.codeLocation?.copy(additionalFrames = emptyList()))

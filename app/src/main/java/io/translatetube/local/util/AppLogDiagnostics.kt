@@ -343,6 +343,124 @@ object AppLogDiagnostics {
                 ),
             )
         }
+        val translationScope = tag.contains("translation") || hasAny("翻译", "translation", "字幕译文")
+        val qualityRejected = translationScope && (
+            hasAny(
+                "dominantforeigntextreason", "译文质量校验", "字幕质量校验",
+                "外文字母数", "汉字数", "未通过质量校验",
+            ) ||
+                (hasAny("质量校验", "质量规则") && hasAny("未通过", "拒绝", "失败", "重试"))
+            )
+        if (qualityRejected) {
+            val status = record.httpStatusCode.takeIf { it in 100..599 }
+                ?: Regex("""(?i)\bHTTP(?:\s*状态码)?\s*[:：]?\s*(\d{3})\b""")
+                    .find(raw)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val batch = Regex("""第\s*\d+\s*批""").find(raw)?.value
+            val row = Regex("""第\s*\d+\s*行(?:\s*[（(]索引\s*\d+[）)])?""")
+                .find(raw)?.value
+            val hanCount = Regex("""汉字(?:数|数量)?\s*[=:：]?\s*(\d+)""")
+                .find(raw)?.groupValues?.getOrNull(1)
+            val latinCount = Regex("""外文字母(?:数|数量)?\s*[=:：]?\s*(\d+)""")
+                .find(raw)?.groupValues?.getOrNull(1)
+            val retriesExhausted = hasAny(
+                "重试耗尽", "耗尽重试", "重试后仍", "反复重试",
+                "最终中止", "最终停止", "retry exhausted", "attempts exhausted",
+            )
+            val finding = buildString {
+                append("模型已返回译文，但应用的字幕质量规则拒绝了至少一行译文，")
+                if (!batch.isNullOrBlank() || !row.isNullOrBlank()) {
+                    append("失败位置：")
+                    append(listOfNotNull(batch, row).joinToString("，"))
+                    append("；")
+                }
+                if (hanCount != null && latinCount != null) {
+                    append("该行汉字数为 ").append(hanCount)
+                        .append("，外文字母数为 ").append(latinCount)
+                        .append("，未满足当前外文占比校验条件；")
+                }
+                append(if (retriesExhausted) {
+                    "同一译文经重试仍未通过校验，最终停止整条翻译任务。"
+                } else {
+                    "当前记录显示该译文未通过质量校验；是否已耗尽重试次数，以重试轨迹为准。"
+                })
+            }
+            val cause = record.rootCauseMessage.ifBlank {
+                record.exceptionSnapshot?.message.orEmpty()
+            }
+            val evidenceText = listOfNotNull(
+                cause.takeIf { it.isNotBlank() },
+                listOfNotNull(batch, row).joinToString("，").takeIf { it.isNotBlank() },
+                if (hanCount != null && latinCount != null) "汉字数=$hanCount，外文字母数=$latinCount" else null,
+                status?.let { "HTTP 状态码：$it" },
+                evidence(record, listOf("质量校验", "外文字母数", "汉字数", "重试轨迹")),
+            ).distinct().joinToString("；").take(900)
+            return AppLogDiagnosis(
+                "字幕译文质量校验失败",
+                if (retriesExhausted) "质量校验拒绝及重试耗尽已确认" else "质量校验拒绝已确认；重试结果需核对",
+                finding,
+                evidenceText.ifBlank { record.message.take(360) },
+                listOf(
+                    "查看未通过校验的字幕行及具体命中规则，确认是否为专有名词、品牌名或原文保留词。",
+                    "核对该行的汉字数、外文字母数和质量规则阈值；不要把正常专有名词一概当作未翻译内容。",
+                    "检查重试轨迹，确认失败是否来自质量校验，而不是请求、解析或授权阶段。",
+                ),
+            )
+        }
+
+        val responseFormatRejected = translationScope && (
+            hasAny(
+                "混用了0起始和1起始边界", "混用0起始和1起始", "0起始和1起始",
+                "编号混用", "mixed zero-based and one-based", "mixed 0-based and 1-based",
+            ) ||
+                (hasAny("响应格式不完整", "字幕编号", "编号不完整") &&
+                    hasAny("parsemodeltranslations", "parsenumbered", "0起始", "1起始", "编号混用"))
+            )
+        if (responseFormatRejected) {
+            val status = record.httpStatusCode.takeIf { it in 100..599 }
+                ?: Regex("""(?i)\bHTTP(?:\s*状态码)?\s*[:：]?\s*(\d{3})\b""")
+                    .find(raw)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val batch = Regex("""第\s*\d+\s*批""").find(raw)?.value
+            val rowRange = Regex("""(?:索引|index)\s*[：:=]?\s*\d+\s*(?:-|–|~|至)\s*\d+""", RegexOption.IGNORE_CASE)
+                .find(raw)?.value
+            val rows = Regex("""(?:本批输入字幕行数|输入字幕行数|批次大小)\s*[：:=]?\s*\d+""")
+                .find(raw)?.value
+            val recoverySkipped = hasAny(
+                "未纳入可恢复异常白名单", "未触发行级重试", "没有触发行级修复",
+                "未执行行级重试", "未触发同批重试",
+            )
+            val finding = buildString {
+                append("模型已返回响应，但字幕编号同时采用 0 起始和 1 起始规则，解析器无法安全地将译文逐行对应回原字幕。")
+                if (!batch.isNullOrBlank()) append("失败发生在").append(batch).append("；")
+                if (!rows.isNullOrBlank()) append(rows).append("；")
+                if (!rowRange.isNullOrBlank()) append(rowRange).append("；")
+                append("为避免字幕错位，解析器拒绝了这批结果并终止当前翻译流程。")
+                if (recoverySkipped) append("该异常没有进入可恢复异常路径，因此未执行行级修复。")
+                if (status != null && status in 200..299) {
+                    append(" HTTP ").append(status).append(" 表明服务端已返回响应，故障在响应编号/格式解析阶段。")
+                }
+            }
+            val cause = record.rootCauseMessage.ifBlank {
+                record.exceptionSnapshot?.message.orEmpty()
+            }
+            val evidenceText = listOfNotNull(
+                cause.takeIf { it.isNotBlank() },
+                listOfNotNull(batch, rows, rowRange).joinToString("，").takeIf { it.isNotBlank() },
+                status?.let { "HTTP 状态码：$it" },
+                evidence(record, listOf("编号", "响应格式", "批次", "重试轨迹")),
+            ).distinct().joinToString("；").take(900)
+            return AppLogDiagnosis(
+                "字幕响应编号/格式异常",
+                "编号对齐失败已确认",
+                finding,
+                evidenceText.ifBlank { record.message.take(360) },
+                listOf(
+                    "检查模型原始响应中的编号格式，确认是否在同一批次混用了 0 起始和 1 起始编号。",
+                    "核对解析器拒绝位置及输入行数，不能通过简单整体加一或减一来猜测对齐关系。",
+                    "检查同批重试、结构化 JSON 修复和失败批次拆分是否按预期执行。",
+                ),
+            )
+        }
+
         if (hasAny("translation", "翻译", "translationengine") && hasAny("exception", "失败", "error", "无效", "empty", "解析")) {
             return result(
                 "字幕翻译失败",

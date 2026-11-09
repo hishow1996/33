@@ -43,7 +43,85 @@ class AppLogIncidentDocumentTest {
         assertTrue(text.contains("Engines.kt:1187"))
         assertTrue(text.contains("期望 5 条译文，实际解析 3 条"))
         assertEquals(8, document.sceneFields.size)
-        assertTrue(text.length <= 3_000)
+        assertTrue(text.length <= 5_000)
+    }
+
+    @Test
+    fun translationQualityDetailExplainsTheSelectedEventWithoutMixingAnotherFailure() {
+        val quality = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "Translation",
+            category = "字幕翻译",
+            message = "第 7 批翻译失败：第 211 行未通过译文质量校验",
+            details = "专有名词 Google 被保留；汉字数=10，外文字母数=6；重试耗尽。",
+            thread = "worker",
+            eventId = "quality-event",
+            sessionId = "translation-session",
+            operationId = "translation-op",
+            errorClass = "java.lang.IllegalStateException",
+            rootCauseMessage = "汉字数 10、外文字母数 6，未满足专有名词外文占比规则。",
+            httpStatusCode = 200,
+            firstAppStackFrame = "io.translatetube.local.player.PlaybackService.translateLinesInternal(PlaybackService.kt:12193)",
+            diagnosticContext = mapOf(
+                "翻译引擎名称" to "智谱 GLM-4-Flash-250414",
+                "当前批次进度" to "7/7",
+                "失败字幕行号" to "211",
+                "HTTP 状态码" to "200",
+                "本批未通过校验字幕行数" to "1",
+                "重试轨迹" to "第 211 行重试多次后仍未通过",
+            ),
+        )
+        val other = quality.copy(
+            timestampMs = quality.timestampMs - 1_000L,
+            eventId = "format-event",
+            message = "第 3 批字幕编号混用，解析器拒绝响应",
+            rootCauseMessage = "字幕编号混用了0起始和1起始边界",
+        )
+        val document = AppLogIncidentDocument.build(quality, listOf(other, quality), env)
+        val text = document.toPlainText()
+
+        assertTrue(document.problemTitle.contains("质量校验"))
+        assertTrue(document.symptom.contains("第 211 行"))
+        assertTrue(document.failureLocation.contains("PlaybackService.kt:12193"))
+        assertTrue(document.directCause.contains("汉字数为 10"))
+        assertTrue(document.faultNature.contains("HTTP 200"))
+        assertFalse(document.directCause.contains("编号混用"))
+        assertTrue(text.indexOf("关键原因") < text.indexOf("关联上下文"))
+        assertTrue(text.contains("批次=7/7"))
+        assertTrue(text.length <= 5_000)
+    }
+
+    @Test
+    fun responseFormatDetailExplainsUnsafeSubtitleAlignment() {
+        val record = AppLogRecord(
+            timestampMs = 1_800_000_000_000L,
+            level = "ERROR",
+            tag = "Translation",
+            category = "字幕翻译",
+            message = "第 3 批翻译失败：字幕编号混用了0起始和1起始边界",
+            details = "本批输入字幕行数：30；索引 272–301；HTTP 状态码：200。",
+            thread = "worker",
+            eventId = "format-event",
+            sessionId = "translation-session",
+            operationId = "translation-op",
+            errorClass = "java.lang.IllegalStateException",
+            rootCauseMessage = "字幕编号混用了0起始和1起始边界",
+            httpStatusCode = 200,
+            firstAppStackFrame = "io.translatetube.local.translate.Engines.parseModelTranslations(Engines.kt:799)",
+            diagnosticContext = mapOf(
+                "翻译引擎名称" to "智谱 GLM-4-Flash-250414",
+                "当前批次进度" to "3/7",
+                "本次翻译批次大小" to "30",
+                "本批输入字幕行数" to "30",
+                "HTTP 状态码" to "200",
+            ),
+        )
+        val document = AppLogIncidentDocument.build(record, listOf(record), env)
+        assertTrue(document.problemTitle.contains("编号混用"))
+        assertTrue(document.directCause.contains("无法安全地将译文逐行对应"))
+        assertTrue(document.failureLocation.contains("Engines.kt:799"))
+        assertTrue(document.faultNature.contains("不支持"))
     }
 
     @Test
@@ -96,7 +174,7 @@ class AppLogIncidentDocumentTest {
         assertTrue(text.contains("当前处理步骤：未采集"))
         assertTrue(text.contains("线程：未采集"))
         assertTrue(text.contains("最后一个成功步骤：未采集"))
-        assertTrue(text.length <= 3_000)
+        assertTrue(text.length <= 5_000)
     }
 
     @Test
@@ -111,7 +189,7 @@ class AppLogIncidentDocumentTest {
         assertNull(document.codeLocation)
         assertFalse(text.contains("代码定位"))
         assertTrue(text.contains("INFO ·"))
-        assertTrue(text.contains("现象："))
+        assertTrue(text.contains("现象"))
         assertFalse(text.contains("异常类型："))
     }
 
@@ -158,12 +236,12 @@ class AppLogIncidentDocumentTest {
         }
         val document = AppLogIncidentDocument.build(target, earlier + target, env)
         val text = document.toPlainText()
-        assertTrue(text.length <= 3_000)
+        assertTrue(text.length <= 5_000)
         assertTrue(text.contains("基本信息"))
         assertTrue(text.contains("故障"))
         assertTrue(text.contains("代码定位"))
         assertTrue(text.contains("现场"))
-        assertTrue(text.contains("前序与要求"))
+        assertTrue(text.contains("关联上下文"))
         assertTrue(text.contains("对照该 Git SHA 的代码定位真实根因"))
         assertTrue(text.contains("不要用吞异常/空结果/伪造成功掩盖故障"))
         assertTrue(text.contains("[已截断，原长"))

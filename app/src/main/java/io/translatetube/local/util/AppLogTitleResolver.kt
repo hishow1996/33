@@ -157,6 +157,13 @@ object AppLogTitleResolver {
         return limitTitle("$feature：$summary")
     }
 
+    fun incidentTitle(tag: String, message: String, diagnosisCategory: String): String =
+        when (diagnosisCategory) {
+            "字幕译文质量校验失败" -> "译文未通过质量校验，重试后任务停止"
+            "字幕响应编号/格式异常" -> "模型字幕编号混用，解析器拒绝本批结果"
+            else -> title(tag, message)
+        }
+
     private fun summarizeKnownEvent(tag: String, message: String): String? {
         val normalizedTag = tag.lowercase(Locale.ROOT)
         if ((normalizedTag.contains("webaudio") || normalizedTag.contains("videosource")) &&

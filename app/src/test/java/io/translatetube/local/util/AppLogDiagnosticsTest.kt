@@ -20,6 +20,52 @@ class AppLogDiagnosticsTest {
     )
 
     @Test
+    fun translationQualityRejectionIsNotMisclassifiedAsNetworkOrAuthorizationFailure() {
+        val diagnosis = AppLogDiagnostics.analyze(
+            record(
+                "Translation",
+                "第 7 批翻译失败：第 211 行未通过译文质量校验",
+                "专有名词 Google 被保留；汉字数=10，外文字母数=6；重试后仍未通过质量校验，重试耗尽。",
+            ).copy(
+                httpStatusCode = 200,
+                rootCauseMessage = "汉字数 10、外文字母数 6，未满足专有名词外文占比规则。",
+                diagnosticContext = mapOf(
+                    "当前批次进度" to "7/7",
+                    "失败字幕行号" to "211",
+                    "HTTP 状态码" to "200",
+                    "重试轨迹" to "同一行多次修复后仍拒绝",
+                ),
+            ),
+        )
+        assertEquals("字幕译文质量校验失败", diagnosis.category)
+        assertTrue(diagnosis.confidence.contains("已确认"))
+        assertTrue(diagnosis.finding.contains("第 7 批"))
+        assertTrue(diagnosis.finding.contains("第 211 行"))
+        assertTrue(diagnosis.finding.contains("汉字数为 10"))
+        assertTrue(diagnosis.finding.contains("重试"))
+    }
+
+    @Test
+    fun mixedZeroAndOneBasedSubtitleIndexesAreDiagnosedAsResponseFormatFailure() {
+        val diagnosis = AppLogDiagnostics.analyze(
+            record(
+                "Translation",
+                "第 3 批翻译失败：字幕编号混用了0起始和1起始边界",
+                "本批输入字幕行数：30；索引 272–301；HTTP 状态码：200；parseModelTranslations 拒绝响应。",
+            ).copy(
+                httpStatusCode = 200,
+                errorClass = "java.lang.IllegalStateException",
+                rootCauseMessage = "字幕编号混用了0起始和1起始边界",
+            ),
+        )
+        assertEquals("字幕响应编号/格式异常", diagnosis.category)
+        assertEquals("编号对齐失败已确认", diagnosis.confidence)
+        assertTrue(diagnosis.finding.contains("0 起始和 1 起始"))
+        assertTrue(diagnosis.finding.contains("HTTP 200"))
+        assertTrue(diagnosis.nextSteps.any { it.contains("加一或减一") })
+    }
+
+    @Test
     fun notificationInflationCrashIsRecognizedWithoutPretendingItsRootCauseIsKnown() {
         val diagnosis = AppLogDiagnostics.analyze(
             record(
