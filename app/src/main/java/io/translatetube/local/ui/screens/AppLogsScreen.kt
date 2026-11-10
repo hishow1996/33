@@ -42,6 +42,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -1246,115 +1247,139 @@ private fun LogRecordCard(
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (selectionMode) {
-                // Compact 22dp visual control; the entire row remains the touch target.
-                Surface(
-                    modifier = Modifier
-                        .padding(top = 1.dp)
-                        .size(22.dp),
-                    shape = RoundedCornerShape(4.dp),
-                    color = if (selected) BrandBright else Color.White,
-                    border = if (selected) null else BorderStroke(1.dp, Color(0xFF8793A1)),
-                    tonalElevation = 0.dp,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        if (selected) {
-                            Text(
-                                "✓",
-                                color = Color.White,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                            )
+            // Reserve the same 22dp leading column in both modes so every title starts
+            // at the same horizontal position. The whole row remains the touch target.
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .padding(top = 1.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (selectionMode) {
+                    Surface(
+                        modifier = Modifier.size(22.dp),
+                        shape = RoundedCornerShape(4.dp),
+                        color = if (selected) BrandBright else Color.White,
+                        border = if (selected) null else BorderStroke(1.dp, Color(0xFF8793A1)),
+                        tonalElevation = 0.dp,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (selected) {
+                                Text(
+                                    "✓",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
                         }
                     }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(CircleShape)
+                            .background(color),
+                    )
                 }
-            } else {
-                // Keep the severity dot in the normal list only.
-                Box(
-                    modifier = Modifier
-                        .padding(top = 7.dp)
-                        .size(9.dp)
-                        .clip(CircleShape)
-                        .background(color),
-                )
             }
+
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                // Keep the complete title. Normal soft wrapping also handles mixed
+                // Chinese/English text, numbers and paths without a fixed line limit.
                 Text(
                     AppLogTitleResolver.title(record.tag, record.message),
                     modifier = Modifier.fillMaxWidth(),
                     color = Color(0xFF202124),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
+                    softWrap = true,
                     maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Clip,
                 )
-                Row(
+
+                Text(
+                    AppLogStore.formatTime(record.timestampMs),
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    Text(
-                        AppLogStore.formatTime(record.timestampMs),
-                        color = Color(0xFF858B93),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                    )
-                }
-                Row(
+                    color = Color(0xFF858B93),
+                    style = MaterialTheme.typography.labelSmall,
+                    textAlign = TextAlign.End,
+                    softWrap = true,
+                    maxLines = 2,
+                    overflow = TextOverflow.Clip,
+                )
+
+                // Keep the module name on its own line so increased system font size
+                // cannot squeeze the level or recovery state out of the row.
+                Text(
+                    record.tag,
                     modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF68707A),
+                    style = MaterialTheme.typography.labelMedium,
+                    softWrap = true,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    Text(
-                        record.tag,
-                        modifier = Modifier
-                            .weight(1f)
-                            .alignByBaseline(),
-                        color = Color(0xFF68707A),
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        "·",
-                        modifier = Modifier.alignByBaseline(),
-                        color = Color(0xFFB1B5BB),
-                    )
-                    Text(
-                        record.level,
-                        modifier = Modifier.alignByBaseline(),
-                        color = color,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Surface(
+                        color = color.copy(alpha = 0.09f),
+                        shape = RoundedCornerShape(5.dp),
+                        tonalElevation = 0.dp,
+                    ) {
+                        Text(
+                            record.level,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            color = color,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                     if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
                         Text(
-                            "·",
-                            modifier = Modifier.alignByBaseline(),
-                            color = Color(0xFFB1B5BB),
-                        )
-                        Text(
                             if (record.recoveredAtMs != null) "已恢复" else "未恢复",
-                            modifier = Modifier.alignByBaseline(),
                             color = if (record.recoveredAtMs != null) Color(0xFF247347) else Color(0xFFB42318),
                             style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
                         )
                     }
                 }
+
                 if (rootCause.isNotBlank() && (record.level == "ERROR" || record.level == "FATAL" || record.level == "WARN")) {
-                    Text(
-                        rootCause,
-                        color = Color(0xFF626A74),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 3.dp)
+                                .width(2.dp)
+                                .height(28.dp)
+                                .clip(RoundedCornerShape(1.dp))
+                                .background(color.copy(alpha = 0.35f)),
+                        )
+                        Text(
+                            rootCause,
+                            modifier = Modifier.weight(1f),
+                            color = Color(0xFF626A74),
+                            style = MaterialTheme.typography.bodySmall,
+                            softWrap = true,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
         HorizontalDivider(
-            modifier = Modifier.padding(start = if (selectionMode) 52.dp else 39.dp),
+            modifier = Modifier.padding(start = 52.dp),
             color = Color(0xFFF0F1F3),
             thickness = 1.dp,
         )
