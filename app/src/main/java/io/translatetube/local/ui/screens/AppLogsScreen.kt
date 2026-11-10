@@ -1162,27 +1162,6 @@ private fun logRecordSelectionKey(record: AppLogRecord): String =
             record.thread,
         ).joinToString(":")
 
-private fun logRecordFileName(record: AppLogRecord): String {
-    val module = record.tag
-        .replace(Regex("[^A-Za-z0-9_-]+"), "_")
-        .trim('_')
-        .take(28)
-        .ifBlank { "App" }
-    val level = record.level
-        .filter { it.isLetterOrDigit() }
-        .take(10)
-        .ifBlank { "INFO" }
-    val time = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
-        .format(Date(record.timestampMs))
-    val identitySource = record.eventId.ifBlank {
-        "${record.processId}_${record.sequence}_${record.timestampMs}_${record.message.hashCode()}_${record.tag.hashCode()}"
-    }
-    val identity = identitySource
-        .filter { it.isLetterOrDigit() }
-        .takeLast(16)
-        .ifBlank { "event" }
-    return "日志_${module}_${level}_${time}_${identity}.txt"
-}
 
 private fun logRecordFileName(record: AppLogRecord): String {
     val rawTitle = AppLogTitleResolver.title(record.tag, record.message)
