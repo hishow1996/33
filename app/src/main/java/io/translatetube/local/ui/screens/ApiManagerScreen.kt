@@ -143,7 +143,7 @@ private fun BuiltinWebEngineCard(
                 shape = RoundedCornerShape(18.dp),
             )
             .clickable { onSelect() }
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -432,7 +432,7 @@ fun ApiManagerScreen(onBack: () -> Unit, initialTab: String = "online") {
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
             .padding(horizontal = 12.dp, vertical = 10.dp)
             .clip(RoundedCornerShape(28.dp)).background(Color(0xFFF2F6FC))
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
         Row(
             Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -515,7 +515,7 @@ fun ApiManagerScreen(onBack: () -> Unit, initialTab: String = "online") {
                             shape = RoundedCornerShape(18.dp),
                         )
                         .clickable { setActive(-1L) }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
