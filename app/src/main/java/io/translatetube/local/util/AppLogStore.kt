@@ -751,6 +751,76 @@ object AppLogStore {
         return report
     }
 
+    /**
+     * Export one selected event as its own complete text file. This supports every log level
+     * (INFO/WARN/ERROR/FATAL) and intentionally does not merge neighboring events into one file.
+     */
+    fun exportRecordFullText(context: Context, target: AppLogRecord): String {
+        val stored = readRecent(context, MAX_READ_RECORDS).firstOrNull { record ->
+            if (target.eventId.isNotBlank()) {
+                record.eventId == target.eventId
+            } else {
+                record.timestampMs == target.timestampMs &&
+                    record.sequence == target.sequence &&
+                    record.tag == target.tag &&
+                    record.message == target.message &&
+                    record.details == target.details
+            }
+        } ?: target
+        val environment = environmentSnapshot()
+        val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        return buildString {
+            append("大象翻译 · 单条应用日志\n")
+            append("report_schema: elephant-app-log/record-v1\n")
+            append("导出时间：").append(exportedAt).append('\n')
+            append("应用版本：").append(environment.appVersion).append('\n')
+            append("设备：").append(environment.device).append('\n')
+            append("Android：").append(environment.androidVersion).append('\n')
+            append("=".repeat(64)).append('\n')
+            append("日志时间：").append(formatTime(stored.timestampMs)).append('\n')
+            append("日志级别：").append(redact(stored.level)).append('\n')
+            append("日志标题：").append(redact(AppLogTitleResolver.title(stored.tag, stored.message))).append('\n')
+            append("模块：").append(redact(stored.tag)).append('\n')
+            append("功能分类：").append(redact(stored.category.ifBlank { AppLogTitleResolver.featureLabel(stored.tag, stored.message) })).append('\n')
+            append("事件 ID：").append(redact(stored.eventId.ifBlank { "旧版日志未记录" })).append('\n')
+            append("进程会话 ID：").append(redact(stored.sessionId.ifBlank { "旧版日志未记录" })).append('\n')
+            append("事件序号：").append(stored.sequence.takeIf { it > 0 } ?: "未记录").append('\n')
+            append("进程 ID：").append(stored.processId.takeIf { it > 0 } ?: "未记录").append('\n')
+            append("线程：").append(redact(stored.thread.ifBlank { "未记录" })).append('\n')
+            append("线程 ID：").append(stored.threadId.takeIf { it > 0 } ?: "未记录").append('\n')
+            append("操作关联 ID：").append(redact(stored.operationId.ifBlank { "未记录" })).append('\n')
+            append("故障编号：").append(redact(stored.issueKey.ifBlank { "未记录" })).append('\n')
+            append("关联恢复故障编号：").append(redact(stored.resolvesIssueKey.ifBlank { "无" })).append('\n')
+            append("恢复状态：").append(
+                stored.recoveredAtMs?.let { "已恢复（${formatTime(it)}）" } ?: "未记录恢复事件",
+            ).append('\n')
+            append("异常类型：").append(redact(stored.errorClass.ifBlank { "未记录" })).append('\n')
+            append("根因消息：").append(redact(stored.rootCauseMessage).ifBlank { "未提取" }).append('\n')
+            append("首个应用代码栈帧：").append(redact(stored.firstAppStackFrame).ifBlank { "未记录" }).append('\n')
+            append("HTTP 状态码：").append(stored.httpStatusCode.takeIf { it > 0 } ?: "未知").append('\n')
+            append("日志 Schema 版本：").append(stored.schemaVersion).append('\n')
+            append("-".repeat(64)).append('\n')
+            append("完整日志消息：\n")
+            append(redact(stored.message)).append('\n')
+            if (stored.diagnosticContext.isNotEmpty()) {
+                append("\n结构化诊断字段：\n")
+                stored.diagnosticContext.toSortedMap().forEach { (key, value) ->
+                    append("- ").append(redact(key)).append("：").append(redact(value)).append('\n')
+                }
+            }
+            stored.exceptionSnapshot?.let { snapshot ->
+                append("\n结构化异常树 JSON：\n")
+                append(exceptionSnapshotForExport(snapshot).toString(2)).append('\n')
+            }
+            if (stored.details.isNotBlank()) {
+                append("\n完整详细内容 / 异常堆栈：\n")
+                append(redact(stored.details.trimEnd())).append('\n')
+            }
+            append("\n").append("=".repeat(64)).append('\n')
+            append("该文件只包含上方这一条被选中的日志；其他选中日志会分别保存为独立文件。\n")
+        }
+    }
+
     /** Create a small, self-contained AI repair package for clipboard sharing. */
     fun exportIncidentText(context: Context, target: AppLogRecord): String {
         val (selected, bounded) = resolveIncidentExportRecords(context, target)

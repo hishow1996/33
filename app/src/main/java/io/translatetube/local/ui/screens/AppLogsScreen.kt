@@ -1,5 +1,8 @@
 package io.translatetube.local.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -74,7 +77,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var records by remember { mutableStateOf<List<AppLogRecord>>(emptyList()) }
-    var filter by remember { mutableStateOf("错误") }
+    var filter by remember { mutableStateOf("全部") }
     var refreshKey by remember { mutableIntStateOf(0) }
     var selectedRecord by remember { mutableStateOf<AppLogRecord?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -87,12 +90,19 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     var incidentExportQuery by remember { mutableStateOf("") }
     var selectedIncidentForExport by remember { mutableStateOf<AppLogRecord?>(null) }
     var pendingIncidentExport by remember { mutableStateOf<AppLogRecord?>(null) }
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedLogKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var pendingLogExports by remember { mutableStateOf<List<AppLogRecord>>(emptyList()) }
 
     BackHandler(enabled = showIncidentExportPicker) {
         showIncidentExportPicker = false
     }
+    BackHandler(enabled = selectionMode && !showIncidentExportPicker && selectedRecord == null) {
+        selectionMode = false
+        selectedLogKeys = emptySet()
+    }
     BackHandler(
-        enabled = !showIncidentExportPicker && selectedRecord == null && !showClearConfirm,
+        enabled = !showIncidentExportPicker && !selectionMode && selectedRecord == null && !showClearConfirm,
         onBack = onBack,
     )
 
@@ -154,11 +164,46 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         // reopening the export menu restores the same selection; cancellation is not a failure.
     }
 
+    val directoryExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        val targets = pendingLogExports
+        pendingLogExports = emptyList()
+        if (treeUri != null && targets.isNotEmpty()) {
+            exporting = true
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    exportLogRecordsToDirectory(ctx.applicationContext, treeUri, targets)
+                }
+                selectedLogKeys = selectedLogKeys - result.savedKeys
+                when {
+                    result.setupError != null -> {
+                        message = "日志导出失败：${result.setupError}"
+                    }
+                    result.failedFiles.isEmpty() -> {
+                        message = "已分别保存 ${result.savedKeys.size} 个独立日志文件"
+                        selectedLogKeys = emptySet()
+                        selectionMode = false
+                    }
+                    result.savedKeys.isEmpty() -> {
+                        message = "日志导出失败：${result.failedFiles.size} 条日志未能保存，已保留选择"
+                    }
+                    else -> {
+                        message = "已保存 ${result.savedKeys.size} 个独立文件，${result.failedFiles.size} 条失败；失败项已保留"
+                    }
+                }
+                exporting = false
+            }
+        }
+        // Canceling the folder picker leaves the current selection untouched.
+    }
+
     LaunchedEffect(refreshKey) {
         val loaded = withContext(Dispatchers.IO) {
-            AppLogStore.readRecent(ctx.applicationContext) to AppLogStore.writerHealth()
+            AppLogStore.readRecent(ctx.applicationContext, 800) to AppLogStore.writerHealth()
         }
         records = loaded.first
+        selectedLogKeys = selectedLogKeys.intersect(loaded.first.map(::logRecordSelectionKey).toSet())
         writerHealth = loaded.second
     }
 
@@ -218,6 +263,9 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             (it.tag == "ProcessExitInfo" && (it.level == "ERROR" || it.level == "FATAL"))
     }
     val warningCount = records.count { it.level == "WARN" }
+    val selectedLogRecords = remember(records, selectedLogKeys) {
+        records.filter { logRecordSelectionKey(it) in selectedLogKeys }
+    }
 
     Column(
         modifier = Modifier
@@ -231,50 +279,62 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 .padding(start = 4.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "返回", tint = Color(0xFF202124))
+            IconButton(
+                onClick = {
+                    if (selectionMode) {
+                        selectionMode = false
+                        selectedLogKeys = emptySet()
+                    } else {
+                        onBack()
+                    }
+                },
+            ) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = if (selectionMode) "退出选择" else "返回", tint = Color(0xFF202124))
             }
             Text(
-                "应用日志",
+                if (selectionMode) "选择日志" else "应用日志",
                 modifier = Modifier.weight(1f),
                 color = Color(0xFF202124),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
             )
-            IconButton(onClick = { refreshKey++ }) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新日志", tint = Color(0xFF4B5563))
-            }
-            Box {
-                IconButton(onClick = { showActionsMenu = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", tint = Color(0xFF4B5563))
+            if (!selectionMode) {
+                IconButton(onClick = { refreshKey++ }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "刷新日志", tint = Color(0xFF4B5563))
                 }
-                DropdownMenu(
-                    expanded = showActionsMenu,
-                    onDismissRequest = { showActionsMenu = false },
-                ) {
-                    DropdownMenuItem(
-                        text = { Text(if (exporting) "正在导出…" else "导出 AI 诊断报告") },
-                        leadingIcon = { Icon(Icons.Filled.FileDownload, contentDescription = null) },
-                        enabled = !exporting,
-                        onClick = {
-                            showActionsMenu = false
-                            incidentExportQuery = ""
-                            if (records.none { it.level == "ERROR" || it.level == "FATAL" }) {
-                                message = "暂无可导出的错误记录"
-                            } else {
-                                showIncidentExportPicker = true
-                            }
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("清空日志") },
-                        leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null, tint = Color(0xFFB42318)) },
-                        onClick = {
-                            showActionsMenu = false
-                            showClearConfirm = true
-                        },
-                    )
+                Box {
+                    IconButton(onClick = { showActionsMenu = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", tint = Color(0xFF4B5563))
+                    }
+                    DropdownMenu(
+                        expanded = showActionsMenu,
+                        onDismissRequest = { showActionsMenu = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(if (exporting) "正在导出…" else "导出日志") },
+                            leadingIcon = { Icon(Icons.Filled.FileDownload, contentDescription = null) },
+                            enabled = !exporting && records.isNotEmpty(),
+                            onClick = {
+                                showActionsMenu = false
+                                if (records.isEmpty()) {
+                                    message = "暂无可导出的日志记录"
+                                } else {
+                                    selectionMode = true
+                                    selectedLogKeys = emptySet()
+                                    message = null
+                                }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("清空日志") },
+                            leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null, tint = Color(0xFFB42318)) },
+                            onClick = {
+                                showActionsMenu = false
+                                showClearConfirm = true
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -345,7 +405,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 .padding(horizontal = 16.dp),
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
-            placeholder = { Text("搜索错误、模块或关键词", maxLines = 1) },
+            placeholder = { Text("搜索日志、模块或关键词", maxLines = 1) },
             leadingIcon = {
                 Icon(Icons.Filled.Search, contentDescription = null, tint = Color(0xFF8A9099))
             },
@@ -405,11 +465,46 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             }
         }
 
+        if (selectionMode) {
+            val currentVisibleKeys = visibleRecords.map(::logRecordSelectionKey).toSet()
+            val allVisibleSelected = currentVisibleKeys.isNotEmpty() &&
+                currentVisibleKeys.all { it in selectedLogKeys }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "已选 ${selectedLogRecords.size} 条",
+                    color = Color(0xFF202124),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    enabled = currentVisibleKeys.isNotEmpty(),
+                    onClick = {
+                        selectedLogKeys = if (allVisibleSelected) {
+                            selectedLogKeys - currentVisibleKeys
+                        } else {
+                            selectedLogKeys + currentVisibleKeys
+                        }
+                    },
+                ) {
+                    Text(if (allVisibleSelected) "取消当前全选" else "全选当前")
+                }
+                TextButton(onClick = { selectedLogKeys = emptySet() }) {
+                    Text("清空选择")
+                }
+            }
+        }
+
         message?.let { text ->
             Text(
                 text,
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
-                color = if (text.startsWith("导出失败") || text.startsWith("清理失败")) {
+                color = if (text.startsWith("导出失败") || text.startsWith("日志导出失败") || text.contains("条失败") || text.startsWith("清理失败")) {
                     Color(0xFFB42318)
                 } else {
                     Color(0xFF357A52)
@@ -466,7 +561,82 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         }
                     },
                 ) { record ->
-                    LogRecordCard(record = record, onClick = { selectedRecord = record })
+                    val recordKey = logRecordSelectionKey(record)
+                    LogRecordCard(
+                        record = record,
+                        selectionMode = selectionMode,
+                        selected = recordKey in selectedLogKeys,
+                        onClick = {
+                            if (selectionMode) {
+                                selectedLogKeys = if (recordKey in selectedLogKeys) {
+                                    selectedLogKeys - recordKey
+                                } else {
+                                    selectedLogKeys + recordKey
+                                }
+                            } else {
+                                selectedRecord = record
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        if (selectionMode) {
+            HorizontalDivider(color = Color(0xFFE9EAEC), thickness = 1.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    "${selectedLogRecords.size} 条",
+                    modifier = Modifier.padding(start = 4.dp),
+                    color = Color(0xFF454B53),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.weight(1f))
+                val singleSelectedError = selectedLogRecords.singleOrNull()
+                    ?.takeIf { it.level == "ERROR" || it.level == "FATAL" }
+                if (singleSelectedError != null) {
+                    TextButton(
+                        enabled = !exporting,
+                        onClick = {
+                            selectedIncidentForExport = singleSelectedError
+                            incidentExportQuery = ""
+                            showIncidentExportPicker = true
+                        },
+                    ) {
+                        Text("AI 诊断")
+                    }
+                }
+                TextButton(
+                    enabled = !exporting,
+                    onClick = {
+                        selectionMode = false
+                        selectedLogKeys = emptySet()
+                    },
+                ) {
+                    Text("取消")
+                }
+                Button(
+                    enabled = selectedLogRecords.isNotEmpty() && !exporting,
+                    onClick = {
+                        pendingLogExports = selectedLogRecords.sortedBy { it.timestampMs }
+                        directoryExportLauncher.launch(null)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = BrandBright,
+                        contentColor = Color.White,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("导出所选")
                 }
             }
         }
@@ -812,6 +982,107 @@ private fun IncidentDetailSection(title: String, content: String) {
     }
 }
 
+private fun logRecordSelectionKey(record: AppLogRecord): String =
+    record.eventId.takeIf { it.isNotBlank() }?.let { "event:$it" }
+        ?: listOf(
+            "legacy",
+            record.timestampMs,
+            record.sequence,
+            record.tag,
+            record.message.hashCode(),
+            record.details.hashCode(),
+            record.thread,
+        ).joinToString(":")
+
+private fun logRecordFileName(record: AppLogRecord): String {
+    val module = record.tag
+        .replace(Regex("[^A-Za-z0-9_-]+"), "_")
+        .trim('_')
+        .take(28)
+        .ifBlank { "App" }
+    val level = record.level
+        .filter { it.isLetterOrDigit() }
+        .take(10)
+        .ifBlank { "INFO" }
+    val time = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
+        .format(Date(record.timestampMs))
+    val identitySource = record.eventId.ifBlank {
+        "${record.processId}_${record.sequence}_${record.timestampMs}_${record.message.hashCode()}_${record.tag.hashCode()}"
+    }
+    val identity = identitySource
+        .filter { it.isLetterOrDigit() }
+        .takeLast(16)
+        .ifBlank { "event" }
+    return "日志_${module}_${level}_${time}_${identity}.txt"
+}
+
+private data class LogDirectoryExportResult(
+    val savedKeys: Set<String>,
+    val failedFiles: List<String>,
+    val setupError: String? = null,
+)
+
+private fun exportLogRecordsToDirectory(
+    context: android.content.Context,
+    treeUri: Uri,
+    records: List<AppLogRecord>,
+): LogDirectoryExportResult {
+    val resolver = context.contentResolver
+    runCatching {
+        resolver.takePersistableUriPermission(
+            treeUri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
+    }
+    val parentUri = runCatching {
+        DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri),
+        )
+    }.getOrElse { failure ->
+        return LogDirectoryExportResult(
+            savedKeys = emptySet(),
+            failedFiles = records.map(::logRecordFileName),
+            setupError = failure.message ?: "无法访问所选文件夹",
+        )
+    }
+
+    val savedKeys = linkedSetOf<String>()
+    val failedFiles = mutableListOf<String>()
+    records.forEach { record ->
+        val fileName = logRecordFileName(record)
+        val saveResult = runCatching {
+            val documentUri = DocumentsContract.createDocument(
+                resolver,
+                parentUri,
+                "text/plain",
+                fileName,
+            ) ?: error("无法在所选文件夹创建文件")
+            var completed = false
+            try {
+                val output = resolver.openOutputStream(documentUri, "wt")
+                    ?: error("无法写入文件")
+                output.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(AppLogStore.exportRecordFullText(context, record))
+                    writer.flush()
+                }
+                completed = true
+            } finally {
+                if (!completed) {
+                    runCatching { DocumentsContract.deleteDocument(resolver, documentUri) }
+                }
+            }
+        }
+        if (saveResult.isSuccess) {
+            savedKeys += logRecordSelectionKey(record)
+        } else {
+            val reason = saveResult.exceptionOrNull()?.message?.take(80).orEmpty()
+            failedFiles += if (reason.isBlank()) fileName else "$fileName（$reason）"
+        }
+    }
+    return LogDirectoryExportResult(savedKeys, failedFiles)
+}
+
 private fun incidentReportFileName(record: AppLogRecord): String {
     val module = record.tag
         .replace(Regex("[^A-Za-z0-9_-]+"), "_")
@@ -924,7 +1195,12 @@ private fun LogSummaryCard(
 }
 
 @Composable
-private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
+private fun LogRecordCard(
+    record: AppLogRecord,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
     val color = levelColor(record.level)
     val diagnosis = remember(record.details, record.tag, record.message) {
         AppLogDiagnostics.analyze(record)
@@ -939,6 +1215,14 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (selectionMode) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = null,
+                    modifier = Modifier.padding(top = 0.dp),
+                    colors = CheckboxDefaults.colors(checkedColor = BrandBright),
+                )
+            }
             Box(
                 modifier = Modifier
                     .padding(top = 2.dp)
