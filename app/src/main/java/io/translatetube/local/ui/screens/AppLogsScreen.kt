@@ -58,6 +58,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Date
 import java.util.Locale
+import org.json.JSONArray
 
 @Composable
 fun AppLogsScreen(onBack: () -> Unit) {
@@ -104,11 +105,54 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     var selectionMode by remember { mutableStateOf(false) }
     var selectedLogKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingLogExports by remember { mutableStateOf<List<AppLogRecord>>(emptyList()) }
+    var savedLogExportKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var failedLogExportKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var skippedLogExportKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showLogExportPreview by remember { mutableStateOf(false) }
     var activeLogExport by remember { mutableStateOf<AppLogRecord?>(null) }
     var requestedLogExport by remember { mutableStateOf<AppLogRecord?>(null) }
-    var logExportSavedCount by remember { mutableIntStateOf(0) }
     var logExportTotalCount by remember { mutableIntStateOf(0) }
+    var exportQueueRestoreAttempted by remember { mutableStateOf(false) }
+    val logExportPreferences = remember(ctx) {
+        ctx.getSharedPreferences("app_log_export_queue", android.content.Context.MODE_PRIVATE)
+    }
+
+    fun finishOrRequestNextLogExport() {
+        val next = pendingLogExports.firstOrNull { record ->
+            val key = logRecordSelectionKey(record)
+            key !in savedLogExportKeys &&
+                key !in skippedLogExportKeys &&
+                key !in failedLogExportKeys
+        }
+        if (next != null) {
+            exporting = true
+            requestedLogExport = next
+            return
+        }
+        if (failedLogExportKeys.isNotEmpty()) {
+            exporting = false
+            message = "已保存 ${savedLogExportKeys.size} / ${logExportTotalCount} 个文件，${failedLogExportKeys.size} 个失败；可逐条重试或跳过"
+            return
+        }
+
+        val savedCount = savedLogExportKeys.size
+        val skippedCount = skippedLogExportKeys.size
+        pendingLogExports = emptyList()
+        savedLogExportKeys = emptySet()
+        failedLogExportKeys = emptySet()
+        skippedLogExportKeys = emptySet()
+        activeLogExport = null
+        requestedLogExport = null
+        exporting = false
+        showLogExportPreview = false
+        selectionMode = false
+        selectedLogKeys = emptySet()
+        message = if (skippedCount == 0) {
+            "已分别保存 $savedCount 个独立日志文件"
+        } else {
+            "已保存 $savedCount 个文件，跳过 $skippedCount 个文件"
+        }
+    }
 
     BackHandler(enabled = showIncidentExportPicker) {
         showIncidentExportPicker = false
@@ -200,35 +244,19 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             writer.flush()
                         }
                     }.onFailure {
-                        runCatching {
-                            DocumentsContract.deleteDocument(ctx.contentResolver, uri)
-                        }
+                        runCatching { DocumentsContract.deleteDocument(ctx.contentResolver, uri) }
                     }
                 }
+                val key = logRecordSelectionKey(target)
                 if (result.isSuccess) {
-                    val savedKey = logRecordSelectionKey(target)
-                    val remaining = pendingLogExports.filterNot {
-                        logRecordSelectionKey(it) == savedKey
-                    }
-                    pendingLogExports = remaining
-                    selectedLogKeys = selectedLogKeys - savedKey
-                    logExportSavedCount += 1
-                    if (remaining.isEmpty()) {
-                        exporting = false
-                        showLogExportPreview = false
-                        selectionMode = false
-                        selectedLogKeys = emptySet()
-                        message = "已分别保存 ${logExportSavedCount} 个独立日志文件"
-                    } else {
-                        // Continue with the next item; each item gets its own Android
-                        // Save As screen and its own suggested title-based filename.
-                        exporting = true
-                        requestedLogExport = remaining.first()
-                        message = "已保存 ${logExportSavedCount} / ${logExportTotalCount} 个文件"
-                    }
+                    savedLogExportKeys = savedLogExportKeys + key
+                    failedLogExportKeys = failedLogExportKeys - key
+                    selectedLogKeys = selectedLogKeys - key
+                    finishOrRequestNextLogExport()
                 } else {
+                    failedLogExportKeys = failedLogExportKeys + key
                     exporting = false
-                    message = "文件保存失败：${result.exceptionOrNull()?.message ?: "未知错误"}；可重试当前日志"
+                    message = "文件保存失败：${result.exceptionOrNull()?.message ?: "未知错误"}；可逐条重试或跳过"
                 }
             }
         }
@@ -248,6 +276,58 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         records = loaded.first
         selectedLogKeys = selectedLogKeys.intersect(loaded.first.map(::logRecordSelectionKey).toSet())
         writerHealth = loaded.second
+
+        if (!exportQueueRestoreAttempted) {
+            val available = loaded.first.associateBy(::logRecordSelectionKey)
+            val queueKeys = readLogExportKeys(logExportPreferences.getString("queue", null))
+            val restoredQueue = queueKeys.mapNotNull(available::get)
+            val restoredKeys = restoredQueue.map(::logRecordSelectionKey).toSet()
+            if (restoredQueue.isNotEmpty()) {
+                pendingLogExports = restoredQueue
+                savedLogExportKeys = readLogExportKeys(logExportPreferences.getString("saved", null)).toSet()
+                    .intersect(restoredKeys)
+                failedLogExportKeys = readLogExportKeys(logExportPreferences.getString("failed", null)).toSet()
+                    .intersect(restoredKeys)
+                skippedLogExportKeys = readLogExportKeys(logExportPreferences.getString("skipped", null)).toSet()
+                    .intersect(restoredKeys)
+                logExportTotalCount = restoredQueue.size
+                selectedLogKeys = restoredQueue
+                    .map(::logRecordSelectionKey)
+                    .filterNot { it in savedLogExportKeys || it in skippedLogExportKeys }
+                    .toSet()
+                selectionMode = true
+                showLogExportPreview = true
+                val missingCount = queueKeys.size - restoredQueue.size
+                message = if (missingCount > 0) {
+                    "已恢复上次导出，$missingCount 条日志已不在本地记录中"
+                } else {
+                    "已恢复上次未完成的导出任务"
+                }
+            } else if (queueKeys.isNotEmpty()) {
+                logExportPreferences.edit().clear().apply()
+            }
+            exportQueueRestoreAttempted = true
+        }
+    }
+
+    LaunchedEffect(
+        exportQueueRestoreAttempted,
+        pendingLogExports,
+        savedLogExportKeys,
+        failedLogExportKeys,
+        skippedLogExportKeys,
+    ) {
+        if (!exportQueueRestoreAttempted) return@LaunchedEffect
+        if (pendingLogExports.isEmpty()) {
+            logExportPreferences.edit().clear().apply()
+        } else {
+            logExportPreferences.edit()
+                .putString("queue", encodeLogExportKeys(pendingLogExports.map(::logRecordSelectionKey)))
+                .putString("saved", encodeLogExportKeys(savedLogExportKeys))
+                .putString("failed", encodeLogExportKeys(failedLogExportKeys))
+                .putString("skipped", encodeLogExportKeys(skippedLogExportKeys))
+                .apply()
+        }
     }
 
     LaunchedEffect(records) {
@@ -658,11 +738,19 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     Text("取消")
                 }
                 Button(
-                    enabled = selectedLogRecords.isNotEmpty() && !exporting,
+                    enabled = (pendingLogExports.isNotEmpty() || selectedLogRecords.isNotEmpty()) && !exporting,
                     onClick = {
-                        pendingLogExports = selectedLogRecords.sortedBy { it.timestampMs }
-                        logExportSavedCount = 0
-                        logExportTotalCount = pendingLogExports.size
+                        if (pendingLogExports.isEmpty()) {
+                            val newQueue = selectedLogRecords.sortedWith(
+                                compareByDescending<AppLogRecord> { it.timestampMs }
+                                    .thenByDescending { it.sequence },
+                            )
+                            pendingLogExports = newQueue
+                            savedLogExportKeys = emptySet()
+                            failedLogExportKeys = emptySet()
+                            skippedLogExportKeys = emptySet()
+                            logExportTotalCount = newQueue.size
+                        }
                         message = null
                         showLogExportPreview = true
                     },
@@ -674,7 +762,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 ) {
                     Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(5.dp))
-                    Text("导出所选")
+                    Text(if (pendingLogExports.isNotEmpty()) "继续导出" else "导出所选")
                 }
             }
         }
@@ -714,7 +802,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         )
                         Text(
                             if (logExportTotalCount > 0) {
-                                "${logExportSavedCount}/${logExportTotalCount}"
+                                "${completedCount}/${logExportTotalCount}"
                             } else {
                                 "${pendingLogExports.size} 个文件"
                             },
@@ -723,6 +811,26 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         )
                     }
                     HorizontalDivider(color = Color(0xFFE9EAEC))
+                    val completedCount = savedLogExportKeys.size + skippedLogExportKeys.size
+                    val progress = if (logExportTotalCount > 0) {
+                        completedCount.toFloat() / logExportTotalCount.toFloat()
+                    } else {
+                        0f
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFE9EEF5)),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(progress.coerceIn(0f, 1f))
+                                .fillMaxHeight()
+                                .background(BrandBright),
+                        )
+                    }
                     LazyColumn(
                         modifier = Modifier.heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -731,6 +839,23 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             items = pendingLogExports,
                             key = { logRecordSelectionKey(it) },
                         ) { record ->
+                            val recordKey = logRecordSelectionKey(record)
+                            val isActive = activeLogExport?.let(::logRecordSelectionKey) == recordKey ||
+                                requestedLogExport?.let(::logRecordSelectionKey) == recordKey
+                            val statusText = when {
+                                recordKey in savedLogExportKeys -> "已保存"
+                                isActive -> "正在保存"
+                                recordKey in failedLogExportKeys -> "保存失败"
+                                recordKey in skippedLogExportKeys -> "已跳过"
+                                else -> "待保存"
+                            }
+                            val statusColor = when {
+                                recordKey in savedLogExportKeys -> Color(0xFF247347)
+                                isActive -> BrandBright
+                                recordKey in failedLogExportKeys -> Color(0xFFB42318)
+                                recordKey in skippedLogExportKeys -> Color(0xFF858B93)
+                                else -> Color(0xFF68707A)
+                            }
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -739,14 +864,25 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                                     .padding(horizontal = 11.dp, vertical = 10.dp),
                                 verticalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
-                                Text(
-                                    AppLogTitleResolver.title(record.tag, record.message),
+                                Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    color = Color(0xFF202124),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    softWrap = true,
-                                )
+                                    verticalAlignment = Alignment.Top,
+                                ) {
+                                    Text(
+                                        AppLogTitleResolver.title(record.tag, record.message),
+                                        modifier = Modifier.weight(1f),
+                                        color = Color(0xFF202124),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        softWrap = true,
+                                    )
+                                    Text(
+                                        statusText,
+                                        color = statusColor,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
                                 Text(
                                     logRecordFileName(record),
                                     modifier = Modifier.fillMaxWidth(),
@@ -754,6 +890,30 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                                     style = MaterialTheme.typography.labelSmall,
                                     softWrap = true,
                                 )
+                                if (recordKey in failedLogExportKeys && !exporting) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        TextButton(
+                                            onClick = {
+                                                failedLogExportKeys = failedLogExportKeys - recordKey
+                                                exporting = true
+                                                message = null
+                                                requestedLogExport = record
+                                            },
+                                        ) { Text("重试") }
+                                        TextButton(
+                                            onClick = {
+                                                skippedLogExportKeys = skippedLogExportKeys + recordKey
+                                                failedLogExportKeys = failedLogExportKeys - recordKey
+                                                selectedLogKeys = selectedLogKeys - recordKey
+                                                finishOrRequestNextLogExport()
+                                            },
+                                        ) { Text("跳过") }
+                                    }
+                                }
                             }
                         }
                     }
@@ -780,15 +940,15 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         }
                         Spacer(Modifier.weight(1f))
                         Button(
-                            enabled = pendingLogExports.isNotEmpty() &&
-                                !exporting &&
-                                activeLogExport == null &&
-                                requestedLogExport == null,
+                            enabled = pendingLogExports.any { record ->
+                                val key = logRecordSelectionKey(record)
+                                key !in savedLogExportKeys &&
+                                    key !in skippedLogExportKeys &&
+                                    key !in failedLogExportKeys
+                            } && !exporting && activeLogExport == null && requestedLogExport == null,
                             onClick = {
-                                val next = pendingLogExports.firstOrNull() ?: return@Button
-                                exporting = true
                                 message = null
-                                requestedLogExport = next
+                                finishOrRequestNextLogExport()
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = BrandBright,
@@ -802,7 +962,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                                 modifier = Modifier.size(17.dp),
                             )
                             Spacer(Modifier.width(6.dp))
-                            Text(if (logExportSavedCount > 0) "继续保存" else "开始保存")
+                            Text(if (completedCount > 0) "继续保存" else "开始保存")
                         }
                     }
                 }
@@ -1162,6 +1322,21 @@ private fun logRecordSelectionKey(record: AppLogRecord): String =
             record.thread,
         ).joinToString(":")
 
+
+private fun readLogExportKeys(raw: String?): List<String> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return runCatching {
+        val array = JSONArray(raw)
+        buildList(array.length()) {
+            for (index in 0 until array.length()) {
+                array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun encodeLogExportKeys(keys: Iterable<String>): String =
+    JSONArray().apply { keys.forEach { put(it) } }.toString()
 
 private fun logRecordFileName(record: AppLogRecord): String {
     val rawTitle = AppLogTitleResolver.title(record.tag, record.message)
