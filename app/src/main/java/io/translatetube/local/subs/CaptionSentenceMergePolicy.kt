@@ -295,34 +295,41 @@ internal object CaptionSentenceMergePolicy {
             return
         }
         val cut = findCut(sentence, total)
+        if (cut < 1) {
+            // 找不到两边都不太短的切点（比如一个很短的词后面紧跟一整块长文字）：宁可留成一句，也不切出碎片。
+            out += sentence
+            return
+        }
         capLength(sentence.subList(0, cut), out)
         capLength(sentence.subList(cut, sentence.size), out)
     }
 
-    /** 优先在 、，, 处切（选最靠近中间的）；没有就在大约一半的位置切。返回左半边的词数。 */
+    /**
+     * 优先在 、，, 处切（选最靠近中间的）；没有就在最靠近中间的词边界切。
+     * 两边都至少要占总长的 [MIN_SPLIT_SHARE]，否则返回 -1（不切）。返回左半边的词数。
+     */
     private fun findCut(sentence: List<CaptionWord>, total: Double): Int {
         val half = total / 2.0
         var accumulated = 0.0
-        var bestIndex = -1
-        var bestDistance = Double.MAX_VALUE
-        var halfIndex = -1
+        var bestBreakIndex = -1
+        var bestBreakDistance = Double.MAX_VALUE
+        var bestAnyIndex = -1
+        var bestAnyDistance = Double.MAX_VALUE
         for (i in 0 until sentence.size - 1) {
             accumulated += unitsOf(sentence[i].text)
-            if (halfIndex < 0 && accumulated >= half) halfIndex = i + 1
+            if (accumulated < total * MIN_SPLIT_SHARE || total - accumulated < total * MIN_SPLIT_SHARE) continue
+            val distance = abs(accumulated - half)
+            if (distance < bestAnyDistance) {
+                bestAnyDistance = distance
+                bestAnyIndex = i + 1
+            }
             val last = sentence[i].text.trimEnd().lastOrNull()
-            if (last != null && last in BREAK_CHARS &&
-                accumulated >= total * MIN_SPLIT_SHARE &&
-                total - accumulated >= total * MIN_SPLIT_SHARE
-            ) {
-                val distance = abs(accumulated - half)
-                if (distance < bestDistance) {
-                    bestDistance = distance
-                    bestIndex = i + 1
-                }
+            if (last != null && last in BREAK_CHARS && distance < bestBreakDistance) {
+                bestBreakDistance = distance
+                bestBreakIndex = i + 1
             }
         }
-        val cut = if (bestIndex > 0) bestIndex else halfIndex
-        return cut.coerceIn(1, sentence.size - 1)
+        return if (bestBreakIndex > 0) bestBreakIndex else bestAnyIndex
     }
 
     // ---- 第 3 步：拼成字幕行、定起止时间 -----------------------------------------------------

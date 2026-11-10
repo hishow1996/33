@@ -191,4 +191,26 @@ class CaptionSentenceMergePolicyTest {
         assertEquals(5_000L, words[1].startMs)
         assertEquals(10_000L, words[1].endMs)
     }
+
+    @Test
+    fun doesNotCutOffAShortLeadingWordFromALongUntimedBlock() {
+        // 一个很短的词（"今"）后面紧跟一整块长文字：以前会在"今"后面切开，得到只有一个字的碎片行。
+        val block = "語".repeat(100)
+        val vtt = listOf(
+            "WEBVTT",
+            "",
+            "00:00:00.000 --> 00:00:20.000",
+            "今<00:00:01.000><c>$block。</c>",
+            "",
+        ).joinToString("\n")
+        val rows = listOf(SubLine(0, 0L, 20_000L, "今$block。"))
+
+        val result = CaptionSentenceMergePolicy.merge(rows, vtt, minTimedTags = 1, minRows = 1)
+
+        val lines = result.lines
+        assertNotNull(result.reason, lines)
+        assertEquals(1, lines!!.size)
+        assertEquals("今$block。", lines[0].text)
+        assertEquals(0L, lines[0].startMs)
+    }
 }
