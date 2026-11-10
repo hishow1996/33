@@ -45,8 +45,11 @@ import io.translatetube.local.util.AppLogIncidentDocument
 import io.translatetube.local.util.AppLogRecord
 import io.translatetube.local.util.AppLogTitleResolver
 import io.translatetube.local.util.AppLogStore
+import io.translatetube.local.util.AppLogSearchEntry
+import io.translatetube.local.util.AppLogSearchIndex
 import io.translatetube.local.util.AppLogDiagnostics
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Date
@@ -84,6 +87,10 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     var message by remember { mutableStateOf<String?>(null) }
     var exporting by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var searchSnapshot by remember {
+        mutableStateOf(AppLogSearchSnapshot(emptyList(), emptyList()))
+    }
+    var visibleEntries by remember { mutableStateOf<List<AppLogSearchEntry>>(emptyList()) }
     var writerHealth by remember { mutableStateOf(AppLogStore.writerHealth()) }
     var showActionsMenu by remember { mutableStateOf(false) }
     var showIncidentExportPicker by remember { mutableStateOf(false) }
@@ -207,62 +214,51 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         writerHealth = loaded.second
     }
 
-    val visibleRecords = remember(records, filter, searchQuery) {
-        val levelFiltered = when (filter) {
-            "错误" -> records.filter { it.level == "ERROR" || it.level == "FATAL" }
-            "未恢复" -> records.filter {
+    LaunchedEffect(records) {
+        val sourceRecords = records
+        val indexed = AppLogSearchIndex.build(sourceRecords)
+        if (sourceRecords === records) {
+            searchSnapshot = AppLogSearchSnapshot(sourceRecords, indexed)
+        }
+    }
+
+    LaunchedEffect(records, filter, searchQuery, searchSnapshot) {
+        val snapshot = searchSnapshot
+        if (snapshot.sourceRecords !== records) return@LaunchedEffect
+
+        // Keep the text field fully controlled by the raw input. Only list filtering is
+        // coalesced, so rapid typing/deletion never waits for the search result to render.
+        if (searchQuery.isNotBlank()) delay(120L)
+        visibleEntries = AppLogSearchIndex.search(
+            entries = snapshot.entries,
+            filter = filter,
+            query = searchQuery,
+        )
+    }
+
+    val filterCounts = remember(records) {
+        LogFilterCounts(
+            unresolved = records.count {
                 isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs == null
-            }
-            "已恢复" -> records.filter {
+            },
+            recovered = records.count {
                 isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs != null
-            }
-            "闪退" -> records.filter {
+            },
+            errors = records.count { it.level == "ERROR" || it.level == "FATAL" },
+            crashes = records.count {
                 it.level == "FATAL" ||
                     it.tag.contains("Crash", ignoreCase = true) ||
                     it.tag == "PreviousCrash" ||
                     (it.tag == "ProcessExitInfo" && (it.level == "ERROR" || it.level == "FATAL"))
-            }
-            "警告" -> records.filter { it.level == "WARN" }
-            else -> records
-        }
-        val query = searchQuery.trim()
-        if (query.isBlank()) levelFiltered else levelFiltered.filter { record ->
-            val diagnosis = AppLogDiagnostics.analyze(record)
-            record.tag.contains(query, ignoreCase = true) ||
-                AppLogTitleResolver.featureLabel(record.tag, record.message).contains(query, ignoreCase = true) ||
-                AppLogTitleResolver.title(record.tag, record.message).contains(query, ignoreCase = true) ||
-                record.message.contains(query, ignoreCase = true) ||
-                record.details.contains(query, ignoreCase = true) ||
-                record.thread.contains(query, ignoreCase = true) ||
-                record.eventId.contains(query, ignoreCase = true) ||
-                record.sessionId.contains(query, ignoreCase = true) ||
-                record.operationId.contains(query, ignoreCase = true) ||
-                record.errorClass.contains(query, ignoreCase = true) ||
-                record.rootCauseMessage.contains(query, ignoreCase = true) ||
-                record.firstAppStackFrame.contains(query, ignoreCase = true) ||
-                record.diagnosticContext.any { (key, value) ->
-                    key.contains(query, ignoreCase = true) || value.contains(query, ignoreCase = true)
-                } ||
-                record.issueKey.contains(query, ignoreCase = true) ||
-                record.resolvesIssueKey.contains(query, ignoreCase = true) ||
-                diagnosis.finding.contains(query, ignoreCase = true) ||
-                diagnosis.category.contains(query, ignoreCase = true)
-        }
+            },
+            warnings = records.count { it.level == "WARN" },
+        )
     }
-    val unresolvedCount = records.count {
-        isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs == null
-    }
-    val recoveredCount = records.count {
-        isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs != null
-    }
-    val errorCount = records.count { it.level == "ERROR" || it.level == "FATAL" }
-    val crashCount = records.count {
-        it.level == "FATAL" ||
-            it.tag.contains("Crash", ignoreCase = true) ||
-            it.tag == "PreviousCrash" ||
-            (it.tag == "ProcessExitInfo" && (it.level == "ERROR" || it.level == "FATAL"))
-    }
-    val warningCount = records.count { it.level == "WARN" }
+    val unresolvedCount = filterCounts.unresolved
+    val recoveredCount = filterCounts.recovered
+    val errorCount = filterCounts.errors
+    val crashCount = filterCounts.crashes
+    val warningCount = filterCounts.warnings
     val selectedLogRecords = remember(records, selectedLogKeys) {
         records.filter { logRecordSelectionKey(it) in selectedLogKeys }
     }
@@ -466,7 +462,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         }
 
         if (selectionMode) {
-            val currentVisibleKeys = visibleRecords.map(::logRecordSelectionKey).toSet()
+            val currentVisibleKeys = visibleEntries.map { logRecordSelectionKey(it.record) }.toSet()
             val allVisibleSelected = currentVisibleKeys.isNotEmpty() &&
                 currentVisibleKeys.all { it in selectedLogKeys }
             Row(
@@ -515,7 +511,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             )
         }
 
-        if (visibleRecords.isEmpty()) {
+        if (visibleEntries.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -554,16 +550,19 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 contentPadding = PaddingValues(top = 2.dp, bottom = 20.dp),
             ) {
                 items(
-                    items = visibleRecords,
-                    key = {
-                        it.eventId.ifBlank {
-                            listOf(it.timestampMs, it.sequence, it.tag, it.message.hashCode()).joinToString("-")
+                    items = visibleEntries,
+                    key = { entry ->
+                        val record = entry.record
+                        record.eventId.ifBlank {
+                            listOf(record.timestampMs, record.sequence, record.tag, record.message.hashCode()).joinToString("-")
                         }
                     },
-                ) { record ->
+                ) { entry ->
+                    val record = entry.record
                     val recordKey = logRecordSelectionKey(record)
                     LogRecordCard(
                         record = record,
+                        diagnosis = entry.diagnosis,
                         selectionMode = selectionMode,
                         selected = recordKey in selectedLogKeys,
                         onClick = {
@@ -1194,18 +1193,32 @@ private fun LogSummaryCard(
     }
 }
 
+private data class AppLogSearchSnapshot(
+    val sourceRecords: List<AppLogRecord>,
+    val entries: List<AppLogSearchEntry>,
+)
+
+private data class LogFilterCounts(
+    val unresolved: Int,
+    val recovered: Int,
+    val errors: Int,
+    val crashes: Int,
+    val warnings: Int,
+)
+
 @Composable
 private fun LogRecordCard(
     record: AppLogRecord,
+    diagnosis: io.translatetube.local.util.AppLogDiagnosis? = null,
     selectionMode: Boolean = false,
     selected: Boolean = false,
     onClick: () -> Unit,
 ) {
     val color = levelColor(record.level)
-    val diagnosis = remember(record.details, record.tag, record.message) {
+    val resolvedDiagnosis = diagnosis ?: remember(record.details, record.tag, record.message) {
         AppLogDiagnostics.analyze(record)
     }
-    val rootCause = diagnosis.finding
+    val rootCause = resolvedDiagnosis.finding
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
