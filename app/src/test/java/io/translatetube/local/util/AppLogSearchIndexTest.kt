@@ -43,7 +43,11 @@ class AppLogSearchIndexTest {
 
         assertEquals("音频读取失败", AppLogSearchIndex.search(index, "全部", "音频").single().record.message)
         assertEquals("音频读取失败", AppLogSearchIndex.search(index, "全部", "解析音频源").single().record.message)
-        assertEquals("正常播放", AppLogSearchIndex.search(index, "全部", "PLAYBACK").first().record.message.let { "正常播放" })
+        assertEquals(
+            listOf("正常播放"),
+            AppLogSearchIndex.search(index, "全部", "PLAYBACK").map { it.record.message },
+        )
+        assertEquals(2, AppLogSearchIndex.search(index, "全部", "").size)
     }
 
     @Test
