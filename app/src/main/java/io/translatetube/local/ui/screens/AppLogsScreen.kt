@@ -1229,38 +1229,54 @@ private fun LogRecordCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (selectionMode) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    modifier = Modifier.padding(top = 0.dp),
-                    colors = CheckboxDefaults.colors(checkedColor = BrandBright),
+                // Keep the selection affordance visually compact; the whole row remains clickable.
+                Surface(
+                    modifier = Modifier
+                        .padding(top = 1.dp)
+                        .size(22.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    color = if (selected) BrandBright else Color.White,
+                    border = if (selected) null else BorderStroke(1.5.dp, Color(0xFF7B8794)),
+                    tonalElevation = 0.dp,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        if (selected) {
+                            Text(
+                                "✓",
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
+            } else {
+                // The level dot is only useful in the normal list, not beside export checkboxes.
+                Box(
+                    modifier = Modifier
+                        .padding(top = 7.dp)
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(color),
                 )
             }
-            Box(
-                modifier = Modifier
-                    .padding(top = 2.dp)
-                    .size(9.dp)
-                    .clip(CircleShape)
-                    .background(color),
-            )
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
+                Text(
+                    AppLogTitleResolver.title(record.tag, record.message),
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF202124),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = Int.MAX_VALUE,
+                    overflow = TextOverflow.Clip,
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Top,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.End,
                 ) {
-                    Text(
-                        AppLogTitleResolver.title(record.tag, record.message),
-                        modifier = Modifier.weight(1f),
-                        color = Color(0xFF202124),
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                     Text(
                         AppLogStore.formatTime(record.timestampMs),
                         color = Color(0xFF858B93),
@@ -1269,6 +1285,7 @@ private fun LogRecordCard(
                     )
                 }
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
@@ -1308,7 +1325,7 @@ private fun LogRecordCard(
             }
         }
         HorizontalDivider(
-            modifier = Modifier.padding(start = 39.dp),
+            modifier = Modifier.padding(start = if (selectionMode) 52.dp else 39.dp),
             color = Color(0xFFF0F1F3),
             thickness = 1.dp,
         )
