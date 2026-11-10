@@ -755,18 +755,10 @@ object AppLogStore {
      * Export one selected event as its own complete text file. This supports every log level
      * (INFO/WARN/ERROR/FATAL) and intentionally does not merge neighboring events into one file.
      */
-    fun exportRecordFullText(context: Context, target: AppLogRecord): String {
-        val stored = readRecent(context, MAX_READ_RECORDS).firstOrNull { record ->
-            if (target.eventId.isNotBlank()) {
-                record.eventId == target.eventId
-            } else {
-                record.timestampMs == target.timestampMs &&
-                    record.sequence == target.sequence &&
-                    record.tag == target.tag &&
-                    record.message == target.message &&
-                    record.details == target.details
-            }
-        } ?: target
+    fun exportRecordFullText(target: AppLogRecord): String {
+        // The UI passes the complete selected record. Do not reread and reparse the log store
+        // for every exported file; exporting hundreds of selected events must remain linear.
+        val stored = target
         val environment = environmentSnapshot()
         val exportedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
         return buildString {

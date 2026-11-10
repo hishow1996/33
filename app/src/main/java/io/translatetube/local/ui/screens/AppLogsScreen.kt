@@ -1063,7 +1063,7 @@ private fun exportLogRecordsToDirectory(
                 val output = resolver.openOutputStream(documentUri, "wt")
                     ?: error("无法写入文件")
                 output.bufferedWriter(Charsets.UTF_8).use { writer ->
-                    writer.write(AppLogStore.exportRecordFullText(context, record))
+                    writer.write(AppLogStore.exportRecordFullText(record))
                     writer.flush()
                 }
                 completed = true
