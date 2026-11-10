@@ -143,7 +143,7 @@ private fun BuiltinWebEngineCard(
                 shape = RoundedCornerShape(18.dp),
             )
             .clickable { onSelect() }
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -515,7 +515,7 @@ fun ApiManagerScreen(onBack: () -> Unit, initialTab: String = "online") {
                             shape = RoundedCornerShape(18.dp),
                         )
                         .clickable { setActive(-1L) }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
@@ -616,7 +616,7 @@ fun ApiManagerScreen(onBack: () -> Unit, initialTab: String = "online") {
                             shape = RoundedCornerShape(18.dp),
                         )
                         .clickable(enabled = p.enabled) { setActive(p.id) }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     ApiProviderLogo(profile = p, selected = selectedProfile, imageLoader = providerLogoImageLoader)
