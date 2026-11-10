@@ -34,6 +34,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -1223,20 +1228,33 @@ private fun LogRecordCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(horizontal = 18.dp, vertical = 16.dp),
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (selectionMode && selected) Color(0xFFF1F6FF) else Color.White,
+                )
+                .clickable(
+                    role = if (selectionMode) Role.Checkbox else null,
+                    onClick = onClick,
+                )
+                .semantics {
+                    if (selectionMode) {
+                        toggleableState = if (selected) ToggleableState.On else ToggleableState.Off
+                        stateDescription = if (selected) "已选择" else "未选择"
+                    }
+                }
+                .padding(horizontal = 18.dp, vertical = 13.dp),
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (selectionMode) {
-                // Keep the selection affordance visually compact; the whole row remains clickable.
+                // Compact 22dp visual control; the entire row remains the touch target.
                 Surface(
                     modifier = Modifier
                         .padding(top = 1.dp)
                         .size(22.dp),
                     shape = RoundedCornerShape(4.dp),
                     color = if (selected) BrandBright else Color.White,
-                    border = if (selected) null else BorderStroke(1.5.dp, Color(0xFF7B8794)),
+                    border = if (selected) null else BorderStroke(1.dp, Color(0xFF8793A1)),
                     tonalElevation = 0.dp,
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -1244,14 +1262,14 @@ private fun LogRecordCard(
                             Text(
                                 "✓",
                                 color = Color.White,
-                                style = MaterialTheme.typography.labelLarge,
+                                style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                             )
                         }
                     }
                 }
             } else {
-                // The level dot is only useful in the normal list, not beside export checkboxes.
+                // Keep the severity dot in the normal list only.
                 Box(
                     modifier = Modifier
                         .padding(top = 7.dp)
@@ -1262,7 +1280,7 @@ private fun LogRecordCard(
             }
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
                     AppLogTitleResolver.title(record.tag, record.message),
@@ -1286,28 +1304,39 @@ private fun LogRecordCard(
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Text(
                         record.tag,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .alignByBaseline(),
                         color = Color(0xFF68707A),
                         style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text("·", color = Color(0xFFB1B5BB))
+                    Text(
+                        "·",
+                        modifier = Modifier.alignByBaseline(),
+                        color = Color(0xFFB1B5BB),
+                    )
                     Text(
                         record.level,
+                        modifier = Modifier.alignByBaseline(),
                         color = color,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                     if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
-                        Text("·", color = Color(0xFFB1B5BB))
+                        Text(
+                            "·",
+                            modifier = Modifier.alignByBaseline(),
+                            color = Color(0xFFB1B5BB),
+                        )
                         Text(
                             if (record.recoveredAtMs != null) "已恢复" else "未恢复",
+                            modifier = Modifier.alignByBaseline(),
                             color = if (record.recoveredAtMs != null) Color(0xFF247347) else Color(0xFFB42318),
                             style = MaterialTheme.typography.labelSmall,
                         )
