@@ -1741,7 +1741,7 @@ private fun LocalEngineCard(
                 shape = RoundedCornerShape(16.dp),
             )
             .clickable(onClick = onSelect)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AsyncImage(
