@@ -789,6 +789,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     modifier = Modifier.padding(18.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    val completedCount = savedLogExportKeys.size + skippedLogExportKeys.size
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -811,7 +812,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         )
                     }
                     HorizontalDivider(color = Color(0xFFE9EAEC))
-                    val completedCount = savedLogExportKeys.size + skippedLogExportKeys.size
                     val progress = if (logExportTotalCount > 0) {
                         completedCount.toFloat() / logExportTotalCount.toFloat()
                     } else {
