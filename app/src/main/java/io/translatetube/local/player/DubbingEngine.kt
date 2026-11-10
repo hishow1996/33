@@ -180,6 +180,7 @@ class DubbingEngine(
     private val firstPlaybackCompletedReported = AtomicBoolean(false)
     private val firstQueuedDelayReported = AtomicBoolean(false)
     private val latenessStats = DubbingLatenessStats()
+    private val shortAudioStats = DubbingShortAudioStats()
     private val audioOutputPathReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     /** Raw input is kept only for local diagnostics so rejected/empty translations remain explainable. */
@@ -3509,6 +3510,15 @@ class DubbingEngine(
         )
         latenessStats.record(desiredUs, playheadUs, startedAtUs, catchUpRatio)
             ?.let(::logLatenessSummary)
+        if (startedAtUs >= 0L) {
+            shortAudioStats.record(
+                row = playIndex + 1,
+                startMs = cue.startMs,
+                windowMs = windowEndMs - cue.startMs,
+                audioMs = samples.size * 1_000L / sampleRate.coerceAtLeast(1),
+                text = cue.text,
+            )?.let(::logShortAudioSummary)
+        }
         val queuedDelayUs = startedAtUs - desiredUs
         if (startedAtUs >= 0L && queuedDelayUs > 150_000L &&
             firstQueuedDelayReported.compareAndSet(false, true)
@@ -3529,6 +3539,25 @@ class DubbingEngine(
             )
         }
         return startedAtUs
+    }
+
+    /**
+     * 配音比字幕窗口短很多的句子汇总，只写日志：用来判断"配音先说完"是窗口偏长/时间不准，
+     * 还是译文本身就短。窗口 = 字幕开始到该句（合并后）窗口末尾；音频 = 拟合后缓存里的原始时长。
+     */
+    private fun logShortAudioSummary(summary: DubbingShortAudioStats.Summary) {
+        val fields = linkedMapOf(
+            "统计句数" to summary.cues.toString(),
+            "配音明显短于窗口的句数" to summary.shortCues.toString(),
+            "配音平均占窗口 %" to summary.avgAudioToWindowPercent.toString(),
+        )
+        summary.worst.forEachIndexed { i, e ->
+            fields["差距最大第${i + 1}句"] =
+                "行${e.row} 开始${e.startMs}ms 窗口${e.windowMs}ms 配音${e.audioMs}ms " +
+                    "原文「${e.text.replace('\n', ' ').take(24)}」"
+        }
+        fields["当前视频位置 ms"] = latestTimelineCursor.positionMs.toString()
+        logDubbingInfo("配音时长短于窗口统计（只记录，不改变播放）", fields)
     }
 
     /**
@@ -4410,6 +4439,7 @@ class DubbingEngine(
         // 否则新引擎的配音会和旧引擎残留的音频叠在一起播出。
         purgeMountedCues()
         latenessStats.drain()?.let(::logLatenessSummary)
+        shortAudioStats.drain()?.let(::logShortAudioSummary)
         paceEngineKey?.let { key ->
             if (paceUpdateCount.get() % 8 != 0) {
                 DubbingSpeechPaceStore.save(appContext, key, speechPaceScale)
