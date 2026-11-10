@@ -20,7 +20,7 @@ internal object YouTubeSubtitleSelectionPolicy {
     const val PREF_KEY = "youtube_subtitle_language_mode"
     const val DEFAULT_MODE = "english"
     const val SESSION_POLICY_VERSION = 3
-    const val SOURCE_CACHE_VERSION = 9
+    const val SOURCE_CACHE_VERSION = 10
     const val TRANSLATION_CACHE_VERSION = 3
 
     fun modeFromPreference(value: String?): YouTubeSubtitleLanguageMode =
