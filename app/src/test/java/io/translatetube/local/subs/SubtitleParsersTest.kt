@@ -884,4 +884,43 @@ class SubtitleParsersTest {
         assertEquals("an umbrella", SubtitleParsers.cleanSpokenText("an umbrella"))
     }
 
+    @Test
+    fun youtubeStyleLoneSpacePlaceholderLineDoesNotDropTheCueText() {
+        // YouTube 自动字幕常在 cue 的第一行放一个只含空格的占位行，真正的文字在它后面；
+        // 以前这行被当成空行，cue 提前结束，后面的文字整个丢了。
+        val source = listOf(
+            "WEBVTT",
+            "",
+            "00:00:00.000 --> 00:00:02.000",
+            " ",
+            "今日は晴れです",
+            "",
+            "00:00:02.000 --> 00:00:04.000",
+            "こんにちは",
+            "",
+        ).joinToString("\n")
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("今日は晴れです", "こんにちは"), parsed.map { it.text })
+    }
+
+    @Test
+    fun whitespaceOnlySeparatorAfterCueTextStillClosesTheCue() {
+        // 占位行只在 cue 还没有文字时才被忽略；SRT 里用空格行当分隔符时，仍要正确分开两条字幕。
+        val source = listOf(
+            "1",
+            "00:00:00,000 --> 00:00:02,000",
+            "first",
+            " ",
+            "2",
+            "00:00:02,000 --> 00:00:04,000",
+            "second",
+            "",
+        ).joinToString("\n")
+
+        val parsed = SubtitleParsers.parseSrt(source)
+
+        assertEquals(listOf("first", "second"), parsed.map { it.text })
+    }
 }

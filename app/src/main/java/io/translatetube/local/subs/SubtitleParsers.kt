@@ -101,6 +101,13 @@ object SubtitleParsers {
             if ((lineIndex and 0xff) == 0) checkActive()
             val line = raw.trim()
             if (line.isEmpty()) {
+                // YouTube auto captions put a lone-space line as the FIRST text line of a cue as a
+                // placeholder; the real text follows it. Closing the cue there drops that text.
+                // Only a line that is empty after trimming the line ending closes a cue; a
+                // whitespace-only line is ignored while the cue has no text yet.
+                val isPlaceholderLine = raw.trimEnd('\r', '\n').isNotEmpty() &&
+                    !inNoteBlock && pendingStart >= 0 && buf.isEmpty()
+                if (isPlaceholderLine) continue
                 // A blank line closes a WebVTT cue. Do not attach comments or orphan text to it.
                 if (!inNoteBlock) flush()
                 inNoteBlock = false
