@@ -1,7 +1,5 @@
 package io.translatetube.local.ui.screens
 
-import android.content.Intent
-import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -106,16 +104,21 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     var selectionMode by remember { mutableStateOf(false) }
     var selectedLogKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingLogExports by remember { mutableStateOf<List<AppLogRecord>>(emptyList()) }
+    var showLogExportPreview by remember { mutableStateOf(false) }
+    var activeLogExport by remember { mutableStateOf<AppLogRecord?>(null) }
+    var requestedLogExport by remember { mutableStateOf<AppLogRecord?>(null) }
+    var logExportSavedCount by remember { mutableIntStateOf(0) }
+    var logExportTotalCount by remember { mutableIntStateOf(0) }
 
     BackHandler(enabled = showIncidentExportPicker) {
         showIncidentExportPicker = false
     }
-    BackHandler(enabled = selectionMode && !showIncidentExportPicker && selectedRecord == null) {
+    BackHandler(enabled = selectionMode && !showIncidentExportPicker && !showLogExportPreview && selectedRecord == null) {
         selectionMode = false
         selectedLogKeys = emptySet()
     }
     BackHandler(
-        enabled = !showIncidentExportPicker && !selectionMode && selectedRecord == null && !showClearConfirm,
+        enabled = !showIncidentExportPicker && !showLogExportPreview && !selectionMode && selectedRecord == null && !showClearConfirm,
         onBack = onBack,
     )
 
@@ -177,38 +180,65 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         // reopening the export menu restores the same selection; cancellation is not a failure.
     }
 
-    val directoryExportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree(),
-    ) { treeUri ->
-        val targets = pendingLogExports
-        pendingLogExports = emptyList()
-        if (treeUri != null && targets.isNotEmpty()) {
-            exporting = true
+    val logRecordExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        val target = activeLogExport
+        activeLogExport = null
+        if (uri == null || target == null) {
+            exporting = false
+            message = "已取消保存，未完成的日志仍保留在导出列表中"
+        } else {
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
-                    exportLogRecordsToDirectory(ctx.applicationContext, treeUri, targets)
-                }
-                selectedLogKeys = selectedLogKeys - result.savedKeys
-                when {
-                    result.setupError != null -> {
-                        message = "日志导出失败：${result.setupError}"
+                    runCatching {
+                        val resolver = ctx.contentResolver
+                        val output = resolver.openOutputStream(uri, "wt")
+                            ?: error("无法打开所选文件")
+                        output.bufferedWriter(Charsets.UTF_8).use { writer ->
+                            writer.write(AppLogStore.exportRecordFullText(target))
+                            writer.flush()
+                        }
+                    }.onFailure {
+                        runCatching {
+                            DocumentsContract.deleteDocument(ctx.contentResolver, uri)
+                        }
                     }
-                    result.failedFiles.isEmpty() -> {
-                        message = "已分别保存 ${result.savedKeys.size} 个独立日志文件"
-                        selectedLogKeys = emptySet()
+                }
+                if (result.isSuccess) {
+                    val savedKey = logRecordSelectionKey(target)
+                    val remaining = pendingLogExports.filterNot {
+                        logRecordSelectionKey(it) == savedKey
+                    }
+                    pendingLogExports = remaining
+                    selectedLogKeys = selectedLogKeys - savedKey
+                    logExportSavedCount += 1
+                    if (remaining.isEmpty()) {
+                        exporting = false
+                        showLogExportPreview = false
                         selectionMode = false
+                        selectedLogKeys = emptySet()
+                        message = "已分别保存 ${logExportSavedCount} 个独立日志文件"
+                    } else {
+                        // Continue with the next item; each item gets its own Android
+                        // Save As screen and its own suggested title-based filename.
+                        exporting = true
+                        requestedLogExport = remaining.first()
+                        message = "已保存 ${logExportSavedCount} / ${logExportTotalCount} 个文件"
                     }
-                    result.savedKeys.isEmpty() -> {
-                        message = "日志导出失败：${result.failedFiles.size} 条日志未能保存，已保留选择"
-                    }
-                    else -> {
-                        message = "已保存 ${result.savedKeys.size} 个独立文件，${result.failedFiles.size} 条失败；失败项已保留"
-                    }
+                } else {
+                    exporting = false
+                    message = "文件保存失败：${result.exceptionOrNull()?.message ?: "未知错误"}；可重试当前日志"
                 }
-                exporting = false
             }
         }
-        // Canceling the folder picker leaves the current selection untouched.
+    }
+
+    LaunchedEffect(requestedLogExport) {
+        val target = requestedLogExport ?: return@LaunchedEffect
+        requestedLogExport = null
+        activeLogExport = target
+        logRecordExportLauncher.launch(logRecordFileName(target))
     }
 
     LaunchedEffect(refreshKey) {
@@ -631,7 +661,10 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     enabled = selectedLogRecords.isNotEmpty() && !exporting,
                     onClick = {
                         pendingLogExports = selectedLogRecords.sortedBy { it.timestampMs }
-                        directoryExportLauncher.launch(null)
+                        logExportSavedCount = 0
+                        logExportTotalCount = pendingLogExports.size
+                        message = null
+                        showLogExportPreview = true
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = BrandBright,
@@ -642,6 +675,136 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(5.dp))
                     Text("导出所选")
+                }
+            }
+        }
+    }
+
+    if (showLogExportPreview) {
+        Dialog(
+            onDismissRequest = {
+                if (!exporting && activeLogExport == null && requestedLogExport == null) {
+                    showLogExportPreview = false
+                }
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.94f)
+                    .widthIn(max = 480.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = Color.White,
+                tonalElevation = 2.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "导出日志",
+                            modifier = Modifier.weight(1f),
+                            color = Color(0xFF202124),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (logExportTotalCount > 0) {
+                                "${logExportSavedCount}/${logExportTotalCount}"
+                            } else {
+                                "${pendingLogExports.size} 个文件"
+                            },
+                            color = Color(0xFF68707A),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    HorizontalDivider(color = Color(0xFFE9EAEC))
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 420.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(
+                            items = pendingLogExports,
+                            key = { logRecordSelectionKey(it) },
+                        ) { record ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFFF8F9FB))
+                                    .padding(horizontal = 11.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Text(
+                                    AppLogTitleResolver.title(record.tag, record.message),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color(0xFF202124),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    softWrap = true,
+                                )
+                                Text(
+                                    logRecordFileName(record),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color(0xFF68707A),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    softWrap = true,
+                                )
+                            }
+                        }
+                    }
+                    message?.takeIf {
+                        it.contains("取消保存") || it.contains("保存失败") || it.contains("已保存")
+                    }?.let { status ->
+                        Text(
+                            status,
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (status.contains("失败")) Color(0xFFB42318) else Color(0xFF357A52),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(
+                            enabled = !exporting && activeLogExport == null && requestedLogExport == null,
+                            onClick = { showLogExportPreview = false },
+                        ) {
+                            Text("关闭")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Button(
+                            enabled = pendingLogExports.isNotEmpty() &&
+                                !exporting &&
+                                activeLogExport == null &&
+                                requestedLogExport == null,
+                            onClick = {
+                                val next = pendingLogExports.firstOrNull() ?: return@Button
+                                exporting = true
+                                message = null
+                                requestedLogExport = next
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BrandBright,
+                                contentColor = Color.White,
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.FileDownload,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (logExportSavedCount > 0) "继续保存" else "开始保存")
+                        }
+                    }
                 }
             }
         }
@@ -1021,71 +1184,36 @@ private fun logRecordFileName(record: AppLogRecord): String {
     return "日志_${module}_${level}_${time}_${identity}.txt"
 }
 
-private data class LogDirectoryExportResult(
-    val savedKeys: Set<String>,
-    val failedFiles: List<String>,
-    val setupError: String? = null,
-)
-
-private fun exportLogRecordsToDirectory(
-    context: android.content.Context,
-    treeUri: Uri,
-    records: List<AppLogRecord>,
-): LogDirectoryExportResult {
-    val resolver = context.contentResolver
-    runCatching {
-        resolver.takePersistableUriPermission(
-            treeUri,
-            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-        )
-    }
-    val parentUri = runCatching {
-        DocumentsContract.buildDocumentUriUsingTree(
-            treeUri,
-            DocumentsContract.getTreeDocumentId(treeUri),
-        )
-    }.getOrElse { failure ->
-        return LogDirectoryExportResult(
-            savedKeys = emptySet(),
-            failedFiles = records.map(::logRecordFileName),
-            setupError = failure.message ?: "无法访问所选文件夹",
-        )
-    }
-
-    val savedKeys = linkedSetOf<String>()
-    val failedFiles = mutableListOf<String>()
-    records.forEach { record ->
-        val fileName = logRecordFileName(record)
-        val saveResult = runCatching {
-            val documentUri = DocumentsContract.createDocument(
-                resolver,
-                parentUri,
-                "text/plain",
-                fileName,
-            ) ?: error("无法在所选文件夹创建文件")
-            var completed = false
-            try {
-                val output = resolver.openOutputStream(documentUri, "wt")
-                    ?: error("无法写入文件")
-                output.bufferedWriter(Charsets.UTF_8).use { writer ->
-                    writer.write(AppLogStore.exportRecordFullText(record))
-                    writer.flush()
-                }
-                completed = true
-            } finally {
-                if (!completed) {
-                    runCatching { DocumentsContract.deleteDocument(resolver, documentUri) }
-                }
+private fun logRecordFileName(record: AppLogRecord): String {
+    val rawTitle = AppLogTitleResolver.title(record.tag, record.message)
+        .ifBlank { record.tag.ifBlank { "App" } }
+    val safeTitle = rawTitle
+        .replace(Regex("[\\u0000-\\u001F\\\\/:*?\"<>|]+"), "_")
+        .replace(Regex("\\s+"), "_")
+        .trim('_', '.')
+        .take(48)
+        .let { value ->
+            if (value.isNotEmpty() && Character.isHighSurrogate(value.last())) {
+                value.dropLast(1)
+            } else {
+                value
             }
         }
-        if (saveResult.isSuccess) {
-            savedKeys += logRecordSelectionKey(record)
-        } else {
-            val reason = saveResult.exceptionOrNull()?.message?.take(80).orEmpty()
-            failedFiles += if (reason.isBlank()) fileName else "$fileName（$reason）"
-        }
+        .ifBlank { "App" }
+    val level = record.level
+        .filter { it.isLetterOrDigit() }
+        .take(10)
+        .ifBlank { "INFO" }
+    val time = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
+        .format(Date(record.timestampMs))
+    val identitySource = record.eventId.ifBlank {
+        "${record.processId}_${record.sequence}_${record.timestampMs}_${record.message.hashCode()}_${record.tag.hashCode()}"
     }
-    return LogDirectoryExportResult(savedKeys, failedFiles)
+    val identity = identitySource
+        .filter { it.isLetterOrDigit() }
+        .takeLast(16)
+        .ifBlank { "event" }
+    return "日志_${safeTitle}_${level}_${time}_${identity}.txt"
 }
 
 private fun incidentReportFileName(record: AppLogRecord): String {
