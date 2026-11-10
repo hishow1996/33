@@ -63,8 +63,19 @@ internal object CaptionSentenceMergePolicy {
     private const val VERIFY_MAX_LENGTH_RATIO = 1.6
     private const val VERIFY_MAX_GAP = 1_000
 
+    /** 分句结尾的切点离句子正中间最多偏这么多（占总长的比例），再远就退回到最靠近中间的词边界。 */
+    private const val MAX_CLAUSE_CUT_OFFSET = 0.25
+
     private const val TERMINAL_CHARS = "。！？!?"
     private const val BREAK_CHARS = "、，,;；"
+
+    /** 日语分句结尾：在这些之后切，语义上比切在词中间自然。 */
+    private val CLAUSE_ENDINGS = listOf(
+        "けれども", "けれど", "けど", "から", "ので", "のに", "たら", "れば", "って", "て", "で", "が", "ね", "よ",
+    )
+
+    /** 下一个词以这些字开头，说明它多半是上一个词的活用尾巴（如"着い｜て"），不能在这里切。 */
+    private const val CONTINUATION_START_CHARS = "てでたまするれせんいなっ"
 
     private val cueHeaderRegex =
         Regex("""^\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})\s+-->\s+((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})""")
@@ -305,7 +316,11 @@ internal object CaptionSentenceMergePolicy {
     }
 
     /**
-     * 优先在 、，, 处切（选最靠近中间的）；没有就在最靠近中间的词边界切。
+     * 找切点，按优先级：
+     * 1. 在 、，, 之后切（选最靠近中间的）；
+     * 2. 在日语的分句结尾（て、で、が、けど、から、ので……）之后切，且下一个词不是紧接着的助动词/活用尾巴
+     *    （避免"着い｜て"这种把一个动词切成两半），离中间不能太远；
+     * 3. 都没有就在最靠近中间的词边界切。
      * 两边都至少要占总长的 [MIN_SPLIT_SHARE]，否则返回 -1（不切）。返回左半边的词数。
      */
     private fun findCut(sentence: List<CaptionWord>, total: Double): Int {
@@ -313,6 +328,8 @@ internal object CaptionSentenceMergePolicy {
         var accumulated = 0.0
         var bestBreakIndex = -1
         var bestBreakDistance = Double.MAX_VALUE
+        var bestClauseIndex = -1
+        var bestClauseDistance = Double.MAX_VALUE
         var bestAnyIndex = -1
         var bestAnyDistance = Double.MAX_VALUE
         for (i in 0 until sentence.size - 1) {
@@ -323,13 +340,33 @@ internal object CaptionSentenceMergePolicy {
                 bestAnyDistance = distance
                 bestAnyIndex = i + 1
             }
-            val last = sentence[i].text.trimEnd().lastOrNull()
+            val trimmed = sentence[i].text.trimEnd()
+            val last = trimmed.lastOrNull()
             if (last != null && last in BREAK_CHARS && distance < bestBreakDistance) {
                 bestBreakDistance = distance
                 bestBreakIndex = i + 1
             }
+            if (endsWithClauseMarker(trimmed) &&
+                !startsWithContinuation(sentence[i + 1].text) &&
+                distance <= total * MAX_CLAUSE_CUT_OFFSET &&
+                distance < bestClauseDistance
+            ) {
+                bestClauseDistance = distance
+                bestClauseIndex = i + 1
+            }
         }
-        return if (bestBreakIndex > 0) bestBreakIndex else bestAnyIndex
+        return when {
+            bestBreakIndex > 0 -> bestBreakIndex
+            bestClauseIndex > 0 -> bestClauseIndex
+            else -> bestAnyIndex
+        }
+    }
+
+    private fun endsWithClauseMarker(text: String): Boolean = CLAUSE_ENDINGS.any { text.endsWith(it) }
+
+    private fun startsWithContinuation(text: String): Boolean {
+        val first = text.trimStart().firstOrNull() ?: return false
+        return first in CONTINUATION_START_CHARS
     }
 
     // ---- 第 3 步：拼成字幕行、定起止时间 -----------------------------------------------------

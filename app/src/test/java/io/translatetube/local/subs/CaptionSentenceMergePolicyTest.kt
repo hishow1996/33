@@ -213,4 +213,41 @@ class CaptionSentenceMergePolicyTest {
         assertEquals("今$block。", lines[0].text)
         assertEquals(0L, lines[0].startMs)
     }
+
+    @Test
+    fun prefersCuttingAfterAJapaneseClauseEndingOverTheExactMiddle() {
+        // 14 个词，每个 6 个单位，共 84，超过一句的上限。正中间在第 7 个词后；
+        // 但整句只有第 9 个词以"て"结尾，所以应在它后面切（而不是切在正中间的词中间）。
+        val tokens = (0..13).map { index ->
+            when (index) {
+                8 -> "語語語語語て"
+                13 -> "語語語語語語。"
+                else -> "語語語語語語"
+            }
+        }
+        val line = StringBuilder(tokens[0])
+        for (i in 1..13) {
+            line.append("<00:00:").append(i.toString().padStart(2, '0')).append(".000><c>")
+                .append(tokens[i]).append("</c>")
+        }
+        val vtt = listOf(
+            "WEBVTT",
+            "",
+            "00:00:00.000 --> 00:00:20.000",
+            line.toString(),
+            "",
+        ).joinToString("\n")
+        val rows = listOf(SubLine(0, 0L, 20_000L, tokens.joinToString("")))
+
+        val result = CaptionSentenceMergePolicy.merge(rows, vtt, minTimedTags = 5, minRows = 1)
+
+        val lines = result.lines
+        assertNotNull(result.reason, lines)
+        assertEquals(2, lines!!.size)
+        assertTrue(lines[0].text.endsWith("て"))
+        assertEquals(53, lines[0].text.count { it == '語' })
+        assertEquals(30, lines[1].text.count { it == '語' })
+        assertEquals(9_000L, lines[0].endMs)
+        assertEquals(9_000L, lines[1].startMs)
+    }
 }
