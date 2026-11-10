@@ -34,6 +34,7 @@ class AppLogSearchIndexTest {
     fun searchesMessageModuleAndStructuredContext() = runBlocking {
         val input = listOf(
             record(
+                tag = "AudioExtraction",
                 message = "音频读取失败",
                 diagnosticContext = mapOf("下载阶段" to "解析音频源"),
             ),
