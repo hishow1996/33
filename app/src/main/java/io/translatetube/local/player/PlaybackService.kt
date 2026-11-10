@@ -1155,6 +1155,21 @@ class PlaybackService : MediaSessionService() {
             instance?.invalidateAllDeletedHistorySessionsState()
         }
 
+        /**
+         * Retire the matching live session and wait until its pipeline, readers and TTS engine
+         * have released their resources before history-owned files are removed.
+         */
+        suspend fun invalidateDeletedHistorySessionAndAwait(key: String) {
+            instance?.invalidateDeletedHistorySessionAndAwaitState(key)
+        }
+
+        /**
+         * Delete-all also stops a session that has not yet produced a history row.
+         * The returned key is informational; the caller still deletes only persisted history rows.
+         */
+        suspend fun invalidateAllDeletedHistorySessionsAndAwait(): String? =
+            instance?.invalidateAllDeletedHistorySessionsAndAwaitState()
+
         /** Delete one history-owned local PCM cache only when no active ASR reader holds it. */
         fun deleteUnleasedLocalPcmCacheFile(file: File): Boolean {
             val service = instance
@@ -4879,8 +4894,12 @@ class PlaybackService : MediaSessionService() {
 
         processingCheckpointRestoreGeneration.incrementAndGet()
         beginPipelineGeneration()
+        processingPaused = false
+        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         cancelPendingSeekResume()
+        cancelDubbingDrainAfterVideoEnd()
         prepJob?.cancel()
+        prepJob = null
         subtitleDownloadJob?.cancel()
         subtitleDownloadJob = null
         speakerJob?.cancel()
@@ -4892,6 +4911,11 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryJob?.cancel()
         qualityRecoveryJob = null
         enginePreferenceRestartJob?.cancel()
+        enginePreferenceRestartJob = null
+        manualTranslationWaiters.remove(sessionKey)?.cancel()
+        manualTranslationSources.remove(sessionKey)
+        manualTranslationRequestedKeys.remove(sessionKey)
+        manualTranslationInterrupts.remove(sessionKey)?.cancel()
         retireCurrentDubbing()
         Handler(Looper.getMainLooper()).post {
             if (::pm.isInitialized && videoKey.isBlank()) runCatching { pm.pause() }
@@ -4912,6 +4936,51 @@ class PlaybackService : MediaSessionService() {
         remoteMediaCookie = null
         clearSubtitleHighlightTimeline()
         ui.value = PlayerUiState()
+    }
+
+    private suspend fun invalidateDeletedHistorySessionAndAwaitState(sessionKey: String) {
+        val currentSessionKey = videoKey.ifBlank { completedReadySessionKey.ifBlank { ui.value.key } }
+        if (sessionKey.isBlank() || currentSessionKey != sessionKey) return
+
+        val jobsToJoin = listOfNotNull(
+            prepJob,
+            subtitleDownloadJob,
+            speakerJob,
+            dubCollectJob,
+            qualityJob,
+            qualityRecoveryJob,
+            enginePreferenceRestartJob,
+        ).distinct()
+
+        invalidateDeletedHistorySessionState(sessionKey)
+        jobsToJoin.forEach { job ->
+            job.cancel()
+            job.join()
+        }
+
+        withContext(Dispatchers.Main.immediate) {
+            if (::pm.isInitialized) {
+                runCatching {
+                    pm.pause()
+                    pm.player.stop()
+                    pm.player.clearMediaItems()
+                }
+            }
+        }
+        awaitRetiredDubbingEngines()
+    }
+
+    private suspend fun invalidateAllDeletedHistorySessionsAndAwaitState(): String? {
+        val currentKey = videoKey.ifBlank { completedReadySessionKey.ifBlank { ui.value.key } }
+        if (currentKey.isBlank()) {
+            invalidateAllDeletedHistorySessionsState()
+            return null
+        }
+        invalidateDeletedHistorySessionAndAwaitState(currentKey)
+        completedReadySessionKey = ""
+        completedReadySessionIgnoresTranscription = false
+        completedReadySessionEngineFingerprint = ""
+        return currentKey
     }
 
     private fun invalidateAllDeletedHistorySessionsState() {

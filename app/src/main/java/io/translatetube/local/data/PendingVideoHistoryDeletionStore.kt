@@ -66,8 +66,12 @@ internal object PendingVideoHistoryDeletionStore {
         preferences(context).getBoolean(KEY_DELETE_ALL_HISTORY, false)
 
     @Synchronized
+    fun clearDeleteAllHistoryPending(context: Context): Boolean =
+        preferences(context).edit().remove(KEY_DELETE_ALL_HISTORY).commit()
+
+    @Synchronized
     fun completeDeleteAll(context: Context): Boolean =
-        preferences(context).edit().clear().commit()
+        clearDeleteAllHistoryPending(context)
 
     @Synchronized
     fun hasPendingOperations(context: Context): Boolean {

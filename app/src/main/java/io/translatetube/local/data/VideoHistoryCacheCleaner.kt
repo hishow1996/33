@@ -11,19 +11,28 @@ import io.translatetube.local.player.SpeakerRecognitionTaskJournal
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Deletes a history row only after all task-owned files, checkpoints and indexes are gone.
  * Durable tombstones make every destructive operation retryable after process death.
  */
 internal object VideoHistoryCacheCleaner {
-    suspend fun deleteVideo(context: Context, database: AppDatabase, video: VideoEntity) {
+    private val cleanupMutex = Mutex()
+
+    suspend fun deleteVideo(context: Context, database: AppDatabase, video: VideoEntity) =
+        cleanupMutex.withLock {
+            deleteVideoLocked(context, database, video)
+        }
+
+    private suspend fun deleteVideoLocked(context: Context, database: AppDatabase, video: VideoEntity) {
         if (!PendingVideoHistoryDeletionStore.markVideoPending(context, video.key)) {
             throw IOException("删除任务标记写入失败，历史记录未删除，请重试。")
         }
 
         // First retire the in-memory READY session so it cannot recreate files during cleanup.
-        PlaybackService.invalidateDeletedHistorySession(video.key)
+        PlaybackService.invalidateDeletedHistorySessionAndAwait(video.key)
 
         // Capture indexed artifacts before advancing the generation; keep the index intact if a
         // later delete fails so the visible history row remains retryable.
@@ -196,16 +205,52 @@ internal object VideoHistoryCacheCleaner {
         }
     }
 
-    suspend fun deleteAll(context: Context, database: AppDatabase): Int {
+    suspend fun deleteAll(context: Context, database: AppDatabase): Int = cleanupMutex.withLock {
         if (!PendingVideoHistoryDeletionStore.markDeleteAllHistoryPending(context)) {
             throw IOException("批量删除标记写入失败，历史记录未删除。")
         }
-        clearAllProcessingData(context, database)
-        val removed = database.videoDao().deleteAll()
-        if (!PendingVideoHistoryDeletionStore.completeDeleteAll(context)) {
-            throw IOException("历史记录已删除，但最终清理标记无法移除；应用下次启动将自动核对。")
+
+        try {
+            // Stop only the current media session, including parsing/transcription/translation/dubbing
+            // and playback. Model downloads use separate directories and are intentionally untouched.
+            PlaybackService.invalidateAllDeletedHistorySessionsAndAwait()
+
+            val videos = database.videoDao().allForCleanup()
+            var removed = 0
+            val failures = mutableListOf<String>()
+            for (video in videos) {
+                try {
+                    deleteVideoLocked(context, database, video)
+                    removed++
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    failures += "${video.title.ifBlank { video.key }}：${failure.message ?: failure.javaClass.simpleName}"
+                }
+            }
+
+            if (failures.isNotEmpty()) {
+                val summary = "已清理 $removed 条历史记录；${failures.size} 条未完成，原记录已保留以便重试。" +
+                    failures.take(3).joinToString(separator = "；", prefix = " ")
+                if (!PendingVideoHistoryDeletionStore.clearDeleteAllHistoryPending(context)) {
+                    throw IOException("$summary 批量清理保护标记无法解除，应用下次启动会继续重试。")
+                }
+                throw IOException(summary)
+            }
+
+            if (!PendingVideoHistoryDeletionStore.completeDeleteAll(context)) {
+                throw IOException("历史记录已清理，但最终清理标记无法移除；应用下次启动将自动核对。")
+            }
+            removed
+        } catch (cancelled: CancellationException) {
+            // A screen/lifecycle cancellation must not leave every future playback globally blocked.
+            // Per-video tombstones remain durable for any item whose cleanup had already started.
+            PendingVideoHistoryDeletionStore.clearDeleteAllHistoryPending(context)
+            throw cancelled
+        } catch (failure: Exception) {
+            PendingVideoHistoryDeletionStore.clearDeleteAllHistoryPending(context)
+            throw failure
         }
-        return removed
     }
 
     private fun deleteFileIfPresent(file: File, label: String) {

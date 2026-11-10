@@ -245,8 +245,8 @@ fun StorageManagementScreen(
         }
     }
     fun requestHistoryDelete(keys: List<String>, clearAll: Boolean = false) {
-        if (destructiveBusy || actionBusy || scanning) {
-            message = "当前有播放、处理或模型下载任务，暂不能清理历史记录及其缓存。"
+        if (actionBusy) {
+            message = "正在清理历史记录，请稍候。"
             messageError = true
             return
         }
@@ -257,9 +257,9 @@ fun StorageManagementScreen(
         messageError = false
     }
     fun executeHistoryDelete(request: HistoryDeleteRequest) {
-        if (destructiveBusy || actionBusy) {
+        if (actionBusy) {
             pendingHistoryDelete = null
-            message = "当前有播放、处理或模型下载任务，暂不能清理历史记录及其缓存。"
+            message = "正在清理历史记录，请稍候。"
             messageError = true
             return
         }
@@ -566,7 +566,7 @@ fun StorageManagementScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
                 TextButton(
-                    enabled = !destructiveBusy && !actionBusy && visibleHistoryKeys.isNotEmpty(),
+                    enabled = !actionBusy && visibleHistoryKeys.isNotEmpty(),
                     onClick = { toggleHistorySelectAll(visibleHistoryKeys) },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                 ) { Text(if (allVisibleHistorySelected) "取消全选" else "全选") }
@@ -671,9 +671,9 @@ fun StorageManagementScreen(
 
     pendingHistoryDelete?.let { request ->
         val description = when {
-            request.clearAll -> "将删除全部视频历史（包括收藏），并清理应用管理的字幕/翻译、配音 PCM、转写音轨和 HLS 分段缓存。手机原始视频和已下载模型不会删除。"
-            request.keys.size == 1 -> "将删除这条视频历史及其字幕/翻译、配音 PCM、转写音轨和 HLS 分段缓存。手机原始视频与已下载模型会保留。"
-            else -> "将删除所选的 ${request.keys.size} 条视频历史及各自关联缓存。手机原始视频与已下载模型会保留。"
+            request.clearAll -> "将删除全部视频历史（包括收藏），并清理应用管理的字幕/翻译、配音 PCM、转写音轨和 HLS 分段缓存。如果有视频正在解析、处理或播放，会先结束对应会话；模型下载不会停止。手机原始视频和已下载模型不会删除。"
+            request.keys.size == 1 -> "将删除这条视频历史及其字幕/翻译、配音 PCM、转写音轨和 HLS 分段缓存。如果该视频正在解析、处理或播放，会先结束对应会话。手机原始视频与已下载模型会保留。"
+            else -> "将删除所选的 ${request.keys.size} 条视频历史及各自关联缓存；其中正在处理的视频会先结束对应会话。手机原始视频与已下载模型会保留。"
         }
         AlertDialog(
             onDismissRequest = { if (!actionBusy) pendingHistoryDelete = null },
@@ -681,7 +681,7 @@ fun StorageManagementScreen(
             text = { Text(description, color = SubText) },
             confirmButton = {
                 TextButton(
-                    enabled = !actionBusy && !destructiveBusy,
+                    enabled = !actionBusy,
                     onClick = { executeHistoryDelete(request) },
                 ) { Text(if (actionBusy) "处理中…" else "确认删除", color = DangerRed) }
             },
