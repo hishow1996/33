@@ -154,12 +154,29 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         }
     }
 
+    fun clearLogExportQueue() {
+        pendingLogExports = emptyList()
+        savedLogExportKeys = emptySet()
+        failedLogExportKeys = emptySet()
+        skippedLogExportKeys = emptySet()
+        activeLogExport = null
+        requestedLogExport = null
+        logExportTotalCount = 0
+        showLogExportPreview = false
+        exporting = false
+    }
+
+    fun exitSelectionMode() {
+        clearLogExportQueue()
+        selectionMode = false
+        selectedLogKeys = emptySet()
+    }
+
     BackHandler(enabled = showIncidentExportPicker) {
         showIncidentExportPicker = false
     }
     BackHandler(enabled = selectionMode && !showIncidentExportPicker && !showLogExportPreview && selectedRecord == null) {
-        selectionMode = false
-        selectedLogKeys = emptySet()
+        exitSelectionMode()
     }
     BackHandler(
         enabled = !showIncidentExportPicker && !showLogExportPreview && !selectionMode && selectedRecord == null && !showClearConfirm,
@@ -291,18 +308,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 skippedLogExportKeys = readLogExportKeys(logExportPreferences.getString("skipped", null)).toSet()
                     .intersect(restoredKeys)
                 logExportTotalCount = restoredQueue.size
-                selectedLogKeys = restoredQueue
-                    .map(::logRecordSelectionKey)
-                    .filterNot { it in savedLogExportKeys || it in skippedLogExportKeys }
-                    .toSet()
-                selectionMode = true
-                showLogExportPreview = true
-                val missingCount = queueKeys.size - restoredQueue.size
-                message = if (missingCount > 0) {
-                    "已恢复上次导出，$missingCount 条日志已不在本地记录中"
-                } else {
-                    "已恢复上次未完成的导出任务"
-                }
             } else if (queueKeys.isNotEmpty()) {
                 logExportPreferences.edit().clear().apply()
             }
@@ -394,8 +399,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             IconButton(
                 onClick = {
                     if (selectionMode) {
-                        selectionMode = false
-                        selectedLogKeys = emptySet()
+                        exitSelectionMode()
                     } else {
                         onBack()
                     }
@@ -612,6 +616,36 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             }
         }
 
+        if (pendingLogExports.isNotEmpty() && !selectionMode && !showLogExportPreview) {
+            val remainingExports = pendingLogExports.filter {
+                val key = logRecordSelectionKey(it)
+                key !in savedLogExportKeys && key !in skippedLogExportKeys
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFF1F6FF))
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "上次有 ${remainingExports.size} 个日志未导出完成",
+                    modifier = Modifier.weight(1f),
+                    color = Color(0xFF202124),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(
+                    onClick = {
+                        selectedLogKeys = remainingExports.map(::logRecordSelectionKey).toSet()
+                        selectionMode = true
+                        showLogExportPreview = true
+                    },
+                ) { Text("继续") }
+                TextButton(onClick = { clearLogExportQueue() }) { Text("放弃") }
+            }
+        }
         message?.let { text ->
             Text(
                 text,
@@ -730,10 +764,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 }
                 TextButton(
                     enabled = !exporting,
-                    onClick = {
-                        selectionMode = false
-                        selectedLogKeys = emptySet()
-                    },
+                    onClick = { exitSelectionMode() },
                 ) {
                     Text("取消")
                 }
