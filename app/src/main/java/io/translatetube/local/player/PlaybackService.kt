@@ -922,6 +922,10 @@ class PlaybackService : MediaSessionService() {
     private var playbackHintShownAtMs = 0L
     private var noFrameWaitStartedAtMs = 0L
     private var noFrameWaitSessionKey = ""
+    // Diagnostic only: READY player page with media loaded but no video view on screen. Main thread only.
+    private var noViewWaitStartedAtMs = 0L
+    private var noViewWaitSessionKey = ""
+    private var noViewLoggedKey = ""
     private var lastObservedSourceGeneration = -1L
     private var playbackStallWatchSessionKey = ""
     private var playbackStallWatchPositionMs = -1L
@@ -3378,11 +3382,19 @@ class PlaybackService : MediaSessionService() {
             // first-frame timeout so it cannot force an unnecessary player/service rebuild.
             surfaceView?.let(::attachSurface)
         }
-        val videoViewBound = surfaceView != null && boundVideoSurface?.get() === surfaceView
+        val viewAttached = surfaceView?.isAttachedToWindow == true
+        val monitorVideo = VideoPresentationModePolicy.shouldMonitorVideo(videoPresentationMode)
+        // The wait window used to need a ready AND bound view, so a view that never became ready
+        // or whose bind failed left the watchdog blind (black screen forever). Count any on-screen
+        // view; handleFirstFrameTimeout repairs the binding before reloading the player.
         val noFirstFrameTimedOut = if (
-            VideoPresentationModePolicy.shouldMonitorVideo(videoPresentationMode) &&
-                surfaceReady && videoViewBound &&
-                (playWhenReady || videoViewBound) && mediaAttached && !firstFrame && !state.audioOnly
+            FirstFrameTimeoutPolicy.shouldCountNoFrameWait(
+                monitorVideo = monitorVideo,
+                mediaAttached = mediaAttached,
+                hasRenderedFirstFrame = firstFrame,
+                audioOnly = state.audioOnly,
+                viewAttached = viewAttached,
+            )
         ) {
             if (noFrameWaitSessionKey != state.key || noFrameWaitStartedAtMs <= 0L) {
                 noFrameWaitSessionKey = state.key
@@ -3398,6 +3410,7 @@ class PlaybackService : MediaSessionService() {
         if (noFirstFrameTimedOut && playerPhase && failure == null && !playbackRecoveryInProgress) {
             handleFirstFrameTimeout(state, now)
         }
+        logMissingVideoViewIfStuck(state, now, monitorVideo, mediaAttached, firstFrame, viewAttached)
 
         val blocked = state.playBlockedHint?.takeIf { state.key == videoKey }
             ?: if (playerPhase && (
@@ -3480,9 +3493,20 @@ class PlaybackService : MediaSessionService() {
         blackScreenErrorLoggedKey = state.key
         when (action) {
             FirstFrameTimeoutAction.SOFT_RELOAD -> {
+                // A view that is on screen but not bound (the bind threw, or never ran) cannot be
+                // fixed by re-preparing the player. Drop the stale bind record and bind it again.
+                val rebindView = surfaceView?.takeIf { it.isAttachedToWindow && boundVideoSurface?.get() !== it }
+                if (rebindView != null) {
+                    boundVideoSurface = null
+                    attachSurface(rebindView)
+                }
                 pm.logBlackScreenError(
                     "画面黑屏或播放无响应，正在自动重新加载",
-                    context + ("自动处理" to "重新准备播放器并继续播放"),
+                    context + ("自动处理" to if (rebindView != null) {
+                        "重新绑定视频画面，并重新准备播放器继续播放"
+                    } else {
+                        "重新准备播放器并继续播放"
+                    }),
                 )
                 // Give the reloaded player a fresh wait window before the next escalation step.
                 noFrameWaitStartedAtMs = now
@@ -3502,6 +3526,54 @@ class PlaybackService : MediaSessionService() {
             )
         }
         firstFrameEscalationStage = FirstFrameTimeoutPolicy.stageAfter(firstFrameEscalationStage, action)
+    }
+
+    /**
+     * The player page should be up (READY, media loaded, no picture yet) but no video view is on
+     * screen for a while. The service cannot repair that, so it only leaves one diagnostic entry
+     * per video to show which prerequisite is missing the next time a black screen is reported.
+     */
+    private fun logMissingVideoViewIfStuck(
+        state: PlayerUiState,
+        now: Long,
+        monitorVideo: Boolean,
+        mediaAttached: Boolean,
+        firstFrame: Boolean,
+        viewAttached: Boolean,
+    ) {
+        val stuck = monitorVideo && state.phase == Phase.READY && mediaAttached &&
+            !firstFrame && !state.audioOnly && !viewAttached
+        if (!stuck) {
+            noViewWaitStartedAtMs = 0L
+            return
+        }
+        if (noViewWaitSessionKey != state.key || noViewWaitStartedAtMs <= 0L) {
+            noViewWaitSessionKey = state.key
+            noViewWaitStartedAtMs = now
+            return
+        }
+        if (now - noViewWaitStartedAtMs < 10_000L || noViewLoggedKey == state.key) return
+        noViewLoggedKey = state.key
+        val surfaceView = requestedVideoSurface?.get()
+        val details = mapOf(
+            "视频来源" to diagnosticMediaSourceType(state),
+            "视频会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+            "视频呈现模式" to videoPresentationMode.name,
+            "画面控件是否存在" to (surfaceView != null).toString(),
+            "画面控件是否附着" to (surfaceView?.isAttachedToWindow?.toString() ?: "无画面控件"),
+            "播放器状态" to runCatching { pm.player.playbackState.toString() }.getOrDefault("未知"),
+            "播放服务代次" to serviceGeneration.value.toString(),
+        )
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                io.translatetube.local.util.AppLogStore.warning(
+                    applicationContext,
+                    "PlayerManager",
+                    "播放页已显示但一直没有可用的视频画面控件",
+                    diagnosticContext = details,
+                )
+            }
+        }
     }
 
     private fun markPlaybackRecoveryFailed(

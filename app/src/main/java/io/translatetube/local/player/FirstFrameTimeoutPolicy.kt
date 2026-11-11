@@ -47,6 +47,21 @@ internal object FirstFrameTimeoutPolicy {
         }
     }
 
+    /**
+     * Whether the "no picture yet" wait window should be running. A video view that is on screen
+     * but not ready (texture never became available, zero size) or not bound to the player (the
+     * bind threw) is exactly a black screen, so it must count too. Requiring a ready, bound view
+     * here made the watchdog blind to those cases. A view that is not attached (processing page
+     * in front, Activity gone) is not a black screen and never counts.
+     */
+    fun shouldCountNoFrameWait(
+        monitorVideo: Boolean,
+        mediaAttached: Boolean,
+        hasRenderedFirstFrame: Boolean,
+        audioOnly: Boolean,
+        viewAttached: Boolean,
+    ): Boolean = monitorVideo && mediaAttached && !hasRenderedFirstFrame && !audioOnly && viewAttached
+
     /** The stage to continue from after [action] was carried out. */
     fun stageAfter(stage: Int, action: FirstFrameTimeoutAction): Int = when (action) {
         FirstFrameTimeoutAction.SOFT_RELOAD -> REBUILD_STAGE

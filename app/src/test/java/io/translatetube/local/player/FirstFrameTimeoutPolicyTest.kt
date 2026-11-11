@@ -67,6 +67,36 @@ class FirstFrameTimeoutPolicyTest {
         )
     }
 
+    private fun counts(
+        monitorVideo: Boolean = true,
+        mediaAttached: Boolean = true,
+        firstFrame: Boolean = false,
+        audioOnly: Boolean = false,
+        viewAttached: Boolean = true,
+    ) = FirstFrameTimeoutPolicy.shouldCountNoFrameWait(
+        monitorVideo = monitorVideo,
+        mediaAttached = mediaAttached,
+        hasRenderedFirstFrame = firstFrame,
+        audioOnly = audioOnly,
+        viewAttached = viewAttached,
+    )
+
+    @Test
+    fun onScreenViewWithoutPictureCountsEvenWhenNotReadyOrNotBound() {
+        // The view's readiness/binding is deliberately not an input: an on-screen view that never
+        // became ready or whose bind failed is a black screen and must start the wait window.
+        assertTrue(counts())
+    }
+
+    @Test
+    fun nothingCountsWhenNoBlackScreenIsPossible() {
+        assertFalse(counts(viewAttached = false))
+        assertFalse(counts(monitorVideo = false))
+        assertFalse(counts(mediaAttached = false))
+        assertFalse(counts(firstFrame = true))
+        assertFalse(counts(audioOnly = true))
+    }
+
     @Test
     fun rebuildCoordinatorAllowsOneRequestPerSessionUntilAPictureAppears() {
         val before = PlayerRebuildCoordinator.request.value.token
