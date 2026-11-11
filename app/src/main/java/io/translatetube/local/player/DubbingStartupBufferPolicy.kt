@@ -28,6 +28,29 @@ internal object DubbingStartupBufferPolicy {
                 !io.translatetube.local.translate.SubtitleSoundDescriptionPolicy.isSoundDescription(line.text)
         }
 
+    /**
+     * The speech cues playback will actually reach first. Resuming mid-video must not wait for (or
+     * promote) the cues at the very start of the video; count from the cue playing at, or next
+     * after, [startPositionMs]. Empty when no speech cue remains after that position.
+     */
+    fun spokenCuesFrom(lines: List<SubLine>, spoken: List<Int>, startPositionMs: Long): List<Int> {
+        if (startPositionMs <= 0L) return spoken
+        val from = spoken.indexOfFirst { lines[it].endMs > startPositionMs }
+        return if (from < 0) emptyList() else spoken.subList(from, spoken.size)
+    }
+
+    /**
+     * Where playback will start after processing: the saved watch position for a resumed video,
+     * otherwise the beginning. Must stay the same rule PlaybackService applies when it starts
+     * playback (resume only past 10 s and not within the last 30 s).
+     */
+    fun playbackStartMs(restartFromBeginning: Boolean, watchedSec: Long, durationSec: Long): Long {
+        if (restartFromBeginning) return 0L
+        val durationMs = durationSec * 1000L
+        val resume = watchedSec > 10L && (durationMs <= 0L || watchedSec * 1000L < durationMs - 30_000L)
+        return if (resume) watchedSec * 1000L else 0L
+    }
+
     fun plan(
         lines: List<SubLine>,
         immediateMode: Boolean,

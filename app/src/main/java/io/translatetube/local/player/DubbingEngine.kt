@@ -160,6 +160,8 @@ class DubbingEngine(
     /** 当前引擎/音色的实测语速校准系数（合并相邻句的预判用），按引擎 cacheKey 持久化。 */
     @Volatile private var speechPaceScale: Double = DubbingSpeechPaceCalibration.DEFAULT_SCALE
     @Volatile private var paceEngineKey: String? = null
+    /** 当前块表实际使用的语速系数（可能是该视频上次定住的值），仅用于诊断日志。 */
+    @Volatile private var chunkPaceScaleInUse: Double = DubbingSpeechPaceCalibration.DEFAULT_SCALE
     private val paceUpdateCount = java.util.concurrent.atomic.AtomicInteger(0)
     /** Scheduler-aware lag: synthesis wall time divided by the interval before the next speech cue. */
     @Volatile private var synthesisTimelineLagFactorValue: Float = Float.NaN
@@ -376,7 +378,23 @@ class DubbingEngine(
      * 旧表里的合并判断（哪两句并成一块）不再成立，必须跟着重算。
      */
     private fun rebuildChunkTable(preparedLines: List<SubLine>, nonSpokenIndexes: Set<Int>) {
-        chunkTable = DubbingChunkPolicy.buildTable(preparedLines, speechPaceScale, speed) { index, _ ->
+        // 用最新学到的系数分块会让同一个视频每次重进的合并结果不一样，已合成的缓存就对不上。
+        // 所以每个视频+引擎+语速只在第一次取当前系数，之后沿用（重新生成配音时才刷新）。
+        val engineKey = paceEngineKey
+        val paceForChunks = if (engineKey == null) {
+            speechPaceScale
+        } else {
+            DubbingChunkPaceStore.resolve(
+                context = appContext,
+                videoKey = videoKey,
+                engineKey = engineKey,
+                speed = speed,
+                current = speechPaceScale,
+                forceFresh = forceRegeneratePcmForAttach,
+            )
+        }
+        chunkPaceScaleInUse = paceForChunks
+        chunkTable = DubbingChunkPolicy.buildTable(preparedLines, paceForChunks, speed) { index, _ ->
             index !in nonSpokenIndexes
         }
     }
@@ -843,6 +861,8 @@ class DubbingEngine(
                                 "待合成队列行数" to pending.totalSize().toString(),
                                 "有效缓存文件数" to existingCacheNames.count { it.endsWith(".pcm") }.toString(),
                                 "快速命中缓存行数" to cacheFastHitCount.toString(),
+                                "合并分块用语速系数" to "%.3f".format(chunkPaceScaleInUse),
+                                "当前实测语速系数" to "%.3f".format(speechPaceScale),
                                 "缓存预检耗时 ms" to cacheScanElapsedMs.toString(),
                                 "配音引擎" to (tts?.name ?: "未知引擎"),
                                 "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),

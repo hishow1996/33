@@ -20,6 +20,45 @@ class DubbingStartupBufferPolicyTest {
         }
 
     @Test
+    fun startupBufferCountsFromTheCuePlayingAtTheResumePoint() {
+        val input = lines(20) // cue n spans [n*2000, n*2000+1500)
+        val spoken = DubbingStartupBufferPolicy.spokenCueIndices(input)
+
+        assertEquals(spoken, DubbingStartupBufferPolicy.spokenCuesFrom(input, spoken, 0L))
+        // 10_500 ms is inside cue 5 ([10000, 11500)): count from it, not from the video start.
+        assertEquals(
+            (5 until 20).toList(),
+            DubbingStartupBufferPolicy.spokenCuesFrom(input, spoken, 10_500L),
+        )
+        // In the gap after cue 5 the next cue to be reached is 6.
+        assertEquals(
+            (6 until 20).toList(),
+            DubbingStartupBufferPolicy.spokenCuesFrom(input, spoken, 11_600L),
+        )
+        assertEquals(emptyList<Int>(), DubbingStartupBufferPolicy.spokenCuesFrom(input, spoken, 1_000_000L))
+
+        val plan = DubbingStartupBufferPolicy.plan(
+            input,
+            DubbingStartupBufferPolicy.spokenCuesFrom(input, spoken, 10_500L),
+            immediateMode = false,
+        )
+        assertEquals(5, plan.lineIndices.first())
+    }
+
+    @Test
+    fun playbackStartMatchesTheResumeRule() {
+        // Not resumed: restarting, or watched 10 s or less.
+        assertEquals(0L, DubbingStartupBufferPolicy.playbackStartMs(true, 600L, 3_000L))
+        assertEquals(0L, DubbingStartupBufferPolicy.playbackStartMs(false, 10L, 3_000L))
+        // Resumed mid-video.
+        assertEquals(600_000L, DubbingStartupBufferPolicy.playbackStartMs(false, 600L, 3_000L))
+        // Within the last 30 s of a known duration: play from the start.
+        assertEquals(0L, DubbingStartupBufferPolicy.playbackStartMs(false, 2_980L, 3_000L))
+        // Unknown duration still resumes.
+        assertEquals(120_000L, DubbingStartupBufferPolicy.playbackStartMs(false, 120L, 0L))
+    }
+
+    @Test
     fun immediateModeOnlyWaitsForFirstUsableSpeechCue() {
         val input = listOf(
             SubLine(0, -1L, 0L, "bad cue", "invalid"),

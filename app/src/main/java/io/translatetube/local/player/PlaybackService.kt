@@ -3084,10 +3084,17 @@ class PlaybackService : MediaSessionService() {
         pipelineGeneration: Long,
         engine: DubbingEngine,
         lines: List<SubLine>,
+        startPositionMs: Long = 0L,
     ) {
         if (engine.usesImmediateTimelinePlayback || lines.isEmpty()) return
 
-        val spokenIndices = DubbingStartupBufferPolicy.spokenCueIndices(lines)
+        // Count the startup buffer from where playback will really begin, so a resumed video does
+        // not wait for the first cues of the video while the cues at the resume point are not ready.
+        val spokenIndices = DubbingStartupBufferPolicy.spokenCuesFrom(
+            lines,
+            DubbingStartupBufferPolicy.spokenCueIndices(lines),
+            startPositionMs,
+        )
         val firstSpeechCue = spokenIndices.firstOrNull() ?: return
         val startupPlan = DubbingStartupBufferPolicy.plan(
             lines = lines,
@@ -11109,11 +11116,23 @@ updateUiForSession(key, pipelineGeneration) {
                 if (startupDubbing != null) {
                     val immediateMode = startupDubbing.usesImmediateTimelinePlayback
                     if (!immediateMode) {
+                        val startupWatchedSec = if (restartPlaybackFromBeginningForThisRun) {
+                            0L
+                        } else {
+                            try {
+                                db.videoDao().byKey(key)?.watchedSec ?: 0L
+                            } catch (_: Exception) { 0L }
+                        }
                         awaitInitialDubbingBufferBeforePlayback(
                             sessionKey = key,
                             pipelineGeneration = pipelineGeneration,
                             engine = startupDubbing,
                             lines = finalLines,
+                            startPositionMs = DubbingStartupBufferPolicy.playbackStartMs(
+                                restartFromBeginning = restartPlaybackFromBeginningForThisRun,
+                                watchedSec = startupWatchedSec,
+                                durationSec = meta.durationSec,
+                            ),
                         )
                     } else {
                         val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
