@@ -11578,6 +11578,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             } catch (logFailure: Exception) {
                 android.util.Log.w("PlaybackService", "Could not close recovered translation issue", logFailure)
             }
+            // 翻译整体成功：这个视频的"重试用在线备用引擎"开关用完即清。
+            io.translatetube.local.translate.ContentFilterFallbackStore.clear(this, key)
             return translatedLines
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
@@ -11730,6 +11732,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         val activeId = activeIdOverride ?: prefs.getLong("active_api_id", -1L)
         val profiles = db.apiProfileDao().enabled()
         val tgt = "zh"
+        // 用户已经看过"内容安全过滤拒绝"的报错并手动点了重试：这次被拒的句子改走在线备用引擎。
+        val contentFilterFallbackEnabled =
+            io.translatetube.local.translate.ContentFilterFallbackStore.isArmed(this, key)
         val plain = ArrayList<String>(lines.size)
         for ((index, line) in lines.withIndex()) {
             checkTranslationActive(index)
@@ -12624,6 +12629,82 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
 
+                // 内容安全过滤拒绝的句子：用户重试后才走到这里，改用在线备用引擎（微软→Google→百度→DeepL）。
+                // 只处理被安全过滤拒绝的行，其他缺失行仍按原来的报错分支处理。
+                var contentFilterFallbackTried = false
+                if (unresolvedIndices.isNotEmpty() && contentFilterFallbackEnabled) {
+                    val refusedRows = unresolvedIndices
+                        .filter { traceContext.isContentFilteredCue(plain[it]) }
+                        .sorted()
+                    if (refusedRows.isNotEmpty()) {
+                        contentFilterFallbackTried = true
+                        val fallbackEngines =
+                            io.translatetube.local.translate.ContentFilterFallbackPolicy.defaultOnlineEngines()
+                        val fallbackNotes = ArrayList<String>()
+                        try {
+                            for ((position, rowIndex) in refusedRows.withIndex()) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                updateUiForSession(key, pipelineGeneration) { state ->
+                                    state.copy(
+                                        translationCurrentBatch = batchIndex + 1,
+                                        translationTotalBatches = translationTotalBatches,
+                                        translationRetryCount = attempt,
+                                        progress = "第 ${batchIndex + 1} 批有 ${refusedRows.size} 句被安全过滤拒绝，" +
+                                            "正在改用在线翻译引擎（${position + 1}/${refusedRows.size}）",
+                                    )
+                                }
+                                fun validated(candidate: String) =
+                                    io.translatetube.local.translate.TranslationBatchResult.from(
+                                        indices = listOf(rowIndex),
+                                        rawTranslations = listOf(candidate),
+                                        sourceTexts = mapOf(rowIndex to plain[rowIndex]),
+                                        sourceLanguage = src,
+                                        targetLanguage = tgt,
+                                        acceptShortUnchanged = true,
+                                    )
+                                val outcome = io.translatetube.local.translate.ContentFilterFallbackPolicy.translateRow(
+                                    sourceText = plain[rowIndex],
+                                    engines = fallbackEngines,
+                                    src = src,
+                                    tgt = tgt,
+                                    accept = { candidate ->
+                                        validated(candidate).translations[rowIndex]?.isNotBlank() == true
+                                    },
+                                )
+                                val translated = outcome.translation
+                                if (translated != null) {
+                                    acceptRecoveredRows(validated(translated))
+                                    fallbackNotes += "第${rowIndex + 1}行：${outcome.engineName}成功"
+                                } else {
+                                    fallbackNotes += "第${rowIndex + 1}行：全部在线引擎失败（" +
+                                        outcome.failures.joinToString("；") + "）"
+                                }
+                            }
+                        } finally {
+                            fallbackEngines.forEach { runCatching { it.close() } }
+                        }
+                        unresolvedIndices = unresolvedIndices.filter { !resolvedBatch.containsKey(it) }
+                        attemptHistory += "安全过滤备用引擎：" + fallbackNotes.joinToString("；")
+                        withContext(Dispatchers.IO) {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                this@PlaybackService,
+                                "Translation",
+                                "安全过滤拒绝的句子已改用在线备用引擎翻译",
+                                diagnosticContext = mapOf(
+                                    "翻译诊断 ID" to diagnosticId,
+                                    "当前批次" to "${batchIndex + 1}/${translationTotalBatches}",
+                                    "被拒行号（从1开始）" to io.translatetube.local.translate.TranslationFailureDiagnosticPolicy
+                                        .summarizeIndices(refusedRows),
+                                    "备用引擎处理结果" to fallbackNotes.joinToString(" || ").take(1_500),
+                                    "仍未解决行数" to unresolvedIndices.size.toString(),
+                                    "翻译引擎名称" to engineName,
+                                    "处理代数" to (pipelineGeneration ?: -1L).toString(),
+                                ),
+                            )
+                        }
+                    }
+                }
+
                 if (unresolvedIndices.isNotEmpty()) {
                     val finalRejections = lastRejectedRows.filter { it.sourceIndex in unresolvedIndices }
                     val missingRows = unresolvedIndices.joinToString(",")
@@ -12688,12 +12769,16 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     }
                     val filteredRows = unresolvedIndices.filter { traceContext.isContentFilteredCue(plain[it]) }
-                    val filteredRowsText = filteredRows.map { it + 1 }.let { rows ->
-                        if (rows.size > 8) rows.take(8).joinToString("、") + " 等 ${rows.size} 行" else rows.joinToString("、")
+                    if (filteredRows.isNotEmpty()) {
+                        // 记下这个视频：用户看到报错后手动点重试时，被拒的句子才改用在线备用引擎。
+                        io.translatetube.local.translate.ContentFilterFallbackStore.arm(this@PlaybackService, key)
                     }
                     throw TranslationFailureException(
                         if (filteredRows.isNotEmpty()) {
-                            "字幕翻译失败：安全过滤拒绝翻译（第 $filteredRowsText 行被翻译服务商的内容安全过滤拒绝，共 ${unresolvedIndices.size} 行未得到译文）。已停止处理。请更换翻译引擎后重试。"
+                            io.translatetube.local.translate.ContentFilterFallbackPolicy.failureMessage(
+                                rows = filteredRows.sorted().map { it to plain[it] },
+                                fallbackTried = contentFilterFallbackTried,
+                            ) + "（本批共 ${unresolvedIndices.size} 行未得到译文）"
                         } else if (hadResponseCountMismatch) {
                             "翻译接口响应数量异常：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。请检查网络和翻译服务后重试。"
                         } else {

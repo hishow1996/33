@@ -82,6 +82,8 @@ internal object ProcessingErrorDisplayPolicy {
             ?.firstOrNull { it.isNotBlank() }
             ?.toIntOrNull()
         val resolvedPhase = resolvePhase(phase, progress, error)
+        // 内容安全过滤拒绝：把被拒的原文句子和"点重试会改用在线引擎"的说明原样给用户看。
+        contentFilterDetail(error)?.let { return formatSingleSentence(it) }
         val detail = when (resolvedPhase) {
             Phase.PARSING -> parsingMessage(source, raw, status)
             Phase.DOWNLOADING_AUDIO -> audioMessage(raw, status)
@@ -92,6 +94,17 @@ internal object ProcessingErrorDisplayPolicy {
         }
         val category = classifyErrorCategory(resolvedPhase, source, raw, status)
         return formatSingleSentence(detail)
+    }
+
+    /**
+     * 安全过滤失败提示由 ContentFilterFallbackPolicy.failureMessage 生成，已含被拒句子（"第 N 行「…」"），
+     * 不含主机名或原始响应，可以直接显示。没有被拒句子的旧格式仍走通用提示。
+     */
+    internal fun contentFilterDetail(error: String?): String? {
+        val text = error ?: return null
+        val start = text.indexOf("字幕翻译失败：安全过滤拒绝翻译")
+        if (start < 0 || !text.contains("行「")) return null
+        return text.substring(start).trim()
     }
 
     /**
