@@ -604,7 +604,7 @@ object NewPipeRepo {
                                 "尝试 URL 格式数量" to candidates.size.toString(),
                             ),
                         )
-                        return@withContext SubtitleParsers.toVtt(parsed)
+                        return@withContext SubtitleParsers.toVtt(SubtitleParsers.stripEscapedFormattingTags(parsed))
                     }
                     lastError = IllegalStateException("字幕内容无法识别")
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -762,7 +762,7 @@ object NewPipeRepo {
                         )
                     } else {
                         parsedLines
-                    }
+                    }.let { SubtitleParsers.stripEscapedFormattingTags(it) }
                     if (lines.isNotEmpty()) {
                         android.util.Log.i(
                             "NewPipeRepo",

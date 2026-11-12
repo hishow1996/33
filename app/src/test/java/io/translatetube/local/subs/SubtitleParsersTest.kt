@@ -247,6 +247,33 @@ class SubtitleParsersTest {
     }
 
     @Test
+    fun timedTextXmlDropsEscapedInlineFormattingTags() {
+        val source = """
+            <transcript>
+              <text start="1.0" dur="2.0">&lt;b&gt;matters for&lt;/b&gt;</text>
+              <text start="3.0" dur="2.0">&lt;i&gt;everything&lt;/i&gt; you&#39;re about to see.</text>
+              <text start="5.0" dur="2.0">1 &lt; 3 and 5 &gt; 2</text>
+            </transcript>
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseTimedTextXml(source)
+
+        assertEquals(
+            listOf("matters for", "everything you're about to see.", "1 < 3 and 5 > 2"),
+            parsed.map { it.text },
+        )
+    }
+
+    @Test
+    fun stripEscapedFormattingTagsOnlyTouchesKnownInlineTags() {
+        assertEquals("matters for", SubtitleParsers.stripEscapedFormattingTags("<b>matters for</b>"))
+        assertEquals("a b", SubtitleParsers.stripEscapedFormattingTags("<font color=\"#fff\">a</font> <c.red>b</c>"))
+        assertEquals("one\ntwo", SubtitleParsers.stripEscapedFormattingTags("one<br>two"))
+        assertEquals("keep <bar> this", SubtitleParsers.stripEscapedFormattingTags("keep <bar> this"))
+        assertEquals("1 < 3", SubtitleParsers.stripEscapedFormattingTags("1 < 3"))
+    }
+
+    @Test
     fun timedTextXmlTagAndAttributeMatchingIsCaseInsensitive() {
         val source = """
             <Transcript>

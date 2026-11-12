@@ -63,6 +63,32 @@ object SubtitleParsers {
         "layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text"
     )
     private val htmlTagRegex = Regex("""</?[A-Za-z][^<>]*>|<\d{2,}:\d{2}:\d{2}[.,]\d{1,6}>""")
+    // Only well-known inline caption formatting tags, so other angle-bracket text like "<bar>" or
+    // "1 < 3" is left alone.
+    private val inlineFormattingTagRegex = Regex(
+        """</?(?:b|i|u|s|em|strong|font|span|c|v|ruby|rt|rp)(?:[\s.][^<>]*)?>""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * YouTube 的 timedtext XML 把行内格式（<b>、<i> 等）转义成 &lt;b&gt; 再放进 <text>，
+     * 去标签发生在还原转义之前，所以还原后会留下字面的 `<b>…</b>`。
+     * 这里在还原之后再清一次常见的行内格式标签（<br> 换成换行）。
+     */
+    fun stripEscapedFormattingTags(text: String): String {
+        if (text.indexOf('<') < 0) return text
+        return inlineFormattingTagRegex.replace(ttmlLineBreakRegex.replace(text, "\n"), "")
+            .lines()
+            .joinToString("\n") { it.trim() }
+            .trim()
+    }
+
+    /** 清掉整批字幕行原文里残留的行内格式标签；清完为空的行保留原文，避免丢时间轴。 */
+    fun stripEscapedFormattingTags(lines: List<SubLine>): List<SubLine> =
+        lines.map { line ->
+            val cleaned = stripEscapedFormattingTags(line.text)
+            if (cleaned == line.text || cleaned.isEmpty()) line else line.copy(text = cleaned)
+        }
 
 
 
@@ -293,7 +319,8 @@ object SubtitleParsers {
             val decodedText = SubtitleTextDecoder.decode(
                 rawText.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, "")
             )
-            val text = decodedText.trim()
+            // timedtext 的行内格式是转义后的 &lt;b&gt;，还原后要再清一次。
+            val text = stripEscapedFormattingTags(decodedText).trim()
             if (text.isNotEmpty()) {
                 ensureCueCapacity(out.size)
                 out += SubLine(out.size, timing.first, timing.second, text)
