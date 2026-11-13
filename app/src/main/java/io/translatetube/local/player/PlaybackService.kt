@@ -16,6 +16,7 @@ import android.content.pm.ServiceInfo
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import okhttp3.Request
 import io.translatetube.local.R
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.util.AppLogOperationContext
@@ -74,6 +75,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.TimeoutCancellationException
 import java.io.File
 import java.io.OutputStreamWriter
 import java.security.MessageDigest
@@ -707,6 +711,42 @@ private const val STARTUP_READ_HEAD_FREEZE_MS = 2_000L
 /** 开播前 flush 之后，位置不连续回调保留总线的有效期。 */
 private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
 
+/** 起播前探测远程直链新鲜度的整体超时；探测失败/超时不阻塞开播，交给运行时错误恢复。 */
+private const val MEDIA_PROBE_TIMEOUT_MS = 8_000L
+
+/** 恢复播放时重新解析 YouTube 视频流的超时；超时按恢复失败处理并给出提示，防止恢复协程挂死吞错。 */
+private const val YOUTUBE_STREAM_REFRESH_TIMEOUT_MS = 30_000L
+
+/** 无媒体死角自动重新准备的整链超时（含重新解析与重挂）。 */
+private const val MISSING_MEDIA_RECOVERY_TIMEOUT_MS = 60_000L
+
+/** 探测远程直链用的 UA；与 PlayerManager 挂载媒体源的 UA 保持一致，避免探测与实际加载判定不一致。 */
+private const val MEDIA_PROBE_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+/** 起播前探测远程直链的结果。 */
+private enum class RemoteMediaProbe {
+    /** 可正常访问（2xx/206），可以开播。 */
+    FRESH,
+
+    /** 签名直链已过期（403/410），应先刷新再开播。 */
+    EXPIRED,
+
+    /** 网络异常/超时/其他状态码：不阻塞开播，交给播放器运行时错误恢复链。 */
+    UNKNOWN,
+
+    /** 本地文件或没有可探测的远程直链。 */
+    SKIP,
+}
+
+/** 直链新鲜度探测专用客户端；连接与读取都设短超时，探测本身绝不长时间阻塞起播。 */
+private val mediaProbeHttpClient by lazy {
+    okhttp3.OkHttpClient.Builder()
+        .connectTimeout(java.time.Duration.ofSeconds(5))
+        .readTimeout(java.time.Duration.ofSeconds(5))
+        .build()
+}
+
 // Media3's DefaultMediaNotificationProvider uses notification ID 1001 for media controls.
 // Processing progress must use a distinct ID so BigTextStyle updates cannot replace MediaStyle.
 private const val PROCESSING_NOTIFICATION_ID = 1004
@@ -913,6 +953,15 @@ class PlaybackService : MediaSessionService() {
     private val pipelineExecutionMutex = kotlinx.coroutines.sync.Mutex()
     @Volatile private var qualityRecoveryAttempted = false
     @Volatile private var expiredAddressRecoveryAttempted = false
+
+    /** 起播前直链新鲜度探测：同一媒体源代次只探测一次，避免恢复循环里反复探测。 */
+    @Volatile private var probedSourceGeneration = -1L
+
+    /**
+     * 无媒体死角（IDLE 且 mediaItemCount=0）每个会话键只自动重新准备一次；
+     * 失败后交给提示条的重试按钮，避免自动循环。重挂成功（源代次变化）后复位。
+     */
+    @Volatile private var noMediaRecoveryAttemptedKey = ""
     @Volatile private var playbackRecoveryInProgress = false
     @Volatile private var playbackRecoveryMessage: String? = null
     @Volatile private var playbackRecoveryFailure: String? = null
@@ -3350,6 +3399,7 @@ class PlaybackService : MediaSessionService() {
             noFrameWaitStartedAtMs = 0L
             noFrameWaitSessionKey = state.key
             idleRecoveryAttemptedKey = ""
+            noMediaRecoveryAttemptedKey = ""
         }
 
         val failure = pm.playbackFailure.value
@@ -3365,6 +3415,20 @@ class PlaybackService : MediaSessionService() {
             playbackRestoreRequested = true
             val autoPlay = runCatching { player.playWhenReady }.getOrDefault(false) || state.isPlaying
             pm.prepareIfIdle(autoPlay = autoPlay)
+        }
+        // 无媒体死角：READY 播放页 + IDLE + 没有任何媒体项。点播放完全空转，且没有任何
+        // hint 分支覆盖（用户看到的是纯黑屏、无提示、无反应，只能退出重进）。这里每个
+        // 会话键自动重新准备一次源；失败后恢复失败提示（带重试）会接管。
+        val isIdleWithoutMedia = !mediaAttached &&
+            player.playbackState == androidx.media3.common.Player.STATE_IDLE
+        if (
+            playerPhase && isIdleWithoutMedia &&
+            failure == null && playbackRecoveryFailure == null &&
+            !playbackRecoveryInProgress &&
+            noMediaRecoveryAttemptedKey != state.key
+        ) {
+            noMediaRecoveryAttemptedKey = state.key
+            startMissingMediaRecovery(state.key, "自动重新准备（播放器无媒体挂载）")
         }
         if (
             playbackRestoreRequested &&
@@ -3731,6 +3795,30 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /**
+     * 无媒体死角的自动重新准备：READY 播放页里播放器 IDLE 且没有挂任何媒体项。
+     * 复用 reparseCurrentPlayback 整链重开（含超时保护）；失败/超时会走
+     * markPlaybackRecoveryFailed，页面上出现带重试按钮的提示而不是纯黑屏。
+     */
+    private fun startMissingMediaRecovery(sessionKey: String, reason: String) {
+        playbackRecoveryInProgress = true
+        playbackRecoveryMessage = "视频源未挂载，正在重新准备…"
+        playbackRecoveryFailure = null
+        playbackRecoveryWasPlayerVisible = true
+        io.translatetube.local.util.AppLogStore.warning(
+            this,
+            "PlaybackFlow",
+            "检测到播放器无媒体挂载，$reason",
+            diagnosticContext = mapOf(
+                "视频来源" to diagnosticMediaSourceType(ui.value),
+                "会话键指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                "恢复超时上限" to "${MISSING_MEDIA_RECOVERY_TIMEOUT_MS / 1000} 秒",
+            ),
+        )
+        refreshPlaybackHint()
+        reparseCurrentPlayback()
+    }
+
     private fun reparseCurrentPlayback() {
         val state = ui.value
         if (state.key.isBlank()) {
@@ -3740,21 +3828,32 @@ class PlaybackService : MediaSessionService() {
         }
         scope.launch(Dispatchers.Main.immediate) {
             try {
+                // YouTube 源必须置空 remoteMediaUrl 让 open() 重新解析直链：复用旧值只会
+                // 把已过期的签名链接原样挂回去，恢复形同虚设（与 startExpiredAddressRecovery 一致）。
                 if (videoId != null) NewPipeRepo.invalidate(videoId!!)
-                open(
-                    key = state.key,
-                    videoId = videoId,
-                    localUri = localUri,
-                    importedLines = importedLines,
-                    resumeState = state,
-                    remoteMediaUrl = remoteMediaUrl,
-                    remoteMediaTitle = remoteMediaTitle,
-                    remoteMediaReferrer = remoteMediaReferrer,
-                    remoteMediaCookie = remoteMediaCookie,
-                    remoteMediaUserAgent = remoteMediaUserAgent,
-                    requestToken = activeOpenRequestToken,
-                    forceRegenerateDubbing = false,
-                )
+                withTimeoutOrNull(MISSING_MEDIA_RECOVERY_TIMEOUT_MS) {
+                    open(
+                        key = state.key,
+                        videoId = videoId,
+                        localUri = localUri,
+                        importedLines = importedLines,
+                        resumeState = state,
+                        remoteMediaUrl = if (videoId != null) null else remoteMediaUrl,
+                        remoteMediaTitle = remoteMediaTitle,
+                        remoteMediaReferrer = remoteMediaReferrer,
+                        remoteMediaCookie = remoteMediaCookie,
+                        remoteMediaUserAgent = remoteMediaUserAgent,
+                        requestToken = activeOpenRequestToken,
+                        forceRegenerateDubbing = false,
+                    )
+                } ?: run {
+                    markPlaybackRecoveryFailed(
+                        state.key,
+                        activePipelineGeneration,
+                        "重新准备视频源超时（${MISSING_MEDIA_RECOVERY_TIMEOUT_MS / 1000} 秒），请重试",
+                    )
+                    return@launch
+                }
             } catch (error: Exception) {
                 markPlaybackRecoveryFailed(
                     state.key,
@@ -3790,6 +3889,50 @@ class PlaybackService : MediaSessionService() {
         ui.update { it.copy(playBlockedHint = null) }
     }
 
+    /**
+     * 起播前直链新鲜度探测的目标地址：优先当前选中画质的视频轨，其次远程媒体直链。
+     * 本地文件或没有可探测地址时返回 null。
+     */
+    private fun currentProbeMediaUrl(): String? {
+        qualitySources.firstOrNull { it.label == ui.value.selectedQuality }?.let { return it.url }
+        qualitySources.firstOrNull()?.let { return it.url }
+        if (videoId != null && qualityAudioUrl.isNotBlank()) return qualityAudioUrl
+        return remoteMediaUrl?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * 对远程直链发一个 1 字节 Range 请求判断是否还活着。探测只影响"要不要在开播前
+     * 先刷新地址"这一个决策：网络异常/超时一律返回 UNKNOWN 放行开播，绝不因探测
+     * 本身失败而阻塞播放——真正加载失败仍有运行时错误恢复链兜底。
+     */
+    private suspend fun probeRemoteMediaFreshness(): RemoteMediaProbe {
+        val url = currentProbeMediaUrl() ?: return RemoteMediaProbe.SKIP
+        return withTimeoutOrNull(MEDIA_PROBE_TIMEOUT_MS) {
+            // OkHttp 的 execute() 是同步阻塞调用；本函数运行在主线程上下文（开播链路），
+            // 必须切到 IO 线程执行网络请求，否则探测期间主线程被卡死。
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val request = Request.Builder()
+                        .url(url)
+                        .header("Range", "bytes=0-1")
+                        .header("User-Agent", remoteMediaUserAgent?.takeIf { it.isNotBlank() } ?: MEDIA_PROBE_UA)
+                        .apply {
+                            remoteMediaReferrer?.takeIf { it.isNotBlank() }?.let { header("Referer", it) }
+                            remoteMediaCookie?.takeIf { it.isNotBlank() }?.let { header("Cookie", it) }
+                        }
+                        .build()
+                    mediaProbeHttpClient.newCall(request).execute().use { response ->
+                        when {
+                            response.code in 200..299 -> RemoteMediaProbe.FRESH
+                            response.code == 403 || response.code == 410 -> RemoteMediaProbe.EXPIRED
+                            else -> RemoteMediaProbe.UNKNOWN
+                        }
+                    }
+                }.getOrDefault(RemoteMediaProbe.UNKNOWN)
+            }
+        } ?: RemoteMediaProbe.UNKNOWN
+    }
+
     private suspend fun startPlaybackWithMountedDubbing(
         seekToMs: Long?,
         ensureCurrent: suspend () -> Unit,
@@ -3805,6 +3948,33 @@ class PlaybackService : MediaSessionService() {
                 } else current
             }
             return
+        }
+        // 起播前探测远程直链新鲜度：转写/翻译/合成耗时较久，YouTube 签名直链可能已过期。
+        // 与其开播后进入 403 错误恢复（用户看到黑屏转圈），不如先探测、过期就地刷新后
+        // 再挂配音开播。每个媒体源代次只探测一次；网络异常不阻塞开播。
+        if (probedSourceGeneration != pm.sourceGeneration.value) {
+            probedSourceGeneration = pm.sourceGeneration.value
+            if (probeRemoteMediaFreshness() == RemoteMediaProbe.EXPIRED && videoId != null) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this,
+                    "PlaybackFlow",
+                    "起播前探测发现视频直链已过期，先刷新地址再开播",
+                    diagnosticContext = mapOf(
+                        "视频来源" to diagnosticMediaSourceType(ui.value),
+                        "会话键指纹" to safeDiagnosticSessionFingerprint(entryState.key),
+                        "探测目标域名" to (runCatching { java.net.URI(currentProbeMediaUrl()).host }.getOrNull() ?: "未知"),
+                    ),
+                )
+                recoverYouTubePlayback(
+                    sessionKey = entryState.key,
+                    failedVideoId = videoId!!,
+                    originalError = "起播前探测：直链已过期",
+                    pipelineGeneration = activePipelineGeneration,
+                    preferOriginalQuality = true,
+                )
+                // 恢复失败已由 recoverYouTubePlayback 标记（页面有提示+重试），不再开播。
+                if (playbackRecoveryFailure != null) return
+            }
         }
         val startMs = (seekToMs ?: pm.position()).coerceAtLeast(0L)
         val engine = dubbing
@@ -13016,6 +13186,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         failedVideoId: String,
         originalError: String,
         pipelineGeneration: Long,
+        /**
+         * true：地址只是过期（例如起播前探测发现签名直链失效），原画质仍可播，
+         * 优先按当前选中画质重挂，不降级。false（默认）：播放失败恢复，保留原有
+         * 降画质兜底逻辑（原画质可能真的解不动）。
+         */
+        preferOriginalQuality: Boolean = false,
     ) {
         val thisJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         try {
@@ -13038,15 +13214,33 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             ensureCurrentSession(sessionKey, pipelineGeneration)
             NewPipeRepo.invalidate(failedVideoId)
-            val refreshedInfo = NewPipeRepo.streams(failedVideoId)
+            val refreshedInfo = try {
+                withTimeout(YOUTUBE_STREAM_REFRESH_TIMEOUT_MS) {
+                    NewPipeRepo.streams(failedVideoId)
+                }
+            } catch (e: TimeoutCancellationException) {
+                // 超时必须转成普通异常：直接 rethrow 会被当作协程取消静默吞掉，
+                // 恢复协程挂着不走失败分支，页面上永远"正在恢复"。
+                throw IllegalStateException(
+                    "重新解析视频流超时（${YOUTUBE_STREAM_REFRESH_TIMEOUT_MS / 1000} 秒）",
+                )
+            }
             ensureCurrentSession(sessionKey, pipelineGeneration)
             val choices = buildYouTubeStreamChoices(refreshedInfo)
             ensureCurrentSession(sessionKey, pipelineGeneration)
-            val lowerCandidates = if (oldHeight != null) choices.sources.filter { it.height < oldHeight } else emptyList()
-            val fallback = lowerCandidates.firstOrNull { it.muxed }
-                ?: lowerCandidates.firstOrNull()
-                ?: choices.sources.firstOrNull { it.muxed }
-                ?: choices.defaultQuality
+            val sameQuality = choices.sources.firstOrNull { it.label == ui.value.selectedQuality }
+            val fallback = if (preferOriginalQuality) {
+                // 地址过期场景：画质本身没问题，尽量原画质重挂，实在没有才退默认。
+                sameQuality
+                    ?: choices.sources.firstOrNull { it.muxed }
+                    ?: choices.defaultQuality
+            } else {
+                val lowerCandidates = if (oldHeight != null) choices.sources.filter { it.height < oldHeight } else emptyList()
+                lowerCandidates.firstOrNull { it.muxed }
+                    ?: lowerCandidates.firstOrNull()
+                    ?: choices.sources.firstOrNull { it.muxed }
+                    ?: choices.defaultQuality
+            }
 
             withContext(Dispatchers.Main) {
                 // A cancellation alone is insufficient if an extractor/network call returned
@@ -13109,6 +13303,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ui.value.key != sessionKey ||
                 videoId != failedVideoId
             ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "YouTubePlayback",
+                    "YouTube 播放恢复任务已过期，忽略其失败结果（新会话/新管线已接管）",
+                    e,
+                    diagnosticContext = mapOf(
+                        "恢复会话键指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                        "旧处理代数" to pipelineGeneration.toString(),
+                        "当前处理代数" to activePipelineGeneration.toString(),
+                    ),
+                )
                 return
             }
             io.translatetube.local.util.AppLogStore.error(

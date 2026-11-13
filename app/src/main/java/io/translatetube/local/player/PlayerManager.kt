@@ -864,8 +864,6 @@ class PlayerManager(private val ctx: Context) {
             return
         }
 
-        clearPreviousYouTubeSource()
-
         // Single-file streams are the most compatible path on older Android devices.
         if (muxed != null) {
             try {
@@ -883,6 +881,11 @@ class PlayerManager(private val ctx: Context) {
                     .createMediaSource(MediaItem.Builder().setUri(v).setMediaMetadata(meta).build())
                 val asrc = ProgressiveMediaSource.Factory(httpFactory)
                     .createMediaSource(MediaItem.Builder().setUri(audioUrl).setMediaMetadata(meta).build())
+                // Atomic replacement: build both sources first, only then reset the playback
+                // status and swap the media source. A failure above keeps the previous source
+                // mounted instead of leaving an empty (0 media items) player behind.
+                clearVideoQualityOverrides()
+                resetPlaybackStatusForNewSource()
                 player.setMediaSource(MergingMediaSource(vs, asrc))
                 player.prepare()
                 return
@@ -895,15 +898,6 @@ class PlayerManager(private val ctx: Context) {
         if (errorSink.value == null) {
             errorSink.value = "YouTube 没有可用的合并音视频流或有效的分离音视频流地址"
         }
-    }
-
-    /** Clear stale playback before switching; a failed new source must not leave the old video running. */
-    private fun clearPreviousYouTubeSource() {
-        clearVideoQualityOverrides()
-        resetPlaybackStatusForNewSource()
-        player.pause()
-        player.stop()
-        player.clearMediaItems()
     }
 
     /** 为指定清晰度加载流；视频轨分离时与音频轨合并播放。 */
@@ -925,13 +919,15 @@ class PlayerManager(private val ctx: Context) {
             return false
         }
 
-        // Clearing Media3 state resets playWhenReady and the timeline. Capture both first so a
-        // quality switch does not jump back to 00:00 or unexpectedly pause an active session.
+        // Capture the current position and play intent so a quality switch does not jump back
+        // to 00:00 or unexpectedly pause an active session. The old source is NOT cleared here:
+        // setMediaItem/setMediaSource below replace it atomically, so a rejected candidate or a
+        // failed setup leaves the previous source mounted instead of an empty (0 media items,
+        // black screen, unresponsive play button) player.
         val resumeState = PlayerQualitySwitchPolicy.capture(
             player.currentPosition,
             player.playWhenReady,
         )
-        clearPreviousYouTubeSource()
         if (muxed) {
             return try {
                 setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
@@ -952,6 +948,8 @@ class PlayerManager(private val ctx: Context) {
                 .createMediaSource(
                     MediaItem.Builder().setUri(audioUrl).setMediaMetadata(meta).build()
                 )
+            clearVideoQualityOverrides()
+            resetPlaybackStatusForNewSource()
             player.setMediaSource(MergingMediaSource(videoSource, audioSource))
             player.prepare()
             restoreQualitySwitchState(resumeState)
@@ -1182,7 +1180,10 @@ class PlayerManager(private val ctx: Context) {
                 runCatching { onPlayBlocked?.invoke() }
                 return
             }
-            if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
+            if (player.playbackState == Player.STATE_IDLE) {
+                // IDLE 且有媒体：prepareIfIdle 自愈链接手。IDLE 且无媒体（恢复/换源途中
+                // 被清空后挂载失败）：play() 本身完全空转，必须回调上层请求重新挂载源，
+                // 否则表现就是"点了没反应、一直黑屏、无任何提示"的死角。
                 runCatching { onPlaybackRestoreRequested?.invoke() }
             }
             ensurePreparedForPlay()
