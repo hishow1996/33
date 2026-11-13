@@ -72,6 +72,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
@@ -1089,7 +1090,14 @@ class PlaybackService : MediaSessionService() {
                         phase = hint.phase,
                         key = sessionKey,
                         processingFlow = hint.processingFlow,
-                        progress = RESUME_INTERIM_PROGRESS,
+                        progress = if (hint.phase == Phase.SYNTHESIZING && preparedCount <= 0) {
+                            // 进度提示没对上（引擎/字幕行数有变化或保存时还没有已合成句）时，
+                            // 明确告诉用户正在找回配音进度，而不是停在泛泛的恢复文案上，
+                            // 真实进度由缓存预检完成后的扫描值覆盖。
+                            "正在找回上次的配音进度…"
+                        } else {
+                            RESUME_INTERIM_PROGRESS
+                        },
                         totalLines = hint.totalLines,
                         translatedLineCount = hint.translatedLines,
                         preparedCount = preparedCount,
@@ -8077,6 +8085,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         var remoteMediaReferrer = requestedRemoteMediaReferrer
         var remoteMediaCookie = requestedRemoteMediaCookie
 
+        // 恢复链路分段计时（PlaybackResume 埋点）：入口→第五阶段装配前之间的耗时，
+        // 覆盖翻译缓存读取校验、行装配、质量清洗等"看不见的"前置步骤。
+        val pipelineStartedAtMs = android.os.SystemClock.elapsedRealtime()
+
         // Restarting playback at 0 and forcing new PCM are separate decisions. Engine/voice changes
         // may reuse only a cache with the exact active synthesis identity; imported external
         // translations still force fresh PCM even when their text happens to match an old cache.
@@ -10953,6 +10965,21 @@ updateUiForSession(key, pipelineGeneration) {
                     ),
                 )
                 val resumeStepStartedMs = android.os.SystemClock.elapsedRealtime()
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackResume",
+                    "恢复配音耗时：管线前置装配完成，进入流装配阶段",
+                    diagnosticContext = mapOf(
+                        "管线前置装配耗时 ms" to
+                            (resumeStepStartedMs - pipelineStartedAtMs).toString(),
+                        "是否带恢复状态" to (resumeState != null).toString(),
+                        "视频来源" to when {
+                            videoId != null -> "YouTube"
+                            remoteMediaUrl != null -> "网页视频/远程媒体"
+                            else -> "本地视频"
+                        },
+                    ),
+                )
                 fun logResumeStep(step: String) {
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
@@ -10985,71 +11012,109 @@ updateUiForSession(key, pipelineGeneration) {
                     }
                 }
                 // ---- 4. 流装配 ----
-                if (!reuseMountedMedia) {
-                if (videoId != null) {
-                    val streamInfo = NewPipeRepo.streams(requireNotNull(videoId))
-                    ensureCurrentSession(key, pipelineGeneration)
-                    val choices = buildYouTubeStreamChoices(streamInfo)
-                    val candidates = choices.sources
-                    val audioUrl = choices.audioUrl
-                    val defaultQuality = choices.defaultQuality
-                    qualitySources = candidates
-                    qualityAudioUrl = audioUrl
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(
-                            qualityOptions = candidates.map { q -> q.label },
-                        )
-                    }
-                    ensureCurrentSession(key, pipelineGeneration)
-                    withContext(Dispatchers.Main) {
-                        ensureCurrentSession(key, pipelineGeneration)
-                        val accepted = pm.setYouTubeQuality(
-                            videoUrl = defaultQuality.url,
-                            audioUrl = audioUrl,
-                            muxed = defaultQuality.muxed,
-                            title = meta.title,
-                            artist = meta.channel,
-                            artworkUrl = meta.thumbUrl,
-                        )
-                        if (!accepted) {
-                            throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
+                // F3 恢复提速：流装配（网络解析+挂载）、旧引擎退场/ASR 卸载、TTS 引擎创建
+                // 三者并行，替代原先的严格串行（网络等待时白等、模型加载时又白等网络）。
+                // TTS 提前创建仅限本地 ASR 尚未加载（冷启动恢复）的场景——热场景（换引擎/
+                // 重开历史，ASR 可能还在内存）保持"先卸载 ASR 再建 TTS"，避免两个大模型
+                // 同时驻留内存。提前创建走同一套就绪检查，未就绪返回 null 由阶段 5 原路径接管。
+                var warmStartedTts: Pair<String, TtsEngine>? = null
+                kotlinx.coroutines.coroutineScope {
+                    val warmStartEligible =
+                        localAsrEngine == null &&
+                            finalLines.isNotEmpty() &&
+                            ui.value.dubbingOn
+                    val ttsWarmStart = if (warmStartEligible) {
+                        async(Dispatchers.IO) {
+                            runCatching {
+                                val earlyTts = DubbingConfigPreferencePolicy.normalizeEngineId(
+                                    getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
+                                )
+                                val earlyReady = when (earlyTts) {
+                                    "system" -> true
+                                    "edge" -> true
+                                    "google" -> true
+                                    "gemini" -> io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
+                                    "kokoro" -> kokoroRuntimeReady()
+                                    "piper" -> piperModelReadyForChinese()
+                                    "melo", "matcha" -> localSherpaModelReadyForChinese(earlyTts)
+                                    else -> false
+                                }
+                                if (earlyReady) earlyTts to makeTtsOffMainThread(earlyTts) else null
+                            }.getOrNull()
                         }
-                        updateUiForSession(key, pipelineGeneration) { it.copy(selectedQuality = defaultQuality.label) }
+                    } else null
+                    val streamAssembly = async {
+                        if (!reuseMountedMedia) {
+                            if (videoId != null) {
+                                val streamInfo = NewPipeRepo.streams(requireNotNull(videoId))
+                                ensureCurrentSession(key, pipelineGeneration)
+                                val choices = buildYouTubeStreamChoices(streamInfo)
+                                val candidates = choices.sources
+                                val audioUrl = choices.audioUrl
+                                val defaultQuality = choices.defaultQuality
+                                qualitySources = candidates
+                                qualityAudioUrl = audioUrl
+                                updateUiForSession(key, pipelineGeneration) {
+                                    it.copy(
+                                        qualityOptions = candidates.map { q -> q.label },
+                                    )
+                                }
+                                ensureCurrentSession(key, pipelineGeneration)
+                                withContext(Dispatchers.Main) {
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    val accepted = pm.setYouTubeQuality(
+                                        videoUrl = defaultQuality.url,
+                                        audioUrl = audioUrl,
+                                        muxed = defaultQuality.muxed,
+                                        title = meta.title,
+                                        artist = meta.channel,
+                                        artworkUrl = meta.thumbUrl,
+                                    )
+                                    if (!accepted) {
+                                        throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
+                                    }
+                                    updateUiForSession(key, pipelineGeneration) { it.copy(selectedQuality = defaultQuality.label) }
+                                }
+                            } else {
+                                ensureCurrentSession(key, pipelineGeneration)
+                                withContext(Dispatchers.Main) {
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    val sourceUri = remoteMediaUrl?.let(Uri::parse) ?: localUri
+                                        ?: throw IllegalStateException("无可播放的视频地址")
+                                    val requestHeaders = buildMap {
+                                        remoteMediaReferrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                                            ?.let { put("Referer", it) }
+                                        remoteMediaCookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+                                    }
+                                    pm.setUriSource(
+                                        sourceUri,
+                                        meta.title,
+                                        if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                                        null,
+                                        requestHeaders,
+                                        userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                                    )
+                                    adaptiveQualitySourceReady = true
+                                    refreshAdaptiveVideoQualityOptions()
+                                }
+                            }
+                        } // Keep the existing stream for a selective stage restart.
                     }
-                } else {
-                    ensureCurrentSession(key, pipelineGeneration)
-                    withContext(Dispatchers.Main) {
-                        ensureCurrentSession(key, pipelineGeneration)
-                        val sourceUri = remoteMediaUrl?.let(Uri::parse) ?: localUri
-                        ?: throw IllegalStateException("无可播放的视频地址")
-                    val requestHeaders = buildMap {
-                        remoteMediaReferrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-                            ?.let { put("Referer", it) }
-                        remoteMediaCookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
-                    }
-                    pm.setUriSource(
-                        sourceUri,
-                        meta.title,
-                        if (remoteMediaUrl != null) "网页视频" else "本地视频",
-                        null,
-                        requestHeaders,
-                        userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
-                    )
-                    adaptiveQualitySourceReady = true
-                    refreshAdaptiveVideoQualityOptions()
+                    // Drain any retired speech engine and unload the native ASR model while the
+                    // stream assembly runs. Reopening a history item can reuse ASR and translation
+                    // checkpoints, so it may arrive here quickly while memory is still high.
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    awaitRetiredDubbingEngines()
+                    releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    logResumeStep("旧引擎退出与本地 ASR 卸载完成（与流装配并行）")
+                    streamAssembly.await()
+                    logResumeStep("流装配完成")
+                    warmStartedTts = ttsWarmStart?.await()
+                    if (warmStartedTts != null) {
+                        logResumeStep("TTS 引擎提前创建完成（与流装配并行）：${warmStartedTts?.first}")
                     }
                 }
-                } // Keep the existing stream for a selective stage restart.
-                logResumeStep("流装配完成")
-
-                // Drain any retired speech engine and unload the native ASR model before
-                // allocating the selected TTS runtime. Reopening a history item can reuse ASR and
-                // translation checkpoints, so it may arrive here quickly while memory is still high.
-                awaitProcessingResumed(key, pipelineGeneration)
-                awaitRetiredDubbingEngines()
-                releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
-                awaitProcessingResumed(key, pipelineGeneration)
-                logResumeStep("旧引擎退出与本地 ASR 卸载完成")
 
                 // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
                 dubbingStageEntered = true
@@ -11093,9 +11158,16 @@ updateUiForSession(key, pipelineGeneration) {
                     // playback instead of silently degrading to source-only narration.
                     if (selectedEngineReady) {
                         try {
-                            // Pass the saved selection explicitly so a settings change during parsing
-                            // cannot cause the readiness check and actual engine to disagree.
-                            val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
+                            // 优先使用阶段 4 并行预创建的引擎实例；设置中途改过引擎（预创建的
+                            // ID 与当前 selectedTts 不一致）时关掉预创建实例走原路径，保证
+                            // "readiness 检查与实际引擎永远一致"的既有约束不被并行化破坏。
+                            val warmPair = warmStartedTts
+                            val tts: TtsEngine = if (warmPair != null && warmPair.first == selectedTts) {
+                                warmPair.second
+                            } else {
+                                warmPair?.let { pair -> runCatching { pair.second.close() } }
+                                makeTtsOffMainThread(selectedTts)
+                            }
                             logResumeStep("TTS 引擎创建完成：$selectedTts")
                             try {
                                 ensureCurrentSession(key, pipelineGeneration)

@@ -601,18 +601,41 @@ fun PlayerScreen(
                             runCatching { PlaybackService.publishResumeInterimState(ctx, key) }
                         }
                     }
+                    // 冷启动→服务就绪的分段计时（PlaybackResume 埋点）：从发起启动到服务
+                    // isReady 的等待，是"重进后页面没反应"的第一段可量化耗时。
+                    val serviceWaitStartedMs = android.os.SystemClock.elapsedRealtime()
                     androidx.core.content.ContextCompat.startForegroundService(
                         ctx, android.content.Intent(ctx, PlaybackService::class.java)
                     )
+                    var tries = 0
+                    // 服务一就绪就继续：轮询间隔从 100ms 缩到 25ms，总等待上限仍是 5 秒。
+                    while (tries < 200) {
+                        if (PlaybackService.instance?.isReady == true) break
+                        delay(25)
+                        tries++
+                    }
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "PlaybackResume",
+                        "恢复配音耗时：播放服务冷启动就绪",
+                        diagnosticContext = mapOf(
+                            "服务冷启动等待 ms" to
+                                (android.os.SystemClock.elapsedRealtime() - serviceWaitStartedMs).toString(),
+                            "轮询次数" to tries.toString(),
+                            "服务是否就绪" to (PlaybackService.instance?.isReady == true).toString(),
+                        ),
+                    )
+                    s = PlaybackService.instance
+                } else {
+                    var tries = 0
+                    // 服务一就绪就继续：轮询间隔从 100ms 缩到 25ms，总等待上限仍是 5 秒。
+                    while (tries < 200) {
+                        if (PlaybackService.instance?.isReady == true) break
+                        delay(25)
+                        tries++
+                    }
+                    s = PlaybackService.instance
                 }
-                var tries = 0
-                // 服务一就绪就继续：轮询间隔从 100ms 缩到 25ms，总等待上限仍是 5 秒。
-                while (tries < 200) {
-                    if (PlaybackService.instance?.isReady == true) break
-                    delay(25)
-                    tries++
-                }
-                s = PlaybackService.instance
                 if (s == null || !s.isReady) {
                     PlaybackService.ui.update {
                         it.copy(
