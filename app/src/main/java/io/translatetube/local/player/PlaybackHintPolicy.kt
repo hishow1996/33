@@ -45,6 +45,8 @@ internal data class PlaybackHintInput(
     val hasMedia: Boolean = false,
     val idleRecovery: Boolean = false,
     val recoveryInProgress: Boolean = false,
+    /** open() 刚开始、播放器还没挂上媒体（正在解析直链/读缓存）：给出加载提示，别让页面纯黑无反应。 */
+    val mountingMedia: Boolean = false,
     val recoveryMessage: String? = null,
     val recoveryFailure: String? = null,
     val httpStatusCode: Int? = null,
@@ -137,6 +139,12 @@ internal object PlaybackHintPolicy {
                 message = "网络较慢，仍在加载…",
                 showSpinner = true,
                 priority = 60,
+            )
+            input.mountingMedia && !input.hasMedia -> PlaybackHint(
+                key = "mounting-media",
+                message = "正在获取视频地址…",
+                showSpinner = true,
+                priority = 52,
             )
             input.idleRecovery && input.hasMedia -> PlaybackHint(
                 key = "restoring",

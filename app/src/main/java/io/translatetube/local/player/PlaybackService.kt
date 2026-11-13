@@ -721,6 +721,12 @@ private const val YOUTUBE_STREAM_REFRESH_TIMEOUT_MS = 30_000L
 /** 无媒体死角自动重新准备的整链超时（含重新解析与重挂）。 */
 private const val MISSING_MEDIA_RECOVERY_TIMEOUT_MS = 60_000L
 
+/**
+ * open() 刚开始的这段时间里，播放器没挂媒体是正常的（正在解析 YouTube 直链、读检查点）。
+ * 此期间不能把它当成「无媒体死角」去重开，否则会打断正在进行的首次挂载。
+ */
+private const val MISSING_MEDIA_OPEN_GRACE_MS = 25_000L
+
 /** 探测远程直链用的 UA；与 PlayerManager 挂载媒体源的 UA 保持一致，避免探测与实际加载判定不一致。 */
 private const val MEDIA_PROBE_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -963,6 +969,10 @@ class PlaybackService : MediaSessionService() {
      * 失败后交给提示条的重试按钮，避免自动循环。重挂成功（源代次变化）后复位。
      */
     @Volatile private var noMediaRecoveryAttemptedKey = ""
+    /** 最近一次 open() 开始的时间（elapsedRealtime），用于判断「无媒体」是不是还在首次挂载途中。 */
+    @Volatile private var lastOpenStartedAtMs = 0L
+    /** 无媒体自动恢复开始时间；0 表示当前没有进行中的无媒体恢复。 */
+    @Volatile private var missingMediaRecoveryStartedAtMs = 0L
     @Volatile private var playbackRecoveryInProgress = false
     @Volatile private var playbackRecoveryMessage: String? = null
     @Volatile private var playbackRecoveryFailure: String? = null
@@ -3424,6 +3434,23 @@ class PlaybackService : MediaSessionService() {
             val autoPlay = runCatching { player.playWhenReady }.getOrDefault(false) || state.isPlaying
             pm.prepareIfIdle(autoPlay = autoPlay)
         }
+        // 无媒体恢复的收尾：open() 是非挂起函数，外面的 withTimeoutOrNull 实际管不住后续异步挂载，
+        // 所以在这里收尾——媒体挂上了就清掉「正在重新准备」提示（暂停状态下不会有首帧+播放，
+        // 原先的清除条件永远不成立，提示会一直挂着）；超过上限仍没挂上就转成带重试的失败提示。
+        if (missingMediaRecoveryStartedAtMs > 0L) {
+            if (mediaAttached) {
+                missingMediaRecoveryStartedAtMs = 0L
+                playbackRecoveryInProgress = false
+                playbackRecoveryMessage = null
+            } else if (now - missingMediaRecoveryStartedAtMs >= MISSING_MEDIA_RECOVERY_TIMEOUT_MS) {
+                missingMediaRecoveryStartedAtMs = 0L
+                markPlaybackRecoveryFailed(
+                    state.key,
+                    activePipelineGeneration,
+                    "重新准备视频源超时（" + (MISSING_MEDIA_RECOVERY_TIMEOUT_MS / 1000) + " 秒），请重试",
+                )
+            }
+        }
         // 无媒体死角：READY 播放页 + IDLE + 没有任何媒体项。点播放完全空转，且没有任何
         // hint 分支覆盖（用户看到的是纯黑屏、无提示、无反应，只能退出重进）。这里每个
         // 会话键自动重新准备一次源；失败后恢复失败提示（带重试）会接管。
@@ -3433,7 +3460,8 @@ class PlaybackService : MediaSessionService() {
             playerPhase && isIdleWithoutMedia &&
             failure == null && playbackRecoveryFailure == null &&
             !playbackRecoveryInProgress &&
-            noMediaRecoveryAttemptedKey != state.key
+            noMediaRecoveryAttemptedKey != state.key &&
+            now - lastOpenStartedAtMs >= MISSING_MEDIA_OPEN_GRACE_MS
         ) {
             noMediaRecoveryAttemptedKey = state.key
             startMissingMediaRecovery(state.key, "自动重新准备（播放器无媒体挂载）")
@@ -3516,6 +3544,9 @@ class PlaybackService : MediaSessionService() {
             loadRetryCount = pm.loadRetryCount.value,
             hasMedia = mediaAttached,
             idleRecovery = playbackRestoreRequested || isIdleWithMedia,
+            mountingMedia = playerPhase && !mediaAttached &&
+                player.playbackState == androidx.media3.common.Player.STATE_IDLE &&
+                now - lastOpenStartedAtMs < MISSING_MEDIA_OPEN_GRACE_MS,
             recoveryInProgress = playbackRecoveryInProgress,
             recoveryMessage = playbackRecoveryMessage,
             recoveryFailure = playbackRecoveryFailure,
@@ -3810,6 +3841,7 @@ class PlaybackService : MediaSessionService() {
      */
     private fun startMissingMediaRecovery(sessionKey: String, reason: String) {
         playbackRecoveryInProgress = true
+        missingMediaRecoveryStartedAtMs = android.os.SystemClock.elapsedRealtime()
         playbackRecoveryMessage = "视频源未挂载，正在重新准备…"
         playbackRecoveryFailure = null
         playbackRecoveryWasPlayerVisible = true
@@ -3821,10 +3853,27 @@ class PlaybackService : MediaSessionService() {
                 "视频来源" to diagnosticMediaSourceType(ui.value),
                 "会话键指纹" to safeDiagnosticSessionFingerprint(sessionKey),
                 "恢复超时上限" to "${MISSING_MEDIA_RECOVERY_TIMEOUT_MS / 1000} 秒",
+                "距最近一次 open 开始 ms" to
+                    (android.os.SystemClock.elapsedRealtime() - lastOpenStartedAtMs).toString(),
+                "处理管线是否仍在运行" to (prepJob?.isActive == true).toString(),
+                "当前阶段" to ui.value.phase.name,
+                "当前进度文案" to ui.value.progress.take(80),
+                "已解析画质源数量" to qualitySources.size.toString(),
+                "媒体源是否已记录挂载" to adaptiveQualitySourceReady.toString(),
             ),
         )
         refreshPlaybackHint()
         reparseCurrentPlayback()
+    }
+
+    /** 播放器当前是否真的挂着媒体项。ExoPlayer 只能在主线程读，非主线程退回服务自己的挂载记录。 */
+    private fun isPlayerMediaMounted(): Boolean {
+        if (!playerReady || !::pm.isInitialized) return false
+        return if (Looper.myLooper() == Looper.getMainLooper()) {
+            runCatching { pm.player.mediaItemCount > 0 }.getOrDefault(false)
+        } else {
+            qualitySources.isNotEmpty() || adaptiveQualitySourceReady
+        }
     }
 
     private fun reparseCurrentPlayback() {
@@ -3853,6 +3902,7 @@ class PlaybackService : MediaSessionService() {
                         remoteMediaUserAgent = remoteMediaUserAgent,
                         requestToken = activeOpenRequestToken,
                         forceRegenerateDubbing = false,
+                        forceRemountMedia = true,
                     )
                 } ?: run {
                     markPlaybackRecoveryFailed(
@@ -5272,7 +5322,9 @@ class PlaybackService : MediaSessionService() {
         precomputedLocalMediaIdentityKey: String? = null,
         localIdentityResolutionToken: Long? = null,
         skipInProgressCheckpointRestore: Boolean = false,
+        forceRemountMedia: Boolean = false,
     ) {
+        lastOpenStartedAtMs = android.os.SystemClock.elapsedRealtime()
         if (PendingVideoHistoryDeletionStore.blocksPlayback(this@PlaybackService, key)) {
             ui.value = PlayerUiState(
                 phase = Phase.ERROR,
@@ -5431,6 +5483,7 @@ class PlaybackService : MediaSessionService() {
                             precomputedLocalMediaIdentityKey = identity,
                             localIdentityResolutionToken = identityToken,
                             skipInProgressCheckpointRestore = skipInProgressCheckpointRestore,
+                            forceRemountMedia = forceRemountMedia,
                         )
                     }
                 }
@@ -5657,6 +5710,7 @@ class PlaybackService : MediaSessionService() {
                         precomputedLocalMediaIdentityKey = localMediaIdentityKey,
                         localIdentityResolutionToken = localIdentityResolutionToken,
                         skipInProgressCheckpointRestore = true,
+                        forceRemountMedia = forceRemountMedia,
                     )
                 }
             }
@@ -5806,10 +5860,15 @@ class PlaybackService : MediaSessionService() {
                 )
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
+        // 「复用已挂载媒体」必须以播放器真的挂着媒体为前提：否则无媒体恢复（resumeState != null、
+        // key 相同）会被误判成可复用，open() 整条链路跳过挂载，播放器永远 IDLE，页面一直停在
+        // 「视频源未挂载，正在重新准备…」。forceRemountMedia 由恢复链路显式要求重新挂载。
         val reuseMountedMedia = !localMediaChangedForActiveSession &&
+            !forceRemountMedia &&
             (effectiveResumeState != null || reuseMountedMediaForRestart) &&
             key == videoKey && ui.value.key == key && !isResumeInterimState(ui.value) &&
-            playerReady && ::pm.isInitialized
+            playerReady && ::pm.isInitialized &&
+            isPlayerMediaMounted()
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
         // This service can live across many videos. Drop the prior session's interval arrays and
@@ -11046,7 +11105,22 @@ updateUiForSession(key, pipelineGeneration) {
                     val streamAssembly = async {
                         if (!reuseMountedMedia) {
                             if (videoId != null) {
+                                val streamsStartedMs = android.os.SystemClock.elapsedRealtime()
                                 val streamInfo = NewPipeRepo.streams(requireNotNull(videoId))
+                                io.translatetube.local.util.AppLogStore.info(
+                                    this@PlaybackService,
+                                    "PlaybackFlow",
+                                    "YouTube 播放流解析完成，准备挂载播放器",
+                                    diagnosticContext = mapOf(
+                                        "解析耗时 ms" to
+                                            (android.os.SystemClock.elapsedRealtime() - streamsStartedMs).toString(),
+                                        "距本次 open 开始 ms" to
+                                            (android.os.SystemClock.elapsedRealtime() - lastOpenStartedAtMs).toString(),
+                                        "会话键指纹" to safeDiagnosticSessionFingerprint(key),
+                                        "处理代数" to pipelineGeneration.toString(),
+                                        "当前处理代数" to activePipelineGeneration.toString(),
+                                    ),
+                                )
                                 ensureCurrentSession(key, pipelineGeneration)
                                 val choices = buildYouTubeStreamChoices(streamInfo)
                                 val candidates = choices.sources
@@ -11074,6 +11148,18 @@ updateUiForSession(key, pipelineGeneration) {
                                         throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
                                     }
                                     updateUiForSession(key, pipelineGeneration) { it.copy(selectedQuality = defaultQuality.label) }
+                                    io.translatetube.local.util.AppLogStore.info(
+                                        this@PlaybackService,
+                                        "PlaybackFlow",
+                                        "YouTube 播放器媒体已挂载",
+                                        diagnosticContext = mapOf(
+                                            "默认清晰度" to defaultQuality.label,
+                                            "是否音视频合流" to defaultQuality.muxed.toString(),
+                                            "已挂载媒体数" to runCatching { pm.player.mediaItemCount.toString() }
+                                                .getOrDefault("读取失败"),
+                                            "会话键指纹" to safeDiagnosticSessionFingerprint(key),
+                                        ),
+                                    )
                                 }
                             } else {
                                 ensureCurrentSession(key, pipelineGeneration)
