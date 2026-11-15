@@ -2082,6 +2082,43 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun acceptsTheReportedKoreanTrainAndKakaoTalkTranslations() {
+        val trainSource = "저는 상하이에서 속도가 430km 되는 마그랩브라는 열차를 탔는데요."
+        val trainTranslation = "我在上海坐了一辆速度430公里的叫Magrapbra的列车。"
+        val trainDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            trainSource, trainTranslation, "ko", "zh-CN",
+        )
+        assertTrue(trainDecision.reason.orEmpty(), trainDecision.accepted)
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                trainSource, trainTranslation, "ko", "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.numericContentMismatchReason(
+                trainSource, trainTranslation, "ko", "zh-CN",
+            ) != null,
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.numericUnitAssociationMismatchReason(
+                trainSource, trainTranslation, "ko", "zh-CN",
+            ) != null,
+        )
+
+        val kakaoSource = "중국에서는 카카오 톡이 안 돼요."
+        val kakaoTranslation = "在中国不能用KakaoTalk。"
+        val kakaoDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            kakaoSource, kakaoTranslation, "ko", "zh-CN",
+        )
+        assertTrue(kakaoDecision.reason.orEmpty(), kakaoDecision.accepted)
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                kakaoSource, kakaoTranslation, "ko", "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun stillRejectsBrandNamesTheSourceNeverMentioned() {
         // 原文只有 구글；PlayStation 在原文里没有任何出处，且长度超过单个短专名的容错范围。
         val source = "구글에서 검색해 봤어요."
