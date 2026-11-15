@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Info
@@ -461,12 +462,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
 
     LaunchedEffect(message) {
         val text = message ?: return@LaunchedEffect
-        val isError = text.startsWith("导出失败") ||
-            text.startsWith("日志导出失败") ||
-            text.contains("条失败") ||
-            text.startsWith("清理失败") ||
-            text.startsWith("文件保存失败") ||
-            text.startsWith("报告保存失败")
+        val isError = text.contains("失败") || text.startsWith("清理失败")
         snackbarHostState.showSnackbar(
             message = text,
             duration = if (isError) SnackbarDuration.Long else SnackbarDuration.Short,
@@ -785,13 +781,13 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 if (searchQuery.isNotBlank()) {
                     Box(
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .clickable(role = Role.Button) { searchQuery = "" },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            Icons.Filled.DeleteOutline,
+                            Icons.Filled.Close,
                             contentDescription = "清除搜索",
                             tint = Color(0xFF737980),
                             modifier = Modifier.size(18.dp),
