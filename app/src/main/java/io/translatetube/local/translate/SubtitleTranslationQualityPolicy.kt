@@ -1293,7 +1293,6 @@ internal object SubtitleTranslationQualityPolicy {
             ignoredTargetClockRanges + ignoredTargetDateRanges,
             ignoreIndefiniteArticleClassifierOne = ignoreImplicitClassifierOne,
         )
-        )
         if (sourceNumbers.isEmpty()) return null
         // Only compare extra quantities when the source actually states an explicit number.
         // This avoids treating a natural Chinese classifier (for example "一只猫" for "a cat")
