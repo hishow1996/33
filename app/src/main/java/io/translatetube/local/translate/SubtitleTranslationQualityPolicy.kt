@@ -1281,11 +1281,18 @@ internal object SubtitleTranslationQualityPolicy {
         }
         val sourceHasIndefiniteArticle = cachedRegex("""\b(?:a|an)\b""", RegexOption.IGNORE_CASE)
             .containsMatchIn(sourceText)
+        // A Chinese classifier such as "一辆" may be required by grammar even when Korean,
+        // Japanese or another article-less source expresses no explicit count. Do not count that
+        // first classifier-one as an added number when the source's explicit values contain no 1.
+        // If the source really states 1, keep it in the comparison so count changes are still caught.
+        val ignoreImplicitClassifierOne = sourceHasIndefiniteArticle ||
+            (sourceNumbers.isNotEmpty() && "1" !in sourceNumbers)
         val translatedNumbers = normalizedTranslationNumbers(
             translatedText,
             targetLanguage,
             ignoredTargetClockRanges + ignoredTargetDateRanges,
-            ignoreIndefiniteArticleClassifierOne = sourceHasIndefiniteArticle,
+            ignoreIndefiniteArticleClassifierOne = ignoreImplicitClassifierOne,
+        )
         )
         if (sourceNumbers.isEmpty()) return null
         // Only compare extra quantities when the source actually states an explicit number.
@@ -2087,6 +2094,8 @@ internal object SubtitleTranslationQualityPolicy {
         "discord" to listOf("디스코드", "ディスコード", "дискорд"),
         "spotify" to listOf("스포티파이", "スポティファイ", "спотифай"),
         "kakaotalk" to listOf("카카오톡", "카카오 톡", "カカオトーク"),
+        // The Korean source in the train subtitle spells the proper name phonetically.
+        "magrapbra" to listOf("마그랩브", "마그랩브라"),
         "chatgpt" to listOf("챗gpt", "챗지피티", "チャットgpt", "チャットジーピーティー"),
         "uber" to listOf("우버", "ウーバー", "убер"),
         "tesla" to listOf("테슬라", "テスラ", "тесла"),
