@@ -1973,7 +1973,7 @@ internal object SubtitleTranslationQualityPolicy {
             "遇到", "遇见", "认识", "见到", "见过", "碰到",
         ).any(translatedText::contains)
         val hasProductNameContext = listOf(
-            "应用", "软件", "程序", "平台", "品牌", "产品",
+            "应用", "软件", "程序", "平台", "品牌", "产品", "地图",
         ).any(translatedText::contains)
         val hasToolNameContext = listOf(
             "工具", "开发环境", "编辑器",
