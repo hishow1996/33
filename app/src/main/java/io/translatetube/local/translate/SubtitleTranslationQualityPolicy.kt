@@ -1965,22 +1965,36 @@ internal object SubtitleTranslationQualityPolicy {
                 foreignLetters += tokenForeignLetters
             }
         }
-        // Short foreign fragments and two- or three-word expressions can be natural in spoken
-        // subtitles. Do not reject them solely because their letters add up. A long untranslated
-        // word, a genuinely long phrase, or several foreign words still fails the content gate.
-        // Source-grounded names and terms are excluded before these measurements.
+        // A single ungrounded proper-looking token may be legitimate, but allow it only
+        // when the surrounding Chinese makes its role clear. Short person names need a person
+        // context; application/product names need an explicit product cue; longer tool names need
+        // a tool/development cue. This prevents arbitrary brand injection in otherwise Chinese text.
+        val hasPersonNameContext = listOf(
+            "遇到", "遇见", "认识", "见到", "见过", "碰到",
+        ).any(translatedText::contains)
+        val hasProductNameContext = listOf(
+            "应用", "软件", "程序", "平台", "品牌", "产品",
+        ).any(translatedText::contains)
+        val hasToolNameContext = listOf(
+            "工具", "开发环境", "编辑器",
+        ).any(translatedText::contains)
         val singleEmbeddedProperNameAccepted =
             ungroundedProperNameTokenCount == 1 &&
                 hanCount >= 4 &&
-                ungroundedLetters <= 12 &&
-                foreignLetters == ungroundedLetters
+                foreignLetters == ungroundedLetters &&
+                when {
+                    ungroundedLetters <= 7 && hasPersonNameContext -> true
+                    ungroundedLetters <= 10 && hasProductNameContext -> true
+                    ungroundedLetters <= 12 && hasToolNameContext -> true
+                    else -> false
+                }
         if (ungroundedProperName &&
             !(hanCount >= 3 && hanCount > ungroundedLetters * 2) &&
             !singleEmbeddedProperNameAccepted
         ) {
-            return "译文含原文里找不到出处的外文名/词，汉字数不足以放行" +
+            return "译文含原文里找不到出处的外文名/词，缺少足够的中文语境或原文出处" +
                 "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
-                "放行需汉字≥3且超过外文名字母2倍，或单个≤12字母外文名且汉字≥4）"
+                "单个人名≤7字母且有人物语境、产品名≤10字母且有产品语境、工具名≤12字母且有工具语境）"
         }
         val longForeignRemainder =
             longestForeignTokenLetters >= 8 ||
@@ -2093,6 +2107,8 @@ internal object SubtitleTranslationQualityPolicy {
         "discord" to listOf("디스코드", "ディスコード", "дискорд"),
         "spotify" to listOf("스포티파이", "スポティファイ", "спотифай"),
         "kakaotalk" to listOf("카카오톡", "카카오 톡", "カカオトーク"),
+        // The reported Korean caption appears to contain a noisy spelling of "Maglev".
+        "maglev" to listOf("마그랩브", "마그랩브라"),
         "chatgpt" to listOf("챗gpt", "챗지피티", "チャットgpt", "チャットジーピーティー"),
         "uber" to listOf("우버", "ウーバー", "убер"),
         "tesla" to listOf("테슬라", "テスラ", "тесла"),
