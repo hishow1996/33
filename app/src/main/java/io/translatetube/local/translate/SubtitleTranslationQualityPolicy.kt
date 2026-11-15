@@ -2086,7 +2086,7 @@ internal object SubtitleTranslationQualityPolicy {
         "telegram" to listOf("텔레그램", "テレグラム", "телеграм"),
         "discord" to listOf("디스코드", "ディスコード", "дискорд"),
         "spotify" to listOf("스포티파이", "スポティファイ", "спотифай"),
-        "kakaotalk" to listOf("카카오톡", "カカオトーク"),
+        "kakaotalk" to listOf("카카오톡", "카카오 톡", "カカオトーク"),
         "chatgpt" to listOf("챗gpt", "챗지피티", "チャットgpt", "チャットジーピーティー"),
         "uber" to listOf("우버", "ウーバー", "убер"),
         "tesla" to listOf("테슬라", "テスラ", "тесла"),
