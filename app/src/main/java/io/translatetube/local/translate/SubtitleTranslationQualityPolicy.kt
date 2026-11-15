@@ -2093,8 +2093,6 @@ internal object SubtitleTranslationQualityPolicy {
         "discord" to listOf("디스코드", "ディスコード", "дискорд"),
         "spotify" to listOf("스포티파이", "スポティファイ", "спотифай"),
         "kakaotalk" to listOf("카카오톡", "카카오 톡", "カカオトーク"),
-        // The Korean source in the train subtitle spells the proper name phonetically.
-        "magrapbra" to listOf("마그랩브", "마그랩브라"),
         "chatgpt" to listOf("챗gpt", "챗지피티", "チャットgpt", "チャットジーピーティー"),
         "uber" to listOf("우버", "ウーバー", "убер"),
         "tesla" to listOf("테슬라", "テスラ", "тесла"),
