@@ -2084,7 +2084,7 @@ class SubtitleTranslationQualityPolicyTest {
     @Test
     fun acceptsTheReportedKoreanTrainAndKakaoTalkTranslations() {
         val trainSource = "저는 상하이에서 속도가 430km 되는 마그랩브라는 열차를 탔는데요."
-        val trainTranslation = "我在上海坐了一辆速度430公里的叫Magrapbra的列车。"
+        val trainTranslation = "我在上海乘坐了一列时速430公里的磁悬浮列车（Maglev）。"
         val trainDecision = SubtitleTranslationQualityPolicy.evaluateTranslation(
             trainSource, trainTranslation, "ko", "zh-CN",
         )
