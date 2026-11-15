@@ -1998,10 +1998,10 @@ class SubtitleTranslationQualityPolicyTest {
 
     @Test
     fun stillRejectsBrandNamesTheSourceNeverMentioned() {
-        // 原文只有 구글；Netflix 在原文里没有任何出处，仍然不能被放行。
+        // 原文只有 구글；PlayStation 在原文里没有任何出处，且长度超过单个短专名的容错范围。
         val source = "구글에서 검색해 봤어요."
         val invented = SubtitleTranslationQualityPolicy.evaluateTranslation(
-            source, "我在Google和Netflix上查过了。", "ko", "zh-CN",
+            source, "我在Google和PlayStation上查过了。", "ko", "zh-CN",
         )
         assertFalse(invented.accepted)
         assertEquals("TARGET_LANGUAGE_MISMATCH", invented.reasonCode)
