@@ -971,6 +971,11 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var noMediaRecoveryAttemptedKey = ""
     /** 最近一次 open() 开始的时间（elapsedRealtime），用于判断「无媒体」是不是还在首次挂载途中。 */
     @Volatile private var lastOpenStartedAtMs = 0L
+    /**
+     * 本次处理管线（代次）的流装配（解析直链 + 挂载视频）还没做完时记下代次，做完清 0。
+     * 恢复进度时界面会先显示「配音合成中」，此时视频还没轮到挂载，不能当成无媒体死角去整条重开。
+     */
+    @Volatile private var streamAssemblyPendingGeneration = 0L
     /** 无媒体自动恢复开始时间；0 表示当前没有进行中的无媒体恢复。 */
     @Volatile private var missingMediaRecoveryStartedAtMs = 0L
     @Volatile private var playbackRecoveryInProgress = false
@@ -3456,6 +3461,11 @@ class PlaybackService : MediaSessionService() {
         // 会话键自动重新准备一次源；失败后恢复失败提示（带重试）会接管。
         val isIdleWithoutMedia = !mediaAttached &&
             player.playbackState == androidx.media3.common.Player.STATE_IDLE
+        val pipelineRunning = prepJob?.isActive == true
+        // 处理管线还在跑且流装配没做完：视频晚点会被正常挂上，不是死角。
+        val streamAssemblyPending = pipelineRunning &&
+            streamAssemblyPendingGeneration != 0L &&
+            streamAssemblyPendingGeneration == activePipelineGeneration
         if (
             playerPhase && isIdleWithoutMedia &&
             failure == null && playbackRecoveryFailure == null &&
@@ -3463,8 +3473,20 @@ class PlaybackService : MediaSessionService() {
             noMediaRecoveryAttemptedKey != state.key &&
             now - lastOpenStartedAtMs >= MISSING_MEDIA_OPEN_GRACE_MS
         ) {
-            noMediaRecoveryAttemptedKey = state.key
-            startMissingMediaRecovery(state.key, "自动重新准备（播放器无媒体挂载）")
+            val recoveryAction = MissingMediaRecoveryPolicy.decide(
+                pipelineRunning = pipelineRunning,
+                streamAssemblyPending = streamAssemblyPending,
+                isYouTube = videoId != null,
+            )
+            // WAIT 不占用「每个会话键只自动恢复一次」的名额，下一轮再判断。
+            if (recoveryAction != MissingMediaRecoveryPolicy.Action.WAIT) {
+                noMediaRecoveryAttemptedKey = state.key
+                startMissingMediaRecovery(
+                    state.key,
+                    "自动重新准备（播放器无媒体挂载）",
+                    keepPipeline = recoveryAction == MissingMediaRecoveryPolicy.Action.REMOUNT_ONLY,
+                )
+            }
         }
         if (
             playbackRestoreRequested &&
@@ -3546,7 +3568,7 @@ class PlaybackService : MediaSessionService() {
             idleRecovery = playbackRestoreRequested || isIdleWithMedia,
             mountingMedia = playerPhase && !mediaAttached &&
                 player.playbackState == androidx.media3.common.Player.STATE_IDLE &&
-                now - lastOpenStartedAtMs < MISSING_MEDIA_OPEN_GRACE_MS,
+                (now - lastOpenStartedAtMs < MISSING_MEDIA_OPEN_GRACE_MS || streamAssemblyPending),
             recoveryInProgress = playbackRecoveryInProgress,
             recoveryMessage = playbackRecoveryMessage,
             recoveryFailure = playbackRecoveryFailure,
@@ -3839,7 +3861,12 @@ class PlaybackService : MediaSessionService() {
      * 复用 reparseCurrentPlayback 整链重开（含超时保护）；失败/超时会走
      * markPlaybackRecoveryFailed，页面上出现带重试按钮的提示而不是纯黑屏。
      */
-    private fun startMissingMediaRecovery(sessionKey: String, reason: String) {
+    private fun startMissingMediaRecovery(
+        sessionKey: String,
+        reason: String,
+        /** true：处理管线还在跑（合成中），只重挂视频，不整条重开去打断合成。 */
+        keepPipeline: Boolean = false,
+    ) {
         playbackRecoveryInProgress = true
         missingMediaRecoveryStartedAtMs = android.os.SystemClock.elapsedRealtime()
         playbackRecoveryMessage = "视频源未挂载，正在重新准备…"
@@ -3860,10 +3887,102 @@ class PlaybackService : MediaSessionService() {
                 "当前进度文案" to ui.value.progress.take(80),
                 "已解析画质源数量" to qualitySources.size.toString(),
                 "媒体源是否已记录挂载" to adaptiveQualitySourceReady.toString(),
+                "恢复方式" to if (keepPipeline) "只重挂视频（保留正在运行的处理任务）" else "整条重新打开",
+                "流装配是否仍未完成" to (streamAssemblyPendingGeneration != 0L).toString(),
             ),
         )
         refreshPlaybackHint()
-        reparseCurrentPlayback()
+        val remountVideoId = videoId
+        if (keepPipeline && remountVideoId != null) {
+            val generation = activePipelineGeneration
+            qualityRecoveryJob?.cancel()
+            qualityRecoveryJob = scope.launch {
+                remountYouTubeSourceKeepingPipeline(sessionKey, remountVideoId, generation)
+            }
+        } else {
+            reparseCurrentPlayback()
+        }
+    }
+
+    /**
+     * 处理管线还在跑（例如配音合成中）时，播放器却没有视频：只重新解析直链并挂上默认画质，
+     * 不碰字幕、配音和合成进度，也不改界面阶段（recoverYouTubePlayback 会把阶段改成 READY，
+     * 合成中不能用）。失败走带重试按钮的恢复失败提示。
+     */
+    private suspend fun remountYouTubeSourceKeepingPipeline(
+        sessionKey: String,
+        remountVideoId: String,
+        pipelineGeneration: Long,
+    ) {
+        try {
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            NewPipeRepo.invalidate(remountVideoId)
+            val streamInfo = try {
+                withTimeout(YOUTUBE_STREAM_REFRESH_TIMEOUT_MS) { NewPipeRepo.streams(remountVideoId) }
+            } catch (e: TimeoutCancellationException) {
+                // 超时必须转成普通异常，否则会被当成协程取消静默吞掉，页面一直停在"正在重新准备"。
+                throw IllegalStateException("重新解析视频流超时（${YOUTUBE_STREAM_REFRESH_TIMEOUT_MS / 1000} 秒）")
+            }
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            val choices = buildYouTubeStreamChoices(streamInfo)
+            withContext(Dispatchers.Main) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (ui.value.key != sessionKey || videoId != remountVideoId) {
+                    throw kotlinx.coroutines.CancellationException("无媒体恢复任务已过期")
+                }
+                // 这期间管线自己已经把视频挂上了：不再重复挂载。
+                if (pm.player.mediaItemCount == 0) {
+                    qualitySources = choices.sources
+                    qualityAudioUrl = choices.audioUrl
+                    val quality = choices.defaultQuality
+                    updateUiForSession(sessionKey, pipelineGeneration) {
+                        it.copy(qualityOptions = choices.sources.map { q -> q.label })
+                    }
+                    val accepted = pm.setYouTubeQuality(
+                        videoUrl = quality.url,
+                        audioUrl = choices.audioUrl,
+                        muxed = quality.muxed,
+                        title = ui.value.title,
+                        artist = ui.value.channel,
+                        artworkUrl = ui.value.thumbUrl,
+                    )
+                    if (!accepted) {
+                        throw IllegalStateException(pm.errorSink.value ?: "视频源初始化失败")
+                    }
+                    updateUiForSession(sessionKey, pipelineGeneration) { it.copy(selectedQuality = quality.label) }
+                }
+                missingMediaRecoveryStartedAtMs = 0L
+                playbackRecoveryInProgress = false
+                playbackRecoveryMessage = null
+                playbackRecoveryFailure = null
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackFlow",
+                    "无媒体恢复：已只重挂视频，处理任务未被打断",
+                    diagnosticContext = mapOf(
+                        "会话键指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                        "已挂载媒体数" to runCatching { pm.player.mediaItemCount.toString() }
+                            .getOrDefault("读取失败"),
+                        "处理管线是否仍在运行" to (prepJob?.isActive == true).toString(),
+                    ),
+                )
+                refreshPlaybackHint()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (
+                activePipelineGeneration != pipelineGeneration ||
+                videoKey != sessionKey ||
+                ui.value.key != sessionKey
+            ) return
+            missingMediaRecoveryStartedAtMs = 0L
+            markPlaybackRecoveryFailed(
+                sessionKey,
+                pipelineGeneration,
+                "重新挂载视频失败：${e.message ?: e.javaClass.simpleName}",
+            )
+        }
     }
 
     /** 播放器当前是否真的挂着媒体项。ExoPlayer 只能在主线程读，非主线程退回服务自己的挂载记录。 */
@@ -5871,6 +5990,8 @@ class PlaybackService : MediaSessionService() {
             isPlayerMediaMounted()
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
+        // 要重新挂载视频的这一代：流装配做完之前，「播放器没有媒体」是正常的，不是死角。
+        streamAssemblyPendingGeneration = pipelineGeneration
         // This service can live across many videos. Drop the prior session's interval arrays and
         // source-list reference as soon as a new open request owns the playback pipeline.
         clearSubtitleHighlightTimeline()
@@ -11103,7 +11224,29 @@ updateUiForSession(key, pipelineGeneration) {
                         }
                     } else null
                     val streamAssembly = async {
-                        if (!reuseMountedMedia) {
+                        // 「复用已挂载媒体」是在 open() 开头按服务自己的记录判的；真正跳过挂载前，
+                        // 到主线程上确认播放器此刻确实挂着媒体项。记录是旧的（播放器已被清空）时，
+                        // 跳过挂载会留下一个永远没有视频的播放器，所以这里改成重新挂载。
+                        val reuseConfirmed = if (reuseMountedMedia) {
+                            val actuallyMounted = withContext(Dispatchers.Main) {
+                                runCatching { pm.player.mediaItemCount > 0 }.getOrDefault(false)
+                            }
+                            if (!actuallyMounted) {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    this@PlaybackService,
+                                    "PlaybackFlow",
+                                    "复用已挂载媒体的判定与播放器实际状态不符，改为重新挂载",
+                                    diagnosticContext = mapOf(
+                                        "会话键指纹" to safeDiagnosticSessionFingerprint(key),
+                                        "处理代数" to pipelineGeneration.toString(),
+                                        "已解析画质源数量" to qualitySources.size.toString(),
+                                        "媒体源是否已记录挂载" to adaptiveQualitySourceReady.toString(),
+                                    ),
+                                )
+                            }
+                            actuallyMounted
+                        } else false
+                        if (!reuseConfirmed) {
                             if (videoId != null) {
                                 val streamsStartedMs = android.os.SystemClock.elapsedRealtime()
                                 val streamInfo = NewPipeRepo.streams(requireNotNull(videoId))
@@ -11195,6 +11338,7 @@ updateUiForSession(key, pipelineGeneration) {
                     awaitProcessingResumed(key, pipelineGeneration)
                     logResumeStep("旧引擎退出与本地 ASR 卸载完成（与流装配并行）")
                     streamAssembly.await()
+                    if (streamAssemblyPendingGeneration == pipelineGeneration) streamAssemblyPendingGeneration = 0L
                     logResumeStep("流装配完成")
                     warmStartedTts = ttsWarmStart?.await()
                     if (warmStartedTts != null) {
