@@ -3,6 +3,7 @@ package io.translatetube.local.translate
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.Normalizer
+import java.util.LinkedHashSet
 import java.util.Locale
 import io.translatetube.local.tts.TtsTextPolicy
 import io.translatetube.local.subs.SubtitleLanguageDetector
@@ -2059,6 +2060,91 @@ internal object SubtitleTranslationQualityPolicy {
         return remaining
     }
 
+    /**
+     * 韩语、日语、俄语等原文常把外来品牌直接音译（유튜브、ネットフリックス、гугл），模型翻译时把它们
+     * 还原成通用拉丁写法（YouTube、Netflix、Google）是正确的。校验只会拿原文里的拉丁词做出处比对，
+     * 找不到就判成「未出处外文名」而拒收，整行反复重试仍失败，最终中止整条处理。
+     *
+     * 这里只在原文里真的出现了该品牌的音译写法时，才把对应的拉丁写法视为有出处；
+     * 原文里没有音译、模型凭空冒出来的品牌名仍然不放行。
+     */
+    private val transliteratedBrands: List<Pair<String, List<String>>> = listOf(
+        "youtube" to listOf("유튜브", "유투브", "ユーチューブ", "ютуб", "ютьюб"),
+        "netflix" to listOf("넷플릭스", "ネットフリックス", "нетфликс"),
+        "google" to listOf("구글", "グーグル", "гугл"),
+        "instagram" to listOf("인스타그램", "인스타", "インスタグラム", "インスタ", "инстаграм"),
+        "facebook" to listOf("페이스북", "フェイスブック", "фейсбук"),
+        "twitter" to listOf("트위터", "ツイッター", "твиттер"),
+        "tiktok" to listOf("틱톡", "ティックトック", "тикток"),
+        "iphone" to listOf("아이폰", "アイフォン", "айфон"),
+        "android" to listOf("안드ロイド", "アンドロイド", "андроид"),
+        "samsung" to listOf("삼성", "サムスン", "самсунг"),
+        "amazon" to listOf("아마존", "アマゾン", "амазон"),
+        "microsoft" to listOf("마이크로소프트", "マイクロソフト", "майкрософт"),
+        "windows" to listOf("윈도우", "ウィンドウズ", "виндовс"),
+        "whatsapp" to listOf("왓츠앱", "ワッツアップ", "ватсап"),
+        "telegram" to listOf("텔레그램", "テレグラム", "телеграм"),
+        "discord" to listOf("디스코드", "ディスコード", "дискорд"),
+        "spotify" to listOf("스포티파이", "スポティファイ", "спотифай"),
+        "kakaotalk" to listOf("카카오톡", "カカオトーク"),
+        "chatgpt" to listOf("챗gpt", "챗지피티", "チャットgpt", "チャットジーピーティー"),
+        "uber" to listOf("우버", "ウーバー", "убер"),
+        "tesla" to listOf("테슬라", "テスラ", "тесла"),
+        "nvidia" to listOf("엔비디아", "エヌビディア", "нвидиа"),
+        "linkedin" to listOf("링크드인", "リンクトイン"),
+        // —— 韩语/日语/俄语：更多常见品牌 ——
+        "apple" to listOf("애플", "アップル"),
+        "paypal" to listOf("페이팔", "ペイパル", "пейпал"),
+        "playstation" to listOf("플레이스테이션", "プレイステーション"),
+        "xbox" to listOf("엑스박스", "エックスボックス"),
+        "nintendo" to listOf("닌텐도", "ニンテンドー"),
+        "sony" to listOf("소니", "ソニー", "сони"),
+        "pinterest" to listOf("핀터레스트", "ピンタレスト"),
+        "reddit" to listOf("레딧", "レディット", "реддит"),
+        "twitch" to listOf("트위치", "ツイッチ"),
+        "snapchat" to listOf("스냅챗", "スナップチャット"),
+        "airbnb" to listOf("에어비앤비", "エアビーアンドビー"),
+        "starbucks" to listOf("스타벅스", "スターバックス", "старбакс"),
+        "disney" to listOf("디즈니", "ディズニー", "дисней"),
+        "nike" to listOf("나이키", "ナイキ", "найк"),
+        "adidas" to listOf("아디다스", "アディダス", "адидас"),
+        "toyota" to listOf("토요타", "도요타", "トヨタ", "тойота"),
+        "honda" to listOf("혼다", "ホンダ", "хонда"),
+        "bmw" to listOf("비엠더블유", "ビーエムダブリュー", "бмв"),
+        "ikea" to listOf("이케아", "イケア", "икеа"),
+        "intel" to listOf("인텔", "インテル", "интел"),
+        "huawei" to listOf("화웨이", "ファーウェイ", "хуавэй"),
+        "xiaomi" to listOf("샤오미", "シャオミ", "сяоми"),
+        "github" to listOf("깃허브", "ギットハブ", "гитхаб"),
+        "gemini" to listOf("제미나이", "ジェミニ"),
+        "claude" to listOf("클로드", "クロード"),
+        "naver" to listOf("네이버", "ネイバー"),
+        "kakao" to listOf("카카오", "カカオ"),
+        "coupang" to listOf("쿠팡", "クーパン"),
+        "lg" to listOf("엘지", "エルジー"),
+        // —— 阿拉伯语 / 泰语 / 印地语：最常见的几个平台 ——
+        "youtube" to listOf("يوتيوب", "ยูทูบ", "यूट्यूब"),
+        "netflix" to listOf("نتفليكس", "نتفلكس", "เน็ตฟลิกซ์", "नेटफ्लिक्स"),
+        "google" to listOf("جوجل", "غوغل", "กูเกิล", "गूगल"),
+        "instagram" to listOf("انستغرام", "إنستغرام", "انستجرام", "อินสตาแกรม", "इंस्टाग्राम"),
+        "facebook" to listOf("فيسبوك", "เฟซบุ๊ก", "फेसबुक"),
+        "twitter" to listOf("تويتر", "ทวิตเตอร์", "ट्विटर"),
+        "tiktok" to listOf("تيك توك", "ติ๊กต๊อก"),
+        "whatsapp" to listOf("واتساب", "व्हाट्सएप"),
+        "telegram" to listOf("تيليجرام", "تلغرام"),
+    )
+
+    private fun transliteratedBrandTokens(sourceText: String): Set<String> {
+        // 不用 normalize()：它会去掉空格和标点，把相邻单词拼在一起，容易跨词误匹配。
+        val folded = Normalizer.normalize(sourceText, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+        if (folded.isBlank()) return emptySet()
+        val matched = LinkedHashSet<String>()
+        for ((latinBrand, spellings) in transliteratedBrands) {
+            if (spellings.any { it in folded }) matched += latinBrand
+        }
+        return matched
+    }
+
     private fun sourceProperNameTokens(
         sourceText: String,
         sourceLanguage: String = "auto",
@@ -2082,6 +2168,7 @@ internal object SubtitleTranslationQualityPolicy {
         SubtitleTermContinuityPolicy.extractHighConfidenceUncasedEntityTokens(
             sourceText, sourceLanguage,
         ).forEach(retained::add)
+        retained += transliteratedBrandTokens(sourceText)
         if (tokens.size < 2) return retained
         for (start in tokens.indices) {
             for (length in 2..8) {

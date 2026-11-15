@@ -1979,4 +1979,52 @@ class SubtitleTranslationQualityPolicyTest {
         assertTrue(foreignHeavy, foreignHeavy.contains("汉字=8"))
         assertTrue(foreignHeavy, foreignHeavy.contains("非汉字外文字母=40"))
     }
+    @Test
+    fun acceptsLatinBrandNamesWhenSourceHasTheirTransliteration() {
+        // 真实失败行（韩语）：原文把品牌音译成 유튜브/넷플릭스/구글/인스타，模型还原为通用拉丁写法是正确的。
+        val source = "아까 말씀드렸던 방화벽 때문에 유튜브도 안 되고 넷플릭스도 안 되고 구글, 인스타 이런게 다 안 되잖아요."
+        val translated = "刚才说的防火墙，YouTube不能用，Netflix不能用，Google、Instagram这些都不行啊。"
+        val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(source, translated, "ko", "zh-CN")
+        assertTrue(decision.reason.orEmpty(), decision.accepted)
+        assertFalse(SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(source, translated, "ko", "zh-CN"))
+
+        val japanese = "グーグルとユーチューブで調べました。"
+        assertTrue(
+            SubtitleTranslationQualityPolicy.evaluateTranslation(
+                japanese, "我在Google和YouTube上查过了。", "ja", "zh-CN",
+            ).accepted,
+        )
+    }
+
+    @Test
+    fun stillRejectsBrandNamesTheSourceNeverMentioned() {
+        // 原文只有 구글；Netflix 在原文里没有任何出处，仍然不能被放行。
+        val source = "구글에서 검색해 봤어요."
+        val invented = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            source, "我在Google和Netflix上查过了。", "ko", "zh-CN",
+        )
+        assertFalse(invented.accepted)
+        assertEquals("TARGET_LANGUAGE_MISMATCH", invented.reasonCode)
+
+        // 原文完全没有品牌，模型编出来的品牌名同样不放行。
+        val noBrandInSource = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "오늘은 날씨가 정말 좋네요.", "今天YouTube和Netflix都很好看。", "ko", "zh-CN",
+        )
+        assertFalse(noBrandInSource.accepted)
+    }
+
+    @Test
+    fun acceptsMoreTransliteratedBrandsFromTheExpandedTable() {
+        // 没有音译对照时，Nike(4)+Adidas(6)=10 个外文字母远超 7 个汉字，会被拒；有出处后应放行。
+        val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "나이키랑 아디다스 신발을 샀어요.", "我买了Nike和Adidas的鞋子。", "ko", "zh-CN",
+        )
+        assertTrue(decision.reason.orEmpty(), decision.accepted)
+        assertTrue(
+            SubtitleTranslationQualityPolicy.evaluateTranslation(
+                "ディズニーとソニーの新作です。", "这是Disney和Sony的新作。", "ja", "zh-CN",
+            ).accepted,
+        )
+    }
+
 }
