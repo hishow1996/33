@@ -11,6 +11,12 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -117,6 +123,9 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     }
     var showModuleMenu by remember { mutableStateOf(false) }
     var showTimeRangeMenu by remember { mutableStateOf(false) }
+    var showAdvancedFilters by remember { mutableStateOf(false) }
+    var topControlsExpanded by remember { mutableStateOf(true) }
+    val logListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     fun rememberSearch(query: String) {
         val updated = AppLogSearchHistoryPolicy.push(searchHistory, query)
@@ -390,6 +399,31 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         AppLogSearchMemory.timeRange = timeRange
     }
 
+    LaunchedEffect(logListState, selectionMode) {
+        if (selectionMode) {
+            topControlsExpanded = true
+            return@LaunchedEffect
+        }
+        var previousIndex = logListState.firstVisibleItemIndex
+        var previousOffset = logListState.firstVisibleItemScrollOffset
+        snapshotFlow {
+            logListState.firstVisibleItemIndex to logListState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            val scrollingDown = index > previousIndex ||
+                (index == previousIndex && offset > previousOffset)
+            val scrollingUp = index < previousIndex ||
+                (index == previousIndex && offset < previousOffset)
+
+            when {
+                scrollingDown && (index > 0 || offset > 64) -> topControlsExpanded = false
+                scrollingUp -> topControlsExpanded = true
+                index == 0 && offset == 0 -> topControlsExpanded = true
+            }
+            previousIndex = index
+            previousOffset = offset
+        }
+    }
+
     LaunchedEffect(records, filter, searchQuery, moduleFilter, timeRange, searchSnapshot) {
         val snapshot = searchSnapshot
         if (snapshot.sourceRecords !== records) return@LaunchedEffect
@@ -517,10 +551,16 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         }
         HorizontalDivider(color = Color(0xFFE9EAEC), thickness = 1.dp)
 
+        AnimatedVisibility(
+            visible = topControlsExpanded || selectionMode,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 10.dp),
+                .padding(start = 18.dp, end = 18.dp, top = 5.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -579,7 +619,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             onValueChange = { searchQuery = it },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 2.dp),
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
             placeholder = { Text("搜索（空格=多词，-词=排除，可搜时间 10:58）", maxLines = 1) },
@@ -612,114 +652,152 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 16.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val filters = listOf(
-                "全部" to records.size,
-                "错误" to errorCount,
-                "闪退" to crashCount,
-                "警告" to warningCount,
-                "未恢复" to unresolvedCount,
-                "已恢复" to recoveredCount,
-            )
-            filters.forEach { (name, count) ->
-                FilterChip(
-                    selected = filter == name,
-                    onClick = { filter = name },
-                    label = { Text("$name $count", maxLines = 1) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = BrandBright,
-                        selectedLabelColor = Color.White,
-                        selectedLeadingIconColor = Color.White,
-                        containerColor = Color(0xFFF3F4F6),
-                        labelColor = Color(0xFF454B53),
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = filter == name,
-                        borderColor = Color(0xFFE7E9EC),
-                        selectedBorderColor = BrandBright,
-                    ),
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val filters = listOf(
+                    "全部" to records.size,
+                    "错误" to errorCount,
+                    "闪退" to crashCount,
+                    "警告" to warningCount,
+                    "未恢复" to unresolvedCount,
+                    "已恢复" to recoveredCount,
                 )
+                filters.forEach { (name, count) ->
+                    FilterChip(
+                        selected = filter == name,
+                        onClick = { filter = name },
+                        label = { Text("$name $count", maxLines = 1) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = BrandBright,
+                            selectedLabelColor = Color.White,
+                            selectedLeadingIconColor = Color.White,
+                            containerColor = Color(0xFFF3F4F6),
+                            labelColor = Color(0xFF454B53),
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = filter == name,
+                            borderColor = Color(0xFFE7E9EC),
+                            selectedBorderColor = BrandBright,
+                        ),
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(7.dp))
+            val hasAdvancedFilter = moduleFilter.isNotBlank() || timeRange != AppLogTimeRange.ALL
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { showAdvancedFilters = !showAdvancedFilters },
+                shape = RoundedCornerShape(10.dp),
+                color = if (hasAdvancedFilter) BrandBright else Color(0xFFF3F4F6),
+                border = BorderStroke(
+                    1.dp,
+                    if (hasAdvancedFilter) BrandBright else Color(0xFFE7E9EC),
+                ),
+                tonalElevation = 0.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        "筛选",
+                        color = if (hasAdvancedFilter) Color.White else Color(0xFF454B53),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        if (showAdvancedFilters) "⌃" else "⌄",
+                        color = if (hasAdvancedFilter) Color.White else Color(0xFF737980),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
 
-        // 模块 / 时间范围：和上面的级别筛选、搜索词叠加生效。
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box {
-                FilterChip(
-                    selected = moduleFilter.isNotBlank(),
-                    onClick = { showModuleMenu = true },
-                    label = { Text(if (moduleFilter.isBlank()) "模块：全部" else "模块：$moduleFilter", maxLines = 1) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = BrandBright,
-                        selectedLabelColor = Color.White,
-                        containerColor = Color(0xFFF3F4F6),
-                        labelColor = Color(0xFF454B53),
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = moduleFilter.isNotBlank(),
-                        borderColor = Color(0xFFE7E9EC),
-                        selectedBorderColor = BrandBright,
-                    ),
-                )
-                DropdownMenu(expanded = showModuleMenu, onDismissRequest = { showModuleMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("全部模块") },
-                        onClick = {
-                            moduleFilter = ""
-                            showModuleMenu = false
-                        },
-                    )
-                    moduleOptions.take(40).forEach { (label, count) ->
+        if (showAdvancedFilters) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 1.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedButton(
+                        onClick = { showModuleMenu = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                        shape = RoundedCornerShape(10.dp),
+                    ) {
+                        Text(
+                            if (moduleFilter.isBlank()) "模块：全部" else "模块：$moduleFilter",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showModuleMenu,
+                        onDismissRequest = { showModuleMenu = false },
+                    ) {
                         DropdownMenuItem(
-                            text = { Text("$label  $count") },
+                            text = { Text("全部模块") },
                             onClick = {
-                                moduleFilter = label
+                                moduleFilter = ""
                                 showModuleMenu = false
                             },
                         )
+                        moduleOptions.take(40).forEach { (label, count) ->
+                            DropdownMenuItem(
+                                text = { Text("$label  $count") },
+                                onClick = {
+                                    moduleFilter = label
+                                    showModuleMenu = false
+                                },
+                            )
+                        }
                     }
                 }
-            }
-            Box {
-                FilterChip(
-                    selected = timeRange != AppLogTimeRange.ALL,
-                    onClick = { showTimeRangeMenu = true },
-                    label = { Text("时间：${timeRange.label}", maxLines = 1) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = BrandBright,
-                        selectedLabelColor = Color.White,
-                        containerColor = Color(0xFFF3F4F6),
-                        labelColor = Color(0xFF454B53),
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = timeRange != AppLogTimeRange.ALL,
-                        borderColor = Color(0xFFE7E9EC),
-                        selectedBorderColor = BrandBright,
-                    ),
-                )
-                DropdownMenu(expanded = showTimeRangeMenu, onDismissRequest = { showTimeRangeMenu = false }) {
-                    AppLogTimeRange.values().forEach { range ->
-                        DropdownMenuItem(
-                            text = { Text(range.label) },
-                            onClick = {
-                                timeRange = range
-                                showTimeRangeMenu = false
-                            },
+
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedButton(
+                        onClick = { showTimeRangeMenu = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                        shape = RoundedCornerShape(10.dp),
+                    ) {
+                        Text(
+                            "时间：${timeRange.label}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelMedium,
                         )
+                    }
+                    DropdownMenu(
+                        expanded = showTimeRangeMenu,
+                        onDismissRequest = { showTimeRangeMenu = false },
+                    ) {
+                        AppLogTimeRange.values().forEach { range ->
+                            DropdownMenuItem(
+                                text = { Text(range.label) },
+                                onClick = {
+                                    timeRange = range
+                                    showTimeRangeMenu = false
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -765,7 +843,18 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     color = Color(0xFF626A74),
                     style = MaterialTheme.typography.bodySmall,
                 )
-                TextButton(onClick = { resetSearchAndFilters() }) { Text("重置筛选") }
+                Text(
+                    "重置筛选",
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { resetSearchAndFilters() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    color = BrandBright,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
+
             }
         }
 
@@ -837,14 +926,14 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         message?.let { text ->
             Text(
                 text,
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp),
                 color = if (text.startsWith("导出失败") || text.startsWith("日志导出失败") || text.contains("条失败") || text.startsWith("清理失败")) {
                     Color(0xFFB42318)
                 } else {
                     Color(0xFF357A52)
                 },
                 style = MaterialTheme.typography.bodySmall,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -885,6 +974,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             }
         } else {
             LazyColumn(
+                state = logListState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
