@@ -1933,6 +1933,27 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun acceptsOneTenLetterProperNameWithFiveHanCharactersButRejectsLongerOrMultipleNames() {
+        val source = "Tell me the app's name."
+        val accepted = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            source, "这款应用叫KakaoTalk。", "en", "zh-CN",
+        )
+        assertTrue(accepted.reason.orEmpty(), accepted.accepted)
+
+        val tooLong = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            source, "这款应用叫PlayStation。", "en", "zh-CN",
+        )
+        assertFalse(tooLong.accepted)
+        assertEquals("TARGET_LANGUAGE_MISMATCH", tooLong.reasonCode)
+
+        val multipleNames = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            source, "这款应用叫KakaoTalk和WhatsApp。", "en", "zh-CN",
+        )
+        assertFalse(multipleNames.accepted)
+        assertEquals("TARGET_LANGUAGE_MISMATCH", multipleNames.reasonCode)
+    }
+
+    @Test
     fun stillRejectsUngroundedNamesWhenChineseTextIsTooShort() {
         assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
