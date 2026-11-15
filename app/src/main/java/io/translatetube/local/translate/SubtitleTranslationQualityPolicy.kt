@@ -2077,7 +2077,7 @@ internal object SubtitleTranslationQualityPolicy {
         "twitter" to listOf("트위터", "ツイッター", "твиттер"),
         "tiktok" to listOf("틱톡", "ティックトック", "тикток"),
         "iphone" to listOf("아이폰", "アイフォン", "айфон"),
-        "android" to listOf("안드ロイド", "アンドロイド", "андроид"),
+        "android" to listOf("안드로이드", "アンドロイド", "андроид"),
         "samsung" to listOf("삼성", "サムスン", "самсунг"),
         "amazon" to listOf("아마존", "アマゾン", "амазон"),
         "microsoft" to listOf("마이크로소프트", "マイクロソフト", "майкрософт"),
