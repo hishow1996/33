@@ -49,6 +49,7 @@ class TranslateTubeApp : Application() {
         registerActivityLifecycleCallbacks(lifecycleTracker)
         CrashGuard.install(this)
         super.onCreate()
+        io.translatetube.local.util.MainThreadWatchdog.start(this)
 
         // A force-stop can interrupt a multi-file delete. Retry its durable tombstones before the
         // player is allowed to restore the affected task or any globally cleared processing cache.
