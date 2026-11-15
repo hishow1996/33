@@ -1954,6 +1954,45 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun furtherRelaxesOneEmbeddedProperNameAndForeignRemainderRatio() {
+        val longerSingleName = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "Tell me the app's name.",
+            "这款工具是VisualStudio。",
+            "en",
+            "zh-CN",
+        )
+        assertTrue(longerSingleName.reason.orEmpty(), longerSingleName.accepted)
+
+        val nameBeyondLimit = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "Tell me the app's name.",
+            "这款工具是MicrosoftOffice。",
+            "en",
+            "zh-CN",
+        )
+        assertFalse(nameBeyondLimit.accepted)
+        assertEquals("TARGET_LANGUAGE_MISMATCH", nameBeyondLimit.reasonCode)
+
+        // A single long foreign word is tolerated when the Chinese portion is meaningful;
+        // a much larger foreign remainder is still rejected.
+        val balancedRemainder = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "That is surprising.",
+            "真无语unbelievable",
+            "en",
+            "zh-CN",
+        )
+        assertTrue(balancedRemainder.reason.orEmpty(), balancedRemainder.accepted)
+
+        val foreignHeavy = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "That is surprising.",
+            "真无语unbelievableplease",
+            "en",
+            "zh-CN",
+        )
+        assertFalse(foreignHeavy.accepted)
+        assertEquals("TARGET_LANGUAGE_MISMATCH", foreignHeavy.reasonCode)
+    }
+
+    @Test
     fun stillRejectsUngroundedNamesWhenChineseTextIsTooShort() {
         assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
@@ -1996,7 +2035,7 @@ class SubtitleTranslationQualityPolicyTest {
             "en",
             "zh-CN",
         ).orEmpty()
-        assertTrue(foreignHeavy, foreignHeavy.contains("触发规则=外文残留达到8字且超过汉字3倍"))
+        assertTrue(foreignHeavy, foreignHeavy.contains("触发规则=外文残留达到8字且超过汉字4倍"))
         assertTrue(foreignHeavy, foreignHeavy.contains("汉字=8"))
         assertTrue(foreignHeavy, foreignHeavy.contains("非汉字外文字母=40"))
     }
