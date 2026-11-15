@@ -1997,6 +1997,31 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun acceptsKakaoTalkWhenKoreanSourceSeparatesTheBrandWithWhitespace() {
+        val source = "중국에서는 카카오 톡이 안 돼요."
+        val translated = "KakaoTalk在中国不行。"
+        val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            source, translated, "ko", "zh-CN",
+        )
+        assertTrue(decision.reason.orEmpty(), decision.accepted)
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                source, translated, "ko", "zh-CN",
+            ),
+        )
+
+        // The relaxation is source-grounded: an unrelated source must not authorize an invented brand.
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "중국에서는 이 앱이 안 돼요.",
+                translated,
+                "ko",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun stillRejectsBrandNamesTheSourceNeverMentioned() {
         // 原文只有 구글；PlayStation 在原文里没有任何出处，且长度超过单个短专名的容错范围。
         val source = "구글에서 검색해 봤어요."
