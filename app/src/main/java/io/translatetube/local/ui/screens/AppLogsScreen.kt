@@ -32,6 +32,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.semantics.stateDescription
@@ -51,6 +58,12 @@ import io.translatetube.local.util.AppLogTitleResolver
 import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.util.AppLogSearchEntry
 import io.translatetube.local.util.AppLogSearchIndex
+import io.translatetube.local.util.AppLogSearchHighlight
+import io.translatetube.local.util.AppLogSearchHistoryPolicy
+import io.translatetube.local.util.AppLogSearchMemory
+import io.translatetube.local.util.AppLogSearchQuery
+import io.translatetube.local.util.AppLogSearchResult
+import io.translatetube.local.util.AppLogTimeRange
 import io.translatetube.local.util.AppLogDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -85,13 +98,35 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var records by remember { mutableStateOf<List<AppLogRecord>>(emptyList()) }
-    var filter by remember { mutableStateOf("全部") }
+    // 搜索/筛选状态在进程内保留：点进某条日志再返回不丢。
+    var filter by remember { mutableStateOf(AppLogSearchMemory.levelFilter) }
     var refreshKey by remember { mutableIntStateOf(0) }
     var selectedRecord by remember { mutableStateOf<AppLogRecord?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var exporting by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf(AppLogSearchMemory.query) }
+    var moduleFilter by remember { mutableStateOf(AppLogSearchMemory.module) }
+    var timeRange by remember { mutableStateOf(AppLogSearchMemory.timeRange) }
+    var searchResult by remember { mutableStateOf<AppLogSearchResult?>(null) }
+    val searchPreferences = remember(ctx) {
+        ctx.getSharedPreferences("app_log_search", android.content.Context.MODE_PRIVATE)
+    }
+    var searchHistory by remember {
+        mutableStateOf(AppLogSearchHistoryPolicy.decode(searchPreferences.getString("history", null)))
+    }
+    var showModuleMenu by remember { mutableStateOf(false) }
+    var showTimeRangeMenu by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    fun rememberSearch(query: String) {
+        val updated = AppLogSearchHistoryPolicy.push(searchHistory, query)
+        if (updated != searchHistory) {
+            searchHistory = updated
+            searchPreferences.edit()
+                .putString("history", AppLogSearchHistoryPolicy.encode(updated))
+                .apply()
+        }
+    }
     var searchSnapshot by remember {
         mutableStateOf(AppLogSearchSnapshot(emptyList(), emptyList()))
     }
@@ -184,7 +219,8 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
     )
 
     val incidentExportCandidates = remember(records, incidentExportQuery) {
-        val query = incidentExportQuery.trim()
+        // 与日志页主搜索同一套规则：空格多词、-词 排除、"短语"、可搜时间。
+        val query = AppLogSearchQuery.parse(incidentExportQuery)
         records.asSequence()
             .filter { it.level == "ERROR" || it.level == "FATAL" }
             .sortedWith(
@@ -193,15 +229,19 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     .thenByDescending { it.sequence },
             )
             .filter { record ->
-                query.isBlank() ||
-                    record.tag.contains(query, ignoreCase = true) ||
-                    AppLogTitleResolver.title(record.tag, record.message).contains(query, ignoreCase = true) ||
-                    record.message.contains(query, ignoreCase = true) ||
-                    record.errorClass.contains(query, ignoreCase = true) ||
-                    record.rootCauseMessage.contains(query, ignoreCase = true) ||
-                    record.firstAppStackFrame.contains(query, ignoreCase = true) ||
-                    record.issueKey.contains(query, ignoreCase = true) ||
-                    record.eventId.contains(query, ignoreCase = true)
+                query.isEmpty || query.matchesFields(
+                    listOf(
+                        record.tag,
+                        AppLogTitleResolver.title(record.tag, record.message),
+                        record.message,
+                        record.errorClass,
+                        record.rootCauseMessage,
+                        record.firstAppStackFrame,
+                        record.issueKey,
+                        record.eventId,
+                        AppLogStore.formatTime(record.timestampMs),
+                    ).map { it.lowercase(Locale.ROOT) },
+                )
             }
             .toList()
     }
@@ -343,18 +383,39 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(records, filter, searchQuery, searchSnapshot) {
+    LaunchedEffect(filter, searchQuery, moduleFilter, timeRange) {
+        AppLogSearchMemory.levelFilter = filter
+        AppLogSearchMemory.query = searchQuery
+        AppLogSearchMemory.module = moduleFilter
+        AppLogSearchMemory.timeRange = timeRange
+    }
+
+    LaunchedEffect(records, filter, searchQuery, moduleFilter, timeRange, searchSnapshot) {
         val snapshot = searchSnapshot
         if (snapshot.sourceRecords !== records) return@LaunchedEffect
 
         // Keep the text field fully controlled by the raw input. Only list filtering is
         // coalesced, so rapid typing/deletion never waits for the search result to render.
         if (searchQuery.isNotBlank()) delay(120L)
-        visibleEntries = AppLogSearchIndex.search(
+        val result = AppLogSearchIndex.searchDetailed(
             entries = snapshot.entries,
             filter = filter,
             query = searchQuery,
+            module = moduleFilter,
+            sinceMs = timeRange.sinceMs(System.currentTimeMillis()),
         )
+        searchResult = result
+        visibleEntries = result.entries
+    }
+
+    val moduleOptions = remember(searchSnapshot) { AppLogSearchIndex.moduleCounts(searchSnapshot.entries) }
+    val hasActiveSearch = searchQuery.isNotBlank() || moduleFilter.isNotBlank() ||
+        timeRange != AppLogTimeRange.ALL || filter != "全部"
+    fun resetSearchAndFilters() {
+        searchQuery = ""
+        moduleFilter = ""
+        timeRange = AppLogTimeRange.ALL
+        filter = "全部"
     }
 
     val filterCounts = remember(records) {
@@ -521,7 +582,12 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 .padding(horizontal = 16.dp),
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
-            placeholder = { Text("搜索日志、模块或关键词", maxLines = 1) },
+            placeholder = { Text("搜索（空格=多词，-词=排除，可搜时间 10:58）", maxLines = 1) },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = {
+                rememberSearch(searchQuery)
+                focusManager.clearFocus()
+            }),
             leadingIcon = {
                 Icon(Icons.Filled.Search, contentDescription = null, tint = Color(0xFF8A9099))
             },
@@ -578,6 +644,128 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         selectedBorderColor = BrandBright,
                     ),
                 )
+            }
+        }
+
+        // 模块 / 时间范围：和上面的级别筛选、搜索词叠加生效。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box {
+                FilterChip(
+                    selected = moduleFilter.isNotBlank(),
+                    onClick = { showModuleMenu = true },
+                    label = { Text(if (moduleFilter.isBlank()) "模块：全部" else "模块：$moduleFilter", maxLines = 1) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = BrandBright,
+                        selectedLabelColor = Color.White,
+                        containerColor = Color(0xFFF3F4F6),
+                        labelColor = Color(0xFF454B53),
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = moduleFilter.isNotBlank(),
+                        borderColor = Color(0xFFE7E9EC),
+                        selectedBorderColor = BrandBright,
+                    ),
+                )
+                DropdownMenu(expanded = showModuleMenu, onDismissRequest = { showModuleMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("全部模块") },
+                        onClick = {
+                            moduleFilter = ""
+                            showModuleMenu = false
+                        },
+                    )
+                    moduleOptions.take(40).forEach { (label, count) ->
+                        DropdownMenuItem(
+                            text = { Text("$label  $count") },
+                            onClick = {
+                                moduleFilter = label
+                                showModuleMenu = false
+                            },
+                        )
+                    }
+                }
+            }
+            Box {
+                FilterChip(
+                    selected = timeRange != AppLogTimeRange.ALL,
+                    onClick = { showTimeRangeMenu = true },
+                    label = { Text("时间：${timeRange.label}", maxLines = 1) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = BrandBright,
+                        selectedLabelColor = Color.White,
+                        containerColor = Color(0xFFF3F4F6),
+                        labelColor = Color(0xFF454B53),
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = timeRange != AppLogTimeRange.ALL,
+                        borderColor = Color(0xFFE7E9EC),
+                        selectedBorderColor = BrandBright,
+                    ),
+                )
+                DropdownMenu(expanded = showTimeRangeMenu, onDismissRequest = { showTimeRangeMenu = false }) {
+                    AppLogTimeRange.values().forEach { range ->
+                        DropdownMenuItem(
+                            text = { Text(range.label) },
+                            onClick = {
+                                timeRange = range
+                                showTimeRangeMenu = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        if (searchQuery.isBlank() && searchHistory.isNotEmpty() && !selectionMode) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("最近搜索", color = Color(0xFF8A9099), style = MaterialTheme.typography.labelMedium)
+                searchHistory.forEach { item ->
+                    AssistChip(
+                        onClick = { searchQuery = item },
+                        label = { Text(item, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    )
+                }
+                TextButton(onClick = {
+                    searchHistory = emptyList()
+                    searchPreferences.edit().remove("history").apply()
+                }) { Text("清空") }
+            }
+        }
+
+        if (hasActiveSearch && searchSnapshot.sourceRecords === records) {
+            val detailsOnlyCount = searchResult?.detailsOnlyCount ?: 0
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    buildString {
+                        append("找到 ${visibleEntries.size} 条")
+                        if (detailsOnlyCount > 0) append("，其中 $detailsOnlyCount 条仅在详情里命中（排在后面）")
+                    },
+                    modifier = Modifier.weight(1f),
+                    color = Color(0xFF626A74),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(onClick = { resetSearchAndFilters() }) { Text("重置筛选") }
             }
         }
 
@@ -690,6 +878,9 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 if (records.isEmpty()) {
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = { refreshKey++ }) { Text("重新读取") }
+                } else if (hasActiveSearch) {
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = { resetSearchAndFilters() }) { Text("重置筛选") }
                 }
             }
         } else {
@@ -715,7 +906,10 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         diagnosis = entry.diagnosis,
                         selectionMode = selectionMode,
                         selected = recordKey in selectedLogKeys,
+                        highlightTerms = searchResult?.query?.include.orEmpty(),
+                        detailsOnly = searchResult?.isDetailsOnly(entry) == true,
                         onClick = {
+                            if (!selectionMode) rememberSearch(searchQuery)
                             if (selectionMode) {
                                 selectedLogKeys = if (recordKey in selectedLogKeys) {
                                     selectedLogKeys - recordKey
@@ -1531,6 +1725,8 @@ private fun LogRecordCard(
     diagnosis: io.translatetube.local.util.AppLogDiagnosis? = null,
     selectionMode: Boolean = false,
     selected: Boolean = false,
+    highlightTerms: List<String> = emptyList(),
+    detailsOnly: Boolean = false,
     onClick: () -> Unit,
 ) {
     val color = levelColor(record.level)
@@ -1604,7 +1800,7 @@ private fun LogRecordCard(
                 // Keep the complete title. Normal soft wrapping also handles mixed
                 // Chinese/English text, numbers and paths without a fixed line limit.
                 Text(
-                    AppLogTitleResolver.title(record.tag, record.message),
+                    highlightedLogText(AppLogTitleResolver.title(record.tag, record.message), highlightTerms),
                     modifier = Modifier.fillMaxWidth(),
                     color = Color(0xFF202124),
                     style = MaterialTheme.typography.bodyLarge,
@@ -1615,7 +1811,7 @@ private fun LogRecordCard(
                 )
 
                 Text(
-                    AppLogStore.formatTime(record.timestampMs),
+                    highlightedLogText(AppLogStore.formatTime(record.timestampMs), highlightTerms),
                     modifier = Modifier.fillMaxWidth(),
                     color = Color(0xFF858B93),
                     style = MaterialTheme.typography.labelSmall,
@@ -1628,7 +1824,7 @@ private fun LogRecordCard(
                 // Keep the module name on its own line so increased system font size
                 // cannot squeeze the level or recovery state out of the row.
                 Text(
-                    record.tag,
+                    highlightedLogText(record.tag, highlightTerms),
                     modifier = Modifier.fillMaxWidth(),
                     color = Color(0xFF68707A),
                     style = MaterialTheme.typography.labelMedium,
@@ -1652,6 +1848,14 @@ private fun LogRecordCard(
                             color = color,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    if (detailsOnly) {
+                        Text(
+                            "仅详情命中",
+                            color = Color(0xFF1A5FD0),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
                         )
                     }
                     if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
@@ -1679,7 +1883,7 @@ private fun LogRecordCard(
                                 .background(color.copy(alpha = 0.35f)),
                         )
                         Text(
-                            rootCause,
+                            highlightedLogText(rootCause, highlightTerms),
                             modifier = Modifier.weight(1f),
                             color = Color(0xFF626A74),
                             style = MaterialTheme.typography.bodySmall,
@@ -1696,6 +1900,22 @@ private fun LogRecordCard(
             color = Color(0xFFF0F1F3),
             thickness = 1.dp,
         )
+    }
+}
+
+/** 把命中的搜索词标成浅黄底，其余原样显示。 */
+private fun highlightedLogText(text: String, terms: List<String>): AnnotatedString {
+    val ranges = AppLogSearchHighlight.ranges(text, terms)
+    if (ranges.isEmpty()) return AnnotatedString(text)
+    return buildAnnotatedString {
+        append(text)
+        for (range in ranges) {
+            addStyle(
+                SpanStyle(background = Color(0xFFFFE9A8), color = Color(0xFF202124)),
+                range.first,
+                range.last + 1,
+            )
+        }
     }
 }
 
