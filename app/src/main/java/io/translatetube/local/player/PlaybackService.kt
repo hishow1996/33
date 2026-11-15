@@ -5444,6 +5444,23 @@ class PlaybackService : MediaSessionService() {
         forceRemountMedia: Boolean = false,
     ) {
         lastOpenStartedAtMs = android.os.SystemClock.elapsedRealtime()
+        // 防御：YouTube 会话键，但调用方既没带 videoId、也没有任何其它来源（网页直链/本地文件）。
+        // 这种调用以前必然走到「无音频源 → 音频提取失败」；会话键本身就带着视频 ID，直接取出来。
+        val videoId = videoId ?: key
+            .takeIf { it.startsWith("youtube:", ignoreCase = true) && remoteMediaUrl == null && localUri == null }
+            ?.substringAfter(':')
+            ?.takeIf { it.isNotBlank() }
+            ?.also {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackFlow",
+                    "YouTube 会话缺少视频 ID，已从会话键补全",
+                    diagnosticContext = mapOf(
+                        "会话键指纹" to safeDiagnosticSessionFingerprint(key),
+                        "是否带恢复状态" to (resumeState != null).toString(),
+                    ),
+                )
+            }
         if (PendingVideoHistoryDeletionStore.blocksPlayback(this@PlaybackService, key)) {
             ui.value = PlayerUiState(
                 phase = Phase.ERROR,
@@ -5757,6 +5774,11 @@ class PlaybackService : MediaSessionService() {
                     EngineRestartStage.DUBBING,
                     null -> checkpoint?.state
                 }
+                // 整表逐行跑翻译质量校验开销大，只为日志字段，不能放进下面的主线程块里
+                // （实测在主线程卡住 4 秒以上，系统弹出「无响应」）。在当前后台协程里先算好。
+                val checkpointStageNeedsTranslation = checkpointState?.let { restored ->
+                    restored.lines.any { needsSubtitleTranslation(it, restored.sourceLang) }
+                } ?: false
                 withContext(Dispatchers.Main.immediate) {
                     if (processingCheckpointRestoreGeneration.get() != checkpointLookupToken) {
                         return@withContext
@@ -5774,7 +5796,7 @@ class PlaybackService : MediaSessionService() {
                                 },
                                 "恢复字幕行数" to checkpointState.lines.size.toString(),
                                 "已完成译文行数" to checkpointState.lines.count { !it.zh.isNullOrBlank() }.toString(),
-                                "恢复阶段" to if (checkpointState.lines.any { needsSubtitleTranslation(it, checkpointState.sourceLang) }) {
+                                "恢复阶段" to if (checkpointStageNeedsTranslation) {
                                     "翻译"
                                 } else {
                                     "配音"
@@ -6106,12 +6128,18 @@ class PlaybackService : MediaSessionService() {
         val dubbingVolume = audioPrefs.getFloat(PREF_PLAYER_DUBBING_VOLUME, 1f).coerceIn(0f, 1f)
         val interruptedSpeakerRecognition =
             SpeakerRecognitionTaskJournal.restoreInterrupted(this, key)
+        // 恢复态是否还有未翻译的行：phase 和 progress 两处都要用，只算一次（open() 跑在主线程，
+        // 对整张字幕表逐行做质量校验不便宜）。
+        val resumeLinesNeedTranslation = !restoreCompletedSnapshot &&
+            effectiveResumeState != null &&
+            effectiveResumeState.lines.isNotEmpty() &&
+            !isChineseLanguage(effectiveResumeState.sourceLang) &&
+            effectiveResumeState.lines.any { needsSubtitleTranslation(it, effectiveResumeState.sourceLang) }
         ui.value = PlayerUiState(
             phase = when {
                 restoreCompletedSnapshot -> Phase.READY
                 effectiveResumeState == null || effectiveResumeState.lines.isEmpty() -> Phase.PARSING
-                !isChineseLanguage(effectiveResumeState.sourceLang) &&
-                    effectiveResumeState.lines.any { needsSubtitleTranslation(it, effectiveResumeState.sourceLang) } ->
+                resumeLinesNeedTranslation ->
                     Phase.TRANSLATING
                 else -> Phase.SYNTHESIZING
             },
@@ -6129,8 +6157,7 @@ class PlaybackService : MediaSessionService() {
                 restoreCompletedSnapshot -> ""
                 effectiveResumeState == null -> "解析中…"
                 effectiveResumeState.lines.isEmpty() -> "复用现有视频资源，准备重新转写…"
-                !isChineseLanguage(effectiveResumeState.sourceLang) &&
-                    effectiveResumeState.lines.any { needsSubtitleTranslation(it, effectiveResumeState.sourceLang) } ->
+                resumeLinesNeedTranslation ->
                     "恢复已获取的原文字幕，继续翻译…"
                 else -> "原文与中文字幕已就绪，正在准备配音…"
             },

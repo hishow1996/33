@@ -24,6 +24,19 @@ internal data class TranslationQualityDecision(
 
 /** Shared validation for live translation batches and restored subtitle caches. */
 internal object SubtitleTranslationQualityPolicy {
+    /**
+     * 函数体内反复 Regex(...) 会在每次调用时重新编译，字幕行一多（上千行 × 每行十几次）就会把
+     * 调用线程卡住数秒（实测在主线程触发「无响应」）。这里把静态模式的编译结果缓存起来复用。
+     * 仅用于模式写死在代码里的正则；带运行时插值的模式不要走这里，否则缓存会无限增长。
+     */
+    private val regexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
+    private fun cachedRegex(pattern: String): Regex =
+        regexCache.getOrPut(pattern) { Regex(pattern) }
+
+    private fun cachedRegex(pattern: String, option: RegexOption): Regex =
+        regexCache.getOrPut("$option\u0000$pattern") { Regex(pattern, option) }
+
     private val wordSeparatorRegex = Regex("""[^\p{L}\p{M}\p{N}]+""")
     private val urlPattern = Regex("""^(?:https?://|www\.)\S+$""", RegexOption.IGNORE_CASE)
     private val socialIdentifierPattern = Regex("""^[@#][\p{L}\p{M}\p{N}_][\p{L}\p{M}\p{N}_.-]{0,63}$""")
@@ -322,7 +335,7 @@ internal object SubtitleTranslationQualityPolicy {
      */
     private fun shortNameTokens(value: String): List<String>? {
         shortLatinTokens(value)?.let { return it }
-        val rawTokens = value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val rawTokens = value.trim().split(cachedRegex("\\s+")).filter { it.isNotEmpty() }
         if (rawTokens.isEmpty() || rawTokens.size > 3) return null
         val cleaned = rawTokens.map { rawToken ->
             rawToken.trim { it in shortTokenBoundaryPunctuation }
@@ -345,7 +358,7 @@ internal object SubtitleTranslationQualityPolicy {
 
     /** 1~5 个拉丁词；允许字幕包裹符号与行尾标点，但不放行数字和其他文字系统。 */
     private fun shortLatinTokens(value: String): List<String>? {
-        val rawTokens = value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val rawTokens = value.trim().split(cachedRegex("\\s+")).filter { it.isNotEmpty() }
         if (rawTokens.isEmpty() || rawTokens.size > 5) return null
         return rawTokens.map { rawToken ->
             // Subtitle speaker labels/names are often wrapped as "(John):", "[Sarah]" or "“John”".
@@ -365,7 +378,7 @@ internal object SubtitleTranslationQualityPolicy {
     private const val shortTokenInnerPunctuation = ".'’‐‑‒–—-"
 
     private fun hasTitleCasedWords(value: String): Boolean =
-        value.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.all { token ->
+        value.trim().split(cachedRegex("\\s+")).filter { it.isNotEmpty() }.all { token ->
             isTitleCasedNameToken(token, allowInitials = true)
         }
 
@@ -655,8 +668,8 @@ internal object SubtitleTranslationQualityPolicy {
             .lowercase(Locale.ROOT)
             .substringBefore("-")
         val commaDecimal = primaryLanguage in commaDecimalLanguages
-        val groupedComma = Regex("""^\d{1,3}(?:,\d{3})+$""").matches(number)
-        val groupedDot = Regex("""^\d{1,3}(?:\.\d{3})+$""").matches(number)
+        val groupedComma = cachedRegex("""^\d{1,3}(?:,\d{3})+$""").matches(number)
+        val groupedDot = cachedRegex("""^\d{1,3}(?:\.\d{3})+$""").matches(number)
         number = when {
             number.contains(",") && number.contains(".") && commaDecimal ->
                 number.replace(".", "").replace(',', '.')
@@ -811,7 +824,7 @@ internal object SubtitleTranslationQualityPolicy {
                     "欧元", "英镑", "百分之", "百分比",
                 ).any(suffix::startsWith)
                 val prefix = value.substring(maxOf(0, match.range.first - 6), match.range.first)
-                val hasNumberPrefix = Regex("""(?:是|为|為|有|共|达|達|约|約|第|超过|超過|至少|少于|少於|多于|多於|等于|等於|只剩|还剩|還剩|剩下|剩余|剩餘|重达|重達|长达|長達|正好|刚好|百分之)$""")
+                val hasNumberPrefix = cachedRegex("""(?:是|为|為|有|共|达|達|约|約|第|超过|超過|至少|少于|少於|多于|多於|等于|等於|只剩|还剩|還剩|剩下|剩余|剩餘|重达|重達|长达|長達|正好|刚好|百分之)$""")
                     .containsMatchIn(prefix)
                 val consecutiveDigits = match.value.length >= 2 &&
                     match.value.all { it in "零〇一二两兩三四五六七八九" }
@@ -892,28 +905,28 @@ internal object SubtitleTranslationQualityPolicy {
         val scriptLanguage = SubtitleLanguageDetector.detect(source)
         if (scriptLanguage != "auto") return SourceLanguagePolicy.canonicalPrimaryCode(scriptLanguage)
         val sample = source.trim()
-        val englishSignal = Regex(
+        val englishSignal = cachedRegex(
             """\b(?:i|you|we|they|he|she)\s+(?:(?:do|does|did)\s+not|(?:am|is|are|was|were|have|has|will|can|could|should|must|may|might)\s+not)\b|\b(?:don't|doesn't|didn't|can't|cannot|won't|isn't|aren't|wasn't|weren't|haven't|hasn't|shouldn't|mustn't)\b""",
             RegexOption.IGNORE_CASE,
-        ).containsMatchIn(sample) || Regex(
+        ).containsMatchIn(sample) || cachedRegex(
             """\b(?:i|you|we|they|he|she)\s+(?:do|does|did|am|is|are|was|were|have|has|will|can|could|should|must|may|might)\s+\w+""",
             RegexOption.IGNORE_CASE,
         ).containsMatchIn(sample)
         if (englishSignal) return "en"
 
-        val frenchSignal = Regex(
+        val frenchSignal = cachedRegex(
             """\bne\b.{0,48}\b(?:pas|plus|jamais|rien|personne)\b|\best-ce\s+que\b""",
             RegexOption.IGNORE_CASE,
         ).containsMatchIn(sample)
         if (frenchSignal) return "fr"
 
-        val germanSignal = Regex(
+        val germanSignal = cachedRegex(
             """\bich\b.{0,48}\b(?:nicht|kein|keine|nie|nichts)\b|\b(?:ich|du|er|sie|wir)\s+(?:bin|bist|ist|sind|war|waren|kann|können|will|wollen)\b""",
             RegexOption.IGNORE_CASE,
         ).containsMatchIn(sample)
         if (germanSignal) return "de"
 
-        val spanishSignal = Regex(
+        val spanishSignal = cachedRegex(
             """\bno\s+(?:quiero|puedo|sé|se|estoy|soy|tengo|hay|vamos)\b|\b(?:yo|tú|tu|él|ella|nosotros)\s+(?:no\s+)?(?:quiero|puedo|sé|se|estoy|soy|tengo)\b""",
             RegexOption.IGNORE_CASE,
         ).containsMatchIn(sample)
@@ -944,19 +957,19 @@ internal object SubtitleTranslationQualityPolicy {
         val intent = speechIntentMismatchReason(source, target, language)
         if (intent != null) return intent
 
-        val sourceAlready = Regex("""\balready\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val sourceNotYet = Regex("""\bnot\s+yet\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val targetAlready = Regex("""已经|早已|早就|已經""").containsMatchIn(target)
-        val targetNotYet = Regex("""还没|还未|尚未|仍未|还没有|還沒|還未|還沒有""").containsMatchIn(target)
+        val sourceAlready = cachedRegex("""\balready\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceNotYet = cachedRegex("""\bnot\s+yet\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetAlready = cachedRegex("""已经|早已|早就|已經""").containsMatchIn(target)
+        val targetNotYet = cachedRegex("""还没|还未|尚未|仍未|还没有|還沒|還未|還沒有""").containsMatchIn(target)
         if ((sourceAlready && targetNotYet && !targetAlready) ||
             (sourceNotYet && targetAlready && !targetNotYet)
         ) return "SEMANTIC_RELATION_MISMATCH：原文 already/not yet 的完成状态与译文明确表达的时间状态相反"
 
-        val sourceStill = Regex("""\bstill\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val sourceNoLonger = Regex("""\b(?:no\s+longer|not\s+anymore)\b""", RegexOption.IGNORE_CASE)
+        val sourceStill = cachedRegex("""\bstill\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceNoLonger = cachedRegex("""\b(?:no\s+longer|not\s+anymore)\b""", RegexOption.IGNORE_CASE)
             .containsMatchIn(source)
-        val targetStill = Regex("""仍然|依然|仍旧|还是""").containsMatchIn(target)
-        val targetNoLonger = Regex("""不再|再也不|已不再|已经不在|已不在""").containsMatchIn(target)
+        val targetStill = cachedRegex("""仍然|依然|仍旧|还是""").containsMatchIn(target)
+        val targetNoLonger = cachedRegex("""不再|再也不|已不再|已经不在|已不在""").containsMatchIn(target)
         if ((sourceStill && targetNoLonger && !targetStill) ||
             (sourceNoLonger && targetStill && !targetNoLonger)
         ) return "SEMANTIC_RELATION_MISMATCH：原文 still/no longer 的持续状态与译文明确表达的状态相反"
@@ -964,7 +977,7 @@ internal object SubtitleTranslationQualityPolicy {
         val sourceProhibition = englishProhibition.containsMatchIn(source)
         val sourceObligation = !sourceProhibition && englishObligation.containsMatchIn(source)
         val sourceRecommendation = englishRecommendation.containsMatchIn(source)
-        val mayIsPermission = Regex("""\b(?:may\s+(?:i|we|you)\b|(?:i|we|you)\s+may\b)""", RegexOption.IGNORE_CASE)
+        val mayIsPermission = cachedRegex("""\b(?:may\s+(?:i|we|you)\b|(?:i|we|you)\s+may\b)""", RegexOption.IGNORE_CASE)
             .containsMatchIn(source)
         val sourcePossibility = !mayIsPermission && englishPossibility.containsMatchIn(source)
         val targetProhibition = chineseProhibition.containsMatchIn(target)
@@ -1006,34 +1019,34 @@ internal object SubtitleTranslationQualityPolicy {
             return "SEMANTIC_ENTITY_MISMATCH：原文明确的人称代词与译文使用的性别代词不一致"
         }
 
-        val sourceBefore = Regex("""\bbefore\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val sourceAfter = Regex("""\bafter\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val targetBefore = Regex("""之前|以前|此前|先前|在.{0,8}之前""").containsMatchIn(target)
-        val targetAfter = Regex("""之后|以后|过后|随后|之後|以後|過後|隨後|在.{0,8}之后|在.{0,8}之後""")
+        val sourceBefore = cachedRegex("""\bbefore\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceAfter = cachedRegex("""\bafter\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetBefore = cachedRegex("""之前|以前|此前|先前|在.{0,8}之前""").containsMatchIn(target)
+        val targetAfter = cachedRegex("""之后|以后|过后|随后|之後|以後|過後|隨後|在.{0,8}之后|在.{0,8}之後""")
             .containsMatchIn(target)
         if (sourceBefore.xor(sourceAfter) &&
             ((sourceBefore && targetAfter && !targetBefore) ||
                 (sourceAfter && targetBefore && !targetAfter))
         ) return "SEMANTIC_RELATION_MISMATCH：原文 before/after 的时间先后方向与译文明确表达的方向相反"
 
-        val sourceUntil = Regex("""\buntil\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val targetUntil = Regex("""直到|直至|为止|為止|等到""").containsMatchIn(target)
+        val sourceUntil = cachedRegex("""\buntil\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetUntil = cachedRegex("""直到|直至|为止|為止|等到""").containsMatchIn(target)
         if (sourceUntil && targetBefore && !targetUntil) {
             return "SEMANTIC_RELATION_MISMATCH：原文 until 的截止时间被译文明确表达成截止点之前"
         }
 
-        val sourceBecause = Regex("""\bbecause\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val sourceAlthough = Regex("""\b(?:although|though|even though)\b""", RegexOption.IGNORE_CASE)
+        val sourceBecause = cachedRegex("""\bbecause\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val sourceAlthough = cachedRegex("""\b(?:although|though|even though)\b""", RegexOption.IGNORE_CASE)
             .containsMatchIn(source)
-        val targetCause = Regex("""因为|由于|所以|因此|因為|由於""").containsMatchIn(target)
-        val targetConcession = Regex("""虽然|尽管|即使|可是|然而|雖然|儘管""").containsMatchIn(target)
+        val targetCause = cachedRegex("""因为|由于|所以|因此|因為|由於""").containsMatchIn(target)
+        val targetConcession = cachedRegex("""虽然|尽管|即使|可是|然而|雖然|儘管""").containsMatchIn(target)
         if ((sourceBecause && targetConcession && !targetCause) ||
             (sourceAlthough && targetCause && !targetConcession)
         ) return "SEMANTIC_RELATION_MISMATCH：原文的因果/让步关系与译文明确使用的关系词不一致"
 
-        val sourceUnless = Regex("""\bunless\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-        val targetIf = Regex("""如果|若|假如|要是""").containsMatchIn(target)
-        val targetHasConditionNegation = Regex("""不|没|未|無|否则|否則|除非""").containsMatchIn(target)
+        val sourceUnless = cachedRegex("""\bunless\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+        val targetIf = cachedRegex("""如果|若|假如|要是""").containsMatchIn(target)
+        val targetHasConditionNegation = cachedRegex("""不|没|未|無|否则|否則|除非""").containsMatchIn(target)
         if (sourceUnless && targetIf && !targetHasConditionNegation) {
             return "SEMANTIC_RELATION_MISMATCH：原文 unless 被译成没有否定限定的普通 if 条件，条件逻辑可能反转"
         }
@@ -1060,29 +1073,29 @@ internal object SubtitleTranslationQualityPolicy {
         language: String,
     ): String? {
         val neutralNegativeSurface = when (language) {
-            "ja" -> Regex("""問題(?:は)?(?:ありません|ない(?:です)?|なかった)""").containsMatchIn(source)
-            "ko" -> Regex("""문제\s*없(?:다|어요|습니다|었어요)""").containsMatchIn(source)
-            "fr" -> Regex("""(?:pas\s+de\s+problème|aucun\s+problème|sans\s+problème|pas\s+mal)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "de" -> Regex("""(?:kein\s+Problem|nicht\s+schlecht)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "es" -> Regex("""(?:no\s+hay\s+problema|sin\s+problema|no\s+está\s+mal|no\s+esta\s+mal)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "pt" -> Regex("""(?:não\s+há\s+problema|nao\s+há\s+problema|sem\s+problema|não\s+é\s+ruim|nao\s+é\s+ruim)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "ru" -> Regex("""(?:нет\s+проблем|без\s+проблем|ничего\s+страшного|неплохо)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "ja" -> cachedRegex("""問題(?:は)?(?:ありません|ない(?:です)?|なかった)""").containsMatchIn(source)
+            "ko" -> cachedRegex("""문제\s*없(?:다|어요|습니다|었어요)""").containsMatchIn(source)
+            "fr" -> cachedRegex("""(?:pas\s+de\s+problème|aucun\s+problème|sans\s+problème|pas\s+mal)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "de" -> cachedRegex("""(?:kein\s+Problem|nicht\s+schlecht)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "es" -> cachedRegex("""(?:no\s+hay\s+problema|sin\s+problema|no\s+está\s+mal|no\s+esta\s+mal)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "pt" -> cachedRegex("""(?:não\s+há\s+problema|nao\s+há\s+problema|sem\s+problema|não\s+é\s+ruim|nao\s+é\s+ruim)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "ru" -> cachedRegex("""(?:нет\s+проблем|без\s+проблем|ничего\s+страшного|неплохо)""", RegexOption.IGNORE_CASE).containsMatchIn(source)
             else -> false
         }
         if (neutralNegativeSurface) return null
         val sourceNegated = when (language) {
-            "ja" -> Regex("""(?:ではない|じゃない|ではありません|じゃありません|ではなかった|じゃなかった|ません|なかった|ないでください|ずに|わけではない|行かない|来ない|食べない|見ない|聞かない|話さない|知らない|分からない|使わない|買わない|書かない|できない|出来ない|持たない|要らない|入らない)""").containsMatchIn(source)
-            "ko" -> Regex("""(?:안\s|(?:^|\s)안(?!녕|심|전)[가-힣]+|못\s|없(?:다|어요|습니다|었어요)|아니(?:다|에요|예요)|지\s*않|지\s*못|않(?:다|아요|습니다))""").containsMatchIn(source)
-            "fr" -> Regex("""\bne\b.{0,48}\b(?:pas|plus|jamais|rien|personne|aucun|aucune)\b|\bn['’]\w+.{0,48}\b(?:pas|plus|jamais|rien|personne)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) ||
-                Regex("""\b(?:aucun|aucune|sans|jamais|personne|rien)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "de" -> Regex("""\b(?:nicht|kein(?:e|en|er|em)?|nie|niemals|ohne|nichts)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
-                !Regex("""\bnicht\s+nur\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "es" -> Regex("""\b(?:no|nunca|jamás|jamas|sin|ningún|ningun|ninguna|nadie|nada|tampoco)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
-                !Regex("""\bno\s+sólo\b|\bno\s+solo\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "pt" -> Regex("""\b(?:não|nao|nunca|jamais|sem|ninguém|ninguem|nada|tampouco|nenhum|nenhuma)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
-                !Regex("""\bnão\s+só\b|\bnao\s+so\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
-            "ru" -> Regex("""\b(?:не|ни|нет|никогда|никто|ничего|никакой|никакая|никакое|без|нельзя)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
-                !Regex("""\bне\s+только\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "ja" -> cachedRegex("""(?:ではない|じゃない|ではありません|じゃありません|ではなかった|じゃなかった|ません|なかった|ないでください|ずに|わけではない|行かない|来ない|食べない|見ない|聞かない|話さない|知らない|分からない|使わない|買わない|書かない|できない|出来ない|持たない|要らない|入らない)""").containsMatchIn(source)
+            "ko" -> cachedRegex("""(?:안\s|(?:^|\s)안(?!녕|심|전)[가-힣]+|못\s|없(?:다|어요|습니다|었어요)|아니(?:다|에요|예요)|지\s*않|지\s*못|않(?:다|아요|습니다))""").containsMatchIn(source)
+            "fr" -> cachedRegex("""\bne\b.{0,48}\b(?:pas|plus|jamais|rien|personne|aucun|aucune)\b|\bn['’]\w+.{0,48}\b(?:pas|plus|jamais|rien|personne)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) ||
+                cachedRegex("""\b(?:aucun|aucune|sans|jamais|personne|rien)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "de" -> cachedRegex("""\b(?:nicht|kein(?:e|en|er|em)?|nie|niemals|ohne|nichts)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !cachedRegex("""\bnicht\s+nur\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "es" -> cachedRegex("""\b(?:no|nunca|jamás|jamas|sin|ningún|ningun|ninguna|nadie|nada|tampoco)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !cachedRegex("""\bno\s+sólo\b|\bno\s+solo\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "pt" -> cachedRegex("""\b(?:não|nao|nunca|jamais|sem|ninguém|ninguem|nada|tampouco|nenhum|nenhuma)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !cachedRegex("""\bnão\s+só\b|\bnao\s+so\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
+            "ru" -> cachedRegex("""\b(?:не|ни|нет|никогда|никто|ничего|никакой|никакая|никакое|без|нельзя)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source) &&
+                !cachedRegex("""\bне\s+только\b""", RegexOption.IGNORE_CASE).containsMatchIn(source)
             else -> false
         }
         val targetNegated = hasClearChineseNegation(target)
@@ -1101,18 +1114,18 @@ internal object SubtitleTranslationQualityPolicy {
         target: String,
         language: String,
     ): String? {
-        val sourceQuestionMark = Regex("""[?？][\"'”’）)]?\s*$""").containsMatchIn(source)
+        val sourceQuestionMark = cachedRegex("""[?？][\"'”’）)]?\s*$""").containsMatchIn(source)
         val sourceQuestionForm = when (language) {
-            "en" -> Regex("""^(?:who|what|where|when|why|how|which|whom|whose)\s+(?:is|are|am|was|were|do|does|did|can|could|would|will|should|have|has|had)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
-            "fr" -> Regex("""^est-ce\s+que\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
-            "de" -> Regex("""^(?:wer|was|wo|wann|warum|weshalb|wie|welche|welcher|welches)\s+(?:ist|sind|war|waren|bist|hast|hat|kann|können|kommt|kommen|geht|gehen)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
+            "en" -> cachedRegex("""^(?:who|what|where|when|why|how|which|whom|whose)\s+(?:is|are|am|was|were|do|does|did|can|could|would|will|should|have|has|had)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
+            "fr" -> cachedRegex("""^est-ce\s+que\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
+            "de" -> cachedRegex("""^(?:wer|was|wo|wann|warum|weshalb|wie|welche|welcher|welches)\s+(?:ist|sind|war|waren|bist|hast|hat|kann|können|kommt|kommen|geht|gehen)\b""", RegexOption.IGNORE_CASE).containsMatchIn(source.trim())
             "es", "pt" -> source.trimStart().startsWith("¿")
-            "ja" -> Regex("""(?:か|のか)[。.!！?？]?\s*$""").containsMatchIn(source.trim())
-            "ko" -> Regex("""(?:습니까|ㅂ니까|나요|까요|니|냐)[。.!！?？]?\s*$""").containsMatchIn(source.trim())
+            "ja" -> cachedRegex("""(?:か|のか)[。.!！?？]?\s*$""").containsMatchIn(source.trim())
+            "ko" -> cachedRegex("""(?:습니까|ㅂ니까|나요|까요|니|냐)[。.!！?？]?\s*$""").containsMatchIn(source.trim())
             else -> false
         }
-        val targetQuestion = Regex("""[?？]\s*$""").containsMatchIn(target.trim()) ||
-            Regex("""(?:吗|嗎|呢|么|麼|什么|什麼|谁|誰|哪里|哪裡|为什么|為什麼|多少|如何|是否|几|幾)[。.!！?？]?$""")
+        val targetQuestion = cachedRegex("""[?？]\s*$""").containsMatchIn(target.trim()) ||
+            cachedRegex("""(?:吗|嗎|呢|么|麼|什么|什麼|谁|誰|哪里|哪裡|为什么|為什麼|多少|如何|是否|几|幾)[。.!！?？]?$""")
                 .containsMatchIn(target.trim())
         if ((sourceQuestionMark || sourceQuestionForm) && !targetQuestion) {
             return "SEMANTIC_INTENT_MISMATCH：原文是疑问表达，但译文没有保留疑问意图"
@@ -1126,64 +1139,64 @@ internal object SubtitleTranslationQualityPolicy {
         language: String,
     ): String? {
         val before = when (language) {
-            "fr" -> Regex("""\bavant\b""", RegexOption.IGNORE_CASE)
-            "de" -> Regex("""\bvor\b""", RegexOption.IGNORE_CASE)
-            "es", "pt" -> Regex("""\bantes\b""", RegexOption.IGNORE_CASE)
-            "ru" -> Regex("""\bдо\b""", RegexOption.IGNORE_CASE)
-            "ja" -> Regex("""前に|以前""")
-            "ko" -> Regex("""전에|이전에""")
+            "fr" -> cachedRegex("""\bavant\b""", RegexOption.IGNORE_CASE)
+            "de" -> cachedRegex("""\bvor\b""", RegexOption.IGNORE_CASE)
+            "es", "pt" -> cachedRegex("""\bantes\b""", RegexOption.IGNORE_CASE)
+            "ru" -> cachedRegex("""\bдо\b""", RegexOption.IGNORE_CASE)
+            "ja" -> cachedRegex("""前に|以前""")
+            "ko" -> cachedRegex("""전에|이전에""")
             else -> null
         }?.containsMatchIn(source) == true
         val after = when (language) {
-            "fr" -> Regex("""\b(?:après|apres)\b""", RegexOption.IGNORE_CASE)
-            "de" -> Regex("""\bnach\b""", RegexOption.IGNORE_CASE)
-            "es" -> Regex("""\b(?:después|despues)\b""", RegexOption.IGNORE_CASE)
-            "pt" -> Regex("""\bdepois\b""", RegexOption.IGNORE_CASE)
-            "ru" -> Regex("""\bпосле\b""", RegexOption.IGNORE_CASE)
-            "ja" -> Regex("""後に|あとで|後で|以後""")
-            "ko" -> Regex("""후에|이후""")
+            "fr" -> cachedRegex("""\b(?:après|apres)\b""", RegexOption.IGNORE_CASE)
+            "de" -> cachedRegex("""\bnach\b""", RegexOption.IGNORE_CASE)
+            "es" -> cachedRegex("""\b(?:después|despues)\b""", RegexOption.IGNORE_CASE)
+            "pt" -> cachedRegex("""\bdepois\b""", RegexOption.IGNORE_CASE)
+            "ru" -> cachedRegex("""\bпосле\b""", RegexOption.IGNORE_CASE)
+            "ja" -> cachedRegex("""後に|あとで|後で|以後""")
+            "ko" -> cachedRegex("""후에|이후""")
             else -> null
         }?.containsMatchIn(source) == true
-        val targetBefore = Regex("""之前|以前|此前|先前|在.{0,8}之前""").containsMatchIn(target)
-        val targetAfter = Regex("""之后|以后|过后|随后|之後|以後|過後|隨後|在.{0,8}之后|在.{0,8}之後""").containsMatchIn(target)
+        val targetBefore = cachedRegex("""之前|以前|此前|先前|在.{0,8}之前""").containsMatchIn(target)
+        val targetAfter = cachedRegex("""之后|以后|过后|随后|之後|以後|過後|隨後|在.{0,8}之后|在.{0,8}之後""").containsMatchIn(target)
         if (before.xor(after) && ((before && targetAfter && !targetBefore) || (after && targetBefore && !targetAfter))) {
             return "SEMANTIC_RELATION_MISMATCH：原文时间先后关系与译文明确表达的方向相反"
         }
 
         val unless = when (language) {
-            "fr" -> Regex("""à\s+moins\s+que""", RegexOption.IGNORE_CASE)
-            "de" -> Regex("""es\s+sei\s+denn""", RegexOption.IGNORE_CASE)
-            "es", "pt" -> Regex("""a\s+menos\s+que""", RegexOption.IGNORE_CASE)
-            "ja" -> Regex("""でない限り|ない限り""")
-            "ko" -> Regex("""하지\s*않으면""")
+            "fr" -> cachedRegex("""à\s+moins\s+que""", RegexOption.IGNORE_CASE)
+            "de" -> cachedRegex("""es\s+sei\s+denn""", RegexOption.IGNORE_CASE)
+            "es", "pt" -> cachedRegex("""a\s+menos\s+que""", RegexOption.IGNORE_CASE)
+            "ja" -> cachedRegex("""でない限り|ない限り""")
+            "ko" -> cachedRegex("""하지\s*않으면""")
             else -> null
         }?.containsMatchIn(source) == true
-        val targetIf = Regex("""如果|若|假如|要是""").containsMatchIn(target)
-        val targetHasConditionNegation = Regex("""不|没|未|無|否则|否則|除非""").containsMatchIn(target)
+        val targetIf = cachedRegex("""如果|若|假如|要是""").containsMatchIn(target)
+        val targetHasConditionNegation = cachedRegex("""不|没|未|無|否则|否則|除非""").containsMatchIn(target)
         if (unless && targetIf && !targetHasConditionNegation) {
             return "SEMANTIC_RELATION_MISMATCH：原文的否定条件被译成没有否定限定的普通条件"
         }
 
         val sourceCause = when (language) {
-            "fr" -> Regex("""\b(?:parce\s+que|car|puisque)\b""", RegexOption.IGNORE_CASE)
-            "de" -> Regex("""\b(?:weil|da)\b""", RegexOption.IGNORE_CASE)
-            "es" -> Regex("""\b(?:porque|ya\s+que)\b""", RegexOption.IGNORE_CASE)
-            "pt" -> Regex("""\b(?:porque|já\s+que|ja\s+que|pois)\b""", RegexOption.IGNORE_CASE)
-            "ja" -> Regex("""から|ので|ため""")
-            "ko" -> Regex("""때문에|니까|므로""")
+            "fr" -> cachedRegex("""\b(?:parce\s+que|car|puisque)\b""", RegexOption.IGNORE_CASE)
+            "de" -> cachedRegex("""\b(?:weil|da)\b""", RegexOption.IGNORE_CASE)
+            "es" -> cachedRegex("""\b(?:porque|ya\s+que)\b""", RegexOption.IGNORE_CASE)
+            "pt" -> cachedRegex("""\b(?:porque|já\s+que|ja\s+que|pois)\b""", RegexOption.IGNORE_CASE)
+            "ja" -> cachedRegex("""から|ので|ため""")
+            "ko" -> cachedRegex("""때문에|니까|므로""")
             else -> null
         }?.containsMatchIn(source) == true
         val sourceConcession = when (language) {
-            "fr" -> Regex("""\b(?:bien\s+que|même\s+si|meme\s+si|quoique)\b""", RegexOption.IGNORE_CASE)
-            "de" -> Regex("""\b(?:obwohl|wenngleich)\b""", RegexOption.IGNORE_CASE)
-            "es" -> Regex("""\b(?:aunque|a\s+pesar\s+de)\b""", RegexOption.IGNORE_CASE)
-            "pt" -> Regex("""\b(?:embora|apesar\s+de)\b""", RegexOption.IGNORE_CASE)
-            "ja" -> Regex("""けど|けれど|のに|にもかかわらず""")
-            "ko" -> Regex("""지만|는데도|더라도|에도\s+불구하고""")
+            "fr" -> cachedRegex("""\b(?:bien\s+que|même\s+si|meme\s+si|quoique)\b""", RegexOption.IGNORE_CASE)
+            "de" -> cachedRegex("""\b(?:obwohl|wenngleich)\b""", RegexOption.IGNORE_CASE)
+            "es" -> cachedRegex("""\b(?:aunque|a\s+pesar\s+de)\b""", RegexOption.IGNORE_CASE)
+            "pt" -> cachedRegex("""\b(?:embora|apesar\s+de)\b""", RegexOption.IGNORE_CASE)
+            "ja" -> cachedRegex("""けど|けれど|のに|にもかかわらず""")
+            "ko" -> cachedRegex("""지만|는데도|더라도|에도\s+불구하고""")
             else -> null
         }?.containsMatchIn(source) == true
-        val targetCause = Regex("""因为|由于|所以|因此|因為|由於""").containsMatchIn(target)
-        val targetConcession = Regex("""虽然|尽管|即使|可是|然而|雖然|儘管""").containsMatchIn(target)
+        val targetCause = cachedRegex("""因为|由于|所以|因此|因為|由於""").containsMatchIn(target)
+        val targetConcession = cachedRegex("""虽然|尽管|即使|可是|然而|雖然|儘管""").containsMatchIn(target)
         if ((sourceCause && targetConcession && !targetCause) ||
             (sourceConcession && targetCause && !targetConcession)
         ) return "SEMANTIC_RELATION_MISMATCH：原文因果/让步关系与译文明确使用的关系词不一致"
@@ -1218,12 +1231,12 @@ internal object SubtitleTranslationQualityPolicy {
             SourceLanguagePolicy.isChinese(sourceLanguage)
         ) return null
 
-        val monthDatePattern = Regex(
+        val monthDatePattern = cachedRegex(
             """\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{4})\b""",
             RegexOption.IGNORE_CASE,
         )
         val sourceMonthDate = monthDatePattern.find(sourceText)
-        val targetCalendarDate = Regex("""(?<!\d)(\d{4})年(\d{1,2})月(\d{1,2})日""")
+        val targetCalendarDate = cachedRegex("""(?<!\d)(\d{4})年(\d{1,2})月(\d{1,2})日""")
             .find(translatedText)
         val ignoredSourceDateRanges = if (sourceMonthDate != null && targetCalendarDate != null) {
             val monthNames = listOf(
@@ -1265,7 +1278,7 @@ internal object SubtitleTranslationQualityPolicy {
         } else {
             emptyList()
         }
-        val sourceHasIndefiniteArticle = Regex("""\b(?:a|an)\b""", RegexOption.IGNORE_CASE)
+        val sourceHasIndefiniteArticle = cachedRegex("""\b(?:a|an)\b""", RegexOption.IGNORE_CASE)
             .containsMatchIn(sourceText)
         val translatedNumbers = normalizedTranslationNumbers(
             translatedText,
@@ -1370,7 +1383,7 @@ internal object SubtitleTranslationQualityPolicy {
                 "毫升", "升", "元", "美元", "欧元", "英镑", "度", "百分之", "百分比", "点", "點", "分",
             ).any(suffix::startsWith)
             val prefix = value.substring(maxOf(0, match.range.first - 6), match.range.first)
-            val hasNumberPrefix = Regex("""(?:是|为|為|有|共|达|達|约|約|第|超过|超過|至少|少于|少於|多于|多於|等于|等於|只剩|还剩|還剩|剩下|剩余|剩餘|重达|重達|长达|長達|正好|刚好|百分之)$""")
+            val hasNumberPrefix = cachedRegex("""(?:是|为|為|有|共|达|達|约|約|第|超过|超過|至少|少于|少於|多于|多於|等于|等於|只剩|还剩|還剩|剩下|剩余|剩餘|重达|重達|长达|長達|正好|刚好|百分之)$""")
                 .containsMatchIn(prefix)
             val trailingHalf = (raw == "半" || raw == "一半") ||
                 ((raw.endsWith('点') || raw.endsWith('點')) && suffix.startsWith("半"))
@@ -1415,14 +1428,14 @@ internal object SubtitleTranslationQualityPolicy {
     private fun parseChineseInteger(value: String): String? {
         if (value.isEmpty()) return "0"
         // Colloquial "一万三" means 13,000, not 10,003.
-        val tenThousandShorthand = Regex("""^([一二两兩三四五六七八九])([万萬])([一二两兩三四五六七八九])$""")
+        val tenThousandShorthand = cachedRegex("""^([一二两兩三四五六七八九])([万萬])([一二两兩三四五六七八九])$""")
             .matchEntire(value)
         if (tenThousandShorthand != null) {
             val first = chineseDigitValue(tenThousandShorthand.groupValues[1].first()) ?: return null
             val last = chineseDigitValue(tenThousandShorthand.groupValues[3].first()) ?: return null
             return (first * 10_000 + last * 1_000).toString()
         }
-        val lowerMagnitudeShorthand = Regex("""^([一二两兩三四五六七八九])([千百])([一二两兩三四五六七八九])$""")
+        val lowerMagnitudeShorthand = cachedRegex("""^([一二两兩三四五六七八九])([千百])([一二两兩三四五六七八九])$""")
             .matchEntire(value)
         if (lowerMagnitudeShorthand != null) {
             val first = chineseDigitValue(lowerMagnitudeShorthand.groupValues[1].first()) ?: return null
@@ -2037,7 +2050,7 @@ internal object SubtitleTranslationQualityPolicy {
             .sortedByDescending(String::length)
             .forEach { name ->
                 if (name.isNotBlank()) {
-                    remaining = Regex(
+                    remaining = cachedRegex(
                         Regex.escape(name),
                         RegexOption.IGNORE_CASE,
                     ).replace(remaining, " ")
@@ -2053,7 +2066,7 @@ internal object SubtitleTranslationQualityPolicy {
         // Split script runs inside each whitespace-delimited token too. This lets names such as
         // "我去了New York" or "このアプリはTikTokで" be found without treating the whole
         // mixed-script fragment as one unmatchable token.
-        val tokens = sourceText.trim().split(Regex("\\s+"))
+        val tokens = sourceText.trim().split(cachedRegex("\\s+"))
             .flatMap { rawToken ->
                 val split = splitMixedScriptTokens(rawToken)
                 if (split.size > 1) split else listOf(rawToken)
@@ -2171,7 +2184,7 @@ internal object SubtitleTranslationQualityPolicy {
         val trimmed = value.trim()
         if (trimmed.isEmpty() || trimmed.any { it in "!?:" }) return false
         val listText = trimmed.trimEnd(',', '，', '、', ';', '；', '.', '。').trim()
-        val items = listText.split(Regex("[,，、;；]")).map { it.trim() }
+        val items = listText.split(cachedRegex("[,，、;；]")).map { it.trim() }
         if (items.size !in 2..8 || items.any { it.isEmpty() }) return false
         return items.all(::isProperNameListItem)
     }
@@ -2184,7 +2197,7 @@ internal object SubtitleTranslationQualityPolicy {
             normalized in commonShortPhrases || normalized in properNameListStopWords
         ) return false
 
-        val tokens = item.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val tokens = item.split(cachedRegex("\\s+")).filter { it.isNotEmpty() }
         if (tokens.isEmpty() || tokens.size > 5) return false
         val letters = item.filter { it.isLetter() }
         if (letters.length < 2) return false
@@ -2240,7 +2253,7 @@ internal object SubtitleTranslationQualityPolicy {
         if (normalizedValue in commonShortPhrases) return false
         if (socialIdentifierPattern.matches(value) || opaqueVersionIdentifierPattern.matches(value)) return true
         if (isProperNameListCue(value)) return true
-        val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val tokens = value.split(cachedRegex("\\s+")).filter { it.isNotEmpty() }
         if (normalizedValue in knownProperNamePhrases &&
             isKnownTitlePhrase(tokens)
         ) return true
@@ -2328,7 +2341,7 @@ internal object SubtitleTranslationQualityPolicy {
     }
 
     private fun isTitleCasedNameToken(token: String, allowInitials: Boolean): Boolean {
-        val letterSegments = token.split(Regex("[-'’]")).filter { it.isNotEmpty() }
+        val letterSegments = token.split(cachedRegex("[-'’]")).filter { it.isNotEmpty() }
         if (letterSegments.size > 1) {
             return letterSegments.withIndex().all { (index, segment) ->
                 val letters = segment.filter { it.isLetter() }
