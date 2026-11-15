@@ -1965,8 +1965,8 @@ internal object SubtitleTranslationQualityPolicy {
         // Source-grounded names and terms are excluded before these measurements.
         val singleEmbeddedProperNameAccepted =
             ungroundedProperNameTokenCount == 1 &&
-                hanCount >= 5 &&
-                ungroundedLetters <= 10 &&
+                hanCount >= 4 &&
+                ungroundedLetters <= 12 &&
                 foreignLetters == ungroundedLetters
         if (ungroundedProperName &&
             !(hanCount >= 3 && hanCount > ungroundedLetters * 2) &&
@@ -1974,15 +1974,15 @@ internal object SubtitleTranslationQualityPolicy {
         ) {
             return "译文含原文里找不到出处的外文名/词，汉字数不足以放行" +
                 "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
-                "放行需汉字≥3且超过外文名字母2倍，或单个≤10字母外文名且汉字≥5）"
+                "放行需汉字≥3且超过外文名字母2倍，或单个≤12字母外文名且汉字≥4）"
         }
         val longForeignRemainder =
             longestForeignTokenLetters >= 8 ||
                 (foreignTokenCount >= 3 && foreignLetters >= 18) ||
                 (foreignTokenCount >= 4 && foreignLetters >= 14)
-        if (foreignLetters >= 8 && foreignLetters > hanCount * 3 && longForeignRemainder) {
+        if (foreignLetters >= 8 && foreignLetters > hanCount * 4 && longForeignRemainder) {
             return "译文仍保留较长外语片段，外文字母明显多于中文汉字" +
-                "（触发规则=外文残留达到8字且超过汉字3倍，并含长外语词/长短语；" +
+                "（触发规则=外文残留达到8字且超过汉字4倍，并含长外语词/长短语；" +
                 "汉字=$hanCount，非汉字外文字母=$foreignLetters，" +
                 "最长外语词=$longestForeignTokenLetters，外语词数=$foreignTokenCount）"
         }
