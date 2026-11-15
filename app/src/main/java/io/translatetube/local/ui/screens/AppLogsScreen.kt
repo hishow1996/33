@@ -835,14 +835,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             )
         }
 
-        if (showAdvancedFilters) "⌃" else "⌄",
-                        color = if (hasAdvancedFilter) Color.White else Color(0xFF737980),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-            }
-        }
-
         if (showAdvancedFilters) {
             Row(
                 modifier = Modifier
