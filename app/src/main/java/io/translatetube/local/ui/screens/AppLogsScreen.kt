@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
@@ -613,60 +614,6 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             exit = shrinkVertically() + fadeOut(),
         ) {
             Column {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 18.dp, end = 14.dp, top = 4.dp, bottom = 3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                "${records.size} 条",
-                color = Color(0xFF202124),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-            )
-            if (hasActiveSearch) {
-                Text(
-                    "· 找到 ${visibleEntries.size} 条",
-                    color = Color(0xFF626A74),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Text(
-                "错$errorCount · 警$warningCount · 闪$crashCount",
-                color = Color(0xFF737980),
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-            )
-            if (hasActiveSearch) {
-                Text(
-                    "重置",
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { resetSearchAndFilters() }
-                        .padding(horizontal = 5.dp, vertical = 5.dp),
-                    color = BrandBright,
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                )
-            }
-        }
-        val detailsOnlyCount = searchResult?.detailsOnlyCount ?: 0
-        if (hasActiveSearch && detailsOnlyCount > 0 && searchSnapshot.sourceRecords === records) {
-            Text(
-                "其中 $detailsOnlyCount 条仅在详情中命中，排在后面",
-                modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 2.dp),
-                color = Color(0xFF737980),
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-
         if (!writerHealth.isHealthy) {
             Surface(
                 modifier = Modifier
@@ -720,79 +667,101 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
             }
         }
 
-        Surface(
+
+        val hasAdvancedFilter = moduleFilter.isNotBlank() || timeRange != AppLogTimeRange.ALL
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 2.dp),
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFFFAFAFB),
-            border = BorderStroke(
-                1.dp,
-                if (searchHasFocus) BrandBright else Color(0xFFE0E3E7),
-            ),
-            tonalElevation = 0.dp,
+                .padding(horizontal = 16.dp, vertical = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(46.dp)
-                    .padding(horizontal = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(24.dp),
+                color = Color(0xFFF1F2F7),
+                tonalElevation = 0.dp,
             ) {
-                Icon(
-                    Icons.Filled.Search,
-                    contentDescription = null,
-                    tint = Color(0xFF8A9099),
-                    modifier = Modifier.size(21.dp),
-                )
-                BasicTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(searchFocusRequester)
-                        .onFocusChanged { searchHasFocus = it.isFocused },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = Color(0xFF202124),
-                    ),
-                    cursorBrush = SolidColor(Color(0xFF202124)),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = {
-                        rememberSearch(searchQuery)
-                        focusManager.clearFocus()
-                    }),
-                    decorationBox = { innerTextField ->
-                        Box(contentAlignment = Alignment.CenterStart) {
-                            if (searchQuery.isBlank()) {
-                                Text(
-                                    "搜索日志（支持多词、-排除、时间）",
-                                    color = Color(0xFF8A9099),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            innerTextField()
-                        }
-                    },
-                )
-                if (searchQuery.isNotBlank()) {
-                    Box(
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = Color(0xFF778196),
+                        modifier = Modifier.size(21.dp),
+                    )
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
                         modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .clickable(role = Role.Button) { searchQuery = "" },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Filled.Close,
-                            contentDescription = "清除搜索",
-                            tint = Color(0xFF737980),
-                            modifier = Modifier.size(18.dp),
-                        )
+                            .weight(1f)
+                            .focusRequester(searchFocusRequester)
+                            .onFocusChanged { searchHasFocus = it.isFocused },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = Color(0xFF202124),
+                        ),
+                        cursorBrush = SolidColor(Color(0xFF202124)),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            rememberSearch(searchQuery)
+                            focusManager.clearFocus()
+                        }),
+                        decorationBox = { innerTextField ->
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (searchQuery.isBlank()) {
+                                    Text(
+                                        "搜索日志（支持多词、-排除、时间）",
+                                        color = Color(0xFF778196),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        },
+                    )
+                    if (searchQuery.isNotBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .clickable(role = Role.Button) { searchQuery = "" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "清除搜索",
+                                tint = Color(0xFF737980),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
+                }
+            }
+            Surface(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable { showAdvancedFilters = !showAdvancedFilters },
+                shape = CircleShape,
+                color = if (hasAdvancedFilter || showAdvancedFilters) Color(0xFFE8EEFF) else Color(0xFFF1F2F7),
+                tonalElevation = 0.dp,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Filled.Tune,
+                        contentDescription = if (showAdvancedFilters) "收起高级筛选" else "高级筛选",
+                        tint = if (hasAdvancedFilter || showAdvancedFilters) BrandBright else Color(0xFF465064),
+                        modifier = Modifier.size(22.dp),
+                    )
                 }
             }
         }
@@ -800,14 +769,14 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 3.dp),
+                .padding(horizontal = 16.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
                 modifier = Modifier
                     .weight(1f)
                     .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val filters = listOf(
@@ -822,55 +791,51 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     val selected = filter == name
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(50))
                             .clickable(role = Role.Button) { filter = name },
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (selected) BrandBright else Color(0xFFF3F4F6),
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) BrandBright else Color(0xFFE7E9EC),
-                        ),
+                        shape = RoundedCornerShape(50),
+                        color = if (selected) BrandBright else Color(0xFFF1F2F7),
                         tonalElevation = 0.dp,
                     ) {
                         Text(
                             "$name $count",
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                            color = if (selected) Color.White else Color(0xFF454B53),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            color = if (selected) Color.White else Color(0xFF273044),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                             maxLines = 1,
                         )
                     }
                 }
-            }
-
-            Spacer(Modifier.width(7.dp))
-            val hasAdvancedFilter = moduleFilter.isNotBlank() || timeRange != AppLogTimeRange.ALL
-            Surface(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { showAdvancedFilters = !showAdvancedFilters },
-                shape = RoundedCornerShape(10.dp),
-                color = if (hasAdvancedFilter) BrandBright else Color(0xFFF3F4F6),
-                border = BorderStroke(
-                    1.dp,
-                    if (hasAdvancedFilter) BrandBright else Color(0xFFE7E9EC),
-                ),
-                tonalElevation = 0.dp,
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
+                if (hasActiveSearch) {
                     Text(
-                        "筛选",
-                        color = if (hasAdvancedFilter) Color.White else Color(0xFF454B53),
+                        "重置",
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { resetSearchAndFilters() }
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        color = BrandBright,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Medium,
+                        maxLines = 1,
                     )
-                    Text(
-                        if (showAdvancedFilters) "⌃" else "⌄",
+                }
+            }
+        }
+
+        val detailsOnlyCount = searchResult?.detailsOnlyCount ?: 0
+        if (hasActiveSearch && detailsOnlyCount > 0 && searchSnapshot.sourceRecords === records) {
+            Text(
+                "其中 $detailsOnlyCount 条仅在详情中命中，排在后面",
+                modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 2.dp),
+                color = Color(0xFF737980),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        if (showAdvancedFilters) "⌃" else "⌄",
                         color = if (hasAdvancedFilter) Color.White else Color(0xFF737980),
                         style = MaterialTheme.typography.labelMedium,
                     )
@@ -1942,18 +1907,24 @@ private fun LogRecordCard(
     onClick: () -> Unit,
 ) {
     val color = levelColor(record.level)
+    val levelBackground = when (record.level) {
+        "INFO" -> Color(0xFFEAF0FF)
+        "WARN" -> Color(0xFFFFEBD2)
+        "ERROR", "FATAL" -> Color(0xFFFFE6E6)
+        else -> color.copy(alpha = 0.09f)
+    }
+    val levelForeground = if (record.level == "INFO") Color(0xFF2861D8) else color
     val resolvedDiagnosis = diagnosis ?: remember(record.details, record.tag, record.message) {
         AppLogDiagnostics.analyze(record)
     }
     val rootCause = resolvedDiagnosis.finding
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                .background(
-                    if (selectionMode && selected) Color(0xFFF1F6FF) else Color.White,
-                )
+                .background(if (selectionMode && selected) Color(0xFFF1F6FF) else Color.White)
                 .clickable(
                     role = if (selectionMode) Role.Checkbox else null,
                     onClick = onClick,
@@ -1964,12 +1935,10 @@ private fun LogRecordCard(
                         stateDescription = if (selected) "已选择" else "未选择"
                     }
                 }
-                .padding(horizontal = 18.dp, vertical = 13.dp),
+                .padding(horizontal = 16.dp, vertical = 11.dp),
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Reserve the same 22dp leading column in both modes so every title starts
-            // at the same horizontal position. The whole row remains the touch target.
             Box(
                 modifier = Modifier
                     .size(22.dp)
@@ -2007,14 +1976,12 @@ private fun LogRecordCard(
 
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                // Keep the complete title. Normal soft wrapping also handles mixed
-                // Chinese/English text, numbers and paths without a fixed line limit.
                 Text(
                     highlightedLogText(AppLogTitleResolver.title(record.tag, record.message), highlightTerms),
                     modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFF202124),
+                    color = Color(0xFF161B27),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
                     softWrap = true,
@@ -2022,65 +1989,68 @@ private fun LogRecordCard(
                     overflow = TextOverflow.Clip,
                 )
 
-                Text(
-                    highlightedLogText(AppLogStore.formatTime(record.timestampMs), highlightTerms),
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFF858B93),
-                    style = MaterialTheme.typography.labelSmall,
-                    textAlign = TextAlign.End,
-                    softWrap = true,
-                    maxLines = 2,
-                    overflow = TextOverflow.Clip,
-                )
-
-                // Keep the module name on its own line so increased system font size
-                // cannot squeeze the level or recovery state out of the row.
-                Text(
-                    highlightedLogText(record.tag, highlightTerms),
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFF68707A),
-                    style = MaterialTheme.typography.labelMedium,
-                    softWrap = true,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    Surface(
-                        color = color.copy(alpha = 0.09f),
-                        shape = RoundedCornerShape(5.dp),
-                        tonalElevation = 0.dp,
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
                     ) {
                         Text(
-                            record.level,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            color = color,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
+                            highlightedLogText(record.tag, highlightTerms),
+                            modifier = Modifier.weight(1f, fill = false),
+                            color = Color(0xFF68748A),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
+                        Surface(
+                            color = levelBackground,
+                            shape = RoundedCornerShape(50),
+                            tonalElevation = 0.dp,
+                        ) {
+                            Text(
+                                record.level,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                color = levelForeground,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        if (detailsOnly) {
+                            Text(
+                                "仅详情命中",
+                                color = Color(0xFF1A5FD0),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                            )
+                        }
+                        if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
+                            Text(
+                                if (record.recoveredAtMs != null) "已恢复" else "未恢复",
+                                color = if (record.recoveredAtMs != null) Color(0xFF247347) else Color(0xFFB42318),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                            )
+                        }
                     }
-                    if (detailsOnly) {
-                        Text(
-                            "仅详情命中",
-                            color = Color(0xFF1A5FD0),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
-                    if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
-                        Text(
-                            if (record.recoveredAtMs != null) "已恢复" else "未恢复",
-                            color = if (record.recoveredAtMs != null) Color(0xFF247347) else Color(0xFFB42318),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(record.timestampMs)),
+                        color = Color(0xFF7C879B),
+                        style = MaterialTheme.typography.labelMedium,
+                        textAlign = TextAlign.End,
+                        maxLines = 1,
+                    )
                 }
 
-                if (rootCause.isNotBlank() && (record.level == "ERROR" || record.level == "FATAL" || record.level == "WARN")) {
+                if (rootCause.isNotBlank() &&
+                    (record.level == "ERROR" || record.level == "FATAL" || record.level == "WARN")
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -2109,7 +2079,7 @@ private fun LogRecordCard(
         }
         HorizontalDivider(
             modifier = Modifier.padding(start = 52.dp),
-            color = Color(0xFFF0F1F3),
+            color = Color(0xFFEDF0F5),
             thickness = 1.dp,
         )
     }
