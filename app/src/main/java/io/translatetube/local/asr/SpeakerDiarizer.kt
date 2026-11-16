@@ -874,13 +874,24 @@ object SpeakerDiarizer {
         destination: File,
         checkActive: () -> Unit,
     ) {
+        io.translatetube.local.data.Bzip2Extraction.withFallback { threads ->
+            extractSegmentationOnce(archive, destination, checkActive, threads)
+        }
+    }
+
+    private fun extractSegmentationOnce(
+        archive: File,
+        destination: File,
+        checkActive: () -> Unit,
+        threads: Int,
+    ) {
         checkActive()
         val temp = File(destination.parentFile, destination.name + ".part")
         temp.delete()
         var found = false
         var archiveEntryCount = 0
         try {
-            TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(archive))).use { tar ->
+            TarArchiveInputStream(io.translatetube.local.data.Bzip2Extraction.open(archive, threads)).use { tar ->
                 while (true) {
                     checkActive()
                     val entry = tar.nextTarEntry ?: break

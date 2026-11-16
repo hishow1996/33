@@ -1197,6 +1197,21 @@ object PiperModels {
         checkActive: () -> Unit,
         onProgress: (Long) -> Unit = {},
     ) {
+        io.translatetube.local.data.Bzip2Extraction.withFallback(
+            onFallback = {
+                // 多线程解码失败：清掉这次写了一半的文件，再用单线程从头解。
+                destination.listFiles()?.forEach { it.deleteRecursively() }
+            },
+        ) { threads -> extractArchiveOnce(archive, destination, checkActive, onProgress, threads) }
+    }
+
+    private fun extractArchiveOnce(
+        archive: File,
+        destination: File,
+        checkActive: () -> Unit,
+        onProgress: (Long) -> Unit,
+        threads: Int,
+    ) {
         if (!destination.isDirectory) throw java.io.IOException("本地语音模型临时解压目录不存在")
         val rootPath = destination.canonicalFile.path + File.separator
         val buffer = ByteArray(64 * 1024)
@@ -1205,12 +1220,9 @@ object PiperModels {
         val progressStepBytes = 8L * 1024L * 1024L
         var nextProgressBytes = progressStepBytes
 
-        // BZip2 performs many small reads internally; buffering its file input avoids a syscall
-        // for each low-level read on slower Android storage.
+        // 多线程解码 bzip2（失败时由 extractArchive 退回带缓冲的单线程解码）。
         TarArchiveInputStream(
-            BZip2CompressorInputStream(
-                BufferedInputStream(FileInputStream(archive), 256 * 1024)
-            )
+            io.translatetube.local.data.Bzip2Extraction.open(archive, threads)
         ).use { tar ->
             while (true) {
                 checkActive()
