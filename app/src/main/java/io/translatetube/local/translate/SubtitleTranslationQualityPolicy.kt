@@ -1830,7 +1830,8 @@ internal object SubtitleTranslationQualityPolicy {
         val kanaDominates = if (japaneseSource) {
             // Still reject full Japanese sentences, but permit short Japanese particles attached
             // to a clear Chinese phrase. Do not let this exception mask a kana-dominant sentence.
-            kana >= 8 && kana > han * 3 && kanaRuns.longestRun >= 6 &&
+            kana >= 8 && kana > han * 3 &&
+                (han <= 2 || kanaRuns.longestRun >= 6) &&
                 !hasClearSimplifiedChineseCue
         } else {
             // Other source languages may quote short Japanese words or endings inside Chinese.
