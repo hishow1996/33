@@ -66,6 +66,21 @@ internal object CaptionSentenceMergePolicy {
     /** 分句结尾的切点离句子正中间最多偏这么多（占总长的比例），再远就退回到最靠近中间的词边界。 */
     private const val MAX_CLAUSE_CUT_OFFSET = 0.25
 
+    /** 合句是可选的优化：超过这个时间就放弃，沿用原来的行，不能拖住字幕获取。 */
+    const val MAX_MERGE_MS = 6_000L
+
+    /** 词数多到这个程度（约 10 小时以上的自动字幕）就不合句。 */
+    private const val MAX_WORDS = 400_000
+
+    private class MergeBudget(limitMs: Long) {
+        private val deadlineNanos = System.nanoTime() + limitMs.coerceAtLeast(0L) * 1_000_000L
+        fun check() {
+            if (System.nanoTime() - deadlineNanos >= 0L) throw MergeTimeoutException()
+        }
+    }
+
+    private class MergeTimeoutException : RuntimeException("合句耗时超过上限")
+
     private const val TERMINAL_CHARS = "。！？!?"
     private const val BREAK_CHARS = "、，,;；"
 
@@ -94,13 +109,39 @@ internal object CaptionSentenceMergePolicy {
         rawVtt: String,
         minTimedTags: Int = MIN_TIMED_TAGS,
         minRows: Int = MIN_ROWS,
+        maxMergeMs: Long = MAX_MERGE_MS,
+    ): CaptionSentenceMergeResult {
+        val startedNanos = System.nanoTime()
+        fun elapsedLabel() = "（用时 ${(System.nanoTime() - startedNanos) / 1_000_000L} ms）"
+        val budget = MergeBudget(maxMergeMs)
+        return try {
+            mergeWithinBudget(rows, rawVtt, minTimedTags, minRows, budget).let { result ->
+                result.copy(reason = result.reason + elapsedLabel())
+            }
+        } catch (_: MergeTimeoutException) {
+            keep("合句耗时超过 ${maxMergeMs} ms，已放弃并沿用原来的行" + elapsedLabel(), 0, 0)
+        } catch (_: StackOverflowError) {
+            keep("合句递归过深，已放弃并沿用原来的行" + elapsedLabel(), 0, 0)
+        } catch (_: OutOfMemoryError) {
+            keep("合句内存不足，已放弃并沿用原来的行" + elapsedLabel(), 0, 0)
+        }
+    }
+
+    private fun mergeWithinBudget(
+        rows: List<SubLine>,
+        rawVtt: String,
+        minTimedTags: Int,
+        minRows: Int,
+        budget: MergeBudget,
     ): CaptionSentenceMergeResult {
         if (rows.size < minRows) return keep("字幕行数太少", 0, 0)
         val timedTags = wordTimeTagRegex.findAll(rawVtt).count()
         if (timedTags < minTimedTags) return keep("没有逐词时间标签（标签数 $timedTags）", 0, 0)
+        budget.check()
 
-        val words = extractWords(rawVtt)
+        val words = extractWords(rawVtt, budget)
         if (words.isEmpty()) return keep("没有读出任何词", 0, 0)
+        if (words.size > MAX_WORDS) return keep("词数过多（${words.size}），不合句", words.size, 0)
 
         var terminalCount = 0
         var totalUnits = 0.0
@@ -113,7 +154,10 @@ internal object CaptionSentenceMergePolicy {
         }
 
         val sentences = ArrayList<List<CaptionWord>>()
-        for (sentence in buildSentences(words)) capLength(sentence, sentences)
+        for (sentence in buildSentences(words)) {
+            budget.check()
+            capLength(sentence, sentences, budget)
+        }
         val merged = toLines(sentences)
         if (merged.isEmpty()) return keep("合句后没有内容", words.size, 0)
         for (i in 1 until merged.size) {
@@ -124,7 +168,7 @@ internal object CaptionSentenceMergePolicy {
 
         val mine = normalizeForCompare(merged.joinToString("") { it.text })
         val original = normalizeForCompare(rows.joinToString("") { it.text })
-        if (!textMatches(mine, original)) {
+        if (!textMatches(mine, original, budget)) {
             return keep("合句后的文字和原字幕对不上", words.size, merged.size)
         }
         return CaptionSentenceMergeResult(merged, "已按句合并", words.size, merged.size)
@@ -139,7 +183,9 @@ internal object CaptionSentenceMergePolicy {
      * 从原始 WebVTT 读出按顺序排列的词。YouTube 自动字幕是"滚动"格式：下一个 cue 会把上一行再显示一遍，
      * 所以每个 cue 只取"新出现"的行（和上一个 cue 末尾重复的开头几行是旧行，跳过）。
      */
-    fun extractWords(rawVtt: String): List<CaptionWord> {
+    fun extractWords(rawVtt: String): List<CaptionWord> = extractWords(rawVtt, null)
+
+    private fun extractWords(rawVtt: String, budget: MergeBudget?): List<CaptionWord> {
         val words = ArrayList<CaptionWord>()
         val cueLines = ArrayList<String>()
         var inCue = false
@@ -171,7 +217,9 @@ internal object CaptionSentenceMergePolicy {
             previous = currentPlain
         }
 
+        var lineCount = 0
         for (rawLine in rawVtt.lineSequence()) {
+            if ((lineCount++ and 0xff) == 0) budget?.check()
             val line = rawLine.trimEnd('\r')
             val header = cueHeaderRegex.find(line)
             if (header != null) {
@@ -299,7 +347,12 @@ internal object CaptionSentenceMergePolicy {
         return out
     }
 
-    private fun capLength(sentence: List<CaptionWord>, out: MutableList<List<CaptionWord>>) {
+    private fun capLength(
+        sentence: List<CaptionWord>,
+        out: MutableList<List<CaptionWord>>,
+        budget: MergeBudget? = null,
+    ) {
+        budget?.check()
         val total = unitsOfWords(sentence)
         if (total <= MAX_SENTENCE_UNITS || sentence.size < 2) {
             out += sentence
@@ -311,8 +364,8 @@ internal object CaptionSentenceMergePolicy {
             out += sentence
             return
         }
-        capLength(sentence.subList(0, cut), out)
-        capLength(sentence.subList(cut, sentence.size), out)
+        capLength(sentence.subList(0, cut), out, budget)
+        capLength(sentence.subList(cut, sentence.size), out, budget)
     }
 
     /**
@@ -453,7 +506,7 @@ internal object CaptionSentenceMergePolicy {
      * 反过来不要求：原来的行解析时可能丢过文字，逐词流里反而更全，多出来的部分是好事。
      * 具体：合句结果的长度是原来的 0.9~1.6 倍；原来的行按 8 个字一段，依次在合句结果里找得到的比例不低于 90%（原来的行自己丢字的地方，会让跨过缺口的那一段对不上，所以留出余量）。
      */
-    private fun textMatches(mine: String, original: String): Boolean {
+    private fun textMatches(mine: String, original: String, budget: MergeBudget? = null): Boolean {
         if (mine.isEmpty() || original.isEmpty()) return false
         val ratio = mine.length.toDouble() / original.length
         if (ratio < VERIFY_MIN_LENGTH_RATIO || ratio > VERIFY_MAX_LENGTH_RATIO) return false
@@ -464,8 +517,15 @@ internal object CaptionSentenceMergePolicy {
         var misses = 0
         var cursor = 0
         for (window in 0 until totalWindows) {
+            if ((window and 0xff) == 0) budget?.check()
             val chunk = original.substring(window * VERIFY_WINDOW, (window + 1) * VERIFY_WINDOW)
-            val found = mine.indexOf(chunk, maxOf(0, cursor - 64))
+            // 只需要知道"第一处出现是否在 cursor + VERIFY_MAX_GAP 以内"，所以只在这个窗口里找。
+            // 不限窗口时，找不到的段会把整个剩余文本扫一遍，长视频上是平方级耗时。
+            val from = maxOf(0, cursor - 64)
+            val searchEnd = minOf(mine.length, cursor + VERIFY_MAX_GAP + VERIFY_WINDOW)
+            val found = if (from >= searchEnd) -1 else mine.substring(from, searchEnd).indexOf(chunk).let {
+                if (it < 0) -1 else it + from
+            }
             if (found >= 0 && found - cursor <= VERIFY_MAX_GAP) {
                 cursor = found + VERIFY_WINDOW
             } else {
