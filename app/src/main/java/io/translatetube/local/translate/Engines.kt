@@ -727,17 +727,22 @@ internal fun parseModelTranslations(
             if (array == null || array.length() != size) return null
             val values = ArrayList<String>(size)
             for (index in 0 until size) {
-                val item = array.optJSONObject(index)
-                    ?: (array.opt(index) as? String)?.let { encoded ->
-                        runCatching { JSONObject(encoded) }.getOrNull()
-                    }
-                    ?: return null
+                val rawItem = array.opt(index) ?: return null
+                val item = array.optJSONObject(index) ?: when (rawItem) {
+                    is Map<*, *> -> runCatching { JSONObject(rawItem) }.getOrNull()
+                    is String -> runCatching { JSONObject(rawItem) }.getOrNull()
+                    else -> runCatching { JSONObject(rawItem.toString()) }.getOrNull()
+                } ?: return null
                 val translationKey = listOf(
                     "translation", "translated_text", "translatedText", "target_text",
                 ).firstOrNull { key -> item.has(key) && !item.isNull(key) } ?: return null
-                val translation = item.opt(translationKey) as? String ?: return null
+                val translation = item.opt(translationKey)?.let { value ->
+                    value as? String ?: value.toString()
+                } ?: return null
                 if (item.has("source") && !item.isNull("source") && sourceLines != null) {
-                    val echoedSource = item.opt("source") as? String ?: return null
+                    val echoedSource = item.opt("source")?.let { value ->
+                        value as? String ?: value.toString()
+                    } ?: return null
                     val requestedSource = sourceLines.getOrNull(index) ?: return null
                     if (normalizeSource(echoedSource) != normalizeSource(requestedSource)) {
                         jsonSourceAlignmentMismatch =
@@ -754,9 +759,21 @@ internal fun parseModelTranslations(
             array: JSONArray?,
             stringMode: String,
             objectMode: String,
-        ): Pair<String, List<String>>? =
-            readStringArray(array)?.let { stringMode to it }
-                ?: readObjectArray(array)?.let { objectMode to it }
+        ): Pair<String, List<String>>? {
+            if (array == null || array.length() != size) return null
+            // Prefer object parsing whenever the array contains JSON objects, maps or
+            // serialized object entries. This prevents object payloads from being returned
+            // verbatim as subtitle text by a permissive JSON implementation.
+            val first = array.opt(0)
+            val looksLikeObject = first is JSONObject || first is Map<*, *> ||
+                (first is String && first.trimStart().startsWith("{"))
+            return if (looksLikeObject) {
+                readObjectArray(array)?.let { objectMode to it }
+            } else {
+                readStringArray(array)?.let { stringMode to it }
+                    ?: readObjectArray(array)?.let { objectMode to it }
+            }
+        }
 
         // Dispatch by the top-level JSON shape. Some org.json implementations can treat
         // object-shaped input inconsistently when passed to JSONArray(String); only arrays
