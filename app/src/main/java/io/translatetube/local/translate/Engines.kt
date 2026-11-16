@@ -791,10 +791,13 @@ internal fun parseModelTranslations(
                 "translations", "translated_texts", "results", "items", "lines", "data", "output",
             )
             arrayKeys.firstNotNullOfOrNull { key ->
-                val wrappedArray = root.optJSONArray(key)
-                    ?: (root.opt(key) as? String)?.let { encoded ->
-                        runCatching { JSONArray(encoded) }.getOrNull()
-                    }
+                val rawArray = root.opt(key)
+                val wrappedArray = when (rawArray) {
+                    is JSONArray -> rawArray
+                    is String -> runCatching { JSONArray(rawArray) }.getOrNull()
+                    null -> null
+                    else -> runCatching { JSONArray(rawArray.toString()) }.getOrNull()
+                }
                 readArray(
                     wrappedArray,
                     "PARSED_JSON_OBJECT_ARRAY",
