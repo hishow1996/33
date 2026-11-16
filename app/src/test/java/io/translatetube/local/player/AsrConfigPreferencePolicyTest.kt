@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.asr.WhisperOutputModePolicy
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,6 +10,14 @@ class AsrConfigPreferencePolicyTest {
     fun selectedProviderAndLocalModelDefineTheLocalEngineIdentity() {
         assertTrue(AsrConfigPreferencePolicy.isRelevantForActiveProvider("asr_provider", "local"))
         assertTrue(AsrConfigPreferencePolicy.isRelevantForActiveProvider("asr_local_model", "local"))
+    }
+
+    @Test
+    fun whisperOutputModeMattersOnlyWhenLocalWhisperIsSelected() {
+        assertTrue(AsrConfigPreferencePolicy.isRelevantForActiveProvider(WhisperOutputModePolicy.PREF_KEY, "local", "whisper"))
+        assertTrue(AsrConfigPreferencePolicy.isRelevantForActiveProvider(WhisperOutputModePolicy.PREF_KEY, "local", "whisper-base"))
+        assertFalse(AsrConfigPreferencePolicy.isRelevantForActiveProvider(WhisperOutputModePolicy.PREF_KEY, "local", "sensevoice"))
+        assertFalse(AsrConfigPreferencePolicy.isRelevantForActiveProvider(WhisperOutputModePolicy.PREF_KEY, "cartesia", "whisper"))
     }
 
     @Test

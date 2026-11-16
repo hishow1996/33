@@ -141,6 +141,16 @@ fun SettingsScreen(
     var localAsrModel by remember {
         mutableStateOf(io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(ctx))
     }
+    var whisperOutputMode by remember {
+        mutableStateOf(
+            io.translatetube.local.asr.WhisperOutputModePolicy.normalize(
+                prefs.getString(
+                    io.translatetube.local.asr.WhisperOutputModePolicy.PREF_KEY,
+                    io.translatetube.local.asr.WhisperOutputModePolicy.TRANSCRIBE,
+                ),
+            ),
+        )
+    }
     var elevenLabsKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_elevenlabs_key", "").orEmpty())) }
     var cartesiaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_cartesia_key", "").orEmpty())) }
     var kawaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_kawa_key", "").orEmpty())) }
@@ -605,6 +615,47 @@ Section(
             onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
             onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.ASR) },
         )
+        if (localAsrModel == "whisper") {
+            Spacer(Modifier.height(8.dp))
+            Text("Whisper 输出模式", color = OnBg, style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    io.translatetube.local.asr.WhisperOutputModePolicy.TRANSCRIBE to "原文",
+                    io.translatetube.local.asr.WhisperOutputModePolicy.TRANSLATE_TO_ENGLISH to "英文翻译",
+                ).forEach { (mode, label) ->
+                    val selected = whisperOutputMode == mode
+                    Surface(
+                        modifier = Modifier.weight(1f).clickable {
+                            whisperOutputMode = mode
+                            prefs.edit()
+                                .putString(io.translatetube.local.asr.WhisperOutputModePolicy.PREF_KEY, mode)
+                                .apply()
+                        },
+                        color = if (selected) Color(0xFFF0F5FF) else Color.White,
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) BrandBright else OutlineSoft),
+                        tonalElevation = 0.dp,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = {
+                                    whisperOutputMode = mode
+                                    prefs.edit()
+                                        .putString(io.translatetube.local.asr.WhisperOutputModePolicy.PREF_KEY, mode)
+                                        .apply()
+                                },
+                                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+                            )
+                            Text(label, color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+        }
     } else {
         val selectedApiKey = when (asrEngine) {
             "elevenlabs" -> elevenLabsKey

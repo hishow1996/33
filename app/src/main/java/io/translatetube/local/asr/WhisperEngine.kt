@@ -9,7 +9,12 @@ import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult
 
 /** Whisper base 多语言本地转写（sherpa-onnx） */
-class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEngine {
+class WhisperEngine(
+    ctx: Context,
+    private val numThreads: Int = 2,
+    outputMode: String = WhisperOutputModePolicy.TRANSCRIBE,
+) : LocalAsrEngine {
+    private val whisperTask = WhisperOutputModePolicy.normalize(outputMode)
     private val recognizer: OfflineRecognizer
     @Volatile private var closed = false
     /** 最近一次转写检测到的语言码（如 "en"/"ja"） */
@@ -32,6 +37,8 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                 whisper = OfflineWhisperModelConfig(
                     encoder = "${m}base-encoder.int8.onnx",
                     decoder = "${m}base-decoder.int8.onnx",
+                    language = "",
+                    task = whisperTask,
                     // DTW token alignment exposes word/subword timing where the model supports attention outputs.
                     enableTokenTimestamps = true,
                 ),
@@ -63,7 +70,13 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
 
     /** 只有真正识别出文字的片段才参与语言投票，权重是片段时长（毫秒）。 */
     private fun recordLanguage(result: OfflineRecognizerResult, weightMs: Long) {
-        languageVote.add(result.lang, weightMs)
+        // In translate mode Whisper emits English text; downstream translation must see it as English.
+        val outputLanguage = WhisperOutputModePolicy.outputLanguage(whisperTask, result.lang)
+        if (whisperTask == WhisperOutputModePolicy.TRANSLATE_TO_ENGLISH) {
+            lastLang = outputLanguage
+            return
+        }
+        languageVote.add(outputLanguage, weightMs)
         languageVote.best().takeIf { it.isNotEmpty() }?.let { lastLang = it }
     }
 

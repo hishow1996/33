@@ -163,6 +163,7 @@ private object ReadyHistorySessionConfigStore {
         val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
             settings.getString("asr_provider", "local"),
         )
+        val activeLocalAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(context)
         val activeTranslationId = settings.getLong("active_api_id", -1L)
         val activeTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(settings.getString("tts_engine", "edge"))
         val relevant = settings.all.entries
@@ -188,6 +189,7 @@ private object ReadyHistorySessionConfigStore {
                         AsrConfigPreferencePolicy.isRelevantForActiveProvider(
                             entry.key,
                             activeAsrProvider,
+                            activeLocalAsrModelId,
                         ))
             }
             .map { entry ->
@@ -295,6 +297,7 @@ private object ReadyHistorySessionConfigStore {
         val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
             settings.getString("asr_provider", "local"),
         )
+        val activeLocalAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(context)
         val activeTranslationId = settings.getLong("active_api_id", -1L)
         val activeTtsEngine = DubbingConfigPreferencePolicy.normalizeEngineId(settings.getString("tts_engine", "edge"))
         val entries = settings.all.entries
@@ -309,6 +312,7 @@ private object ReadyHistorySessionConfigStore {
                         AsrConfigPreferencePolicy.isRelevantForActiveProvider(
                             entry.key,
                             activeAsrProvider,
+                            activeLocalAsrModelId,
                         )) &&
                     (domain != EngineConfigDomain.TRANSLATION ||
                         TranslationConfigPreferencePolicy.isRelevantForActiveEngine(
@@ -824,6 +828,7 @@ class PlaybackService : MediaSessionService() {
     private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
     @Volatile private var localAsrEngine: LocalAsrEngine? = null
     @Volatile private var localAsrEngineModelId: String? = null
+    @Volatile private var localAsrEngineConfigId: String? = null
     // sherpa-onnx OfflineRecognizer is native state and must never decode two videos concurrently.
     private val localAsrMutex = kotlinx.coroutines.sync.Mutex()
 
@@ -5281,6 +5286,7 @@ class PlaybackService : MediaSessionService() {
         val engine = localAsrEngine
         localAsrEngine = null
         localAsrEngineModelId = null
+        localAsrEngineConfigId = null
         runCatching { engine?.close() }
             .onFailure { android.util.Log.w("PlaybackService", "Local ASR recognizer cleanup failed", it) }
     }
@@ -8584,6 +8590,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 cloudAsrResubmissionConsentKeys.remove(key)
             } else false
             val localAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this)
+            val whisperOutputMode = io.translatetube.local.asr.WhisperOutputModePolicy.normalize(
+                settingsPrefs.getString(
+                    io.translatetube.local.asr.WhisperOutputModePolicy.PREF_KEY,
+                    io.translatetube.local.asr.WhisperOutputModePolicy.TRANSCRIBE,
+                ),
+            )
             val transcriptionEngineDisplayName = when (asrProvider) {
                 "local" -> "本地 " + io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
                 "elevenlabs" -> "ElevenLabs 云端转写"
@@ -8596,10 +8608,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val asrCacheIdentity = AsrTranscriptCacheIdentity.key(
                 provider = asrProvider,
                 localModelId = localAsrModelId,
+                whisperTask = whisperOutputMode,
             )
             val asrEngineCachePrefix = AsrTranscriptCacheIdentity.enginePrefix(
                 provider = asrProvider,
                 localModelId = localAsrModelId,
+                whisperTask = whisperOutputMode,
             )
             val baseTranslationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,
@@ -10209,8 +10223,15 @@ updateUiForSession(key, pipelineGeneration) {
                                 "已从检查点恢复字幕行数" to restoredAsrRows.size.toString(),
                             ),
                         )
-                        val engine = localAsrEngine?.takeIf { localAsrEngineModelId == selectedModelId }
-                            ?: run {
+                        val engineConfigId = if (selectedModelId == "whisper") {
+                            "$selectedModelId:$whisperOutputMode"
+                        } else {
+                            selectedModelId
+                        }
+                        val engine = localAsrEngine?.takeIf {
+                            localAsrEngineModelId == selectedModelId &&
+                                localAsrEngineConfigId == engineConfigId
+                        } ?: run {
                                 releaseLocalAsr()
                                 val playbackState = ui.value
                                 val asrThreads = LocalAsrPerformancePolicy.recommendedThreadCount(
@@ -10228,10 +10249,15 @@ updateUiForSession(key, pipelineGeneration) {
                                 val created: LocalAsrEngine = if (selectedModelId == "sensevoice") {
                                     SenseVoiceEngine(this@PlaybackService, asrThreads)
                                 } else {
-                                    WhisperEngine(this@PlaybackService, asrThreads)
+                                    WhisperEngine(
+                                        this@PlaybackService,
+                                        asrThreads,
+                                        outputMode = whisperOutputMode,
+                                    )
                                 }
                                 localAsrEngine = created
                                 localAsrEngineModelId = selectedModelId
+                                localAsrEngineConfigId = engineConfigId
                                 created
                             }
                         if (restoredProcessedSegments < segs.size) {
@@ -10442,6 +10468,7 @@ updateUiForSession(key, pipelineGeneration) {
                             // memory pressure; healthy phones can keep it warm for another ASR job.
                             localAsrEngine = null
                             localAsrEngineModelId = null
+                            localAsrEngineConfigId = null
                             runCatching { engine.close() }
                                 .onFailure { android.util.Log.w("PlaybackService", "Local ASR release under memory pressure failed", it) }
                             android.util.Log.i("PlaybackService", "Released local ASR recognizer after transcription because of memory pressure")

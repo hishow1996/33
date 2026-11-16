@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.asr.WhisperOutputModePolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -9,10 +10,11 @@ class AsrTranscriptCacheIdentityTest {
     private fun key(
         provider: String = "local",
         model: String = "whisper-base",
-    ) = AsrTranscriptCacheIdentity.key(provider, model)
+        task: String = WhisperOutputModePolicy.TRANSCRIBE,
+    ) = AsrTranscriptCacheIdentity.key(provider, model, whisperTask = task)
 
     @Test
-    fun sameSelectedEngineAlwaysProducesTheSameTranscriptCacheIdentity() {
+    fun sameSelectedEngineAndOutputModeAlwaysProducesTheSameTranscriptCacheIdentity() {
         assertEquals(key(), key())
         assertEquals(
             AsrTranscriptCacheIdentity.key("cartesia", "ignored-local-model"),
@@ -24,30 +26,23 @@ class AsrTranscriptCacheIdentityTest {
     fun changingProviderOrSelectedLocalModelSeparatesTranscriptCaches() {
         assertNotEquals(key(), key(model = "sensevoice"))
         assertNotEquals(key(), key(provider = "elevenlabs"))
-        assertNotEquals(
-            AsrTranscriptCacheIdentity.key("cartesia", "unused"),
-            AsrTranscriptCacheIdentity.key("kawa", "unused"),
-        )
+        assertNotEquals(AsrTranscriptCacheIdentity.key("cartesia", "unused"), AsrTranscriptCacheIdentity.key("kawa", "unused"))
     }
 
     @Test
-    fun legacyCachePrefixMatchesKeysWithOldConfigurationSuffixes() {
-        val prefix = AsrTranscriptCacheIdentity.enginePrefix("local", "whisper-base")
-        assertTrue("local-whisper-base-auto-cfg-0123456789abcdef01234567".startsWith(prefix))
-        assertTrue("local-whisper-base-engine-v1".startsWith(prefix))
-        assertTrue(
-            AsrTranscriptCacheIdentity.enginePrefix("cartesia", "unused")
-                .let { "cartesia-cloud-en-cfg-old-digest".startsWith(it) },
-        )
+    fun whisperOutputModesNeverReuseEachOthersTranscriptCache() {
+        assertNotEquals(key(task = WhisperOutputModePolicy.TRANSCRIBE), key(task = WhisperOutputModePolicy.TRANSLATE_TO_ENGLISH))
+        assertTrue("local-whisper-base-transcribe-engine-v2".startsWith(
+            AsrTranscriptCacheIdentity.enginePrefix("local", "whisper-base", WhisperOutputModePolicy.TRANSCRIBE),
+        ))
+        assertTrue("local-whisper-base-translate-engine-v2".startsWith(
+            AsrTranscriptCacheIdentity.enginePrefix("local", "whisper-base", WhisperOutputModePolicy.TRANSLATE_TO_ENGLISH),
+        ))
     }
 
     @Test
-    fun cacheIdentityContainsOnlyTheSelectedEngineAndNoCredentials() {
-        val identity = AsrTranscriptCacheIdentity.key("kawa", "private-api-secret-not-a-cache-identity")
-        assertEquals("kawa-cloud-engine-v1", identity)
-        assertEquals(
-            "local-whisper-base-engine-v1",
-            AsrTranscriptCacheIdentity.key("local", "whisper-base"),
-        )
+    fun otherProvidersKeepTheirExistingIdentityFormat() {
+        assertEquals("kawa-cloud-engine-v1", key(provider = "kawa", model = "unused"))
+        assertEquals("local-sensevoice-engine-v1", key(model = "sensevoice"))
     }
 }

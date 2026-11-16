@@ -1,14 +1,13 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.asr.WhisperOutputModePolicy
 import java.util.Locale
 
 /**
  * Stable identity for ASR transcript and subtitle caches.
  *
- * A completed transcript belongs to the selected recognition engine. Mutable credentials,
- * endpoint settings, language hints and decoder tuning do not create a new engine and therefore
- * do not split the cache. The engine version marker leaves room for a deliberate cache-format
- * change while the prefix remains compatible with older, more detailed cache keys.
+ * Whisper output modes produce different text and therefore use separate source and checkpoint
+ * cache namespaces. Other recognizers retain their existing engine identity.
  */
 internal object AsrTranscriptCacheIdentity {
     @Suppress("UNUSED_PARAMETER")
@@ -18,21 +17,28 @@ internal object AsrTranscriptCacheIdentity {
         language: String = "auto",
         configFingerprint: String = "",
         modelFingerprint: String = "",
-    ): String = enginePrefix(provider, localModelId) + "engine-v1"
-
-    /**
-     * Prefix shared by current and legacy keys from the same selected engine.
-     *
-     * Older app versions appended language and a configuration digest to this prefix. Looking up
-     * by this prefix lets the current version migrate those source transcripts without rerunning ASR.
-     */
-    fun enginePrefix(
-        provider: String,
-        localModelId: String,
+        whisperTask: String = WhisperOutputModePolicy.TRANSCRIBE,
     ): String {
         val normalizedProvider = token(provider)
         val model = if (normalizedProvider == "local") token(localModelId) else "cloud"
-        return "$normalizedProvider-$model-"
+        val isWhisper = normalizedProvider == "local" &&
+            (model == "whisper" || model.startsWith("whisper-") || model.startsWith("whisper_"))
+        return enginePrefix(provider, localModelId, whisperTask) +
+            if (isWhisper) "engine-v2" else "engine-v1"
+    }
+
+    /** Prefixes also isolate legacy lookups and resumable segment checkpoints by Whisper task. */
+    fun enginePrefix(
+        provider: String,
+        localModelId: String,
+        whisperTask: String = WhisperOutputModePolicy.TRANSCRIBE,
+    ): String {
+        val normalizedProvider = token(provider)
+        val model = if (normalizedProvider == "local") token(localModelId) else "cloud"
+        val base = "$normalizedProvider-$model-"
+        val isWhisper = normalizedProvider == "local" &&
+            (model == "whisper" || model.startsWith("whisper-") || model.startsWith("whisper_"))
+        return if (isWhisper) "$base${WhisperOutputModePolicy.normalize(whisperTask)}-" else base
     }
 
     private fun token(value: String): String =
