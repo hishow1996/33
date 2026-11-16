@@ -1820,10 +1820,18 @@ internal object SubtitleTranslationQualityPolicy {
             Character.UnicodeScript.HIRAGANA,
             Character.UnicodeScript.KATAKANA,
         )
+        val targetTag = SourceLanguagePolicy.normalizeTag(targetLanguage).lowercase(Locale.ROOT)
+        val simplifiedTarget = targetTag == "zh" || targetTag.startsWith("zh-cn") ||
+            targetTag.startsWith("zh-hans") || targetTag == "zh-sg"
+        // A clear simplified-Chinese character such as "错" is positive evidence that a
+        // Japanese-sourced subtitle is a Chinese/mixed translation, not an unchanged sentence.
+        val hasClearSimplifiedChineseCue = simplifiedTarget &&
+            scriptCheckedText.any { it in "错这为发后国门东车书云电汉广场龙风饭头还没与从让说时间开关长万亿爱见听写话语远边个们吗软体续会" }
         val kanaDominates = if (japaneseSource) {
-            // Keep rejecting a clearly Japanese sentence, but tolerate more kana inside a
-            // Chinese translation. A short mixed phrase should not fail on a few kana particles.
-            kana >= 10 && kana > han * 3 && (han <= 2 || kanaRuns.longestRun >= 7)
+            // Still reject full Japanese sentences, but permit short Japanese particles attached
+            // to a clear Chinese phrase. Do not let this exception mask a kana-dominant sentence.
+            kana >= 8 && kana > han * 3 && kanaRuns.longestRun >= 6 &&
+                !hasClearSimplifiedChineseCue
         } else {
             // Other source languages may quote short Japanese words or endings inside Chinese.
             // Require a longer fragment and a clearer foreign-script majority before rejecting.
@@ -1838,7 +1846,7 @@ internal object SubtitleTranslationQualityPolicy {
         // Hangul fragments still fail when they dominate the Chinese content.
         if (hangul > han * 3 &&
             ((hangul >= 10 && hangulRuns.longestRun >= 10) ||
-                (hangul >= 14 && (hangulRuns.longestRun >= 7 || hangulRuns.runCount >= 4)))
+                (hangul >= 12 && (hangulRuns.longestRun >= 5 || hangulRuns.runCount >= 3)))
         ) {
             return "译文韩文音节明显占主导（汉字=$han，韩文音节=$hangul，最长连续韩文=" +
                 hangulRuns.longestRun + "）"
@@ -1925,6 +1933,12 @@ internal object SubtitleTranslationQualityPolicy {
         var foreignLetters = 0
         var foreignTokenCount = 0
         var longestForeignTokenLetters = 0
+        // Keep the relaxed Latin-word tolerance separate from non-Latin scripts. The latter
+        // still need a stronger check for untranslated full phrases in Arabic, Hebrew, Indic,
+        // Thai, Cyrillic and Greek, while a short retained Latin word can remain in Chinese. 
+        var nonLatinForeignLetters = 0
+        var nonLatinForeignTokenCount = 0
+        var longestNonLatinForeignTokenLetters = 0
         var ungroundedProperName = false
         var ungroundedProperNameTokenCount = 0
         var ungroundedLetters = 0
@@ -1951,17 +1965,32 @@ internal object SubtitleTranslationQualityPolicy {
                 ungroundedProperNameTokenCount++
                 ungroundedLetters += letters.length
             }
+            fun isExcludedKana(script: Character.UnicodeScript): Boolean =
+                japaneseSource &&
+                    (script == Character.UnicodeScript.HIRAGANA ||
+                        script == Character.UnicodeScript.KATAKANA)
             val tokenForeignLetters = letters.count { char ->
                 val script = Character.UnicodeScript.of(char.code)
+                script != Character.UnicodeScript.HAN && !isExcludedKana(script)
+            }
+            val tokenNonLatinForeignLetters = letters.count { char ->
+                val script = Character.UnicodeScript.of(char.code)
                 script != Character.UnicodeScript.HAN &&
-                    !(japaneseSource &&
-                        (script == Character.UnicodeScript.HIRAGANA ||
-                            script == Character.UnicodeScript.KATAKANA))
+                    script != Character.UnicodeScript.LATIN &&
+                    !isExcludedKana(script)
             }
             if (tokenForeignLetters > 0) {
                 foreignTokenCount++
                 longestForeignTokenLetters = maxOf(longestForeignTokenLetters, tokenForeignLetters)
                 foreignLetters += tokenForeignLetters
+            }
+            if (tokenNonLatinForeignLetters > 0) {
+                nonLatinForeignTokenCount++
+                longestNonLatinForeignTokenLetters = maxOf(
+                    longestNonLatinForeignTokenLetters,
+                    tokenNonLatinForeignLetters,
+                )
+                nonLatinForeignLetters += tokenNonLatinForeignLetters
             }
         }
         // A single ungrounded proper-looking token may be legitimate, but allow it only
@@ -1995,6 +2024,22 @@ internal object SubtitleTranslationQualityPolicy {
                 "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
                 "单个人名≤9字母且有人物语境、产品名≤10字母且有产品语境、工具名≤14字母且有工具语境）"
         }
+        // Non-Latin language phrases need a separate stricter threshold: relaxing the
+        // Latin threshold must not let an untranslated Arabic/Hebrew/Indic/Thai/etc. sentence
+        // pass merely because its individual words are shorter than 12 characters.
+        val longNonLatinForeignRemainder =
+            longestNonLatinForeignTokenLetters >= 8 ||
+                (nonLatinForeignTokenCount >= 3 && nonLatinForeignLetters >= 18) ||
+                (nonLatinForeignTokenCount >= 4 && nonLatinForeignLetters >= 14)
+        if (nonLatinForeignLetters >= 8 &&
+            nonLatinForeignLetters > hanCount * 4 &&
+            longNonLatinForeignRemainder
+        ) {
+            return "译文仍保留较长非拉丁外语片段，外文字符明显多于中文汉字" +
+                "（汉字=$hanCount，非拉丁外文字母=$nonLatinForeignLetters，" +
+                "最长外语词=$longestNonLatinForeignTokenLetters，外语词数=$nonLatinForeignTokenCount）"
+        }
+
         val longForeignRemainder =
             longestForeignTokenLetters >= 12 ||
                 (foreignTokenCount >= 3 && foreignLetters >= 22) ||
