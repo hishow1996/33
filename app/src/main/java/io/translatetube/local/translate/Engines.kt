@@ -727,7 +727,11 @@ internal fun parseModelTranslations(
             if (array == null || array.length() != size) return null
             val values = ArrayList<String>(size)
             for (index in 0 until size) {
-                val item = array.opt(index) as? JSONObject ?: return null
+                val item = array.optJSONObject(index)
+                    ?: (array.opt(index) as? String)?.let { encoded ->
+                        runCatching { JSONObject(encoded) }.getOrNull()
+                    }
+                    ?: return null
                 val translationKey = listOf(
                     "translation", "translated_text", "translatedText", "target_text",
                 ).firstOrNull { key -> item.has(key) && !item.isNull(key) } ?: return null
@@ -754,17 +758,28 @@ internal fun parseModelTranslations(
             readStringArray(array)?.let { stringMode to it }
                 ?: readObjectArray(array)?.let { objectMode to it }
 
-        val directArray = runCatching { JSONArray(normalized) }.getOrNull()
+        // Dispatch by the top-level JSON shape. Some org.json implementations can treat
+        // object-shaped input inconsistently when passed to JSONArray(String); only arrays
+        // should enter the direct-array branch.
+        val directArray = if (normalized.startsWith("[")) {
+            runCatching { JSONArray(normalized) }.getOrNull()
+        } else {
+            null
+        }
         if (directArray != null) {
             readArray(directArray, "PARSED_JSON_ARRAY", "PARSED_JSON_OBJECT_ARRAY")
-        } else {
+        } else if (normalized.startsWith("{")) {
             val root = JSONObject(normalized)
             val arrayKeys = listOf(
                 "translations", "translated_texts", "results", "items", "lines", "data", "output",
             )
             arrayKeys.firstNotNullOfOrNull { key ->
+                val wrappedArray = root.optJSONArray(key)
+                    ?: (root.opt(key) as? String)?.let { encoded ->
+                        runCatching { JSONArray(encoded) }.getOrNull()
+                    }
                 readArray(
-                    root.optJSONArray(key),
+                    wrappedArray,
                     "PARSED_JSON_OBJECT_ARRAY",
                     "PARSED_JSON_OBJECT_TRANSLATION_ARRAY",
                 )
@@ -791,6 +806,8 @@ internal fun parseModelTranslations(
             } else {
                 null
             }
+        } else {
+            null
         }
     }.getOrNull()
 
