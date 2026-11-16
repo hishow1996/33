@@ -1659,12 +1659,48 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         else -> ModelFiles.asrDirectoryCoreReady(dir)
     }
 
+    /**
+     * 解压 .tar.bz2。bzip2 解压很慢（单线程每秒只有十几 MB），所以优先用多线程解码
+     * （[ParallelBzip2InputStream]）；任何并行解码自身的问题都退回单线程，结果完全一样。
+     */
     private fun extractTarBz2(
         pkg: File,
         destDir: File,
         checkActive: () -> Unit = {},
         onProgress: ((extractedBytes: Long, archiveBytesRead: Long, archiveTotalBytes: Long) -> Unit)? = null,
         onStage: ((message: String, progress: Int) -> Unit)? = null,
+    ): Long {
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+        if (threads > 1) {
+            val startedAtMs = android.os.SystemClock.elapsedRealtime()
+            try {
+                val bytes = extractTarBz2Once(pkg, destDir, checkActive, onProgress, onStage, threads)
+                logModelInfo(
+                    "模型压缩包使用多线程解压完成",
+                    mapOf(
+                        "解压线程数" to threads.toString(),
+                        "多线程解压耗时 ms" to (android.os.SystemClock.elapsedRealtime() - startedAtMs).toString(),
+                    ),
+                )
+                return bytes
+            } catch (e: ParallelBzip2InputStream.ParallelBzip2Exception) {
+                logModelWarning(
+                    "多线程解压失败，改用单线程解压",
+                    e,
+                    mapOf("解压线程数" to threads.toString()),
+                )
+            }
+        }
+        return extractTarBz2Once(pkg, destDir, checkActive, onProgress, onStage, 1)
+    }
+
+    private fun extractTarBz2Once(
+        pkg: File,
+        destDir: File,
+        checkActive: () -> Unit,
+        onProgress: ((extractedBytes: Long, archiveBytesRead: Long, archiveTotalBytes: Long) -> Unit)?,
+        onStage: ((message: String, progress: Int) -> Unit)?,
+        threads: Int,
     ): Long {
         checkActive()
         val parent = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
@@ -1739,18 +1775,25 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         var archiveRootName: String? = null
         var archiveEntryCount = 0
         try {
-            val archiveInput = CountingInputStream(
-                BufferedInputStream(FileInputStream(pkg), 256 * 1024),
-            )
-            TarArchiveInputStream(BZip2CompressorInputStream(archiveInput)).use { tar ->
+            val parallelInput = if (threads > 1) ParallelBzip2InputStream(pkg, threads) else null
+            val sequentialInput = if (parallelInput == null) {
+                CountingInputStream(BufferedInputStream(FileInputStream(pkg), 256 * 1024))
+            } else {
+                null
+            }
+            val decoderInput: java.io.InputStream = parallelInput
+                ?: BZip2CompressorInputStream(sequentialInput!!)
+            fun compressedBytesRead(): Long =
+                parallelInput?.compressedBytesConsumed() ?: sequentialInput!!.bytesRead
+            TarArchiveInputStream(decoderInput).use { tar ->
                 fun publishProgress(force: Boolean = false) {
-                    val compressedBytesRead = archiveInput.bytesRead.coerceAtMost(archiveTotalBytes)
+                    val compressedNow = compressedBytesRead().coerceAtMost(archiveTotalBytes)
                     if (force ||
-                        compressedBytesRead >= nextProgressAt ||
+                        compressedNow >= nextProgressAt ||
                         processedBytes >= nextProcessedProgressAt
                     ) {
-                        onProgress?.invoke(processedBytes, compressedBytesRead, archiveTotalBytes)
-                        while (nextProgressAt <= compressedBytesRead) {
+                        onProgress?.invoke(processedBytes, compressedNow, archiveTotalBytes)
+                        while (nextProgressAt <= compressedNow) {
                             nextProgressAt += progressStep
                         }
                         while (nextProcessedProgressAt <= processedBytes) {
@@ -1848,7 +1891,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             }
             onProgress?.invoke(
                 processedBytes,
-                archiveInput.bytesRead.coerceAtMost(archiveTotalBytes),
+                compressedBytesRead().coerceAtMost(archiveTotalBytes),
                 archiveTotalBytes,
             )
 
