@@ -1993,6 +1993,51 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
     @Test
+    fun acceptsShortForeignFragmentsInsideReadableChineseTranslations() {
+        val examples = listOf(
+            "这很beautiful。",
+            "这很interesting。",
+        )
+        examples.forEach { translated ->
+            val decision = SubtitleTranslationQualityPolicy.evaluateTranslation(
+                "That is a good result.",
+                translated,
+                "en",
+                "zh-CN",
+            )
+            assertTrue("$translated: ${decision.reason.orEmpty()}", decision.accepted)
+        }
+    }
+
+    @Test
+    fun toleratesShortJapaneseAndKoreanFragmentsInsideChineseOutput() {
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "That is a good result.",
+                "很好かもしれません",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "That is a good result.",
+                "很好그럴수도있습니다",
+                "en",
+                "zh-CN",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
+                "今日はいい天気ですね。",
+                "不错そうかもしれません",
+                "ja",
+                "zh-CN",
+            ),
+        )
+    }
+
+    @Test
     fun stillRejectsUngroundedNamesWhenChineseTextIsTooShort() {
         assertTrue(
             SubtitleTranslationQualityPolicy.isTargetLanguageMismatch(
@@ -2035,10 +2080,19 @@ class SubtitleTranslationQualityPolicyTest {
             "en",
             "zh-CN",
         ).orEmpty()
-        assertTrue(foreignHeavy, foreignHeavy.contains("触发规则=外文残留达到8字且超过汉字4倍"))
+        assertTrue(foreignHeavy, foreignHeavy.contains("触发规则=外文残留达到10字且超过汉字4倍"))
         assertTrue(foreignHeavy, foreignHeavy.contains("汉字=8"))
         assertTrue(foreignHeavy, foreignHeavy.contains("非汉字外文字母=40"))
+
+        val longSingleRemainder = SubtitleTranslationQualityPolicy.evaluateTranslation(
+            "That is surprising.",
+            "好unbelievableplease",
+            "en",
+            "zh-CN",
+        )
+        assertFalse(longSingleRemainder.accepted)
     }
+
     @Test
     fun acceptsLatinBrandNamesWhenSourceHasTheirTransliteration() {
         // 真实失败行（韩语）：原文把品牌音译成 유튜브/넷플릭스/구글/인스타，模型还原为通用拉丁写法是正确的。

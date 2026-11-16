@@ -1821,14 +1821,13 @@ internal object SubtitleTranslationQualityPolicy {
             Character.UnicodeScript.KATAKANA,
         )
         val kanaDominates = if (japaneseSource) {
-            // Preserve the existing guard for a Japanese-looking full sentence, including
-            // kanji-heavy Japanese. When the Chinese portion is substantial, short separated
-            // kana fragments are tolerated unless one fragment itself becomes long.
-            kana >= 8 && kana > han * 3 && (han <= 2 || kanaRuns.longestRun >= 6)
+            // Keep rejecting a clearly Japanese sentence, but tolerate more kana inside a
+            // Chinese translation. A short mixed phrase should not fail on a few kana particles.
+            kana >= 10 && kana > han * 3 && (han <= 2 || kanaRuns.longestRun >= 7)
         } else {
-            // Other source languages may naturally quote a short Japanese word or ending.
-            // Reject only a longer kana run that clearly outweighs the Chinese portion.
-            kana >= 6 && kana > han * 2 && kanaRuns.longestRun >= 4
+            // Other source languages may quote short Japanese words or endings inside Chinese.
+            // Require a longer fragment and a clearer foreign-script majority before rejecting.
+            kana >= 8 && kana > han * 2 && kanaRuns.longestRun >= 6
         }
         if (kanaDominates) {
             return "译文日文假名明显占主导（汉字=$han，日文假名=$kana，最长连续假名=" +
@@ -1838,8 +1837,8 @@ internal object SubtitleTranslationQualityPolicy {
         // A short Korean greeting or ending can remain in mixed Chinese. Repeated or long
         // Hangul fragments still fail when they dominate the Chinese content.
         if (hangul > han * 3 &&
-            ((hangul >= 8 && hangulRuns.longestRun >= 8) ||
-                (hangul >= 12 && (hangulRuns.longestRun >= 5 || hangulRuns.runCount >= 3)))
+            ((hangul >= 10 && hangulRuns.longestRun >= 10) ||
+                (hangul >= 14 && (hangulRuns.longestRun >= 7 || hangulRuns.runCount >= 4)))
         ) {
             return "译文韩文音节明显占主导（汉字=$han，韩文音节=$hangul，最长连续韩文=" +
                 hangulRuns.longestRun + "）"
@@ -1980,12 +1979,12 @@ internal object SubtitleTranslationQualityPolicy {
         ).any(translatedText::contains)
         val singleEmbeddedProperNameAccepted =
             ungroundedProperNameTokenCount == 1 &&
-                hanCount >= 4 &&
+                hanCount >= 3 &&
                 foreignLetters == ungroundedLetters &&
                 when {
-                    ungroundedLetters <= 7 && hasPersonNameContext -> true
+                    ungroundedLetters <= 9 && hasPersonNameContext -> true
                     ungroundedLetters <= 10 && hasProductNameContext -> true
-                    ungroundedLetters <= 12 && hasToolNameContext -> true
+                    ungroundedLetters <= 14 && hasToolNameContext -> true
                     else -> false
                 }
         if (ungroundedProperName &&
@@ -1994,15 +1993,15 @@ internal object SubtitleTranslationQualityPolicy {
         ) {
             return "译文含原文里找不到出处的外文名/词，缺少足够的中文语境或原文出处" +
                 "（触发规则=未出处外文名；汉字=$hanCount，外文名字母=$ungroundedLetters，" +
-                "单个人名≤7字母且有人物语境、产品名≤10字母且有产品语境、工具名≤12字母且有工具语境）"
+                "单个人名≤9字母且有人物语境、产品名≤10字母且有产品语境、工具名≤14字母且有工具语境）"
         }
         val longForeignRemainder =
-            longestForeignTokenLetters >= 8 ||
-                (foreignTokenCount >= 3 && foreignLetters >= 18) ||
-                (foreignTokenCount >= 4 && foreignLetters >= 14)
-        if (foreignLetters >= 8 && foreignLetters > hanCount * 4 && longForeignRemainder) {
+            longestForeignTokenLetters >= 12 ||
+                (foreignTokenCount >= 3 && foreignLetters >= 22) ||
+                (foreignTokenCount >= 4 && foreignLetters >= 18)
+        if (foreignLetters >= 10 && foreignLetters > hanCount * 4 && longForeignRemainder) {
             return "译文仍保留较长外语片段，外文字母明显多于中文汉字" +
-                "（触发规则=外文残留达到8字且超过汉字4倍，并含长外语词/长短语；" +
+                "（触发规则=外文残留达到10字且超过汉字4倍，并含长外语词/长短语；" +
                 "汉字=$hanCount，非汉字外文字母=$foreignLetters，" +
                 "最长外语词=$longestForeignTokenLetters，外语词数=$foreignTokenCount）"
         }
