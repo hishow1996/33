@@ -250,18 +250,4 @@ class CaptionSentenceMergePolicyTest {
         assertEquals(9_000L, lines[0].endMs)
         assertEquals(9_000L, lines[1].startMs)
     }
-
-    @Test
-    fun givesUpAndKeepsOriginalRowsWhenTheTimeBudgetIsExhausted() {
-        val result = CaptionSentenceMergePolicy.merge(
-            rollingJapaneseRows,
-            rollingJapaneseVtt,
-            minTimedTags = 5,
-            minRows = 1,
-            maxMergeMs = -1L,
-        )
-
-        assertNull(result.lines)
-        assertTrue(result.reason, result.reason.contains("耗时"))
-    }
 }

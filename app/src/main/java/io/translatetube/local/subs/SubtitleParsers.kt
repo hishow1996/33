@@ -103,7 +103,7 @@ object SubtitleParsers {
      * 诊断用：统计原始 VTT 里的逐词时间标签（<00:00:01.200>）数量。
      * 解析时这些标签会被删掉，所以必须在解析前对原始响应统计；只用于日志，不影响任何行为。
      */
-    fun countWordTimingTags(src: String): Int = wordTimingTagRegex.findAll(src).count()
+    fun countWordTimingTags(src: String): Int = RegexScan.count(wordTimingTagRegex, src)
 
     /** WebVTT → 行列表（YouTube timedtext 返回 vtt） */
     fun parseVtt(src: String): List<SubLine> = parseVtt(src) {}
@@ -310,11 +310,10 @@ object SubtitleParsers {
     internal fun parseTimedTextXml(src: String, checkActive: () -> Unit): List<SubLine> {
         if (!src.contains("<transcript", ignoreCase = true)) return emptyList()
         val out = mutableListOf<SubLine>()
-        val re = timedTextCueRegex
-        for ((matchIndex, match) in re.findAll(src).withIndex()) {
+        RegexScan.forEachMatch(timedTextCueRegex, src) { matchIndex, match ->
             if ((matchIndex and 0xff) == 0) checkActive()
-            val timing = parseTimedTextTiming(match.groupValues[1]) ?: continue
-            val rawText = match.groupValues[2]
+            val timing = parseTimedTextTiming(match.group(1).orEmpty()) ?: return@forEachMatch
+            val rawText = match.group(2).orEmpty()
             // Plain text needs no Android Html conversion; escaped entities and markup still do.
             val decodedText = SubtitleTextDecoder.decode(
                 rawText.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, "")
@@ -367,26 +366,25 @@ object SubtitleParsers {
             return emptyList()
         }
         val out = mutableListOf<SubLine>()
-        val cueRegex = ttmlCueRegex
         val attributeRegex = ttmlAttributeRegex
-        for ((matchIndex, match) in cueRegex.findAll(src).withIndex()) {
+        RegexScan.forEachMatch(ttmlCueRegex, src) { matchIndex, match ->
             if ((matchIndex and 0xff) == 0) checkActive()
-            val attrs = attributeRegex.findAll(match.groupValues[1])
+            val attrs = attributeRegex.findAll(match.group(1).orEmpty())
                 .associate { it.groupValues[1].lowercase(Locale.ROOT) to it.groupValues[2] }
             val start = (attrs["begin"] ?: attrs["start"])?.let { parseTtmlTime(it) }
-                ?.takeIf { it >= 0L } ?: continue
+                ?.takeIf { it >= 0L } ?: return@forEachMatch
             // An explicit but malformed end is not equivalent to a missing end. Do not
             // silently replace broken absolute timing with a relative duration and shift the cue.
             val end = if (attrs.containsKey("end")) {
-                attrs["end"]?.let { parseTtmlTime(it) } ?: continue
+                attrs["end"]?.let { parseTtmlTime(it) } ?: return@forEachMatch
             } else {
-                val durationText = attrs["dur"] ?: continue
-                val duration = parseTtmlTime(durationText) ?: continue
-                if (duration <= 0L || start > Long.MAX_VALUE - duration) continue
+                val durationText = attrs["dur"] ?: return@forEachMatch
+                val duration = parseTtmlTime(durationText) ?: return@forEachMatch
+                if (duration <= 0L || start > Long.MAX_VALUE - duration) return@forEachMatch
                 start + duration
             }
-            if (end <= start) continue
-            val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
+            if (end <= start) return@forEachMatch
+            val body = match.group(2).orEmpty().replace(ttmlLineBreakRegex, "\n")
             val text = SubtitleTextDecoder.decode(body.replace(htmlTagRegex, ""))
                 .replace('\u00a0', ' ').replace(inlineWhitespaceRegex, " ").trim()
             if (text.isNotEmpty()) {
