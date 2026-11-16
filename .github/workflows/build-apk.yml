@@ -419,3 +419,4 @@ jobs:
 
 # User-requested APK build trigger marker (2026-11-10 17:34 +08:00): build latest main and publish debug/release APK artifacts.
 # User-requested APK build trigger marker (2026-11-15 13:36 +08:00): build latest main and publish debug/release APK artifacts.
+# Explicit user-requested APK build trigger marker (2026-11-16 11:41 Asia/Tokyo): build latest main and publish debug/release APK artifacts.
