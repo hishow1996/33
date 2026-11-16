@@ -128,6 +128,21 @@ internal data class TranslationBatchResult(
                     targetLanguage = targetLanguage,
                     acceptShortUnchanged = acceptShortUnchanged,
                 )
+                val knownSoundCaptionFallback = if (
+                    !qualityDecision.accepted && SourceLanguagePolicy.isChinese(targetLanguage)
+                ) {
+                    SubtitleSoundDescriptionPolicy.translateKnownSoundDescription(sourceText)
+                } else {
+                    null
+                }
+                if (knownSoundCaptionFallback != null) {
+                    if (translated[sourceIndex].isNullOrEmpty()) {
+                        translated[sourceIndex] = knownSoundCaptionFallback
+                    }
+                    missing.remove(sourceIndex)
+                    rejectionByIndex.remove(sourceIndex)
+                    return@forEachIndexed
+                }
                 val sourceEcho = qualityDecision.sourceEcho
                 val targetMismatchDetail = qualityDecision.targetLanguageMismatchReason
                 val targetMismatch = targetMismatchDetail != null

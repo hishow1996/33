@@ -1,14 +1,38 @@
 package io.translatetube.local.translate
 
 /**
- * Recognizes bracketed captions describing non-verbal audio.
+ * Recognizes known captions describing non-verbal audio, including a truncated opening bracket.
  *
- * These rows are translatable subtitle content and remain visible on the timeline, but they
- * must not be sent to TTS as spoken dialogue. Recognition is limited to known sound/event labels
- * inside one pair of brackets so ordinary bracketed text remains speakable.
+ * These rows remain visible on the timeline but must not be sent to TTS as spoken dialogue.
+ * Recognition is limited to exact known sound/event labels so ordinary bracketed text remains speakable.
  */
 internal object SubtitleSoundDescriptionPolicy {
     private val bracketedBody = Regex("""^\s*(?:\[|【|（|\(|\{|「|『|〈|《)\s*(.+?)\s*(?:\]|】|）|\)|\}|」|』|〉|》)\s*[.!?。！？,，;；]*\s*$""")
+    private val unmatchedOpeningBracketBody = Regex("""^\s*(?:\[|【|（|\(|\{|「|『|〈|《)\s*(.+?)\s*$""")
+    private data class SoundDescriptionParts(
+        val opening: Char,
+        val body: String,
+        val suffix: String,
+    )
+
+    private fun soundDescriptionParts(text: String): SoundDescriptionParts? {
+        val trimmed = text.trim()
+        val completeMatch = bracketedBody.matchEntire(trimmed)
+        val body = completeMatch?.groupValues?.get(1)
+            ?: unmatchedOpeningBracketBody.matchEntire(trimmed)?.groupValues?.get(1)
+            ?: return null
+        val opening = trimmed.firstOrNull { it in "[【（({「『〈《" } ?: return null
+        val suffix = if (completeMatch != null) {
+            closingBracketAndSuffix.find(trimmed)?.groupValues?.get(1).orEmpty()
+        } else {
+            ""
+        }
+        return SoundDescriptionParts(
+            opening = opening,
+            body = body.trim().replace(Regex("""\s+"""), " "),
+            suffix = suffix,
+        )
+    }
     private val englishLabels = setOf(
         "music", "background music", "soft music", "instrumental music", "upbeat music",
         "dramatic music", "sad music", "happy music", "theme music", "singing", "song",
@@ -230,16 +254,14 @@ internal object SubtitleSoundDescriptionPolicy {
      */
     fun translateKnownSoundDescription(text: String?): String? {
         if (text.isNullOrBlank()) return null
-        val trimmed = text.trim()
-        val match = bracketedBody.matchEntire(trimmed) ?: return null
-        val body = match.groupValues[1].trim().replace(Regex("""\s+"""), " ")
-        val normalizedBody = body.lowercase(java.util.Locale.ROOT)
+        val parts = soundDescriptionParts(text) ?: return null
+        val normalizedBody = parts.body.lowercase(java.util.Locale.ROOT)
         val translated = knownEnglishTranslations[normalizedBody]
             ?: speakingLanguagePattern.matchEntire(normalizedBody)?.groupValues?.getOrNull(1)
                 ?.let(speakingLanguageTranslations::get)
                 ?.let { "说$it" }
             ?: return null
-        val opening = trimmed.firstOrNull { it in "[【（({「『〈《" } ?: return null
+        val opening = parts.opening
         val closing = when (opening) {
             '[' -> ']'
             '【' -> '】'
@@ -252,16 +274,12 @@ internal object SubtitleSoundDescriptionPolicy {
             '《' -> '》'
             else -> return null
         }
-        val suffix = closingBracketAndSuffix.find(trimmed)?.groupValues?.get(1).orEmpty()
-        return "$opening$translated$closing$suffix"
+        return "$opening$translated$closing${parts.suffix}"
     }
 
     fun isSoundDescription(text: String?): Boolean {
         if (text.isNullOrBlank()) return false
-        val body = bracketedBody.matchEntire(text.trim())?.groupValues?.getOrNull(1)
-            ?.trim()
-            ?.replace(Regex("""\s+"""), " ")
-            ?: return false
+        val body = soundDescriptionParts(text)?.body ?: return false
         if (body.isEmpty()) return false
         val normalized = body.lowercase(java.util.Locale.ROOT)
             .trimEnd('.', '。', '!', '！', '?', '？', ',', '，', ';', '；')

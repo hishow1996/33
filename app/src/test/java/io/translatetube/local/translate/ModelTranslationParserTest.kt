@@ -35,6 +35,51 @@ class ModelTranslationParserTest {
     }
 
     @Test
+    fun extractsOnlyTranslationFieldsFromJsonObjectArrays() {
+        assertEquals(
+            listOf("[音乐]"),
+            parseModelTranslations(
+                """[{"source":"[Music","translation":"[音乐]"}]""",
+                1,
+                listOf("[Music"),
+            ),
+        )
+        assertEquals(
+            listOf("第一条译文", "第二条译文"),
+            parseModelTranslations(
+                """{"translations":[{"source":"Hello","translation":"你好"},{"source":"Goodbye","translation":"再见"}]}""",
+                2,
+                listOf("Hello", "Goodbye"),
+            ),
+        )
+    }
+
+    @Test
+    fun extractsSingleJsonObjectTranslationWithoutIncludingFieldNames() {
+        assertEquals(
+            listOf("[音乐]"),
+            parseModelTranslations(
+                """{"source":"[Music","translation":"[音乐]"}""",
+                1,
+                listOf("[Music"),
+            ),
+        )
+    }
+
+    @Test
+    fun rejectsJsonObjectArrayWhenSourceRowsDoNotMatchRequestedOrder() {
+        val error = runCatching {
+            parseModelTranslations(
+                """[{"source":"Goodbye","translation":"再见"},{"source":"Hello","translation":"你好"}]""",
+                2,
+                listOf("Hello", "Goodbye"),
+            )
+        }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("source 与请求字幕行不一致"))
+    }
+
+    @Test
     fun acceptsCommonNumberedDelimitersWithoutChangingRowOrder() {
         assertEquals(
             listOf("第一条", "第二条", "第三条"),

@@ -33,6 +33,15 @@ class SubtitleSoundDescriptionPolicyTest {
     }
 
     @Test
+    fun recognizesAndTranslatesKnownSoundCueWithMissingClosingBracket() {
+        assertTrue(SubtitleSoundDescriptionPolicy.isSoundDescription("[Music"))
+        assertEquals("[音乐]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[Music"))
+        assertEquals("[音乐]", SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[ music "))
+        assertFalse(SubtitleSoundDescriptionPolicy.isSoundDescription("[music theory"))
+        assertNull(SubtitleSoundDescriptionPolicy.translateKnownSoundDescription("[music theory"))
+    }
+
+    @Test
     fun doesNotTreatOrdinaryBracketedDialogueOrUnbracketedTextAsSoundCaptions() {
         listOf(
             "[Hello there]",

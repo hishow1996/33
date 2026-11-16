@@ -677,7 +677,11 @@ private fun stripTranslationPrefix(value: String): String {
  * plain one-translation-per-line output; treating that as an all-empty batch caused a false
  * "status placeholder" error even though the model returned translations.
  */
-internal fun parseModelTranslations(content: String, size: Int): List<String> {
+internal fun parseModelTranslations(
+    content: String,
+    size: Int,
+    sourceLines: List<String>? = null,
+): List<String> {
     if (size <= 0) return emptyList()
     fun recordParser(result: String, reason: String = "") {
         TranslationDiagnosticContextHolder.current()?.recordParserEvent(
@@ -699,9 +703,16 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         return List(size) { "" }
     }
 
-    // Accept JSON arrays and common object-wrapped arrays. Keep org.json calls inside
-    // runCatching because Android's local-test stub may throw from length().
+    // Accept JSON string arrays, arrays of {source, translation} objects, and
+    // common object-wrapped variants. Keep org.json calls inside runCatching because
+    // Android's local-test stub may throw from length().
+    var jsonSourceAlignmentMismatch: String? = null
     val jsonPayload = runCatching {
+        fun normalizeSource(value: String): String =
+            java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC)
+                .trim()
+                .replace(Regex("""\s+"""), " ")
+
         fun readStringArray(array: JSONArray?): List<String>? {
             if (array == null || array.length() != size) return null
             val values = ArrayList<String>(size)
@@ -712,30 +723,90 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
             return values
         }
 
+        fun readObjectArray(array: JSONArray?): List<String>? {
+            if (array == null || array.length() != size) return null
+            val values = ArrayList<String>(size)
+            for (index in 0 until size) {
+                val item = array.opt(index) as? JSONObject ?: return null
+                val translationKey = listOf(
+                    "translation", "translated_text", "translatedText", "target_text",
+                ).firstOrNull { key -> item.has(key) && !item.isNull(key) } ?: return null
+                val translation = item.opt(translationKey) as? String ?: return null
+                if (item.has("source") && !item.isNull("source") && sourceLines != null) {
+                    val echoedSource = item.opt("source") as? String ?: return null
+                    val requestedSource = sourceLines.getOrNull(index) ?: return null
+                    if (normalizeSource(echoedSource) != normalizeSource(requestedSource)) {
+                        jsonSourceAlignmentMismatch =
+                            "row=${index + 1}; sourceChars=${echoedSource.length}; requestedChars=${requestedSource.length}"
+                        return null
+                    }
+                }
+                values += translation.trim()
+            }
+            return values
+        }
+
+        fun readArray(
+            array: JSONArray?,
+            stringMode: String,
+            objectMode: String,
+        ): Pair<String, List<String>>? =
+            readStringArray(array)?.let { stringMode to it }
+                ?: readObjectArray(array)?.let { objectMode to it }
+
         val directArray = runCatching { JSONArray(normalized) }.getOrNull()
         if (directArray != null) {
-            readStringArray(directArray)?.let { "PARSED_JSON_ARRAY" to it }
+            readArray(directArray, "PARSED_JSON_ARRAY", "PARSED_JSON_OBJECT_ARRAY")
         } else {
             val root = JSONObject(normalized)
             val arrayKeys = listOf(
                 "translations", "translated_texts", "results", "items", "lines", "data", "output",
             )
             arrayKeys.firstNotNullOfOrNull { key ->
-                readStringArray(root.optJSONArray(key))?.let { "PARSED_JSON_OBJECT_ARRAY" to it }
+                readArray(
+                    root.optJSONArray(key),
+                    "PARSED_JSON_OBJECT_ARRAY",
+                    "PARSED_JSON_OBJECT_TRANSLATION_ARRAY",
+                )
+            } ?: if (size == 1) {
+                val translationKey = listOf(
+                    "translation", "translated_text", "translatedText", "target_text",
+                ).firstOrNull { key -> root.has(key) && !root.isNull(key) }
+                if (translationKey == null) {
+                    null
+                } else {
+                    val translation = root.opt(translationKey) as? String
+                    val echoedSource = root.opt("source") as? String
+                    val requestedSource = sourceLines?.singleOrNull()
+                    if (echoedSource != null && requestedSource != null &&
+                        normalizeSource(echoedSource) != normalizeSource(requestedSource)
+                    ) {
+                        jsonSourceAlignmentMismatch =
+                            "row=1; sourceChars=${echoedSource.length}; requestedChars=${requestedSource.length}"
+                        null
+                    } else {
+                        translation?.trim()?.let { "PARSED_JSON_OBJECT" to listOf(it) }
+                    }
+                }
+            } else {
+                null
             }
         }
     }.getOrNull()
+
+    if (jsonSourceAlignmentMismatch != null) {
+        recordParser("REJECTED_JSON_SOURCE_MISMATCH", jsonSourceAlignmentMismatch.orEmpty())
+        throw IllegalStateException(
+            "翻译服务返回的 JSON source 与请求字幕行不一致，已拒绝可能错位的译文"
+        )
+    }
+
     val jsonTranslations = jsonPayload?.second
     if (jsonTranslations != null) {
         recordParser(
             jsonPayload.first,
             "expectedRows=$size; outputRows=${jsonTranslations.size}",
         )
-        return jsonTranslations
-    }
-
-    if (jsonTranslations != null) {
-        recordParser("PARSED_JSON_ARRAY", "expectedRows=$size; outputRows=${jsonTranslations.size}")
         return jsonTranslations
     }
 
@@ -2389,7 +2460,7 @@ class OpenAiCompatEngine(
         }
         val content = apiResponse.content
         val translated = try {
-            parseNumbered(content, lines.size)
+            parseNumbered(content, lines.size, lines)
         } catch (error: Exception) {
             android.util.Log.w(
                 "TranslationAPI",
@@ -2426,8 +2497,11 @@ class OpenAiCompatEngine(
         return translated
     }
 
-    private fun parseNumbered(content: String, size: Int): List<String> =
-        parseModelTranslations(content, size)
+    private fun parseNumbered(
+        content: String,
+        size: Int,
+        sourceLines: List<String>? = null,
+    ): List<String> = parseModelTranslations(content, size, sourceLines)
 }
 
 /** Retry retired Gemini model IDs with the current stable Flash model, but never hide auth/network errors. */

@@ -127,6 +127,20 @@ class UntranslatableCueRecoveryTest {
     }
 
     @Test
+    fun knownSoundCaptionFallbackCompletesARejectedModelTranslation() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(124),
+            rawTranslations = listOf("Music"),
+            sourceTexts = mapOf(124 to "[Music"),
+            sourceLanguage = "en",
+            targetLanguage = "zh",
+        )
+
+        assertEquals("[音乐]", result.translations[124])
+        assertTrue(result.missingIndices.isEmpty())
+    }
+
+    @Test
     fun symbolOnlySourceHasNothingToSpeak() {
         assertTrue(SubtitleTranslationQualityPolicy.hasNothingToSpeak("♪♪"))
         assertTrue(SubtitleTranslationQualityPolicy.hasNothingToSpeak("..."))
