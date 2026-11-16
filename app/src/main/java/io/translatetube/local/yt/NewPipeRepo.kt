@@ -170,6 +170,29 @@ object NewPipeRepo {
         Thread(runnable, "youtube-extractor-log").apply { isDaemon = true }
     }
 
+    /**
+     * 第一阶段（解析）的资源快照：长视频崩溃时，日志里最后一条记录能看出是哪一步、当时内存多少。
+     * 只读系统计数，不分配大对象。
+     */
+    private fun memoryProbe(): Map<String, String> {
+        val mb = 1024L * 1024L
+        val runtime = Runtime.getRuntime()
+        val out = LinkedHashMap<String, String>()
+        out["Java 堆已用 MB"] = ((runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L) / mb).toString()
+        out["Java 堆上限 MB"] = (runtime.maxMemory() / mb).toString()
+        runCatching { out["原生堆已分配 MB"] = (android.os.Debug.getNativeHeapAllocatedSize() / mb).toString() }
+        runCatching {
+            val manager = appContext?.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            if (manager != null) {
+                val info = android.app.ActivityManager.MemoryInfo()
+                manager.getMemoryInfo(info)
+                out["系统可用内存 MB"] = (info.availMem / mb).toString()
+                out["系统低内存状态"] = info.lowMemory.toString()
+            }
+        }
+        return out
+    }
+
     private fun logInfo(message: String, context: Map<String, String> = emptyMap()) {
         val app = appContext ?: return
         runCatching {
@@ -378,7 +401,7 @@ object NewPipeRepo {
                     "视频流候选数量" to fetched.videoStreams.size.toString(),
                     "请求耗时 ms" to elapsedMs.toString(),
                     "结果是否写入缓存" to (infoCacheGeneration == requestGeneration).toString(),
-                ),
+                ) + memoryProbe(),
             )
             fetched
         }
@@ -749,9 +772,24 @@ object NewPipeRepo {
             for (candidateUrl in candidateUrls) {
                 try {
                     val body = downloadText(candidateUrl)
+                    logInfo(
+                        "YouTube 字幕响应下载完成，开始解析",
+                        mapOf(
+                            "YouTube 视频 ID" to videoId,
+                            "字幕语言" to track.languageTag,
+                            "原始字幕响应字符数" to body.length.toString(),
+                        ) + memoryProbe(),
+                    )
                     val parsedLines = SubtitleParsers.parseAutoCancellable(body) {
                         ownerJob?.ensureActive()
                     }
+                    logInfo(
+                        "YouTube 字幕解析完成，开始按句合并",
+                        mapOf(
+                            "YouTube 视频 ID" to videoId,
+                            "解析出的字幕行数" to parsedLines.size.toString(),
+                        ) + memoryProbe(),
+                    )
                     val lines = if (parsedLines.isNotEmpty()) {
                         mergeCaptionSentences(
                             videoId = videoId,
@@ -786,7 +824,7 @@ object NewPipeRepo {
                                 "原始字幕逐词时间标签数" to SubtitleParsers.countWordTimingTags(body).toString(),
                                 "尝试过的字幕轨数量" to (candidateTracks.indexOf(track) + 1).toString(),
                                 "当前使用 VTT 格式候选" to candidateUrl.contains("fmt=vtt").toString(),
-                            ),
+                            ) + memoryProbe(),
                         )
                         return lines to track.languageTag
                     }
