@@ -965,7 +965,6 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
         tgtLang: String,
     ): List<String> = translateInternal(lines, srcLang, tgtLang, null)
 
-    @Suppress("UNUSED_PARAMETER")
     override suspend fun translateWithContext(
         lines: List<String>,
         srcLang: String,
@@ -973,13 +972,15 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
         context: Pair<List<String>, List<String>>?,
         lookaheadSource: List<String>,
         videoTitle: String?,
-    ): List<String> = translateInternal(lines, srcLang, tgtLang, context)
+    ): List<String> = translateInternal(lines, srcLang, tgtLang, context, lookaheadSource, videoTitle)
 
     private suspend fun translateInternal(
         lines: List<String>,
         srcLang: String,
         tgtLang: String,
         context: Pair<List<String>, List<String>>?,
+        lookaheadSource: List<String> = emptyList(),
+        videoTitle: String? = null,
     ): List<String> {
         if (lines.isEmpty()) return emptyList()
         val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
@@ -1025,20 +1026,18 @@ class HyMtEngine(private val context: Context) : TranslationEngine {
                 }
                 withContext(Dispatchers.Default) {
                     val taskContext = currentCoroutineContext()
-                    var rollingContext = context?.first.orEmpty()
-                        .zip(context?.second.orEmpty())
-                        .filter { it.first.isNotBlank() && it.second.isNotBlank() }
-                        .takeLast(3)
-                        .let { cues ->
-                            if (cues.isEmpty()) null else cues.map { it.first } to cues.map { it.second }
-                        }
+                    var rollingContext = HyMtPromptContext.trimContext(context)
                     lines.mapIndexed { index, line ->
                         taskContext.ensureActive()
                         val translated = when {
                             line.isBlank() -> ""
                             simplifiedChineseSource -> line
                             else -> try {
-                                val prompt = HyMtPromptBuilder.build(line, source, rollingContext)
+                                val prompt = HyMtPromptBuilder.build(
+                                    line, source, rollingContext,
+                                    following = HyMtPromptContext.followingCues(lines, index, lookaheadSource),
+                                    videoTitle = videoTitle,
+                                )
                                 val maxTokens = (line.length * 2 + 64).coerceIn(96, 512)
                                 HyMtRuntime.translate(appContext, prompt, maxTokens)
                             } catch (cancelled: CancellationException) {
@@ -1104,22 +1103,60 @@ internal fun appendHyMtTranslationContext(
     val recent = context?.first.orEmpty()
         .zip(context?.second.orEmpty())
         .filter { it.first.isNotBlank() && it.second.isNotBlank() }
-        .takeLast(2)
+        .takeLast(HyMtPromptContext.MAX_CONTEXT_PAIRS - 1)
         .toMutableList()
     recent += sourceText to translatedText
-    return recent.map { it.first } to recent.map { it.second }
+    return HyMtPromptContext.trimContext(recent.map { it.first } to recent.map { it.second })
 }
 
-private object HyMtPromptBuilder {
+/**
+ * Context budget for the on-device model. Prompt processing is the slow part on phones, so the pair count
+ * is capped together with a character budget instead of letting long cues inflate every request.
+ */
+internal object HyMtPromptContext {
+    const val MAX_CONTEXT_PAIRS = 5
+    const val MAX_CONTEXT_CHARS = 700
+    const val MAX_FOLLOWING_CUES = 2
+    const val MAX_FOLLOWING_CUE_CHARS = 120
+    const val MAX_TITLE_CHARS = 80
+
+    fun trimContext(context: Pair<List<String>, List<String>>?): Pair<List<String>, List<String>>? {
+        val pairs = context?.first.orEmpty()
+            .zip(context?.second.orEmpty())
+            .filter { it.first.isNotBlank() && it.second.isNotBlank() }
+            .takeLast(MAX_CONTEXT_PAIRS)
+            .toMutableList()
+        while (pairs.size > 1 && pairs.sumOf { it.first.length + it.second.length } > MAX_CONTEXT_CHARS) {
+            pairs.removeAt(0)
+        }
+        return if (pairs.isEmpty()) null else pairs.map { it.first } to pairs.map { it.second }
+    }
+
+    /** The cues right after [index]: first the rest of this batch, then the source-only lookahead. */
+    fun followingCues(lines: List<String>, index: Int, lookaheadSource: List<String>): List<String> {
+        val out = ArrayList<String>(MAX_FOLLOWING_CUES)
+        var position = index + 1
+        while (position < lines.size && out.size < MAX_FOLLOWING_CUES) {
+            lines[position].trim().takeIf { it.isNotEmpty() }?.let { out += it.take(MAX_FOLLOWING_CUE_CHARS) }
+            position++
+        }
+        for (candidate in lookaheadSource) {
+            if (out.size >= MAX_FOLLOWING_CUES) break
+            candidate.trim().takeIf { it.isNotEmpty() }?.let { out += it.take(MAX_FOLLOWING_CUE_CHARS) }
+        }
+        return out
+    }
+}
+
+internal object HyMtPromptBuilder {
     fun build(
         sourceText: String,
         sourceLanguage: String,
         context: Pair<List<String>, List<String>>?,
+        following: List<String> = emptyList(),
+        videoTitle: String? = null,
     ): String {
-        val previous = context?.first.orEmpty()
-            .zip(context?.second.orEmpty())
-            .filter { it.first.isNotBlank() && it.second.isNotBlank() }
-            .takeLast(3)
+        val previous = HyMtPromptContext.trimContext(context)?.let { it.first.zip(it.second) }.orEmpty()
         val sourceLabel = if (SourceLanguagePolicy.isUndetermined(sourceLanguage)) {
             "自动识别原文语言"
         } else {
@@ -1129,13 +1166,20 @@ private object HyMtPromptBuilder {
             SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES,
             SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES,
         ).joinToString("\n")
+        val title = videoTitle?.trim()?.take(HyMtPromptContext.MAX_TITLE_CHARS)?.takeIf { it.isNotEmpty() }
+        val titleBlock = if (title == null) "" else "视频标题（仅供理解主题和术语，不要翻译）：$title\n"
+        val followingBlock = if (following.isEmpty()) {
+            ""
+        } else {
+            "紧跟在当前字幕后面的原文（仅供判断当前半句话怎么收尾，不要翻译、不要输出）：\n" +
+                following.joinToString("\n") + "\n\n"
+        }
         if (previous.isEmpty()) {
-            return "$fidelityGuidelines\n将以下${sourceLabel}字幕台词翻译为简体中文。保持人物称呼；字幕可能是被切开的半句话，请结合当前文本理解，但只翻译当前这一条。不要删减、概括或扩写，只输出译文，不要解释：\n\n$sourceText"
+            return "$fidelityGuidelines\n$titleBlock${followingBlock}将以下${sourceLabel}字幕台词翻译为简体中文。保持人物称呼；字幕可能是被切开的半句话，请结合当前文本理解，但只翻译当前这一条。不要删减、概括或扩写，只输出译文，不要解释：\n\n$sourceText"
         }
         val contextText = previous.joinToString("\n") { (source, target) ->
             "原文：$source\n译文：$target"
         }
-        return "$fidelityGuidelines\n以下是前面字幕的原文和已确认译文，仅供理解上下文及统一人物称呼、专有名词和术语；优先沿用已确认的译法，不要翻译或重复上文：\n$contextText\n\n将下面的${sourceLabel}字幕翻译为简体中文。当前字幕可能是半句话，请结合上文理解，保持人称、指代和语气连贯；只翻译当前这一条，不要删减、概括、扩写或额外解释：\n$sourceText"
-
+        return "$fidelityGuidelines\n$titleBlock以下是前面字幕的原文和已确认译文，仅供理解上下文及统一人物称呼、专有名词和术语；优先沿用已确认的译法，不要翻译或重复上文：\n$contextText\n\n${followingBlock}将下面的${sourceLabel}字幕翻译为简体中文。当前字幕可能是半句话，请结合上文理解，保持人称、指代和语气连贯；只翻译当前这一条，不要删减、概括、扩写或额外解释：\n$sourceText"
     }
 }

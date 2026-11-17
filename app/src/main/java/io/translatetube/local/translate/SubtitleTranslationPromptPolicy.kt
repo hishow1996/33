@@ -33,6 +33,18 @@ internal object SubtitleTranslationPromptPolicy {
             "and Traditional Chinese only for zh-Hant/zh-TW/zh-HK/zh-MO. Prefer natural target-language punctuation. " +
             "Keep the result concise and natural for spoken subtitles. "
 
+    /**
+     * How the model should use the reference cues sent with every request. One shared block replaces the
+     * scattered, partly duplicated sentences the two API prompt builders used to carry.
+     */
+    const val CONTEXT_USAGE_GUIDELINES =
+        "Use the reference cues (earlier cues with their translations, and upcoming cues) only to understand the current cues; " +
+            "never translate or output them. Keep pronouns, tone and the rendering of every person, place or recurring term " +
+            "identical to the earlier translations. When a cue is only part of a sentence, read it together with its neighbours to get " +
+            "the meaning right, but output only what the current cue itself says, phrased so that the neighbouring translations " +
+            "join naturally: do not pull in words from the next cue and do not repeat the previous one. " +
+            "Example: the cues `I sat on the bank` and `of the river all day` are about a riverbank, not a financial bank. "
+
     fun targetLanguageLabel(code: String): String {
         val normalized = SourceLanguagePolicy.normalizeTag(code).lowercase(java.util.Locale.ROOT)
         val traditionalChinese = normalized.startsWith("zh-hant") ||

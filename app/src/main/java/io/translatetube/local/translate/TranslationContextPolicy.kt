@@ -2,11 +2,12 @@ package io.translatetube.local.translate
 
 /** Finds a small, ordered tail of usable translated rows without copying the whole prefix. */
 internal object TranslationContextPolicy {
-    const val MAX_CONTEXT_ROWS = 8
-    const val MAX_CONTEXT_JSON_CHARS = 6_000
-    const val MAX_LOOKAHEAD_JSON_CHARS = 1_600
+    const val MAX_CONTEXT_ROWS = 12
+    const val MAX_CONTEXT_JSON_CHARS = 8_000
+    const val MAX_LOOKAHEAD_ROWS = 6
+    const val MAX_LOOKAHEAD_JSON_CHARS = 2_400
     private const val MAX_TERM_SCAN_ROWS = 1_024
-    private const val MAX_TERM_REFERENCE_ROWS = 3
+    private const val MAX_TERM_REFERENCE_ROWS = 6
 
     /**
      * Return at most [maxRows] usable indexes before [beforeIndex], ordered oldest to newest.

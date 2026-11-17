@@ -36,6 +36,21 @@ interface TranslationEngine {
         lookaheadSource: List<String> = emptyList(),
         videoTitle: String? = null,
     ): List<String> = translate(lines, srcLang, tgtLang)
+
+    /**
+     * Optional one-time pre-scan of the whole transcript (topic, style, glossary, likely recognition
+     * errors). Only LLM-backed engines implement it; every other engine returns null.
+     * Failures must never block translation, so callers treat exceptions as "no brief".
+     */
+    suspend fun prepareVideoBrief(
+        transcriptSample: String,
+        srcLang: String,
+        tgtLang: String,
+        videoTitle: String?,
+    ): VideoTranslationBrief? = null
+
+    /** Remember the brief so every following batch request can carry it. Engines are created per run. */
+    fun applyVideoBrief(brief: VideoTranslationBrief?) = Unit
 }
 
 object LocalTranslationEnginePolicy {

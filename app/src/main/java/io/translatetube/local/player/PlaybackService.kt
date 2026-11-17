@@ -12465,6 +12465,75 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     },
                 )
             }
+            // 翻译前预扫描：一次请求拿到主题、说话风格、统一译名表和疑似识别错词，之后每一批都带上。
+            // 只有 LLM 类 API 引擎实现；任何失败都只记日志，不影响翻译本身，也不会换引擎。
+            val briefEngine = engine
+            if (briefEngine != null &&
+                (briefEngine is io.translatetube.local.translate.OpenAiCompatEngine ||
+                    briefEngine is io.translatetube.local.translate.GeminiEngine) &&
+                io.translatetube.local.translate.VideoTranslationBriefPolicy.shouldBuild(pendingIndices.size)
+            ) {
+                val briefPolicy = io.translatetube.local.translate.VideoTranslationBriefPolicy
+                val briefSampleLines = ArrayList<String>(pendingIndices.size)
+                for (pendingIndex in pendingIndices) briefSampleLines += updatedLines[pendingIndex].text
+                val briefSample = briefPolicy.buildSample(briefSampleLines)
+                if (briefSample.isNotBlank()) {
+                    val briefSource = src.ifBlank { srcLang }
+                    val briefDirectory = File(cacheDir, "translation_brief")
+                    val briefCacheKey = briefPolicy.cacheKey(
+                        key, briefEngine.id, engineName, briefSource, tgt, briefSample,
+                    )
+                    var brief = withContext(Dispatchers.IO) { briefPolicy.loadCached(briefDirectory, briefCacheKey) }
+                    val briefFromCache = brief != null
+                    if (brief == null) {
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(progress = "正在分析视频主题和术语…")
+                        }
+                        val briefStartedAtNanos = System.nanoTime()
+                        brief = try {
+                            briefEngine.prepareVideoBrief(briefSample, briefSource, tgt, translationVideoTitle)
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            withContext(Dispatchers.IO) {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    this@PlaybackService,
+                                    "Translation",
+                                    "视频主题和术语预扫描失败，本次翻译不带术语表继续",
+                                    failure,
+                                    diagnosticContext = mapOf(
+                                        "翻译诊断 ID" to diagnosticId,
+                                        "翻译引擎名称" to engineName,
+                                        "预扫描耗时毫秒" to ((System.nanoTime() - briefStartedAtNanos) / 1_000_000L).toString(),
+                                    ),
+                                )
+                            }
+                            null
+                        }
+                        brief?.let { generated ->
+                            withContext(Dispatchers.IO) { briefPolicy.saveCached(briefDirectory, briefCacheKey, generated) }
+                        }
+                    }
+                    val finalBrief = brief
+                    briefEngine.applyVideoBrief(finalBrief)
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "Translation",
+                            if (finalBrief != null) "视频主题和术语预扫描完成" else "视频主题和术语预扫描没有得到可用结果",
+                            diagnosticContext = mapOf(
+                                "翻译诊断 ID" to diagnosticId,
+                                "翻译引擎名称" to engineName,
+                                "来自缓存" to briefFromCache.toString(),
+                                "取样字符数" to briefSample.length.toString(),
+                                "术语表条数" to (finalBrief?.glossary?.size ?: 0).toString(),
+                                "识别纠错条数" to (finalBrief?.recognitionFixes?.size ?: 0).toString(),
+                                "主题已提取" to (finalBrief?.topic?.isNotBlank() == true).toString(),
+                            ),
+                        )
+                    }
+                }
+            }
             val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
             // Checkpoint the first batch immediately, then every few successful batches and
             // always at the end. This bounds crash recovery loss without serializing the full
@@ -12498,7 +12567,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     .drop(lastIndex + 1)
                     .map { it.text }
                     .filter { it.isNotBlank() }
-                    .take(3)
+                    .take(io.translatetube.local.translate.TranslationContextPolicy.MAX_LOOKAHEAD_ROWS)
                     .toList()
                 // Context is rebuilt for each attempt. On retries, already accepted rows from
                 // this batch become available to later missing cues instead of reusing stale context.
@@ -12761,9 +12830,34 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 .withDiagnosticContext(traceContext) {
                                     io.translatetube.local.translate.TranslationRetryNoticeHolder
                                         .withNotice(retryNotice) {
-                                            engine!!.translateWithContext(
-                                                batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
-                                            )
+                                            val activeEngine = engine!!
+                                            // 逐行翻译的引擎看不到上下文：把没说完的相邻几行合成整句再翻，译完拆回各行。
+                                            // 上一轮有行被打回时不再合句，退回最稳的逐行翻译。
+                                            val groupSentences = lastRejectedRows.none() &&
+                                                activeEngine !is io.translatetube.local.translate.OpenAiCompatEngine &&
+                                                activeEngine !is io.translatetube.local.translate.GeminiEngine &&
+                                                activeEngine !is io.translatetube.local.translate.HyMtEngine
+                                            if (groupSentences) {
+                                                io.translatetube.local.translate.SentenceGroupedTranslation.translate(
+                                                    lines = batch,
+                                                    rowIndices = unresolvedIndices,
+                                                    report = { stats ->
+                                                        android.util.Log.i(
+                                                            "PlaybackService",
+                                                            "整句合并翻译：${stats.mergedGroups} 组共 ${stats.mergedLines} 行，" +
+                                                                "拆不开退回逐行 ${stats.fallbackLines} 行",
+                                                        )
+                                                    },
+                                                ) { units ->
+                                                    activeEngine.translateWithContext(
+                                                        units, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
+                                                    )
+                                                }
+                                            } else {
+                                                activeEngine.translateWithContext(
+                                                    batch, src, tgt, retryContext, lookaheadSource, translationVideoTitle,
+                                                )
+                                            }
                                         }
                                 }
                         }.also { translationJob?.ensureActive() }

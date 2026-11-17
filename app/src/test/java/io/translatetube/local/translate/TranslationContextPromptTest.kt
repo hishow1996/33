@@ -88,13 +88,19 @@ class TranslationContextPromptTest {
         val prompt = buildContextUserPrompt(
             context = null,
             numbered = "0|We should go",
-            lookaheadSource = listOf("before the rain", "", "when it starts", "after the call", "ignore this cue"),
+            lookaheadSource = listOf(
+                "before the rain", "", "when it starts", "after the call",
+                "then we leave", "and walk home", "past the park", "ignore this cue",
+            ),
         ) ?: throw AssertionError("Expected lookahead context")
 
         val expectedFollowing = org.json.JSONArray()
             .put("before the rain")
             .put("when it starts")
             .put("after the call")
+            .put("then we leave")
+            .put("and walk home")
+            .put("past the park")
             .toString()
         assertTrue(prompt.contains("Following cues (source only, for understanding sentence continuation; do not translate or return them):"))
         assertTrue(prompt.contains(expectedFollowing))
@@ -122,19 +128,19 @@ class TranslationContextPromptTest {
     }
 
     @Test
-    fun keepsEightRecentAlignedRowsAvailableForLongerTermNameAndTermContinuity() {
-        val sources = (0 until 10).map { "Source cue $it" }
-        val translations = (0 until 10).map { "译文 $it" }
+    fun keepsTwelveRecentAlignedRowsAvailableForLongerTermNameAndTermContinuity() {
+        val sources = (0 until 16).map { "Source cue $it" }
+        val translations = (0 until 16).map { "译文 $it" }
         val prompt = buildContextUserPrompt(
             sources to translations,
             "0|Current cue",
         ) ?: throw AssertionError("Expected a prompt with recent context")
 
-        assertTrue(prompt.contains("Source cue 2"))
-        assertTrue(prompt.contains("译文 2"))
-        assertTrue(prompt.contains("Source cue 9"))
-        assertFalse(prompt.contains("Source cue 1"))
-        assertFalse(prompt.contains("译文 1"))
+        assertTrue(prompt.contains("Source cue 4\""))
+        assertTrue(prompt.contains("译文 4\""))
+        assertTrue(prompt.contains("Source cue 15"))
+        assertFalse(prompt.contains("Source cue 3\""))
+        assertFalse(prompt.contains("译文 3\""))
     }
 
     @Test
@@ -159,7 +165,7 @@ class TranslationContextPromptTest {
         val prompt = buildContextUserPrompt(
             context = null,
             numbered = "0|Current cue",
-            lookaheadSource = listOf("next-cue " + "n".repeat(2_000)),
+            lookaheadSource = listOf("next-cue " + "n".repeat(3_000)),
         )
         assertNull(prompt)
     }

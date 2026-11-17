@@ -56,7 +56,7 @@ internal fun buildContextUserPrompt(
             .takeLast(CONTEXT_LINES)
             .toMutableList()
     } ?: mutableListOf()
-    val followingCues = lookaheadSource.filter { it.isNotBlank() }.take(3).toMutableList()
+    val followingCues = lookaheadSource.filter { it.isNotBlank() }.take(TranslationContextPolicy.MAX_LOOKAHEAD_ROWS).toMutableList()
     fun encodePrevious(): String = JSONArray().apply {
         previousCues.forEach { (source, translated) ->
             put(JSONObject().put("source", source).put("translation", translated))
@@ -1933,6 +1933,7 @@ private fun buildOpenAiSubtitlePrompts(
     videoTitle: String?,
     forceTranslate: Boolean,
     jsonArrayResponse: Boolean = false,
+    videoBrief: String? = null,
 ): ApiSubtitlePrompts {
         val src = LangMap.display(srcLang)
         val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
@@ -1952,15 +1953,14 @@ private fun buildOpenAiSubtitlePrompts(
             if (forceTranslate) {
                 append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
             }
-            append("Translate as coherent dialogue: keep pronouns, references and tone consistent across lines. ")
-            append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
+            append(SubtitleTranslationPromptPolicy.CONTEXT_USAGE_GUIDELINES)
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
-            append("Render the same person, place or recurring term identically every time it appears. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
             append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
             }
+            videoBrief?.takeIf { it.isNotBlank() }?.let { append(it) }
             TranslationRetryNoticeHolder.current()?.takeIf { it.isNotBlank() }?.let { notice ->
                 append(notice)
             }
@@ -2111,6 +2111,49 @@ class OpenAiCompatEngine(
         return batchLearningByLanguage.computeIfAbsent(scope) {
             ApiSubtitleBatchLearningState(model, baseUrl, batchLearningStore, scope)
         }
+    }
+
+    @Volatile
+    private var videoBriefSection: String? = null
+
+    override fun applyVideoBrief(brief: VideoTranslationBrief?) {
+        videoBriefSection = brief?.takeUnless { it.isEmpty }?.toPromptSection()
+    }
+
+    override suspend fun prepareVideoBrief(
+        transcriptSample: String,
+        srcLang: String,
+        tgtLang: String,
+        videoTitle: String?,
+    ): VideoTranslationBrief? {
+        if (apiKey.isBlank() || transcriptSample.isBlank()) return null
+        val payload = JSONObject()
+            .put("model", model)
+            .put(
+                "messages", JSONArray()
+                    .put(
+                        JSONObject().put("role", "system").put(
+                            "content",
+                            VideoTranslationBriefPolicy.systemPrompt(
+                                LangMap.display(srcLang),
+                                SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang),
+                            ),
+                        )
+                    )
+                    .put(
+                        JSONObject().put("role", "user").put(
+                            "content",
+                            VideoTranslationBriefPolicy.userPrompt(videoTitle, transcriptSample),
+                        )
+                    )
+            )
+        val params = ChatCompletionParamsPolicy.forModel(
+            baseUrl, model, VideoTranslationBriefPolicy.OUTPUT_TOKEN_ESTIMATE,
+            batchLearningFor(srcLang, tgtLang).snapshot().outputBudgetTokens,
+        )
+        params.temperature?.let { payload.put("temperature", it) }
+        payload.put(if (params.useMaxCompletionTokens) "max_completion_tokens" else "max_tokens", params.maxTokens)
+        return VideoTranslationBriefPolicy.parse(requestTranslationContent(payload).content)
     }
 
     private fun payloadWithThinkingControl(
@@ -2358,6 +2401,7 @@ class OpenAiCompatEngine(
                     val prompt = buildOpenAiSubtitlePrompts(
                         candidateLines, srcLang, tgtLang, contextForSelection,
                         lookaheadSource, videoTitle, forceTranslate = false,
+                        videoBrief = videoBriefSection,
                     )
                     ApiSubtitleBatchPolicy.estimatePromptTokens(
                         prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
@@ -2494,7 +2538,7 @@ class OpenAiCompatEngine(
         val batchLearning = batchLearningFor(srcLang, tgtLang)
         val prompts = buildOpenAiSubtitlePrompts(
             lines, srcLang, tgtLang, context, lookaheadSource, videoTitle, forceTranslate,
-            jsonArrayResponse,
+            jsonArrayResponse, videoBriefSection,
         )
         val sys = prompts.system
         val user = prompts.user
@@ -2606,6 +2650,7 @@ private fun buildGeminiSubtitlePrompts(
     lookaheadSource: List<String>,
     videoTitle: String?,
     forceTranslate: Boolean,
+    videoBrief: String? = null,
 ): ApiSubtitlePrompts {
         val src = LangMap.display(srcLang)
         val tgt = SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang)
@@ -2618,14 +2663,14 @@ private fun buildGeminiSubtitlePrompts(
             if (forceTranslate) {
                 append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
             }
-            append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines. ")
-            append("A sentence may be split across adjacent subtitle cues; use the reference cues to understand fragments, but translate only the current cue assigned to each index. ")
+            append("These cues are consecutive dialogue from one video. ")
+            append(SubtitleTranslationPromptPolicy.CONTEXT_USAGE_GUIDELINES)
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
-            append("Render the same person, place or recurring term identically every time it appears. ")
             append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
             }
+            videoBrief?.takeIf { it.isNotBlank() }?.let { append(it) }
             TranslationRetryNoticeHolder.current()?.takeIf { it.isNotBlank() }?.let { notice ->
                 append(notice)
             }
@@ -2738,6 +2783,7 @@ class GeminiEngine(
                     val prompt = buildGeminiSubtitlePrompts(
                         candidateLines, srcLang, tgtLang, contextForSelection,
                         lookaheadSource, videoTitle, forceTranslate = false,
+                        videoBrief = videoBriefSection,
                     )
                     ApiSubtitleBatchPolicy.estimatePromptTokens(
                         prompt.system, prompt.user, learningSnapshot.inputTokenMultiplier,
@@ -2873,6 +2919,7 @@ class GeminiEngine(
         val batchLearning = batchLearningFor(srcLang, tgtLang)
         val prompts = buildGeminiSubtitlePrompts(
             lines, srcLang, tgtLang, context, lookaheadSource, videoTitle, forceTranslate,
+            videoBrief = videoBriefSection,
         )
         val sys = prompts.system
         val user = prompts.user
@@ -2975,6 +3022,46 @@ class GeminiEngine(
                     "failedBatches=${performance.failedBatchCount}",
         )
         return translated
+    }
+
+    @Volatile
+    private var videoBriefSection: String? = null
+
+    override fun applyVideoBrief(brief: VideoTranslationBrief?) {
+        videoBriefSection = brief?.takeUnless { it.isEmpty }?.toPromptSection()
+    }
+
+    override suspend fun prepareVideoBrief(
+        transcriptSample: String,
+        srcLang: String,
+        tgtLang: String,
+        videoTitle: String?,
+    ): VideoTranslationBrief? {
+        if (normalizedApiKey.isBlank() || transcriptSample.isBlank()) return null
+        val configuredModel = model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }
+        val prompt = VideoTranslationBriefPolicy.systemPrompt(
+            LangMap.display(srcLang),
+            SubtitleTranslationPromptPolicy.targetLanguageLabel(tgtLang),
+        ) + "\n\n" + VideoTranslationBriefPolicy.userPrompt(videoTitle, transcriptSample)
+        val payload = JSONObject().put(
+            "contents",
+            JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt))))
+        )
+        applyGeminiTranslationThinkingConfig(payload, configuredModel)
+        applyGeminiTranslationOutputLimit(
+            payload, configuredModel, VideoTranslationBriefPolicy.OUTPUT_TOKEN_ESTIMATE,
+            batchLearningFor(srcLang, tgtLang).snapshot().outputBudgetTokens,
+        )
+        val body = generateContent(configuredModel, payload.toString())
+        val parts = JSONObject(body).optJSONArray("candidates")
+            ?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+            ?: return null
+        val text = (0 until parts.length()).mapNotNull { index ->
+            val part = parts.optJSONObject(index) ?: return@mapNotNull null
+            if (part.optBoolean("thought", false)) return@mapNotNull null
+            part.optString("text").takeIf { it.isNotBlank() && it != "null" }
+        }.joinToString("\n")
+        return VideoTranslationBriefPolicy.parse(text)
     }
 
     /**
