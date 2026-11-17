@@ -790,13 +790,54 @@ internal fun parseModelTranslations(
             val arrayKeys = listOf(
                 "translations", "translated_texts", "results", "items", "lines", "data", "output",
             )
+
+            // Read wrapped arrays from their original JSON slice first. This avoids
+            // differences between org.json implementations when retrieving a nested
+            // JSONArray through JSONObject.opt(), while preserving quoted brackets and
+            // escaped characters inside subtitle strings.
+            fun extractWrappedArray(key: String): JSONArray? {
+                val property = Regex("\"" + Regex.escape(key) + "\"\\s*:\\s*\\[")
+                    .find(normalized) ?: return null
+                val start = normalized.indexOf('[', property.range.first)
+                if (start < 0) return null
+                var depth = 0
+                var inString = false
+                var escaped = false
+                for (index in start until normalized.length) {
+                    val char = normalized[index]
+                    if (inString) {
+                        when {
+                            escaped -> escaped = false
+                            char == '\\' -> escaped = true
+                            char == '"' -> inString = false
+                        }
+                    } else {
+                        when (char) {
+                            '"' -> inString = true
+                            '[' -> depth++
+                            ']' -> {
+                                depth--
+                                if (depth == 0) {
+                                    return runCatching {
+                                        JSONArray(normalized.substring(start, index + 1))
+                                    }.getOrNull()
+                                }
+                            }
+                        }
+                    }
+                }
+                return null
+            }
+
             arrayKeys.firstNotNullOfOrNull { key ->
-                val rawArray = root.opt(key)
-                val wrappedArray = when (rawArray) {
-                    is JSONArray -> rawArray
-                    is String -> runCatching { JSONArray(rawArray) }.getOrNull()
-                    null -> null
-                    else -> runCatching { JSONArray(rawArray.toString()) }.getOrNull()
+                val wrappedArray = extractWrappedArray(key) ?: run {
+                    val rawArray = root.opt(key)
+                    when (rawArray) {
+                        is JSONArray -> rawArray
+                        is String -> runCatching { JSONArray(rawArray) }.getOrNull()
+                        null -> null
+                        else -> runCatching { JSONArray(rawArray.toString()) }.getOrNull()
+                    }
                 }
                 readArray(
                     wrappedArray,
