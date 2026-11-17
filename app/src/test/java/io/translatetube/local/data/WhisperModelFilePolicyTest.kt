@@ -6,21 +6,21 @@ import org.junit.Test
 
 class WhisperModelFilePolicyTest {
     private fun files(
-        encoder: Long = 80L * 1024 * 1024,
-        decoder: Long = 100L * 1024 * 1024,
-        tokens: Long = 1024L,
+        encoder: Long = 112_442_483L,
+        decoder: Long = 262_226_114L,
+        tokens: Long = 816_730L,
     ) = mapOf(
-        "base-encoder.int8.onnx" to encoder,
-        "base-decoder.int8.onnx" to decoder,
-        "base-tokens.txt" to tokens,
+        "small-encoder.int8.onnx" to encoder,
+        "small-decoder.int8.onnx" to decoder,
+        "small-tokens.txt" to tokens,
     )
 
     @Test
     fun requiresEncoderDecoderAndTheExactTokenFilenameUsedByWhisperEngine() {
         assertTrue(WhisperModelFilePolicy.isCoreComplete(files()))
         assertFalse(WhisperModelFilePolicy.isCoreComplete(files(tokens = 0L)))
-        assertFalse(WhisperModelFilePolicy.isCoreComplete(files(encoder = 0L)))
-        assertFalse(WhisperModelFilePolicy.isCoreComplete(files(decoder = 0L)))
+        assertFalse(WhisperModelFilePolicy.isCoreComplete(files(encoder = WhisperModelFilePolicy.MIN_ENCODER_BYTES - 1L)))
+        assertFalse(WhisperModelFilePolicy.isCoreComplete(files(decoder = WhisperModelFilePolicy.MIN_DECODER_BYTES - 1L)))
         assertFalse(WhisperModelFilePolicy.isCoreComplete(files(tokens = 511L)))
     }
 

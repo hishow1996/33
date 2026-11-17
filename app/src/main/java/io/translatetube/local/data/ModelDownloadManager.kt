@@ -83,7 +83,7 @@ object ModelFiles {
             .let { if (it == "sensevoice") "sensevoice" else "whisper" }
 
     fun localAsrModelDisplayName(modelId: String): String =
-        if (modelId == "sensevoice") "SenseVoice Small INT8" else "Whisper Base"
+        if (modelId == "sensevoice") "SenseVoice Small INT8" else "Whisper Small INT8"
 
     private fun validModel(file: File, minBytes: Long = 1L * 1024 * 1024) =
         file.isFile && file.length() >= minBytes
@@ -145,9 +145,9 @@ object ModelFiles {
     internal fun asrDirectoryCoreReady(dir: File): Boolean =
         WhisperModelFilePolicy.isCoreComplete(
             mapOf(
-                "base-encoder.int8.onnx" to File(dir, "base-encoder.int8.onnx").takeIf { it.isFile }?.length().orZero(),
-                "base-decoder.int8.onnx" to File(dir, "base-decoder.int8.onnx").takeIf { it.isFile }?.length().orZero(),
-                "base-tokens.txt" to File(dir, "base-tokens.txt").takeIf { it.isFile }?.length().orZero(),
+                "small-encoder.int8.onnx" to File(dir, "small-encoder.int8.onnx").takeIf { it.isFile }?.length().orZero(),
+                "small-decoder.int8.onnx" to File(dir, "small-decoder.int8.onnx").takeIf { it.isFile }?.length().orZero(),
+                "small-tokens.txt" to File(dir, "small-tokens.txt").takeIf { it.isFile }?.length().orZero(),
             )
         )
 
@@ -189,7 +189,7 @@ object ModelFiles {
         val names = if (normalized == "sensevoice") {
             listOf("model.int8.onnx", "tokens.txt")
         } else {
-            listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx", "base-tokens.txt")
+            listOf("small-encoder.int8.onnx", "small-decoder.int8.onnx", "small-tokens.txt")
         }
         val files = names.map { name -> File(modelDir, name) } +
             File(asrDir(ctx), "silero_vad.onnx")
@@ -296,9 +296,9 @@ object ModelFiles {
 /**
  * 双模型独立下载管理器：
  * - TTS（Kokoro v1.1 int8，压缩包 140MB → 就绪 207MB）
- * - ASR（Whisper base int8，压缩包 198MB → 就绪 160MB）
- * 双源：GitHub 官方 → 镜像加速（国内直连 GitHub 不稳时自动切换）
- * 原子性：下载到 .tmp → 解压到 .tmp → 原子 rename，任何中断不污染旧文件
+ * - ASR（Whisper Small INT8，逐个下载 encoder/decoder/tokens，合计约 375 MB）
+ * - SenseVoice 继续使用独立模型压缩包下载
+ * Whisper 文件固定上游 revision、校验权重 SHA-256，并支持断点续传与备用镜像
  */
 class ModelDownloadManager(private val ctx: Context, private val scope: CoroutineScope) {
 
@@ -411,8 +411,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         .build()
     private val actualAsrArchiveSizes = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    fun cachedAsrArchiveSizeBytes(modelId: String): Long? =
-        actualAsrArchiveSizes[normalizeAsrModelId(modelId)]
+    fun cachedAsrArchiveSizeBytes(modelId: String): Long? {
+        val normalized = normalizeAsrModelId(modelId)
+        return if (normalized == "whisper") whisperSmallTotalBytes else actualAsrArchiveSizes[normalized]
+    }
 
     private fun normalizeAsrModelId(modelId: String): String =
         if (modelId.equals("sensevoice", ignoreCase = true)) "sensevoice" else "whisper"
@@ -424,8 +426,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
      */
     suspend fun queryAsrArchiveSizeBytes(modelId: String): Long? {
         val normalized = normalizeAsrModelId(modelId)
+        if (normalized == "whisper") {
+            actualAsrArchiveSizes[normalized] = whisperSmallTotalBytes
+            return whisperSmallTotalBytes
+        }
         actualAsrArchiveSizes[normalized]?.let { return it }
-        val urls = if (normalized == "sensevoice") senseVoiceUrls else asrUrls
+        val urls = senseVoiceUrls
         return withContext(Dispatchers.IO) {
             for (url in urls.take(2)) {
                 val headSize = readArchiveSize(url, useRange = false)
@@ -525,10 +531,36 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2",
         "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2",
     )
-    private val asrUrls = listOf(
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
-        "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
-        "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
+    private data class WhisperSmallArtifact(
+        val fileName: String,
+        val sizeBytes: Long,
+        val sha256: String?,
+    )
+
+    // Pin the upstream model revision so a future repository update cannot silently change files.
+    private val whisperSmallRevision = "8f3c18b358db4d1f2fc1eae49d75cd20989e4309"
+    private val whisperSmallArtifacts = listOf(
+        WhisperSmallArtifact(
+            fileName = "small-encoder.int8.onnx",
+            sizeBytes = 112_442_483L,
+            sha256 = "4cbe7b22fa9026b843b60a68640c747de05bafb1a11b57edc0e66c232d9f33a9",
+        ),
+        WhisperSmallArtifact(
+            fileName = "small-decoder.int8.onnx",
+            sizeBytes = 262_226_114L,
+            sha256 = "acad50b5c782696e91b55914cc5ab4f756f1532f76e22aa6fc615f39fb69a8ee",
+        ),
+        WhisperSmallArtifact(
+            fileName = "small-tokens.txt",
+            sizeBytes = 816_730L,
+            sha256 = null,
+        ),
+    )
+    private val whisperSmallTotalBytes = whisperSmallArtifacts.sumOf { it.sizeBytes }
+
+    private fun whisperSmallArtifactUrls(fileName: String): List<String> = listOf(
+        "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small/resolve/$whisperSmallRevision/$fileName",
+        "https://hf-mirror.com/csukuangfj/sherpa-onnx-whisper-small/resolve/$whisperSmallRevision/$fileName",
     )
     private val senseVoiceUrls = listOf(
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
@@ -571,7 +603,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 "是否处于暂停状态" to isPaused.toString(),
                 "下载源数量" to when (kind) {
                     ModelKind.TTS -> ttsUrls.size.toString()
-                    ModelKind.ASR -> (if (ModelFiles.selectedLocalAsrModelId(ctx) == "sensevoice") senseVoiceUrls else asrUrls).size.toString()
+                    ModelKind.ASR -> if (ModelFiles.selectedLocalAsrModelId(ctx) == "sensevoice") {
+                        senseVoiceUrls.size.toString()
+                    } else {
+                        whisperSmallArtifactUrls(whisperSmallArtifacts.first().fileName).size.toString()
+                    }
                 },
             ),
         )
@@ -660,6 +696,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 ModelKind.ASR -> {
                     val selectedModelId = ModelFiles.selectedLocalAsrModelId(ctx)
                     if (ModelFiles.asrReady(ctx)) {
+                        if (selectedModelId == "whisper") {
+                            listOf(
+                                "base-encoder.int8.onnx",
+                                "base-decoder.int8.onnx",
+                                "base-tokens.txt",
+                            ).forEach { legacyName -> runCatching { File(ModelFiles.asrDir(ctx), legacyName).delete() } }
+                        }
                         _asr.value = ModelState(status = ModelStatus.READY, progress = 100)
                         logModelInfo(
                             "当前转写模型及必需附属文件已完整，跳过重复下载",
@@ -689,7 +732,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                 ModelFiles.asrCoreReady(ctx) -> runVadOnly(_asr)
                                 selectedModelId == "sensevoice" ->
                                     runDownload(ModelKind.ASR, _asr, senseVoiceUrls, ModelFiles.senseVoiceDir(ctx))
-                                else -> runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
+                                else -> runWhisperSmallModelFiles(_asr)
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
@@ -961,7 +1004,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             // to avoid delaying a manual download with a second metadata request; constants below
             // are storage-safety fallbacks only and are never shown as verified UI sizes.
             else -> cachedAsrArchiveSizeBytes(modelId)
-                ?: if (modelId == "sensevoice") 165_783_878L else 207_557_382L
+                ?: if (modelId == "sensevoice") 165_783_878L else whisperSmallTotalBytes
         }
         val resumableBytes = (if (reusablePackage) pkg.length() else {
             urls.maxOfOrNull { url -> ResumableModelArchiveDownloader.partFileFor(pkg, url).length() } ?: 0L
@@ -980,7 +1023,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             } else {
                 ModelStoragePreflightPolicy.requiredBytes(
                     archiveBytes = remainingArchiveBytes,
-                    extractedBytes = 160L * ModelStoragePreflightPolicy.MIB,
+                    extractedBytes = whisperSmallTotalBytes,
                 )
             }
         }
@@ -1434,7 +1477,155 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         )
     }
 
-    /** Whisper 主模型已经存在时，只补下载缺失/损坏的 VAD 文件，避免重新下载近 200 MB 模型包。 */
+    /** Download only the three INT8 Whisper Small files, avoiding FP32 weights and sample audio. */
+    private suspend fun runWhisperSmallModelFiles(state: MutableStateFlow<ModelState>) {
+        val startedAtMs = System.currentTimeMillis()
+        val modelDir = ModelFiles.asrDir(ctx)
+        if (!modelDir.isDirectory && !modelDir.mkdirs()) {
+            throw java.io.IOException("无法创建 Whisper Small 模型目录")
+        }
+        val totalBytes = whisperSmallTotalBytes
+        actualAsrArchiveSizes["whisper"] = totalBytes
+
+        fun publish(status: ModelStatus, processedBytes: Long, message: String, indeterminate: Boolean = false) {
+            val safeBytes = processedBytes.coerceIn(0L, totalBytes)
+            state.value = ModelState(
+                status = status,
+                progress = if (totalBytes > 0L) (safeBytes * 100L / totalBytes).toInt().coerceIn(0, 99) else 0,
+                downloadedMB = safeBytes / ModelStoragePreflightPolicy.MIB,
+                totalMB = (totalBytes + ModelStoragePreflightPolicy.MIB - 1L) / ModelStoragePreflightPolicy.MIB,
+                downloadedBytes = safeBytes,
+                totalBytes = totalBytes,
+                stageMessage = message,
+                indeterminate = indeterminate,
+            )
+        }
+
+        // Downloads are installed one file at a time, so only remaining bytes plus a
+        // safety margin need to be available; no FP32-containing model archive is stored.
+        val bytesStillNeeded = whisperSmallArtifacts.sumOf { artifact ->
+            val destination = File(modelDir, artifact.fileName)
+            if (destination.isFile && destination.length() == artifact.sizeBytes) {
+                0L
+            } else {
+                val bestPartial = whisperSmallArtifactUrls(artifact.fileName).maxOfOrNull { url ->
+                    ResumableModelArchiveDownloader.partFileFor(destination, url).length()
+                } ?: 0L
+                (artifact.sizeBytes - bestPartial.coerceAtMost(artifact.sizeBytes)).coerceAtLeast(0L)
+            }
+        }
+        val requiredStorageBytes = ModelStoragePreflightPolicy.requiredBytes(
+            archiveBytes = bytesStillNeeded,
+            extractedBytes = 0L,
+        )
+        val usableSpace = ModelStoragePreflightPolicy.minimumKnownUsableSpace(
+            ctx.filesDir.usableSpace,
+            modelDir.usableSpace,
+        )
+        if (!ModelStoragePreflightPolicy.hasEnoughSpace(usableSpace, requiredStorageBytes)) {
+            throw java.io.IOException(
+                "可用存储空间不足：下载 Whisper Small INT8 还需要约 " +
+                    "${ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间，请释放空间后重试。"
+            )
+        }
+
+        var completedBytes = 0L
+        for ((index, artifact) in whisperSmallArtifacts.withIndex()) {
+            val destination = File(modelDir, artifact.fileName)
+            if (destination.isFile && destination.length() == artifact.sizeBytes) {
+                completedBytes += artifact.sizeBytes
+                publish(
+                    ModelStatus.DOWNLOADING,
+                    completedBytes,
+                    "Whisper Small INT8 文件已就绪（${index + 1}/${whisperSmallArtifacts.size}）",
+                )
+                continue
+            }
+
+            var lastFailure: Exception? = null
+            val artifactUrls = whisperSmallArtifactUrls(artifact.fileName)
+            val orderedSources = ResumableModelArchiveDownloader.orderSourcesByResumeProgress(
+                destination,
+                artifactUrls,
+            )
+            for ((sourceIndex, url) in orderedSources) {
+                val partial = ResumableModelArchiveDownloader.partFileFor(destination, url)
+                val resumedBytes = partial.length().coerceAtMost(artifact.sizeBytes)
+                val stage = if (sourceIndex == 0) {
+                    "正在下载 Whisper Small INT8（${index + 1}/${whisperSmallArtifacts.size}）…"
+                } else {
+                    "正在切换 Whisper Small INT8 下载源（${index + 1}/${whisperSmallArtifacts.size}）…"
+                }
+                publish(ModelStatus.DOWNLOADING, completedBytes + resumedBytes, stage)
+                try {
+                    downloadTo(
+                        url = url,
+                        dest = destination,
+                        maxBytes = artifact.sizeBytes,
+                        expectedBytes = artifact.sizeBytes,
+                        expectedSha256 = artifact.sha256,
+                        onProgress = { got, responseTotal ->
+                            publish(
+                                ModelStatus.DOWNLOADING,
+                                completedBytes + got.coerceAtMost(artifact.sizeBytes),
+                                stage,
+                                indeterminate = responseTotal <= 0L,
+                            )
+                        },
+                        onVerificationProgress = { read, _ ->
+                            publish(
+                                ModelStatus.EXTRACTING,
+                                completedBytes + read.coerceAtMost(artifact.sizeBytes),
+                                "正在校验 Whisper Small INT8（${index + 1}/${whisperSmallArtifacts.size}）…",
+                            )
+                        },
+                    )
+                    if (!destination.isFile || destination.length() != artifact.sizeBytes) {
+                        throw java.io.IOException("Whisper Small 文件大小校验失败：${artifact.fileName}")
+                    }
+                    lastFailure = null
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastFailure = e
+                    Log.w("ModelDL", "Whisper Small 下载源失败：${artifact.fileName}，继续尝试其他来源", e)
+                }
+            }
+            if (lastFailure != null) {
+                throw java.io.IOException(
+                    "Whisper Small INT8 文件下载失败：${artifact.fileName}；${lastFailure?.message ?: "网络异常"}",
+                    lastFailure,
+                )
+            }
+            completedBytes += artifact.sizeBytes
+            publish(
+                ModelStatus.EXTRACTING,
+                completedBytes,
+                "正在校验 Whisper Small INT8 文件（${index + 1}/${whisperSmallArtifacts.size}）…",
+            )
+        }
+
+        if (!ModelFiles.whisperCoreReady(ctx)) {
+            throw java.io.IOException("Whisper Small INT8 模型文件不完整，无法启动本地转写")
+        }
+
+        // Remove the previous Base payload only after every Small file passed size/hash checks.
+        listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx", "base-tokens.txt").forEach { name ->
+            runCatching { File(modelDir, name).delete() }
+        }
+        logModelInfo(
+            "Whisper Small INT8 三个必需文件下载并安装完成",
+            mapOf(
+                "模型文件" to whisperSmallArtifacts.joinToString(", ") { it.fileName },
+                "模型文件总字节数" to totalBytes.toString(),
+                "总耗时 ms" to (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L).toString(),
+            ),
+        )
+        // VAD remains a separate, small dependency and keeps its existing resume/checksum flow.
+        runVadOnly(state)
+    }
+    /** Whisper 主模型已经存在时，只补下载缺失/损坏的 VAD 文件，避免重新下载主模型文件。 */
     private suspend fun runVadOnly(state: MutableStateFlow<ModelState>) {
         val startedAtMs = System.currentTimeMillis()
         val vad = File(ModelFiles.asrDir(ctx), "silero_vad.onnx")
@@ -1624,6 +1815,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     private suspend fun downloadTo(
         url: String,
         dest: File,
+        maxBytes: Long = 16L * 1024 * 1024,
+        expectedBytes: Long? = null,
         onProgress: ((got: Long, total: Long) -> Unit)? = null,
         expectedSha256: String? = null,
         onVerificationProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
@@ -1636,7 +1829,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             client = http,
             url = url,
             partFile = partFile,
-            maxBytes = 16L * 1024 * 1024,
+            maxBytes = maxBytes,
             expectedSha256 = expectedSha256,
             awaitResume = { awaitDownloadsResumed() },
             checkActive = { ownerJob?.ensureActive() },
@@ -1645,6 +1838,14 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 onVerificationProgress?.invoke(bytesRead, totalBytes)
             },
         )
+        if (expectedBytes != null && partFile.length() != expectedBytes) {
+            val actualBytes = partFile.length()
+            partFile.delete()
+            ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
+            throw java.io.IOException(
+                "模型文件大小校验失败：${dest.name}，预期 ${expectedBytes} 字节，实际 ${actualBytes} 字节"
+            )
+        }
         AtomicFileInstaller.install(partFile, dest)
         if (dest.name == "silero_vad.onnx" && expectedSha256 != null) {
             ModelFiles.cacheVerifiedVadModel(dest, result.sha256)
@@ -1844,11 +2045,14 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         throw java.io.IOException("解压后的模型超过大小限制")
                     }
 
-                    // SenseVoice archives may contain example WAVs that are not installed.
-                    // Consume those entries in bounded chunks so progress and cancellation
-                    // remain responsive instead of silently skipping a potentially large file.
-                    val shouldInstall = destDir.name != "sensevoice" ||
-                        relative == "model.int8.onnx" || relative == "tokens.txt"
+                    // ASR archives can contain unused precision variants or test audio. Keep only
+                    // the exact INT8 model files used by the selected local engine.
+                    val shouldInstall = when (destDir.name) {
+                        "sensevoice" -> relative == "model.int8.onnx" || relative == "tokens.txt"
+                        "whisper" -> relative == "small-encoder.int8.onnx" ||
+                            relative == "small-decoder.int8.onnx" || relative == "small-tokens.txt"
+                        else -> true
+                    }
                     var fileBytes = 0L
                     if (!shouldInstall) {
                         while (true) {
@@ -1908,9 +2112,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     "tokens.txt" to SenseVoiceModelFilePolicy.MIN_TOKENS_BYTES,
                 )
                 else -> listOf(
-                    "base-encoder.int8.onnx" to WhisperModelFilePolicy.MIN_ONNX_BYTES,
-                    "base-decoder.int8.onnx" to WhisperModelFilePolicy.MIN_ONNX_BYTES,
-                    "base-tokens.txt" to WhisperModelFilePolicy.MIN_TOKENS_BYTES,
+                    "small-encoder.int8.onnx" to WhisperModelFilePolicy.MIN_ENCODER_BYTES,
+                    "small-decoder.int8.onnx" to WhisperModelFilePolicy.MIN_DECODER_BYTES,
+                    "small-tokens.txt" to WhisperModelFilePolicy.MIN_TOKENS_BYTES,
                 )
             }
             if (required.any { (name, minimumBytes) ->
@@ -1921,7 +2125,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     when (destDir.name) {
                         "tts" -> "模型包缺少必要文件或文件体积异常，已取消安装"
                         "sensevoice" -> "SenseVoice 模型包缺少 model.int8.onnx 或 tokens.txt，已取消安装"
-                        else -> "Whisper 模型包缺少 encoder、decoder 或 base-tokens.txt 词表，已取消安装"
+                        else -> "Whisper Small INT8 模型包缺少 encoder、decoder 或 small-tokens.txt 词表，已取消安装"
                     }
                 )
             }
@@ -1932,7 +2136,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
                 "tts" -> Unit
                 else -> if (!ModelFiles.asrDirectoryCoreReady(staging)) {
-                    throw java.io.IOException("Whisper 模型核心文件校验失败：缺少 base-tokens.txt 或模型文件不完整")
+                    throw java.io.IOException("Whisper Small INT8 模型核心文件校验失败：缺少 small-tokens.txt 或模型文件不完整")
                 }
             }
 

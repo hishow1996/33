@@ -8,7 +8,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult
 
-/** Whisper base 多语言本地转写（sherpa-onnx） */
+/** Whisper Small INT8 多语言本地转写（sherpa-onnx） */
 class WhisperEngine(
     ctx: Context,
     private val numThreads: Int = 2,
@@ -28,21 +28,21 @@ class WhisperEngine(
     init {
         require(numThreads in 1..4) { "本地转写线程数必须在 1 到 4 之间" }
         check(io.translatetube.local.data.ModelFiles.whisperCoreReady(ctx)) {
-            "本地 Whisper 模型不完整：需要 base-encoder.int8.onnx、base-decoder.int8.onnx 和 base-tokens.txt；请在转写设置中重新下载模型。"
+            "本地 Whisper 模型不完整：需要 small-encoder.int8.onnx、small-decoder.int8.onnx 和 small-tokens.txt；请在转写设置中重新下载模型。"
         }
         val m = io.translatetube.local.data.ModelFiles.asrDir(ctx).absolutePath + "/"
         val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
             modelConfig = OfflineModelConfig(
                 whisper = OfflineWhisperModelConfig(
-                    encoder = "${m}base-encoder.int8.onnx",
-                    decoder = "${m}base-decoder.int8.onnx",
+                    encoder = "${m}small-encoder.int8.onnx",
+                    decoder = "${m}small-decoder.int8.onnx",
                     language = "",
                     task = whisperTask,
                     // DTW token alignment exposes word/subword timing where the model supports attention outputs.
                     enableTokenTimestamps = true,
                 ),
-                tokens = "${m}base-tokens.txt",
+                tokens = "${m}small-tokens.txt",
                 numThreads = numThreads,
                 debug = false,
                 provider = "cpu",

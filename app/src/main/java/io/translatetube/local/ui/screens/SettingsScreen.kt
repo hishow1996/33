@@ -577,7 +577,7 @@ Section(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             AsrProviderCard(
-                title = "Whisper Base",
+                title = "Whisper Small",
                 selected = localAsrModel == "whisper",
                 enabled = !asrModelBusy,
                 modifier = Modifier.weight(1f),
@@ -600,7 +600,7 @@ Section(
             )
         }
         ModelRow(
-            title = if (localAsrModel == "sensevoice") "SenseVoice Small INT8" else "Whisper Base",
+            title = if (localAsrModel == "sensevoice") "SenseVoice Small INT8" else "Whisper Small INT8",
             state = asrState,
             ready = asrReady,
             packageSizeBytes = asrArchiveSizeBytes
