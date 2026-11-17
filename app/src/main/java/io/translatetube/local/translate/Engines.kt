@@ -709,7 +709,7 @@ internal fun parseModelTranslations(
     val normalized = content
         .replace(Regex("(?s)<think>.*?</think>"), "")
         .replace("\\r\n", "\n")
-        .replace("\n", "\n")
+        .replace("\\n", "\n")
         .replace("\\r", "\n")
         .replace(Regex("(?m)^\\s*```[\\w-]*\\s*$"), "")
         .trim()
