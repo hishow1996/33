@@ -1,3 +1,4 @@
+# Explicit user-requested APK build trigger marker (2026-11-17): build latest main HEAD and publish Debug APK artifact.
 # Explicit user-requested APK build retry marker (2026-11-09): align the foreign-residue diagnostic assertion with the current rejection reason.
 # Explicit user-requested APK build retry marker (2026-11-09): align the Korean diagnostic wording assertion and rerun all checks.
 # Explicit user-requested APK build retry marker (2026-11-09): rebuild latest main after relaxing multilingual validation and updating regression tests.
