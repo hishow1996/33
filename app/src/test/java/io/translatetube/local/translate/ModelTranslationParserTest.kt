@@ -45,7 +45,7 @@ class ModelTranslationParserTest {
             ),
         )
         assertEquals(
-            listOf("第一条译文", "第二条译文"),
+            listOf("你好", "再见"),
             parseModelTranslations(
                 """{"translations":[{"source":"Hello","translation":"你好"},{"source":"Goodbye","translation":"再见"}]}""",
                 2,
