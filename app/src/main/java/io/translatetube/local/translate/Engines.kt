@@ -80,7 +80,7 @@ internal fun buildContextUserPrompt(
     val followingText = encodeFollowing()
     return buildString {
         if (previousCues.isNotEmpty()) {
-            append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Use these completed pairs only as reference for established names, terms, pronouns, references and tone; do not translate or repeat them. Reuse a confirmed Chinese rendering for the same named entity or technical term consistently; do not invent alternate names. If prior rows use conflicting renderings, prefer the current source and clearly supported context instead of copying the conflict. Do not infer a speaker's identity, gender, relationship or an ambiguous referent unless the source and context clearly support it. The current source text is authoritative; never alter its meaning just to match an earlier translation. A sentence may continue across cue boundaries, so use nearby context to understand its grammar while keeping every current cue's meaning within its own index; do not duplicate, omit, summarize or move content between rows.\n")
+            append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Reference only, following the context rules: do not translate or repeat them. Reuse a confirmed Chinese rendering for the same named entity or technical term consistently. The current source text is authoritative.\n")
             append(ctxText)
             append("\n\n")
         }
@@ -1950,13 +1950,17 @@ private fun buildOpenAiSubtitlePrompts(
             }
             append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
             append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
-            if (forceTranslate) {
-                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
-            }
             append(SubtitleTranslationPromptPolicy.CONTEXT_USAGE_GUIDELINES)
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
             append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
+            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
+            append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged. ")
+            // 每个视频、每次重试才会变的内容放最后：前面的固定规则对所有请求完全一致，
+            // 自动前缀缓存（OpenAI 兼容、DeepSeek 等）才能一直命中。
+            if (forceTranslate) {
+                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
+            }
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
             }
@@ -1964,8 +1968,6 @@ private fun buildOpenAiSubtitlePrompts(
             TranslationRetryNoticeHolder.current()?.takeIf { it.isNotBlank() }?.let { notice ->
                 append(notice)
             }
-            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
-            append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
         }
         val user = buildContextUserPrompt(context, numbered, lookaheadSource)
             ?: numbered
@@ -2660,13 +2662,17 @@ private fun buildGeminiSubtitlePrompts(
             append("Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. ")
             append("Do not copy ordinary source-language words or sentences unchanged. If wording is ambiguous, provide your best natural $tgt translation instead of echoing the source. ")
             append("Preserve unchanged only content that naturally remains the same, such as proper names, brand names, acronyms, URLs, email addresses and standalone numbers. ")
-            if (forceTranslate) {
-                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
-            }
             append("These cues are consecutive dialogue from one video. ")
             append(SubtitleTranslationPromptPolicy.CONTEXT_USAGE_GUIDELINES)
             append("Do not omit, summarize, invent facts or move content between subtitle rows. ")
             append("The source text may come from automatic speech recognition: it can contain misrecognized words, missing punctuation and wrong sentence breaks. Infer the intended wording from context and translate the intended meaning; never translate an obvious misrecognition literally, and never add content that the speech does not support. ")
+            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
+            append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone. ")
+            // 每个视频、每次重试才会变的内容放最后：前面的固定规则对所有请求完全一致，
+            // 自动前缀缓存（OpenAI 兼容、DeepSeek 等）才能一直命中。
+            if (forceTranslate) {
+                append("This is a recovery request for a cue that was previously empty or echoed from the source. Translate its ordinary words into $tgt now; do not repeat the source-language wording. ")
+            }
             videoTitle?.trim()?.take(120)?.takeIf { it.isNotBlank() }?.let { title ->
                 append("Video title (for topic and terminology only): $title. ")
             }
@@ -2674,8 +2680,6 @@ private fun buildGeminiSubtitlePrompts(
             TranslationRetryNoticeHolder.current()?.takeIf { it.isNotBlank() }?.let { notice ->
                 append(notice)
             }
-            append(SubtitleTranslationPromptPolicy.guidelinesForTarget(tgtLang))
-            append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
         }
         val user = buildContextUserPrompt(context, numbered, lookaheadSource)
             ?: numbered

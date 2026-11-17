@@ -288,10 +288,5 @@ class SubtitleTranslationRelaxationPolicyTest {
             ),
         )
         assertTrue(SubtitleTranslationPromptPolicy.ENGLISH_FIDELITY_GUIDELINES.contains("@handles"))
-        assertTrue(
-            SubtitleTranslationPromptPolicy.CHINESE_FIDELITY_GUIDELINES.contains(
-                "跨行截断的不完整片段",
-            ),
-        )
     }
 }

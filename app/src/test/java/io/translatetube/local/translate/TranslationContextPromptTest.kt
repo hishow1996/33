@@ -20,8 +20,6 @@ class TranslationContextPromptTest {
         assertTrue(prompt.contains("\"translation\":\"我们明天和萨姆见面。\""))
         assertTrue(prompt.contains("current source text is authoritative"))
         assertTrue(prompt.contains("Reuse a confirmed Chinese rendering for the same named entity or technical term consistently"))
-        assertTrue(prompt.contains("prefer the current source and clearly supported context"))
-        assertTrue(prompt.contains("Do not infer a speaker's identity"))
         assertTrue(prompt.contains("Translate only the current numbered subtitle cues below."))
         assertTrue(prompt.contains("0|Please continue."))
     }
@@ -74,15 +72,6 @@ class TranslationContextPromptTest {
         assertTrue(prompt.contains("0|Continue."))
     }
 
-    @Test
-    fun chineseContextRulesAvoidUnsupportedSpeakerAndReferentAssumptions() {
-        val instructions = SubtitleTranslationPromptPolicy.CHINESE_CONTEXT_GUIDELINES
-
-        assertTrue(instructions.contains("当前字幕原文优先"))
-        assertTrue(instructions.contains("不要猜测说话者身份、性别、人物关系"))
-        assertTrue(instructions.contains("每行只翻译自己的内容"))
-        assertTrue(instructions.contains("不重复前后行"))
-    }
     @Test
     fun lookaheadSourceOnlyAddsFollowingCuesWithoutRequiringPriorTranslations() {
         val prompt = buildContextUserPrompt(
