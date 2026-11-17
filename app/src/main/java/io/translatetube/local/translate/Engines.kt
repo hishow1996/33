@@ -39,6 +39,7 @@ private val http: OkHttpClient = OkHttpClient.Builder()
 
 /** 批间衔接时携带的上批尾部行数（原文+译文对照）。 */
 private const val CONTEXT_LINES = TranslationContextPolicy.MAX_CONTEXT_ROWS
+private const val MAX_CONTEXT_PROMPT_CHARS = 8_000
 private const val SLOW_TRANSLATION_REQUEST_WARNING_MS = 8_000L
 
 /**
@@ -76,21 +77,35 @@ internal fun buildContextUserPrompt(
     }
     if (previousCues.isEmpty() && followingCues.isEmpty()) return null
 
-    val ctxText = encodePrevious()
-    val followingText = encodeFollowing()
-    return buildString {
-        if (previousCues.isNotEmpty()) {
-            append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Reference only, following the context rules: do not translate or repeat them. Reuse a confirmed Chinese rendering for the same named entity or technical term consistently. The current source text is authoritative.\n")
-            append(ctxText)
-            append("\n\n")
+    // The JSON budgets above exclude fixed instructions and current cues. Enforce a final
+    // prompt budget too, dropping whole rows only and keeping the newest aligned pair whenever it fits.
+    while (true) {
+        val ctxText = encodePrevious()
+        val followingText = encodeFollowing()
+        val prompt = buildString {
+            if (previousCues.isNotEmpty()) {
+                append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Reference only, following the context rules: do not translate or repeat them. Reuse a confirmed Chinese rendering for the same named entity or technical term consistently. The current source text is authoritative.\\n")
+                append(ctxText)
+                append("\\n\\n")
+            }
+            if (followingCues.isNotEmpty()) {
+                append("Following cues (source only, for understanding sentence continuation; do not translate or return them): ")
+                append(followingText)
+                append("\\n\\n")
+            }
+            append("Translate only the current numbered subtitle cues below. Include each current index exactly once and return no reference cues.\\n")
+            append(numbered)
         }
-        if (followingCues.isNotEmpty()) {
-            append("Following cues (source only, for understanding sentence continuation; do not translate or return them): ")
-            append(followingText)
-            append("\n\n")
+        if (prompt.length < MAX_CONTEXT_PROMPT_CHARS) return prompt
+
+        when {
+            // Upcoming cues are supplementary; discard the farthest ones first.
+            followingCues.isNotEmpty() -> followingCues.removeAt(0)
+            // Keep source/translation alignment and preserve the most recent pair.
+            previousCues.size > 1 -> previousCues.removeAt(0)
+            previousCues.isNotEmpty() -> previousCues.clear()
+            else -> return null
         }
-        append("Translate only the current numbered subtitle cues below. Include each current index exactly once and return no reference cues.\n")
-        append(numbered)
     }
 }
 /**
