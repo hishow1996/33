@@ -600,7 +600,7 @@ Section(
             )
         }
         ModelRow(
-            title = if (localAsrModel == "sensevoice") "SenseVoice Small INT8 转写模型" else "Whisper Base 转写模型",
+            title = if (localAsrModel == "sensevoice") "SenseVoice Small INT8" else "Whisper Base",
             state = asrState,
             ready = asrReady,
             packageSizeBytes = asrArchiveSizeBytes
@@ -611,7 +611,7 @@ Section(
             packageSizeLoading = asrArchiveSizeLoading,
             installedSizeBytes = io.translatetube.local.data.ModelFiles.installedAsrModelBytes(ctx, localAsrModel),
             showInstalledSize = true,
-            compactStatus = true,
+            linearProgressCard = true,
             onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
             onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.ASR) },
         )
@@ -1879,160 +1879,349 @@ private fun ModelRow(
     installedSizeBytes: Long? = null,
     showInstalledSize: Boolean = false,
     compactStatus: Boolean = false,
+    linearProgressCard: Boolean = false,
     onDownload: () -> Unit,
     onCancel: () -> Unit = {},
 ) {
     val active = state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING ||
         state.status == io.translatetube.local.data.ModelStatus.EXTRACTING
-    Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                title,
-                color = OnBg,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f),
-            )
-            if (ready) {
-                Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelMedium)
-            } else if (active) {
-                IconButton(
-                    onClick = onCancel,
-                    modifier = Modifier.size(40.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = "取消$title 下载与安装",
-                        tint = DangerRed,
-                    )
+
+    if (linearProgressCard) {
+        AsrModelDownloadCard(
+            title = title,
+            state = state,
+            ready = ready,
+            packageSizeBytes = packageSizeBytes,
+            packageSizeLoading = packageSizeLoading,
+            installedSizeBytes = installedSizeBytes,
+            showInstalledSize = showInstalledSize,
+            onDownload = onDownload,
+            onCancel = onCancel,
+        )
+    } else {
+        Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    color = OnBg,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                if (ready) {
+                    Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelMedium)
+                } else if (active) {
+                    IconButton(
+                        onClick = onCancel,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "取消$title 下载与安装",
+                            tint = DangerRed,
+                        )
+                    }
+                } else {
+                    IconButton(
+                        onClick = onDownload,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Download,
+                            contentDescription = if (state.status == io.translatetube.local.data.ModelStatus.FAILED) "重试下载$title" else "下载$title",
+                            tint = BrandBright,
+                        )
+                    }
+                }
+            }
+            val reportedPackageBytes = packageSizeBytes
+                ?: state.totalBytes.takeIf { it > 10_000_000L && !state.stageMessage.orEmpty().contains("语音检测") }
+            if (compactStatus) {
+                // 下载中已有实时的“已下载 / 总大小”，避免重复展示同一信息。
+                if (!active) {
+                    val sizeSummary = listOfNotNull(
+                        reportedPackageBytes?.let { "下载包 ${formatExactModelMB(it)}" },
+                        if (showInstalledSize) installedSizeBytes?.let { "安装后 ${formatExactModelMB(it)}" } else null,
+                    ).joinToString(" · ")
+                    if (sizeSummary.isNotBlank()) {
+                        Text(sizeSummary, color = SubText, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             } else {
-                IconButton(
-                    onClick = onDownload,
-                    modifier = Modifier.size(40.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Download,
-                        contentDescription = if (state.status == io.translatetube.local.data.ModelStatus.FAILED) "重试下载$title" else "下载$title",
-                        tint = BrandBright,
+                Text(
+                    reportedPackageBytes?.let { "下载包大小 ${formatExactModelMB(it)}" }
+                        ?: if (packageSizeLoading) "下载包大小正在查询" else "下载包大小：下载时读取源站数据",
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (showInstalledSize) {
+                    Text(
+                        installedSizeBytes?.let { "安装后占用 ${formatExactModelMB(it)}" }
+                            ?: if (ready) "安装后占用暂不可读取" else "安装后占用：安装完成后按实际文件统计",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
+            Spacer(Modifier.height(5.dp))
+            when {
+                ready -> {
+                    if (!compactStatus) {
+                        Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (state.indeterminate) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(36.dp),
+                                color = BrandBright,
+                                trackColor = Color(0xFFE5EAF0),
+                                strokeWidth = 3.dp,
+                            )
+                        } else {
+                            CircularProgressIndicator(
+                                progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                                modifier = Modifier.size(36.dp),
+                                color = BrandBright,
+                                trackColor = Color(0xFFE5EAF0),
+                                strokeWidth = 3.dp,
+                            )
+                        }
+                        val taskLabel = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在下载模型"
+                        val detail = when {
+                            state.indeterminate && state.totalBytes > 0L ->
+                                "$taskLabel · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
+                            state.totalBytes > 0L ->
+                                "$taskLabel · ${state.progress.coerceIn(0, 99)}% · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
+                            state.downloadedBytes > 0L ->
+                                "$taskLabel · 已下载 ${formatExactModelMB(state.downloadedBytes)}"
+                            else -> taskLabel
+                        }
+                        Text(
+                            detail,
+                            color = BrandBright,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                state.status == io.translatetube.local.data.ModelStatus.EXTRACTING -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (state.indeterminate) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(36.dp),
+                                color = BrandBright,
+                                trackColor = Color(0xFFE5EAF0),
+                                strokeWidth = 3.dp,
+                            )
+                        } else {
+                            CircularProgressIndicator(
+                                progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                                modifier = Modifier.size(36.dp),
+                                color = BrandBright,
+                                trackColor = Color(0xFFE5EAF0),
+                                strokeWidth = 3.dp,
+                            )
+                        }
+                        val taskLabel = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在处理模型"
+                        Text(
+                            if (state.indeterminate) taskLabel else "$taskLabel · ${state.progress.coerceIn(0, 99)}%",
+                            color = BrandBright,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
+                    Text(
+                        state.error ?: "下载失败，请检查网络后重试",
+                        color = DangerRed,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                else -> Unit
+            }
         }
-        val reportedPackageBytes = packageSizeBytes
-            ?: state.totalBytes.takeIf { it > 10_000_000L && !state.stageMessage.orEmpty().contains("语音检测") }
-        if (compactStatus) {
-            // 下载中已有实时的“已下载 / 总大小”，避免重复展示同一信息。
-            if (!active) {
+    }
+}
+
+@Composable
+private fun AsrModelDownloadCard(
+    title: String,
+    state: io.translatetube.local.data.ModelState,
+    ready: Boolean,
+    packageSizeBytes: Long?,
+    packageSizeLoading: Boolean,
+    installedSizeBytes: Long?,
+    showInstalledSize: Boolean,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val downloading = state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING
+    val extracting = state.status == io.translatetube.local.data.ModelStatus.EXTRACTING
+    val active = downloading || extracting
+    val failed = state.status == io.translatetube.local.data.ModelStatus.FAILED
+    val reportedPackageBytes = packageSizeBytes
+        ?: state.totalBytes.takeIf { it > 10_000_000L && !state.stageMessage.orEmpty().contains("语音检测") }
+
+    val statusLabel = when {
+        ready -> "已就绪"
+        downloading -> "下载中"
+        extracting -> "安装中"
+        failed -> "下载失败"
+        else -> null
+    }
+    val statusColor = when {
+        failed -> DangerRed
+        else -> BrandBright
+    }
+    val statusBackground = when {
+        failed -> Color(0xFFFFF0F0)
+        else -> Color(0xFFEAF1FF)
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        color = Color(0xFFF8FAFE),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE4EAF2)),
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 11.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    title,
+                    color = OnBg,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                if (statusLabel != null) {
+                    Surface(
+                        color = statusBackground,
+                        shape = CircleShape,
+                        tonalElevation = 0.dp,
+                    ) {
+                        Text(
+                            statusLabel,
+                            color = statusColor,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+                if (!ready) {
+                    IconButton(
+                        onClick = if (active) onCancel else onDownload,
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (active) Icons.Filled.Close else Icons.Filled.Download,
+                            contentDescription = when {
+                                active -> "取消$title 下载与安装"
+                                failed -> "重试下载$title"
+                                else -> "下载$title"
+                            },
+                            tint = if (active) DangerRed else BrandBright,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
+                }
+            }
+
+            if (active) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (downloading) "下载进度" else "安装进度",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (!state.indeterminate && state.totalBytes > 0L) {
+                        Text(
+                            "${state.progress.coerceIn(0, 99)}%",
+                            color = BrandBright,
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                    }
+                }
+
+                if (state.indeterminate) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = BrandBright,
+                        trackColor = Color(0xFFE5EAF0),
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = BrandBright,
+                        trackColor = Color(0xFFE5EAF0),
+                    )
+                }
+
+                val progressDetail = when {
+                    downloading && state.totalBytes > 0L ->
+                        "${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
+                    downloading && state.downloadedBytes > 0L ->
+                        "已下载 ${formatExactModelMB(state.downloadedBytes)}"
+                    extracting ->
+                        state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在安装模型"
+                    else -> state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在准备模型"
+                }
+                Text(
+                    progressDetail,
+                    color = SubText,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            } else {
                 val sizeSummary = listOfNotNull(
                     reportedPackageBytes?.let { "下载包 ${formatExactModelMB(it)}" },
                     if (showInstalledSize) installedSizeBytes?.let { "安装后 ${formatExactModelMB(it)}" } else null,
                 ).joinToString(" · ")
-                if (sizeSummary.isNotBlank()) {
-                    Text(sizeSummary, color = SubText, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        } else {
-            Text(
-                reportedPackageBytes?.let { "下载包大小 ${formatExactModelMB(it)}" }
-                    ?: if (packageSizeLoading) "下载包大小正在查询" else "下载包大小：下载时读取源站数据",
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (showInstalledSize) {
-                Text(
-                    installedSizeBytes?.let { "安装后占用 ${formatExactModelMB(it)}" }
-                        ?: if (ready) "安装后占用暂不可读取" else "安装后占用：安装完成后按实际文件统计",
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-        Spacer(Modifier.height(5.dp))
-        when {
-            ready -> {
-                if (!compactStatus) {
-                    Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    if (state.indeterminate) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(36.dp),
-                            color = BrandBright,
-                            trackColor = Color(0xFFE5EAF0),
-                            strokeWidth = 3.dp,
-                        )
-                    } else {
-                        CircularProgressIndicator(
-                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
-                            modifier = Modifier.size(36.dp),
-                            color = BrandBright,
-                            trackColor = Color(0xFFE5EAF0),
-                            strokeWidth = 3.dp,
-                        )
-                    }
-                    val taskLabel = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在下载模型"
-                    val detail = when {
-                        state.indeterminate && state.totalBytes > 0L ->
-                            "$taskLabel · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
-                        state.totalBytes > 0L ->
-                            "$taskLabel · ${state.progress.coerceIn(0, 99)}% · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
-                        state.downloadedBytes > 0L ->
-                            "$taskLabel · 已下载 ${formatExactModelMB(state.downloadedBytes)}"
-                        else -> taskLabel
-                    }
-                    Text(
-                        detail,
-                        color = BrandBright,
+                when {
+                    sizeSummary.isNotBlank() -> Text(
+                        sizeSummary,
+                        color = SubText,
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                    packageSizeLoading -> Text(
+                        "正在获取模型大小",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (failed) {
+                    Text(
+                        state.error ?: "下载失败，请检查网络后重试",
+                        color = DangerRed,
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
-            state.status == io.translatetube.local.data.ModelStatus.EXTRACTING -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    if (state.indeterminate) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(36.dp),
-                            color = BrandBright,
-                            trackColor = Color(0xFFE5EAF0),
-                            strokeWidth = 3.dp,
-                        )
-                    } else {
-                        CircularProgressIndicator(
-                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
-                            modifier = Modifier.size(36.dp),
-                            color = BrandBright,
-                            trackColor = Color(0xFFE5EAF0),
-                            strokeWidth = 3.dp,
-                        )
-                    }
-                    val taskLabel = state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在处理模型"
-                    Text(
-                        if (state.indeterminate) taskLabel else "$taskLabel · ${state.progress.coerceIn(0, 99)}%",
-                        color = BrandBright,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-            state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
-                Text(
-                    state.error ?: "下载失败，请检查网络后重试",
-                    color = DangerRed,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            else -> Unit
         }
     }
 }
