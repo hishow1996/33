@@ -40,14 +40,35 @@ class SentenceGroupedTranslationTest {
     }
 
     @Test
-    fun groupsAreCappedByLineCountAndLength() {
+    fun groupsAreCappedAtTwoLinesAndByLength() {
         assertEquals(
-            listOf(0 to 3, 3 to 4),
+            listOf(0 to 2, 2 to 4),
             groups(listOf("a b", "c d", "e f", "g h")),
+        )
+        // 第一行以悬空词 the 结尾，本来该合并，但合起来超过 220 字符，所以不合。
+        assertEquals(
+            listOf(0 to 1, 1 to 2),
+            groups(listOf("x".repeat(146) + " the", "y".repeat(100))),
+        )
+    }
+
+    @Test
+    fun twoLongSelfContainedLinesAreNotMerged() {
+        assertEquals(
+            listOf(0 to 1, 1 to 2),
+            groups(listOf("so I went down to the old market near the harbor", "and bought some fresh fish for dinner tonight")),
         )
         assertEquals(
             listOf(0 to 1, 1 to 2),
-            groups(listOf("x".repeat(150), "y".repeat(100))),
+            groups(listOf("When we finally arrived at the old harbor,", "the market was already closing down")),
+        )
+    }
+
+    @Test
+    fun aDanglingWordAtTheEndMergesEvenLongLines() {
+        assertEquals(
+            listOf(0 to 2),
+            groups(listOf("so I went down to the old market near the", "harbor and bought some fresh fish tonight")),
         )
     }
 
@@ -58,6 +79,21 @@ class SentenceGroupedTranslationTest {
             listOf("I sat on the bank", "of the river all day fishing"),
         )
         assertEquals(listOf("我坐在河岸上", "整天都在钓鱼"), pieces)
+    }
+
+    @Test
+    fun clauseBoundaryInTheSourcePullsTheCutTowardsChinesePunctuation() {
+        val translation = "他很快就离开了那个房间并走进花园，大家都很吃惊"
+        // 原文在词组中间断开：只能按比例估，切在比例位置附近。
+        assertEquals(
+            listOf("他很快就离开了那个房间", "并走进花园，大家都很吃惊"),
+            SentenceGroupingPolicy.split(translation, listOf("He left the room quickly", "and everyone was surprised")),
+        )
+        // 原文第一行以逗号结尾：切点优先选译文里的标点。
+        assertEquals(
+            listOf("他很快就离开了那个房间并走进花园", "大家都很吃惊"),
+            SentenceGroupingPolicy.split(translation, listOf("He left the room quickly,", "and everyone was surprised")),
+        )
     }
 
     @Test

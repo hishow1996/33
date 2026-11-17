@@ -11,7 +11,9 @@ internal data class SentenceGroup(val start: Int, val endExclusive: Int) {
  * 全部是不依赖 Android 的纯逻辑。判断保守：拿不准就不合并，拆不开就退回逐行翻译。
  */
 internal object SentenceGroupingPolicy {
-    const val MAX_GROUP_LINES = 3
+    const val MAX_GROUP_LINES = 2
+    /** 比这更短的行自己译不通顺，才值得合并；两行都够长就各译各的，免得拆回时错位。 */
+    const val SHORT_LINE_CHARS = 25
     const val MAX_GROUP_CHARS = 220
     private const val MIN_PIECE_CHARS = 2
     private const val SENTENCE_END = ".!?…。！？‼⁇"
@@ -21,6 +23,16 @@ internal object SentenceGroupingPolicy {
     private const val NO_LINE_END = "([{（【「『“‘《"
     private const val PREFERRED_CUT_AFTER = "，。！？、；：,.!?;:…—"
     private const val NON_SPEECH_START = "-–—>[(♪*"
+    /** 以这些词结尾的行几乎一定没说完（冠词、介词、连词、助动词、物主代词等）。 */
+    private val DANGLING_WORDS = setOf(
+        "the", "a", "an", "of", "to", "in", "on", "at", "for", "with", "by", "from", "into", "about", "than",
+        "and", "or", "but", "so", "because", "that", "which", "who", "if", "as", "is", "are", "was", "were",
+        "be", "been", "not", "my", "your", "his", "her", "its", "our", "their", "this", "these", "those",
+        "el", "la", "los", "las", "un", "una", "y", "que", "en", "con", "por", "para", "de",
+        "le", "les", "du", "des", "et", "une", "der", "die", "das", "ein", "eine", "und", "zu", "von", "mit",
+        "il", "lo", "di", "da", "e", "che",
+        "и", "в", "на", "с", "что", "к", "по", "не", "а", "но",
+    )
     private val UNSPACED_SCRIPTS = setOf(
         Character.UnicodeScript.HAN,
         Character.UnicodeScript.HIRAGANA,
@@ -69,9 +81,19 @@ internal object SentenceGroupingPolicy {
         if (!isSpaceDelimited(a) || !isSpaceDelimited(b)) return false
         val last = lastSignificantChar(a) ?: return false
         if (last in SENTENCE_END) return false
-        if (last in CONTINUATION_END) return true
-        val first = b.firstOrNull { it.isLetter() } ?: return false
-        return first.isLowerCase()
+        val first = b.firstOrNull { it.isLetter() }
+        if (last !in CONTINUATION_END && (first == null || !first.isLowerCase())) return false
+        // 是延续，但两行都够长又没有悬空词时，各自独立翻译就够好，不值得冒拆回错位的险。
+        return a.length < SHORT_LINE_CHARS || b.length < SHORT_LINE_CHARS || endsWithDanglingWord(a, last)
+    }
+
+    private fun endsWithDanglingWord(text: String, last: Char): Boolean {
+        if (!last.isLetter()) return false
+        var end = text.length
+        while (end > 0 && text[end - 1] in CLOSERS) end--
+        var start = end
+        while (start > 0 && text[start - 1].isLetter()) start--
+        return text.substring(start, end).lowercase(java.util.Locale.ROOT) in DANGLING_WORDS
     }
 
     /**
@@ -98,13 +120,18 @@ internal object SentenceGroupingPolicy {
             val low = previousCut + MIN_PIECE_CHARS
             val high = length - MIN_PIECE_CHARS * (count - 1 - index)
             if (low > high) return null
+            // 原文这一行以逗号等结尾，说明这里是句内停顿：译文里的标点更可能就是对应的切点，
+            // 放宽对比例位置的要求并加重"没切在标点上"的惩罚。原文在词组中间断开则只能按比例估。
+            val clauseBoundary = lastSignificantChar(sourceLines[index].trim())?.let { it in CONTINUATION_END } == true
+            val distanceWeight = if (clauseBoundary) 0.5 else 1.0
+            val missPenalty = if (clauseBoundary) penalty * 1.5 else penalty
             var best = -1
             var bestCost = Double.MAX_VALUE
             for (position in low..high) {
                 if (!allowedCut(text, position)) continue
                 val preferred = text[position - 1] in PREFERRED_CUT_AFTER ||
                     (text[position - 1] == ' ' && position >= 2 && text[position - 2] in PREFERRED_CUT_AFTER)
-                val cost = Math.abs(position - ideal) + if (preferred) 0.0 else penalty
+                val cost = Math.abs(position - ideal) * distanceWeight + if (preferred) 0.0 else missPenalty
                 if (cost < bestCost) {
                     bestCost = cost
                     best = position
