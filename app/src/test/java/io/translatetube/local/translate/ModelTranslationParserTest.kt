@@ -44,13 +44,14 @@ class ModelTranslationParserTest {
                 listOf("[Music"),
             ),
         )
-        val wrappedObjectArrayResult = parseModelTranslations(
-            """{"translations":[{"source":"Hello","translation":"你好"},{"source":"Goodbye","translation":"再见"}]}""",
-            2,
-            listOf("Hello", "Goodbye"),
+        assertEquals(
+            listOf("第一条译文", "第二条译文"),
+            parseModelTranslations(
+                """{"translations":[{"source":"Hello","translation":"你好"},{"source":"Goodbye","translation":"再见"}]}""",
+                2,
+                listOf("Hello", "Goodbye"),
+            ),
         )
-        System.err.println("MODEL_PARSER_WRAPPED_OBJECT_ARRAY_RESULT=$wrappedObjectArrayResult")
-        assertEquals(listOf("第一条译文", "第二条译文"), wrappedObjectArrayResult)
     }
 
     @Test
