@@ -7899,7 +7899,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                 }
                             }
                             "melo", "matcha" -> localSherpaModelUnavailableHint(selectedImportTts)
-                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key。"
+                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key；填好后会自动继续配音。"
                             else -> "所选配音引擎「$unavailableEngineName」尚未就绪，请先检查设置和引擎配置。"
                         }
                         it.copy(
@@ -7919,6 +7919,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                             error = null,
                         )
                     }
+                    watchLocalDubbingModelReady(sessionKey, pipelineGeneration, selectedImportTts)
                     ensureCurrentSession(sessionKey, pipelineGeneration)
                     return@launch
                 }
@@ -9385,11 +9386,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     val hint = when (asrProvider) {
                         "local" -> {
                             val modelName = io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
-                            "视频音频已提取并缓存（约 ${((audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 转写引擎中下载$modelName；安装后重新打开本视频，直接复用已提取的音频自动转写并配音。"
+                            "视频音频已提取并缓存（约 ${((audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 转写引擎中下载$modelName；安装完成后会自动继续，直接复用已提取的音频转写并配音，不用重新打开视频。"
                         }
-                        "elevenlabs" -> "视频音频已提取并缓存。已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
-                        "cartesia" -> "视频音频已提取并缓存。已选择 Cartesia 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
-                        else -> "视频音频已提取并缓存。已选择 Kawa 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
+                        "elevenlabs" -> "视频音频已提取并缓存。已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎填写 API Key；填写好后会自动继续转写，不用重新打开视频。"
+                        "cartesia" -> "视频音频已提取并缓存。已选择 Cartesia 云端转写，请先在设置 → 转写引擎填写 API Key；填写好后会自动继续转写，不用重新打开视频。"
+                        else -> "视频音频已提取并缓存。已选择 Kawa 云端转写，请先在设置 → 转写引擎填写 API Key；填写好后会自动继续转写，不用重新打开视频。"
                     }
                     updateUiForSession(key, pipelineGeneration) {
                         it.copy(
@@ -9403,6 +9404,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         )
                     }
                     if (missingLocalModel) watchLocalAsrModelReady(key, pipelineGeneration)
+                    if (missingCloudKey) watchCloudAsrKeyReady(key, pipelineGeneration)
                     // Stop here instead of falling through with an empty transcript. Falling
                     // through skipped transcription/translation/dubbing and reached the final
                     // auto-play block, which started a local video as original-audio playback.
@@ -11618,7 +11620,7 @@ updateUiForSession(key, pipelineGeneration) {
                                 }
                             }
                             "melo", "matcha" -> localSherpaModelUnavailableHint(selectedTts)
-                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key 后再试。"
+                            "gemini" -> "已选择 Gemini TTS，但尚未配置 Gemini API Key。请在设置 → 配音设置中填入 API Key；填好后会自动继续配音。"
                             else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择配音引擎。应用不会擅自切换引擎。"
                         }
                         updateUiForSession(key, pipelineGeneration) {
@@ -15603,6 +15605,68 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
     }
 
+    private var asrKeyReadyWatchJob: Job? = null
+
+    /**
+     * 转写停在"云端 API Key 没填"时，用户去设置里填好 Key（或改选了别的转写引擎）后，
+     * 自动重新开始转写；不用再退出并重新打开视频。音频已缓存，重新开始会直接复用。
+     */
+    private fun watchCloudAsrKeyReady(key: String, pipelineGeneration: Long) {
+        asrKeyReadyWatchJob?.cancel()
+        asrKeyReadyWatchJob = scope.launch {
+            val waitingProvider = AsrConfigPreferencePolicy.normalizeProvider(
+                getSharedPreferences("settings", MODE_PRIVATE).getString("asr_provider", "local"),
+            )
+            while (true) {
+                kotlinx.coroutines.delay(1_500L)
+                val state = ui.value
+                if (videoKey != key || activePipelineGeneration != pipelineGeneration ||
+                    state.key != key || !state.waitingForTranscriptionEngine
+                ) return@launch
+                val currentProvider = AsrConfigPreferencePolicy.normalizeProvider(
+                    getSharedPreferences("settings", MODE_PRIVATE).getString("asr_provider", "local"),
+                )
+                val keyReady = currentProvider != "local" &&
+                    io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this@PlaybackService, currentProvider)
+                        .isNotBlank()
+                // 改选了别的转写引擎也要重新评估：可能是本地模型已就绪，也可能是另一家云端已有 Key。
+                val providerChanged = currentProvider != waitingProvider
+                if (!keyReady && !providerChanged) continue
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackFlow",
+                    "云端转写 API Key 已填写或转写引擎已更换，自动重新开始转写",
+                    diagnosticContext = mapOf(
+                        "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                        "等待时的转写引擎" to waitingProvider,
+                        "当前转写引擎" to currentProvider,
+                        "当前引擎 API Key 已填写" to keyReady.toString(),
+                    ),
+                )
+                val restartRemoteUrl = remoteMediaUrl
+                val restartVideoId = videoId ?: if (restartRemoteUrl == null) {
+                    key.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+                } else null
+                withContext(Dispatchers.Main.immediate) {
+                    open(
+                        key = key,
+                        videoId = restartVideoId,
+                        localUri = localUri,
+                        importedLines = null,
+                        resumeState = null,
+                        remoteMediaUrl = restartRemoteUrl,
+                        remoteMediaTitle = remoteMediaTitle,
+                        remoteMediaReferrer = remoteMediaReferrer,
+                        remoteMediaCookie = remoteMediaCookie,
+                        remoteMediaUserAgent = remoteMediaUserAgent,
+                        requestToken = activeOpenRequestToken,
+                    )
+                }
+                return@launch
+            }
+        }
+    }
+
     private var asrModelReadyWatchJob: Job? = null
 
     /**
@@ -15658,7 +15722,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
      * re-enter the dubbing stage (reusing source text, translation and media) once it is usable.
      */
     private fun watchLocalDubbingModelReady(key: String, pipelineGeneration: Long, engineId: String) {
-        if (!isLocalDubbingEngine(engineId)) return
+        // Gemini TTS 没有本地模型，但缺 API Key 时同样要在填好后自动继续。
+        if (!isLocalDubbingEngine(engineId) && engineId != "gemini") return
         dubbingModelReadyWatchJob?.cancel()
         dubbingModelReadyWatchJob = scope.launch {
             while (true) {
@@ -15671,12 +15736,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge"),
                 )
                 if (selected != engineId) return@launch
-                if (!isLocalDubbingModelReady(engineId)) continue
+                val engineReady = if (engineId == "gemini") {
+                    io.translatetube.local.tts.GeminiTtsVoices.resolveApiKey(this@PlaybackService).isNotBlank()
+                } else {
+                    isLocalDubbingModelReady(engineId)
+                }
+                if (!engineReady) continue
                 if (localDubbingModelInstallProgress(engineId) != null) continue
                 io.translatetube.local.util.AppLogStore.info(
                     this@PlaybackService,
                     "PlaybackFlow",
-                    "本地配音模型已就绪，自动重新进入配音阶段",
+                    "配音引擎已就绪（本地模型已装好或 API Key 已填写），自动重新进入配音阶段",
                     diagnosticContext = mapOf(
                         "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
                         "配音引擎 ID" to engineId,
