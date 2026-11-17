@@ -611,7 +611,7 @@ Section(
             packageSizeLoading = asrArchiveSizeLoading,
             installedSizeBytes = io.translatetube.local.data.ModelFiles.installedAsrModelBytes(ctx, localAsrModel),
             showInstalledSize = true,
-            linearProgressCard = true,
+            inlineAsrDownload = true,
             onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
             onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.ASR) },
         )
@@ -1879,16 +1879,15 @@ private fun ModelRow(
     installedSizeBytes: Long? = null,
     showInstalledSize: Boolean = false,
     compactStatus: Boolean = false,
-    linearProgressCard: Boolean = false,
+    inlineAsrDownload: Boolean = false,
     onDownload: () -> Unit,
     onCancel: () -> Unit = {},
 ) {
     val active = state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING ||
         state.status == io.translatetube.local.data.ModelStatus.EXTRACTING
 
-    if (linearProgressCard) {
-        AsrModelDownloadCard(
-            title = title,
+    if (inlineAsrDownload) {
+        AsrModelDownloadInline(
             state = state,
             ready = ready,
             packageSizeBytes = packageSizeBytes,
@@ -2054,8 +2053,7 @@ private fun ModelRow(
 }
 
 @Composable
-private fun AsrModelDownloadCard(
-    title: String,
+private fun AsrModelDownloadInline(
     state: io.translatetube.local.data.ModelState,
     ready: Boolean,
     packageSizeBytes: Long?,
@@ -2069,156 +2067,128 @@ private fun AsrModelDownloadCard(
     val extracting = state.status == io.translatetube.local.data.ModelStatus.EXTRACTING
     val active = downloading || extracting
     val failed = state.status == io.translatetube.local.data.ModelStatus.FAILED
+    val progress = state.progress.coerceIn(0, 99)
     val reportedPackageBytes = packageSizeBytes
-        ?: state.totalBytes.takeIf { it > 10_000_000L && !state.stageMessage.orEmpty().contains("语音检测") }
+        ?: state.totalBytes.takeIf {
+            it > 10_000_000L && !state.stageMessage.orEmpty().contains("语音检测")
+        }
 
-    val statusLabel = when {
-        ready -> "已就绪"
-        downloading -> "下载中"
-        extracting -> "安装中"
-        failed -> "下载失败"
-        else -> null
+    val sizeSummary = listOfNotNull(
+        reportedPackageBytes?.let { "下载包 ${formatExactModelMB(it)}" },
+        if (showInstalledSize) installedSizeBytes?.let { "安装后 ${formatExactModelMB(it)}" } else null,
+    ).joinToString(" · ")
+
+    val detail = when {
+        downloading && state.totalBytes > 0L ->
+            "已下载 ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
+        downloading && state.downloadedBytes > 0L ->
+            "已下载 ${formatExactModelMB(state.downloadedBytes)}"
+        downloading ->
+            state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在下载模型"
+        extracting ->
+            state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在安装模型"
+        failed ->
+            state.error ?: "下载失败，请检查网络后重试"
+        ready ->
+            if (sizeSummary.isNotBlank()) "已就绪 · $sizeSummary" else "模型已就绪"
+        sizeSummary.isNotBlank() ->
+            sizeSummary
+        packageSizeLoading ->
+            "正在获取模型大小"
+        else ->
+            "下载包大小将在下载时获取"
     }
-    val statusColor = when {
+
+    val detailColor = when {
         failed -> DangerRed
-        else -> BrandBright
-    }
-    val statusBackground = when {
-        failed -> Color(0xFFFFF0F0)
-        else -> Color(0xFFEAF1FF)
+        ready -> BrandBright
+        else -> SubText
     }
 
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
-        color = Color(0xFFF8FAFE),
-        shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE4EAF2)),
-        tonalElevation = 0.dp,
+    // 下载状态直接缩进显示在模型选择项下方，不再创建独立卡片。
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 10.dp, top = 6.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    title,
-                    color = OnBg,
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                )
-                if (statusLabel != null) {
-                    Surface(
-                        color = statusBackground,
-                        shape = CircleShape,
-                        tonalElevation = 0.dp,
-                    ) {
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .height(40.dp)
+                .clip(CircleShape)
+                .background(BrandBright.copy(alpha = 0.42f)),
+        )
+        Spacer(Modifier.width(9.dp))
+        Text(
+            detail,
+            color = detailColor,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.width(8.dp))
+
+        when {
+            active -> {
+                Box(
+                    modifier = Modifier.size(34.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (state.indeterminate) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.fillMaxSize(),
+                            color = BrandBright,
+                            trackColor = Color(0xFFE5EAF0),
+                            strokeWidth = 3.dp,
+                        )
+                    } else {
+                        CircularProgressIndicator(
+                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxSize(),
+                            color = BrandBright,
+                            trackColor = Color(0xFFE5EAF0),
+                            strokeWidth = 3.dp,
+                        )
                         Text(
-                            statusLabel,
-                            color = statusColor,
+                            "$progress%",
+                            color = BrandBright,
                             style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                            maxLines = 1,
                         )
                     }
                 }
-                if (!ready) {
-                    IconButton(
-                        onClick = if (active) onCancel else onDownload,
-                        modifier = Modifier.size(34.dp),
-                    ) {
-                        Icon(
-                            imageVector = if (active) Icons.Filled.Close else Icons.Filled.Download,
-                            contentDescription = when {
-                                active -> "取消$title 下载与安装"
-                                failed -> "重试下载$title"
-                                else -> "下载$title"
-                            },
-                            tint = if (active) DangerRed else BrandBright,
-                            modifier = Modifier.size(19.dp),
-                        )
-                    }
+                IconButton(
+                    onClick = onCancel,
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "取消模型下载与安装",
+                        tint = DangerRed,
+                        modifier = Modifier.size(17.dp),
+                    )
                 }
             }
-
-            if (active) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        if (downloading) "下载进度" else "安装进度",
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    if (!state.indeterminate && state.totalBytes > 0L) {
-                        Text(
-                            "${state.progress.coerceIn(0, 99)}%",
-                            color = BrandBright,
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                    }
-                }
-
-                if (state.indeterminate) {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = BrandBright,
-                        trackColor = Color(0xFFE5EAF0),
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        progress = { (state.progress / 100f).coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = BrandBright,
-                        trackColor = Color(0xFFE5EAF0),
-                    )
-                }
-
-                val progressDetail = when {
-                    downloading && state.totalBytes > 0L ->
-                        "${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
-                    downloading && state.downloadedBytes > 0L ->
-                        "已下载 ${formatExactModelMB(state.downloadedBytes)}"
-                    extracting ->
-                        state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在安装模型"
-                    else -> state.stageMessage?.takeIf { it.isNotBlank() } ?: "正在准备模型"
-                }
+            ready -> {
                 Text(
-                    progressDetail,
-                    color = SubText,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    "✓",
+                    color = BrandBright,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 7.dp),
                 )
-            } else {
-                val sizeSummary = listOfNotNull(
-                    reportedPackageBytes?.let { "下载包 ${formatExactModelMB(it)}" },
-                    if (showInstalledSize) installedSizeBytes?.let { "安装后 ${formatExactModelMB(it)}" } else null,
-                ).joinToString(" · ")
-                when {
-                    sizeSummary.isNotBlank() -> Text(
-                        sizeSummary,
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    )
-                    packageSizeLoading -> Text(
-                        "正在获取模型大小",
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (failed) {
-                    Text(
-                        state.error ?: "下载失败，请检查网络后重试",
-                        color = DangerRed,
-                        style = MaterialTheme.typography.bodySmall,
+            }
+            else -> {
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier.size(34.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Download,
+                        contentDescription = if (failed) "重试模型下载" else "下载模型",
+                        tint = BrandBright,
+                        modifier = Modifier.size(19.dp),
                     )
                 }
             }
