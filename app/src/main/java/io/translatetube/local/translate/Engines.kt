@@ -84,16 +84,16 @@ internal fun buildContextUserPrompt(
         val followingText = encodeFollowing()
         val prompt = buildString {
             if (previousCues.isNotEmpty()) {
-                append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Reference only, following the context rules: do not translate or repeat them. Reuse a confirmed Chinese rendering for the same named entity or technical term consistently. The current source text is authoritative.\\n")
+                append("Earlier subtitle cues are provided in chronological order as JSON. Each object's source and translation are one aligned pair. Reference only, following the context rules: do not translate or repeat them. Reuse a confirmed Chinese rendering for the same named entity or technical term consistently. The current source text is authoritative.\n")
                 append(ctxText)
-                append("\\n\\n")
+                append("\n\n")
             }
             if (followingCues.isNotEmpty()) {
                 append("Following cues (source only, for understanding sentence continuation; do not translate or return them): ")
                 append(followingText)
-                append("\\n\\n")
+                append("\n\n")
             }
-            append("Translate only the current numbered subtitle cues below. Include each current index exactly once and return no reference cues.\\n")
+            append("Translate only the current numbered subtitle cues below. Include each current index exactly once and return no reference cues.\n")
             append(numbered)
         }
         if (prompt.length < MAX_CONTEXT_PROMPT_CHARS) return prompt
@@ -103,7 +103,7 @@ internal fun buildContextUserPrompt(
             followingCues.isNotEmpty() -> followingCues.removeAt(0)
             // Keep source/translation alignment and preserve the most recent pair.
             previousCues.size > 1 -> previousCues.removeAt(0)
-            previousCues.isNotEmpty() -> previousCues.clear()
+            previousCues.isNotEmpty() -> return null
             else -> return null
         }
     }
@@ -708,8 +708,8 @@ internal fun parseModelTranslations(
 
     val normalized = content
         .replace(Regex("(?s)<think>.*?</think>"), "")
-        .replace("\\r\\n", "\n")
-        .replace("\\n", "\n")
+        .replace("\\r\n", "\n")
+        .replace("\n", "\n")
         .replace("\\r", "\n")
         .replace(Regex("(?m)^\\s*```[\\w-]*\\s*$"), "")
         .trim()
