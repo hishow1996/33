@@ -1177,6 +1177,6 @@ internal object HyMtPromptBuilder {
         val contextText = previous.joinToString("\n") { (source, target) ->
             "原文：$source\n译文：$target"
         }
-        return "$rules\n$titleBlock以下是前面字幕的原文和已确认译文，仅供统一人称、专有名词和术语，不要翻译或重复：\n$contextText\n\n${followingBlock}将下面的${sourceLabel}字幕翻译为简体中文，只输出译文，不要解释：\n$sourceText"
+        return "$rules\n${titleBlock}以下是前面字幕的原文和已确认译文，仅供统一人称、专有名词和术语，不要翻译或重复：\n$contextText\n\n${followingBlock}将下面的${sourceLabel}字幕翻译为简体中文，只输出译文，不要解释：\n$sourceText"
     }
 }
