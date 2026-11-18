@@ -105,74 +105,6 @@ import kotlin.math.abs
 
 private const val TAG_WEB = "WebVideoScreen"
 
-private data class AddressBarAppearance(
-    val textColor: Int,
-    val hintColor: Int,
-    val backgroundColor: Int,
-    val outlineColor: Int,
-    val cornerRadiusPx: Float,
-    val strokeWidthPx: Int,
-)
-
-/**
- * Native single-line EditText owns cursor/selection gestures and horizontal auto-scrolling.
- * Compose synchronizes URL text only; selection stays native so dragging a handle does not
- * trigger a Compose round-trip or reset the editor's scroll position.
- */
-private class AddressBarEditText(context: Context) : android.widget.EditText(context) {
-    var onAddressTextEdited: (() -> Unit)? = null
-    private var applyingExternalText = false
-    private var appliedExternalRevision = Long.MIN_VALUE
-    private var appliedAppearance: AddressBarAppearance? = null
-
-    init {
-        addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                dispatchAddressText()
-            }
-
-            override fun afterTextChanged(s: android.text.Editable?) = Unit
-        })
-    }
-
-    fun syncExternalText(value: String, revision: Long) {
-        if (appliedExternalRevision == revision) return
-        applyingExternalText = true
-        try {
-            if (text.toString() != value) setText(value)
-            // External navigation intentionally places the caret at the URL end.
-            setSelection(value.length)
-            appliedExternalRevision = revision
-        } finally {
-            applyingExternalText = false
-        }
-        if (hasFocus()) {
-            post {
-                if (hasFocus()) bringPointIntoView(text?.length ?: 0)
-            }
-        }
-    }
-
-    fun applyAppearance(appearance: AddressBarAppearance) {
-        if (appliedAppearance == appearance) return
-        setTextColor(appearance.textColor)
-        setHintTextColor(appearance.hintColor)
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = appearance.cornerRadiusPx
-            setColor(appearance.backgroundColor)
-            setStroke(appearance.strokeWidthPx, appearance.outlineColor)
-        }
-        appliedAppearance = appearance
-    }
-
-    private fun dispatchAddressText() {
-        if (!applyingExternalText) onAddressTextEdited?.invoke()
-    }
-}
-
 private fun webSourceHost(rawUrl: String): String =
     runCatching { android.net.Uri.parse(rawUrl).host }
         .getOrNull()
@@ -361,7 +293,7 @@ fun WebVideoScreen(
     var addressSyncRevision by remember(initialUrl) { mutableStateOf(0L) }
     var addressFieldHasFocus by remember(initialUrl) { mutableStateOf(false) }
     var addressEditPending by remember(initialUrl) { mutableStateOf(false) }
-    var addressEditText by remember(initialUrl) { mutableStateOf<AddressBarEditText?>(null) }
+    var addressEditText by remember(initialUrl) { mutableStateOf<NativeAddressBarEditText?>(null) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     // Keep 52dp at the normal font scale; grow only when the scaled 18sp line needs more room.
@@ -1792,7 +1724,7 @@ fun WebVideoScreen(
                     )
                 }
                 val addressDensity = LocalDensity.current
-                val addressAppearance = AddressBarAppearance(
+                val addressAppearance = NativeAddressBarAppearance(
                     textColor = MaterialTheme.colorScheme.onSurface.toArgb(),
                     hintColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb(),
                     backgroundColor = MaterialTheme.colorScheme.surface.toArgb(),
@@ -1806,7 +1738,7 @@ fun WebVideoScreen(
                 )
                 AndroidView(
                     factory = { context ->
-                        AddressBarEditText(context).apply {
+                        NativeAddressBarEditText(context).apply {
                             addressEditText = this
                             setSingleLine(true)
                             setHorizontallyScrolling(true)
