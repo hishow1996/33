@@ -207,17 +207,27 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          for name in KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Missing required GitHub Actions secret: ${name/KEYSTORE_B64/ANDROID_KEYSTORE_BASE64}"
-              exit 1
-            fi
-          done
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Missing required GitHub Actions secret: ANDROID_KEYSTORE_BASE64"
+            exit 1
+          fi
+          if [ -z "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "::error::Missing required GitHub Actions secret: ANDROID_KEYSTORE_PASSWORD"
+            exit 1
+          fi
+          if [ -z "$ANDROID_KEY_ALIAS" ]; then
+            echo "::error::Missing required GitHub Actions secret: ANDROID_KEY_ALIAS"
+            exit 1
+          fi
+          if [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Missing required GitHub Actions secret: ANDROID_KEY_PASSWORD"
+            exit 1
+          fi
 
-          KEYSTORE_PATH="$RUNNER_TEMP/elephant-release.p12"
+          KEYSTORE_PATH="$RUNNER_TEMP/elephant-release.keystore"
           printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
           test -s "$KEYSTORE_PATH"
-          keytool -list -storetype PKCS12 -keystore "$KEYSTORE_PATH" \
+          keytool -list -keystore "$KEYSTORE_PATH" \
             -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
           echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
