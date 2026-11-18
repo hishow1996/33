@@ -197,28 +197,29 @@ jobs:
 
       # 持久签名密钥（推荐）：把 keystore 的 base64 放进仓库 Secrets，
       # 这样每次构建的签名一致，用户才能覆盖安装而不丢数据。未配置时退回临时密钥并给出警告。
-      - name: Restore persistent signing key
+      # Never generate ephemeral CI signing keys. Both APK variants must use the same
+      # repository-managed persistent keystore so upgrades keep a stable certificate.
+      - name: Restore and verify persistent signing key
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
-            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          else
-            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64：本次 debug APK 使用临时密钥签名（无法覆盖安装旧版本），release APK 未签名。"
-          fi
+          set -euo pipefail
+          for name in KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required GitHub Actions secret: ${name/KEYSTORE_B64/ANDROID_KEYSTORE_BASE64}"
+              exit 1
+            fi
+          done
 
-      # 仅在没有持久密钥时生成临时 debug keystore（仓库按设计不保存任何 keystore）。
-      - name: Generate CI debug keystore
-        if: env.ANDROID_KEYSTORE_PATH == ''
-        run: |
-          keytool -genkeypair -noprompt -storetype JKS \
-            -keystore debug.keystore \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          KEYSTORE_PATH="$RUNNER_TEMP/elephant-release.p12"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+          keytool -list -storetype PKCS12 -keystore "$KEYSTORE_PATH" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
       - name: Build debug and release APKs
         env:
