@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -35,8 +36,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -84,6 +88,54 @@ fun HomeScreen(
     }
     var link by remember { mutableStateOf("") }
     var linkError by remember { mutableStateOf(false) }
+    var linkSyncRevision by remember { mutableStateOf(0L) }
+    var linkFieldHasFocus by remember { mutableStateOf(false) }
+    var linkEditText by remember { mutableStateOf<NativeAddressBarEditText?>(null) }
+    val addressDensity = LocalDensity.current
+
+    fun setLink(value: String) {
+        link = value
+        linkSyncRevision += 1L
+        linkEditText?.syncExternalText(value, linkSyncRevision)
+    }
+
+    fun submitLink() {
+        // Read the native editor directly so submission always uses the latest draft.
+        val rawInput = (linkEditText?.text?.toString() ?: link).trim()
+        // Bilibili and other apps copy a title/description together with the URL.
+        // Extract the first HTTP(S) URL before routing it through existing parsers.
+        val input = SharedLinkTextParser.extractFirstHttpUrl(rawInput) ?: rawInput
+        val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(input)
+            ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(input)) input else null
+        if (id != null) {
+            linkError = false
+            onPlay(PlayRequest(videoId = id))
+            setLink("")
+            return
+        }
+
+        // Direct MP4/HLS/audio links should enter playback directly; pages
+        // still go through WebView probing and yt-dlp fallback.
+        val mediaUrl = WebMediaUrlPolicy.normalizeDirectMediaUrl(input)
+        val pageUrl = if (mediaUrl == null) {
+            WebMediaUrlPolicy.normalizePageUrl(input)
+        } else {
+            null
+        }
+        when {
+            mediaUrl != null -> {
+                linkError = false
+                onPlay(PlayRequest(mediaUrl = mediaUrl))
+                setLink("")
+            }
+            pageUrl != null -> {
+                linkError = false
+                onPlay(PlayRequest(webPageUrl = pageUrl))
+                setLink("")
+            }
+            else -> linkError = true
+        }
+    }
 
     val localPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
@@ -260,28 +312,93 @@ fun HomeScreen(
             tonalElevation = 0.dp,
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
-                OutlinedTextField(
-                    value = link,
-                    onValueChange = { link = it; linkError = false },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("YouTube、网页视频地址或视频直链", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = SubText) },
-                    isError = linkError,
-                    supportingText = if (linkError) {
-                        { Text("请输入有效的 YouTube、HTTP/HTTPS 网页地址或视频直链") }
-                    } else null,
-                    singleLine = true,
-                    shape = RoundedCornerShape(17.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BrandBright,
-                        unfocusedBorderColor = OutlineSoft,
-                        focusedContainerColor = Color(0xFFF4F7FC),
-                        unfocusedContainerColor = Color(0xFFF4F7FC),
-                        focusedTextColor = OnBg,
-                        unfocusedTextColor = OnBg,
-                        cursorColor = BrandBright,
-                    ),
+                val addressBarShape = RoundedCornerShape(17.dp)
+                val addressBarOutline = when {
+                    linkError -> MaterialTheme.colorScheme.error
+                    linkFieldHasFocus -> BrandBright
+                    else -> OutlineSoft
+                }
+                val addressBarAppearance = NativeAddressBarAppearance(
+                    textColor = OnBg.toArgb(),
+                    hintColor = SubText.toArgb(),
+                    // The Compose container owns the shared outline; keep the native editor
+                    // transparent so the icon and text sit inside one continuous field.
+                    backgroundColor = android.graphics.Color.TRANSPARENT,
+                    outlineColor = addressBarOutline.toArgb(),
+                    cornerRadiusPx = with(addressDensity) { 17.dp.toPx() },
+                    strokeWidthPx = 0,
                 )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .clip(addressBarShape)
+                        .background(Color(0xFFF4F7FC))
+                        .border(1.dp, addressBarOutline, addressBarShape),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier.width(48.dp).fillMaxHeight(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.Link, contentDescription = null, tint = SubText)
+                    }
+                    AndroidView(
+                        factory = { context ->
+                            NativeAddressBarEditText(context).apply {
+                                linkEditText = this
+                                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16f)
+                                gravity = android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
+                                val endPadding = with(addressDensity) { 14.dp.roundToPx() }
+                                setPadding(0, 0, endPadding, 0)
+                                hint = "YouTube、网页视频地址或视频直链"
+                                applyAppearance(addressBarAppearance)
+                                onAddressTextEdited = {
+                                    link = text?.toString().orEmpty()
+                                    if (linkError) linkError = false
+                                }
+                                setOnFocusChangeListener { view, hasFocus ->
+                                    linkFieldHasFocus = hasFocus
+                                    if (hasFocus) {
+                                        // Match the web address bar: select all only when focus
+                                        // first enters; subsequent taps keep native cursor placement.
+                                        view.post {
+                                            if (view.hasFocus()) {
+                                                setSelection(0, text?.length ?: 0)
+                                                bringPointIntoView(text?.length ?: 0)
+                                            }
+                                        }
+                                    }
+                                }
+                                setOnEditorActionListener { _, actionId, event ->
+                                    val isGo = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
+                                        (event?.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
+                                            event.action == android.view.KeyEvent.ACTION_UP)
+                                    if (isGo) {
+                                        submitLink()
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                syncExternalText(link, linkSyncRevision)
+                            }
+                        },
+                        update = { editText ->
+                            editText.applyAppearance(addressBarAppearance)
+                            editText.syncExternalText(link, linkSyncRevision)
+                        },
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+                if (linkError) {
+                    Text(
+                        "请输入有效的 YouTube、HTTP/HTTPS 网页地址或视频直链",
+                        modifier = Modifier.padding(start = 16.dp, top = 4.dp),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 val playButtonInteraction = remember { MutableInteractionSource() }
                 val playButtonPressed by playButtonInteraction.collectIsPressedAsState()
@@ -295,41 +412,7 @@ fun HomeScreen(
                 )
                 Button(
                     interactionSource = playButtonInteraction,
-                    onClick = {
-                        val rawInput = link.trim()
-                        // Bilibili and other apps copy a title/description together with the URL.
-                        // Extract the first HTTP(S) URL before routing it through existing parsers.
-                        val input = SharedLinkTextParser.extractFirstHttpUrl(rawInput) ?: rawInput
-                        val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(input)
-                            ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(input)) input else null
-                        if (id != null) {
-                            linkError = false
-                            onPlay(PlayRequest(videoId = id))
-                            link = ""
-                        } else {
-                            // Direct MP4/HLS/audio links should enter playback directly; pages
-                            // still go through WebView probing and yt-dlp fallback.
-                            val mediaUrl = WebMediaUrlPolicy.normalizeDirectMediaUrl(input)
-                            val pageUrl = if (mediaUrl == null) {
-                                WebMediaUrlPolicy.normalizePageUrl(input)
-                            } else {
-                                null
-                            }
-                            when {
-                                mediaUrl != null -> {
-                                    linkError = false
-                                    onPlay(PlayRequest(mediaUrl = mediaUrl))
-                                    link = ""
-                                }
-                                pageUrl != null -> {
-                                    linkError = false
-                                    onPlay(PlayRequest(webPageUrl = pageUrl))
-                                    link = ""
-                                }
-                                else -> linkError = true
-                            }
-                        }
-                    },
+                    onClick = { submitLink() },
                     enabled = link.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().height(58.dp).graphicsLayer {
                         scaleX = playButtonScale
