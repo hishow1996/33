@@ -1740,50 +1740,22 @@ fun WebVideoScreen(
                     factory = { context ->
                         NativeAddressBarEditText(context).apply {
                             addressEditText = this
-                            setSingleLine(true)
-                            setHorizontallyScrolling(true)
-                            maxLines = 1
-                            isFocusable = true
-                            isFocusableInTouchMode = true
-                            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                                android.text.InputType.TYPE_TEXT_VARIATION_URI
-                            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
-                            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
-                            gravity = android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
                             val horizontalPadding = with(addressDensity) { 16.dp.roundToPx() }
-                            setPadding(horizontalPadding, 0, horizontalPadding, 0)
                             hint = "输入网页地址"
                             applyAppearance(addressAppearance)
+                            applyTextMetrics(
+                                textSizeSp = 13f,
+                                paddingLeftPx = horizontalPadding,
+                                paddingRightPx = horizontalPadding,
+                            )
                             onAddressTextEdited = {
-                                // Do not round-trip every keystroke through Compose. The native
-                                // EditText keeps its live draft; this flag only protects it from
-                                // late WebView URL callbacks.
+                                // Keep the native draft independent from Compose recomposition.
                                 if (!addressEditPending) addressEditPending = true
                             }
-                            setOnFocusChangeListener { view, hasFocus ->
+                            onAddressFocusChanged = { hasFocus ->
                                 addressFieldHasFocus = hasFocus
-                                if (hasFocus) {
-                                    // Select all only on the transition into focus. After that,
-                                    // the native editor owns tap placement and drag selection.
-                                    view.post {
-                                        if (view.hasFocus()) {
-                                            setSelection(0, text?.length ?: 0)
-                                            bringPointIntoView(text?.length ?: 0)
-                                        }
-                                    }
-                                }
                             }
-                            setOnEditorActionListener { _, actionId, event ->
-                                val isGo = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
-                                    (event?.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
-                                        event.action == android.view.KeyEvent.ACTION_UP)
-                                if (isGo) {
-                                    submitAddress()
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
+                            onAddressAction = { submitAddress() }
                             syncExternalText(addressText, addressSyncRevision)
                         }
                     },
@@ -1791,6 +1763,12 @@ fun WebVideoScreen(
                         // Apply theme changes only when their resolved values actually change.
                         // Cursor movement alone no longer asks Compose to redraw this view.
                         editText.applyAppearance(addressAppearance)
+                        val horizontalPadding = with(addressDensity) { 16.dp.roundToPx() }
+                        editText.applyTextMetrics(
+                            textSizeSp = 13f,
+                            paddingLeftPx = horizontalPadding,
+                            paddingRightPx = horizontalPadding,
+                        )
                         // Only a programmatic page-URL revision can replace the native draft.
                         // Ordinary recomposition never writes stale Compose text back into it.
                         editText.syncExternalText(addressText, addressSyncRevision)
