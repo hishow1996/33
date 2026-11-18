@@ -74,10 +74,19 @@ android {
 
     signingConfigs {
         create("debugConfig") {
-            storeFile = file("${rootDir}/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            if (releaseSigningReady) {
+                // CI / 本机配置了持久签名密钥时，debug 包也用它签名：
+                // 每次构建签名一致，才能直接覆盖安装而不丢失数据和已下载的模型。
+                storeFile = file(requireNotNull(releaseStorePath))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            } else {
+                storeFile = file("${rootDir}/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
         if (releaseSigningReady) {
             create("release") {
@@ -327,7 +336,7 @@ if (!sherpaAarFile.isFile || sherpaAarFile.length() != sherpaStaticAarExpectedBy
                         }
                         logger.lifecycle(
                             "Downloaded and SHA-256 verified static-link sherpa-onnx AAR " +
-                                "(\${sherpaAarFile.length()} bytes)."
+                                "(${sherpaAarFile.length()} bytes)."
                         )
                         downloaded = true
                         break
@@ -348,7 +357,7 @@ if (!sherpaAarFile.isFile || sherpaAarFile.length() != sherpaStaticAarExpectedBy
             } catch (e: Exception) {
                 logger.warn(
                     "Failed to download static-link sherpa-onnx AAR from $urlStr " +
-                        "(attempt $attempt/2): \${e.message}"
+                        "(attempt $attempt/2): ${e.message}"
                 )
                 if (attempt < 2) Thread.sleep(1500L * attempt)
             }

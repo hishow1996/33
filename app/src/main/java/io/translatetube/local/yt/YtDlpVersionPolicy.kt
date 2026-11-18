@@ -23,6 +23,7 @@ internal object YtDlpVersionPolicy {
     private val zipLocalHeader = byteArrayOf(0x50, 0x4B, 0x03, 0x04)
     private const val MAX_LEADING_BYTES = 8192
     private const val MAX_ZIP_ENTRIES = 20_000
+    private const val MAX_VERSION_MODULE_BYTES = 64 * 1024
     private const val VERSION_MODULE = "yt_dlp/version.py"
     private val versionAssignment = Regex("""__version__\s*=\s*['"]([^'"]+)['"]""")
 
@@ -82,7 +83,15 @@ internal object YtDlpVersionPolicy {
             while (found == null && entries++ < MAX_ZIP_ENTRIES) {
                 val entry = archive.nextEntry ?: break
                 if (entry.name == VERSION_MODULE) {
-                    val source = String(archive.readBytes(), Charsets.UTF_8)
+                    // version.py 只有几十字节；限制读取量，避免恶意 zip 炸弹造成 OOM。
+                    val limited = ByteArray(MAX_VERSION_MODULE_BYTES)
+                    var filled = 0
+                    while (filled < limited.size) {
+                        val n = archive.read(limited, filled, limited.size - filled)
+                        if (n < 0) break
+                        filled += n
+                    }
+                    val source = String(limited, 0, filled, Charsets.UTF_8)
                     found = versionAssignment.find(source)
                         ?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
                     break

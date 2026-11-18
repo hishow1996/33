@@ -1090,6 +1090,15 @@ object YtDlpRepo {
                 return@withContext "yt-dlp 解析规则已是最新版本；失败可能是站点限制或网络问题"
             }
 
+            // 安全：更新包会被内置 Python 执行，必须先拿到只来自 GitHub 官方端点的 SHA-256。
+            // 镜像只负责传输字节，不再作为"可信"来源；拿不到官方哈希就拒绝更新（fail closed）。
+            _updateState.value = _updateState.value.copy(updateStage = "正在获取官方校验和…")
+            val expectedSha256 = fetchOfficialSha256(appCtx, version)
+                ?: throw java.io.IOException(
+                    "无法从 GitHub 官方获取 yt-dlp $version 的 SHA-256 校验和，为安全起见已取消更新" +
+                        (lastProbeDetail?.let { "（$it）" } ?: ""),
+                )
+
             val ytdlpDir = File(File(appCtx.noBackupFilesDir, YoutubeDL.baseName), YoutubeDL.ytdlpDirName)
             if (!ytdlpDir.exists() && !ytdlpDir.mkdirs()) {
                 throw java.io.IOException("无法创建 yt-dlp 安装目录")
@@ -1108,7 +1117,7 @@ object YtDlpRepo {
             val officialReleaseUrl =
                 "https://github.com/yt-dlp/yt-dlp/releases/download/$version/${YoutubeDL.ytdlpBin}"
             // 官方直连失败时依次尝试公开镜像，处理 GitHub 网页/API 可访问但 Release CDN 下载失败。
-            // 下载后仍会验证文件大小和 zipapp 内版本号，镜像错误页不会被安装。
+            // 下载后会用官方 SHA-256 校验字节，再核对大小和 zipapp 内版本号；校验不过的来源会被丢弃。
             val candidates = listOf(
                 "GitHub 官方" to officialReleaseUrl,
                 // 保留公开文档注明支持 Release 附件的代理；各服务可用性可能变化。
@@ -1129,7 +1138,7 @@ object YtDlpRepo {
                         _updateState.value = _updateState.value.copy(
                             updateStage = "正在从 $source 下载 yt-dlp $version",
                         )
-                        downloadedBytes = downloadYtDlpZipapp(candidate, tempFile!!, version) { done, total ->
+                        downloadedBytes = downloadYtDlpZipapp(candidate, tempFile!!, version, expectedSha256) { done, total ->
                             totalBytes = total
                             _updateState.value = _updateState.value.copy(
                                 updateStage = "正在从 $source 下载 yt-dlp $version",
@@ -1337,6 +1346,71 @@ object YtDlpRepo {
         }
     }
 
+    private val sha256HexPattern = Regex("^[0-9a-f]{64}$")
+    private val stableTagForUrl = Regex("^\\d{4}\\.\\d{1,2}\\.\\d{1,2}$")
+
+    private fun sha256Hex(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                digest.update(buffer, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Fetch the expected SHA-256 of the release asset from OFFICIAL GitHub endpoints only
+     * (never from a public proxy): the release-asset `digest` field and `SHA2-256SUMS`.
+     * Returns null when no official source answered or when the sources disagree.
+     */
+    private fun fetchOfficialSha256(context: Context, version: String): String? {
+        if (!stableTagForUrl.matches(version)) return null
+        val asset = YoutubeDL.ytdlpBin
+        val found = linkedSetOf<String>()
+
+        fetchVersionText(
+            context,
+            "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/$version",
+            "application/vnd.github+json",
+            MAX_RELEASE_METADATA_BYTES,
+            "GitHub 官方发布 API（校验和）",
+        )?.let { json ->
+            runCatching {
+                val assets = JSONObject(json).optJSONArray("assets")
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val item = assets.optJSONObject(i) ?: continue
+                        if (item.optString("name") != asset) continue
+                        val digest = item.optString("digest").removePrefix("sha256:").lowercase(Locale.ROOT)
+                        if (sha256HexPattern.matches(digest)) found += digest
+                    }
+                }
+            }
+        }
+
+        fetchVersionText(
+            context,
+            "https://github.com/yt-dlp/yt-dlp/releases/download/$version/SHA2-256SUMS",
+            "text/plain",
+            64L * 1024L,
+            "GitHub 官方 SHA2-256SUMS",
+        )?.let { text ->
+            text.lineSequence().forEach { line ->
+                val parts = line.trim().split(Regex("\\s+"), limit = 2)
+                if (parts.size == 2 && parts[1].trimStart('*') == asset) {
+                    val hash = parts[0].lowercase(Locale.ROOT)
+                    if (sha256HexPattern.matches(hash)) found += hash
+                }
+            }
+        }
+
+        return found.singleOrNull()
+    }
+
     /**
      * Download a yt-dlp zipapp with bounded size, complete-length and embedded-version checks.
      * Transient failures are retried by updateRules() using a fresh overwrite of the temp file;
@@ -1346,6 +1420,7 @@ object YtDlpRepo {
         url: String,
         dest: File,
         expectedVersion: String,
+        expectedSha256: String,
         onProgress: (downloaded: Long, total: Long?) -> Unit,
     ): Long {
         require(url.startsWith("https://")) { "更新包地址必须是 HTTPS" }
@@ -1399,6 +1474,15 @@ object YtDlpRepo {
         }
         if (received < MIN_UPDATE_DOWNLOAD_BYTES) {
             throw NonRetryableDownloadException("下载包过小，疑似错误页面")
+        }
+        // 先验证来源真实性（SHA-256），再解析不可信的 zip 内容。
+        val actualSha256 = sha256Hex(dest)
+        if (!java.security.MessageDigest.isEqual(
+                actualSha256.toByteArray(Charsets.US_ASCII),
+                expectedSha256.toByteArray(Charsets.US_ASCII),
+            )
+        ) {
+            throw NonRetryableDownloadException("SHA-256 校验失败：该来源返回的文件与官方发布不一致")
         }
         val actual = dest.inputStream().use { YtDlpVersionPolicy.versionFromZipapp(it) }
         if (actual != expectedVersion) {

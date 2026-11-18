@@ -1,6 +1,7 @@
 package io.translatetube.local.translate
 
 import android.security.keystore.KeyGenParameterSpec
+import android.util.Log
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -14,6 +15,8 @@ object Crypto {
     private const val ALIAS = "tt_api_keys"
     private val magic = "TTENC1:".toByteArray()
 
+    /** 串行化：首次并发调用时避免重复生成密钥，覆盖掉已用于加密的旧密钥。 */
+    @Synchronized
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance(KS).apply { load(null) }
         (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
@@ -47,6 +50,8 @@ object Crypto {
             c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
             String(c.doFinal(data))
         } catch (e: Exception) {
+            // 常见原因：Keystore 密钥丢失（换机恢复/重装）。不记录密文内容，仅记录异常类型。
+            Log.w("Crypto", "API Key 解密失败：" + e.javaClass.simpleName)
             ""
         }
     }

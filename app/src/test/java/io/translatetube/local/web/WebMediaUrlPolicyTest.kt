@@ -146,4 +146,26 @@ class WebMediaUrlPolicyTest {
         assertEquals(true, WebMediaUrlPolicy.unsupportedReason("https://cdn.example/index.mpd")!!.contains("DASH"))
         assertNull(WebMediaUrlPolicy.unsupportedReason("https://cdn.example/video.mp4"))
     }
+
+    @Test
+    fun detectsLoopbackPrivateAndLinkLocalHosts() {
+        listOf(
+            "localhost", "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1",
+            "169.254.169.254", "0.0.0.0", "::1", "[::1]", "fe80::1", "fd00::1",
+            "2130706433", "0x7f.0.0.1", "0177.0.0.1", "printer.local", "nas.lan",
+        ).forEach { host ->
+            assertEquals("$host should be private/local", true, WebMediaUrlPolicy.isPrivateOrLocalHost(host))
+        }
+    }
+
+    @Test
+    fun publicHostsAreNotTreatedAsPrivate() {
+        // 198.18/15 (fake-ip DNS) and 100.64/10 (CGNAT, Tailscale) must keep working.
+        listOf(
+            "example.com", "cdn.example.com", "8.8.8.8", "172.32.0.1", "172.15.0.1",
+            "192.169.0.1", "198.18.0.1", "100.64.0.1", "2001:4860:4860::8888",
+        ).forEach { host ->
+            assertEquals("$host should be public", false, WebMediaUrlPolicy.isPrivateOrLocalHost(host))
+        }
+    }
 }

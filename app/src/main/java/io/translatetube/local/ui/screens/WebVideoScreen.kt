@@ -1668,6 +1668,10 @@ fun WebVideoScreen(
                 val bridgeGeneration = pageGeneration.get()
                 mainHandler.post {
                     if (!screenActive.get() || pageGeneration.get() != bridgeGeneration) return@post
+                    // 桥对所有页面/iframe 开放：只信任当前确实是 PikPak 分享页的上报，
+                    // 且上报的 shareId 必须与页面 URL 一致，防止任意站点伪造请求头/token/文件清单。
+                    val pageShareId = PikpakShare.parseShareId(currentPage) ?: return@post
+                    if (!data.shareId.isNullOrBlank() && data.shareId != pageShareId) return@post
                     if (!data.shareId.isNullOrBlank()) pikpakShareId = data.shareId
                     if (data.headers.isNotEmpty()) pikpakCapturedHeaders = data.headers
                     val hasNewVerifiedPasscodeToken =

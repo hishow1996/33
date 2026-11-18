@@ -132,6 +132,66 @@ internal object WebMediaUrlPolicy {
             .any(path::endsWith)
     }
 
+    /**
+     * True when [host] is a loopback / private / link-local literal or an obviously local name.
+     * Literal-only on purpose: no DNS lookup (so VPN / fake-ip DNS setups keep working).
+     * Used to stop a remote server's redirect from steering downloads into the user's LAN.
+     */
+    fun isPrivateOrLocalHost(host: String): Boolean {
+        val h = host.trim().trimEnd('.').lowercase(Locale.ROOT).removePrefix("[").removeSuffix("]")
+        if (h.isEmpty()) return true
+        if (h == "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") ||
+            h.endsWith(".lan") || h.endsWith(".home.arpa")
+        ) return true
+        if (h.contains(':')) {
+            val addr = runCatching { java.net.InetAddress.getByName(h) }.getOrNull() ?: return true
+            val b = addr.address
+            return addr.isAnyLocalAddress || addr.isLoopbackAddress || addr.isLinkLocalAddress ||
+                addr.isSiteLocalAddress || (b.size == 16 && (b[0].toInt() and 0xFE) == 0xFC)
+        }
+        legacyIpv4(h)?.let { return isPrivateIpv4(it) }
+        return false
+    }
+
+    private fun isPrivateIpv4(b: IntArray): Boolean {
+        val a = b[0]
+        val c = b[1]
+        return a == 0 || a == 10 || a == 127 ||
+            (a == 169 && c == 254) ||
+            (a == 172 && c in 16..31) ||
+            (a == 192 && c == 168)
+    }
+
+    /** inet_aton-style parsing (1–4 parts, decimal / 0x hex / leading-0 octal) as the OS resolver accepts. */
+    private fun legacyIpv4(host: String): IntArray? {
+        val parts = host.split('.')
+        if (parts.isEmpty() || parts.size > 4) return null
+        val values = LongArray(parts.size)
+        for ((i, part) in parts.withIndex()) {
+            if (part.isEmpty()) return null
+            val v = when {
+                part.startsWith("0x") && part.length > 2 -> part.substring(2).toLongOrNull(16)
+                part.length > 1 && part.startsWith("0") -> part.substring(1).toLongOrNull(8)
+                else -> part.toLongOrNull(10)
+            } ?: return null
+            if (v < 0) return null
+            values[i] = v
+        }
+        val last = values.last()
+        val leading = values.dropLast(1)
+        if (leading.any { it > 255 }) return null
+        val lastLimit = 1L shl (8 * (5 - parts.size))
+        if (last >= lastLimit) return null
+        var packed = last
+        leading.forEachIndexed { i, v -> packed += v shl (8 * (3 - i)) }
+        return intArrayOf(
+            ((packed shr 24) and 0xFF).toInt(),
+            ((packed shr 16) and 0xFF).toInt(),
+            ((packed shr 8) and 0xFF).toInt(),
+            (packed and 0xFF).toInt(),
+        )
+    }
+
     fun normalizeMediaUrl(input: String): String? {
         if (containsControlCharacters(input)) return null
         val raw = input.trim()

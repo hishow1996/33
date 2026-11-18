@@ -53,6 +53,8 @@ internal object SafeMediaHttp {
         if (initial.scheme !in setOf("http", "https") || initial.username.isNotEmpty() || initial.password.isNotEmpty()) {
             throw IllegalArgumentException("媒体 URL 不是有效的 HTTP/HTTPS 地址。")
         }
+        // 起点本身在内网（如局域网 NAS）时允许内网；否则禁止远端通过重定向把下载引到本机/局域网。
+        val allowPrivateTargets = io.translatetube.local.web.WebMediaUrlPolicy.isPrivateOrLocalHost(initial.host)
         val cookieOrigin = allowedCookieOrigin?.toHttpUrlOrNull() ?: initial
         var current: HttpUrl = initial
 
@@ -137,6 +139,11 @@ internal object SafeMediaHttp {
                 next.host.isBlank() || next.username.isNotEmpty() || next.password.isNotEmpty()
             ) {
                 throw IOException("媒体地址跳转到了无效或不允许的 URL。")
+            }
+            if (!allowPrivateTargets &&
+                io.translatetube.local.web.WebMediaUrlPolicy.isPrivateOrLocalHost(next.host)
+            ) {
+                throw IOException("媒体地址跳转到了本机或局域网地址，已拒绝。")
             }
             if (!isAllowedRedirect(current.scheme, next.scheme)) {
                 throw IOException("媒体地址试图从 HTTPS 降级到 HTTP，已阻止跳转以保护会话数据。")

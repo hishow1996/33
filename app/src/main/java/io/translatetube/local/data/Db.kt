@@ -225,9 +225,13 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         fun get(ctx: Context): AppDatabase = inst ?: synchronized(this) {
-            inst ?: Room.databaseBuilder(ctx, AppDatabase::class.java, "translatetube.db")
+            // 单例必须持有 applicationContext：调用方会传入 Activity / PlaybackService，
+            // 直接持有会把它们泄漏到进程结束。
+            inst ?: Room.databaseBuilder(ctx.applicationContext, AppDatabase::class.java, "translatetube.db")
                 .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
-                .fallbackToDestructiveMigration()
+                // 不再对"升级"做破坏性回退：以后改表结构忘写 Migration 时，宁可在开发期立刻报错，
+                // 也不要静默清空用户的 API 配置、观看历史和字幕缓存。仅降级（回滚版本）时允许重建。
+                .fallbackToDestructiveMigrationOnDowngrade()
                 .build().also { inst = it }
         }
     }

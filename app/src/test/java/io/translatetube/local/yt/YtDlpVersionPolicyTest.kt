@@ -143,4 +143,17 @@ class YtDlpVersionPolicyTest {
         return buffer.toByteArray()
     }
 
+
+    @Test
+    fun ignoresOversizedVersionModuleInsteadOfReadingItAll() {
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zip ->
+            zip.putNextEntry(ZipEntry("yt_dlp/version.py"))
+            // 200 KB of padding pushes the assignment far beyond the bounded read window.
+            zip.write("#".repeat(200 * 1024).toByteArray())
+            zip.write("\n__version__ = '2026.1.1'\n".toByteArray())
+            zip.closeEntry()
+        }
+        assertNull(YtDlpVersionPolicy.versionFromZipapp(ByteArrayInputStream(out.toByteArray())))
+    }
 }

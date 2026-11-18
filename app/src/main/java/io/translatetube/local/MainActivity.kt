@@ -121,7 +121,8 @@ class MainActivity : ComponentActivity() {
         else editor.putString(KEY_LAST_PROGRESS, task.lastProgress.take(180))
         if (task.lastUpdatedAt <= 0L) editor.remove(KEY_LAST_UPDATED_AT)
         else editor.putLong(KEY_LAST_UPDATED_AT, task.lastUpdatedAt)
-        editor.commit()
+        // apply() 异步写盘：避免在主线程同步 I/O；Activity 停止时系统会等待落盘完成。
+        editor.apply()
     }
 
     /** Give even rapid repeat taps on the same row a distinct playback request token. */
@@ -220,7 +221,7 @@ class MainActivity : ComponentActivity() {
             .remove(KEY_LAST_PHASE)
             .remove(KEY_LAST_PROGRESS)
             .remove(KEY_LAST_UPDATED_AT)
-            .commit()
+            .apply()
         pendingResumeTaskState.value = null
     }
 
@@ -245,7 +246,13 @@ class MainActivity : ComponentActivity() {
         // flipping it back and forth left Compose with a stale status-bar inset after leaving
         // fullscreen, which showed up as an extra blank strip at the top of every page.
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        handleIntent(intent)
+        // 仅在全新启动时处理入口 intent：Activity 因进程回收/配置变化重建，或从最近任务恢复时，
+        // intent 仍是最初那份，重复处理会重放分享链接并重启解析。
+        val launchedFromHistory =
+            intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !launchedFromHistory) {
+            handleIntent(intent)
+        }
         if (pendingResumeTaskState.value == null) {
             pendingResumeTaskState.value = loadPendingResumeTask()
         }
@@ -797,7 +804,9 @@ class MainActivity : ComponentActivity() {
             }
             Intent.ACTION_VIEW -> {
                 val uri = intent.data ?: return
-                if (uri.scheme == "content" || uri.scheme == "file") {
+                // 仅接受 content://（manifest 也只声明了 content）。MainActivity 对外导出，
+                // 拒绝 file:// 以免被其他应用诱导读取本应用私有目录。
+                if (uri.scheme == "content") {
                     // 拿持久读授权：播放服务稍后跨组件访问该 uri
                     runCatching {
                         contentResolver.takePersistableUriPermission(

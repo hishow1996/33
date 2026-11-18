@@ -194,9 +194,22 @@ jobs:
           print(f"JVM_TEST_FAILURE_COUNT={failures}")
           PY
 
-      # This repository intentionally ignores local keystores. Generate an ephemeral CI-only
-      # debug keystore so the debug APK remains installable without storing signing keys in Git.
+      # 持久签名密钥（推荐）：把 keystore 的 base64 放进仓库 Secrets，
+      # 这样每次构建的签名一致，用户才能覆盖安装而不丢数据。未配置时退回临时密钥并给出警告。
+      - name: Restore persistent signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64：本次 debug APK 使用临时密钥签名（无法覆盖安装旧版本），release APK 未签名。"
+          fi
+
+      # 仅在没有持久密钥时生成临时 debug keystore（仓库按设计不保存任何 keystore）。
       - name: Generate CI debug keystore
+        if: env.ANDROID_KEYSTORE_PATH == ''
         run: |
           keytool -genkeypair -noprompt -storetype JKS \
             -keystore debug.keystore \
@@ -207,6 +220,10 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Build debug and release APKs
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew --no-daemon assembleDebug assembleRelease
 
       - name: Verify OPUS-MT native runtime is packaged in APKs
