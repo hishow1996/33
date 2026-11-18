@@ -337,9 +337,11 @@ internal class GeminiTts(
             )
         }
 
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
+        // 密钥放请求头而不是 URL：URL 会出现在异常信息、代理和日志里。
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val request = Request.Builder()
             .url(url)
+            .header("x-goog-api-key", apiKey)
             .post(bodyJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
 

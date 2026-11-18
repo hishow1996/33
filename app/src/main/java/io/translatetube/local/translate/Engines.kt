@@ -1893,6 +1893,13 @@ internal fun openAiCompatEndpoint(baseUrl: String, path: String): String {
     require(uri.isAbsolute && scheme in setOf("http", "https") && !uri.rawAuthority.isNullOrBlank()) {
         "API Base URL 格式无效，请填写 http:// 或 https:// 开头的地址"
     }
+    // API Key 会随每个请求发送：明文 http 只允许本机/局域网（如本地 Ollama），公网地址必须 https。
+    if (scheme == "http") {
+        val host = uri.host
+        require(host != null && io.translatetube.local.web.WebMediaUrlPolicy.isPrivateOrLocalHost(host)) {
+            "为避免 API Key 被明文传输，非局域网地址请使用 https:// 开头的 API Base URL"
+        }
+    }
 
     var basePath = uri.rawPath.orEmpty().trimEnd('/')
     basePath = when {

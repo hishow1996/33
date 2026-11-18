@@ -188,6 +188,24 @@ class ChatCompletionParamsPolicyTest {
         assertTrue(error.message.orEmpty().contains("API Base URL 格式无效"))
     }
 
+    @Test
+    fun plainHttpIsOnlyAllowedForLocalOrLanHosts() {
+        assertEquals(
+            "http://192.168.1.20:11434/v1/chat/completions",
+            openAiCompatEndpoint("http://192.168.1.20:11434", "/chat/completions"),
+        )
+        assertEquals(
+            "http://localhost:8080/v1/models",
+            openAiCompatEndpoint("http://localhost:8080", "/models"),
+        )
+        listOf("http://api.example.com/v1", "http://8.8.8.8/v1").forEach { url ->
+            val error = org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+                openAiCompatEndpoint(url, "/chat/completions")
+            }
+            assertTrue(error.message.orEmpty().contains("https://"))
+        }
+    }
+
 
     @Test
     fun outputBudgetScalesWithEstimatedResponseSize() {

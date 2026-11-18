@@ -1677,24 +1677,5 @@ object AppLogStore {
     }
 
     /** Redact common credentials, authorization headers, URL user-info and signed query parameters. */
-    private fun redact(input: String): String {
-        var value = input
-        val bearer = Regex("""(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+""")
-        value = bearer.replace(value, "Bearer [REDACTED]")
-        val basic = Regex("""(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}""")
-        value = basic.replace(value, "Basic [REDACTED]")
-        val jsonSecrets = Regex("""(?i)("(?:api[\s_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)"\s*:\s*")[^"]*(")""")
-        value = jsonSecrets.replace(value) { match ->
-            match.groupValues[1] + "[REDACTED]" + match.groupValues[2]
-        }
-        val urlUserInfo = Regex("""(?i)(https?://)[^/\s@]+@""")
-        value = urlUserInfo.replace(value) { match -> match.groupValues[1] + "[REDACTED]@" }
-        val credentials = Regex("""(?i)(api[\s_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)(\s*[=:：]\s*)[^\s,;]+""")
-        value = credentials.replace(value) { match ->
-            match.groupValues[1] + match.groupValues[2] + "[REDACTED]"
-        }
-        val querySecrets = Regex("""(?i)([?&](?:[A-Za-z0-9_.-]*(?:api[_-]?key|key|token|sig(?:nature)?|cookie|auth|password|secret|expires|credential|session|hdnts|policy|jwt))=)[^\s&]+""")
-        value = querySecrets.replace(value) { match -> match.groupValues[1] + "[REDACTED]" }
-        return value
-    }
+    private fun redact(input: String): String = LogRedactor.redact(input)
 }
