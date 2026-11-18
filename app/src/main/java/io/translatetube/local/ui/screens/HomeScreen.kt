@@ -92,6 +92,7 @@ fun HomeScreen(
     var linkFieldHasFocus by remember { mutableStateOf(false) }
     var linkEditText by remember { mutableStateOf<NativeAddressBarEditText?>(null) }
     val addressDensity = LocalDensity.current
+    val addressBarHeight = maxOf(56f, 16f * addressDensity.fontScale + 40f).dp
 
     fun setLink(value: String) {
         link = value
@@ -331,7 +332,7 @@ fun HomeScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(56.dp)
+                        .height(addressBarHeight)
                         .clip(addressBarShape)
                         .background(Color(0xFFF4F7FC))
                         .border(1.dp, addressBarOutline, addressBarShape),
@@ -347,45 +348,31 @@ fun HomeScreen(
                         factory = { context ->
                             NativeAddressBarEditText(context).apply {
                                 linkEditText = this
-                                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16f)
-                                gravity = android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
-                                val endPadding = with(addressDensity) { 14.dp.roundToPx() }
-                                setPadding(0, 0, endPadding, 0)
                                 hint = "YouTube、网页视频地址或视频直链"
                                 applyAppearance(addressBarAppearance)
+                                applyTextMetrics(
+                                    textSizeSp = 16f,
+                                    paddingLeftPx = 0,
+                                    paddingRightPx = with(addressDensity) { 14.dp.roundToPx() },
+                                )
                                 onAddressTextEdited = {
                                     link = text?.toString().orEmpty()
                                     if (linkError) linkError = false
                                 }
-                                setOnFocusChangeListener { view, hasFocus ->
+                                onAddressFocusChanged = { hasFocus ->
                                     linkFieldHasFocus = hasFocus
-                                    if (hasFocus) {
-                                        // Match the web address bar: select all only when focus
-                                        // first enters; subsequent taps keep native cursor placement.
-                                        view.post {
-                                            if (view.hasFocus()) {
-                                                setSelection(0, text?.length ?: 0)
-                                                bringPointIntoView(text?.length ?: 0)
-                                            }
-                                        }
-                                    }
                                 }
-                                setOnEditorActionListener { _, actionId, event ->
-                                    val isGo = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
-                                        (event?.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
-                                            event.action == android.view.KeyEvent.ACTION_UP)
-                                    if (isGo) {
-                                        submitLink()
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                }
+                                onAddressAction = { submitLink() }
                                 syncExternalText(link, linkSyncRevision)
                             }
                         },
                         update = { editText ->
                             editText.applyAppearance(addressBarAppearance)
+                            editText.applyTextMetrics(
+                                textSizeSp = 16f,
+                                paddingLeftPx = 0,
+                                paddingRightPx = with(addressDensity) { 14.dp.roundToPx() },
+                            )
                             editText.syncExternalText(link, linkSyncRevision)
                         },
                         modifier = Modifier.weight(1f).fillMaxHeight(),
