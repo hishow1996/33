@@ -6769,10 +6769,12 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
 
                     val startX = down.position.x
                     val startY = down.position.y
-                    val initialVolume = if (inVolumeZone && audioManager != null) {
-                        runCatching {
-                            audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                        }.getOrDefault(0).coerceIn(0, maxMusicVolume)
+                    val initialVolume = if (inVolumeZone) {
+                        audioManager?.let { manager ->
+                            runCatching {
+                                manager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                            }.getOrDefault(0).coerceIn(0, maxMusicVolume)
+                        } ?: 0
                     } else 0
                     // 窗口亮度为负数表示"跟随系统"，此时从系统亮度设置读起始值。
                     val initialBrightness = if (inBrightnessZone) {
@@ -6851,16 +6853,18 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                         deltaY / dragRangePx * maxMusicVolume.toFloat()
                                     ).roundToInt().coerceIn(0, maxMusicVolume)
                                 if (nextVolume != lastRequestedVolume) {
-                                    val actualVolume = runCatching {
-                                        audioManager.setStreamVolume(
-                                            AudioManager.STREAM_MUSIC,
-                                            nextVolume,
-                                            0,
-                                        )
-                                        // Read back the system value so the indicator follows
-                                        // any device-side volume cap instead of assuming success.
-                                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                    }.getOrNull()
+                                    val actualVolume = audioManager?.let { manager ->
+                                        runCatching {
+                                            manager.setStreamVolume(
+                                                AudioManager.STREAM_MUSIC,
+                                                nextVolume,
+                                                0,
+                                            )
+                                            // Read back the system value so the indicator follows
+                                            // any device-side volume cap instead of assuming success.
+                                            manager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                        }.getOrNull()
+                                    }
                                     lastRequestedVolume = nextVolume
                                     if (actualVolume != null) {
                                         volumeProgress = actualVolume
