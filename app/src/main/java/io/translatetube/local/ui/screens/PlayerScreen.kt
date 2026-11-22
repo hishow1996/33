@@ -55,6 +55,7 @@ import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForwardIos
+import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -698,7 +699,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         failedPhase = ProcessingErrorDisplayPolicy.resolvePhase(it.phase, it.progress, e.message),
                         failedProgress = it.progress,
                         progress = "",
-                        error = "无法启动播放器（${e.javaClass.simpleName}）：${e.message ?: "未知错误"}"
+                        // 完整异常已写入应用日志；界面只给用户能照着做的提示和一个简短原因。
+                        error = "播放器没能启动，请点击重试。反复失败的话，重启应用再试，" +
+                            "或到 设置 → 应用日志 查看详情（${e.javaClass.simpleName}）"
                     )
                 }
             }
@@ -6529,6 +6532,53 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         label = "volume-gesture-progress",
     )
 
+    // 左侧上下滑调整播放页亮度：只改本 App 窗口的亮度，离开播放页时恢复系统亮度。
+    // 悬浮窗等拿不到 Activity 的场景 brightnessWindow 为 null，手势自动不生效。
+    val brightnessWindow = remember(context) {
+        var currentContext: android.content.Context? = context
+        while (
+            currentContext != null &&
+            currentContext !is android.app.Activity &&
+            currentContext is android.content.ContextWrapper
+        ) {
+            currentContext = currentContext.baseContext
+        }
+        (currentContext as? android.app.Activity)?.window
+    }
+    var brightnessGestureActive by remember(state.key) { mutableStateOf(false) }
+    var brightnessProgress by remember(state.key) { mutableStateOf(0f) }
+    val animatedBrightnessProgress by animateFloatAsState(
+        targetValue = brightnessProgress.coerceIn(0f, 1f),
+        animationSpec = tween(90, easing = FastOutSlowInEasing),
+        label = "brightness-gesture-progress",
+    )
+    var brightnessAdjusted by remember(brightnessWindow) { mutableStateOf(false) }
+    DisposableEffect(brightnessWindow) {
+        onDispose {
+            if (brightnessAdjusted) {
+                runCatching {
+                    brightnessWindow?.let { window ->
+                        val attributes = window.attributes
+                        attributes.screenBrightness =
+                            android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                        window.attributes = attributes
+                    }
+                }
+            }
+        }
+    }
+
+    // 双击左/右侧快退/快进 10 秒后，在对应一侧短暂显示提示。
+    var doubleTapSeekLabel by remember(state.key) { mutableStateOf<String?>(null) }
+    var doubleTapSeekOnRight by remember(state.key) { mutableStateOf(true) }
+    var doubleTapSeekNonce by remember(state.key) { mutableStateOf(0) }
+    LaunchedEffect(doubleTapSeekNonce) {
+        if (doubleTapSeekNonce > 0) {
+            kotlinx.coroutines.delay(650)
+            doubleTapSeekLabel = null
+        }
+    }
+
     // Respect the actual host lifecycle (including the floating-window owner).
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     var lifecycleResumed by remember(lifecycleOwner) {
@@ -6660,6 +6710,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 state.key,
                 audioManager,
                 maxMusicVolume,
+                brightnessWindow,
                 isFullscreen,
                 fullscreenInteractionLocked,
             ) {
@@ -6696,14 +6747,19 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     with(this) { 64.dp.toPx() }
                         }
                     )
+                    // 右侧 38% 上下滑调音量，左侧 38% 上下滑调亮度，中间不响应。
+                    val inVolumeZone = down.position.x >= size.width * 0.62f
+                    val inBrightnessZone = down.position.x <= size.width * 0.38f
+                    val canAdjustVolume = audioManager != null && maxMusicVolume > 0
+                    val canAdjustBrightness = brightnessWindow != null
                     if (
                         latestFullscreenInteractionLocked ||
-                        down.position.x < size.width * 0.62f ||
+                        (!inVolumeZone && !inBrightnessZone) ||
+                        (inVolumeZone && !canAdjustVolume) ||
+                        (inBrightnessZone && !canAdjustBrightness) ||
                         startsInsideRightControls ||
                         startsInsideFullscreenCaption ||
                         down.position.y > size.height - seekbarSafeBottom ||
-                        audioManager == null ||
-                        maxMusicVolume <= 0 ||
                         latestQualityExpanded ||
                         latestSpeedExpanded ||
                         latestScrubbing
@@ -6713,9 +6769,25 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
 
                     val startX = down.position.x
                     val startY = down.position.y
-                    val initialVolume = runCatching {
-                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    }.getOrDefault(0).coerceIn(0, maxMusicVolume)
+                    val initialVolume = if (inVolumeZone && audioManager != null) {
+                        runCatching {
+                            audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                        }.getOrDefault(0).coerceIn(0, maxMusicVolume)
+                    } else 0
+                    // 窗口亮度为负数表示"跟随系统"，此时从系统亮度设置读起始值。
+                    val initialBrightness = if (inBrightnessZone) {
+                        runCatching {
+                            brightnessWindow?.attributes?.screenBrightness
+                                ?.takeIf { it >= 0f }
+                                ?: (
+                                    android.provider.Settings.System.getInt(
+                                        context.contentResolver,
+                                        android.provider.Settings.System.SCREEN_BRIGHTNESS,
+                                        128,
+                                    ) / 255f
+                                    )
+                        }.getOrDefault(0.5f).coerceIn(0.02f, 1f)
+                    } else 0f
                     // Keep the same physical travel distance on short landscape windows;
                     // otherwise a short swipe can jump several volume steps at once.
                     val dragRangePx = maxOf(
@@ -6743,15 +6815,35 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                                     when {
                                         movedY > movedX * 1.2f -> {
                                             claimedVolumeGesture = true
-                                            volumeGestureActive = true
-                                            volumeProgress = initialVolume.toFloat() / maxMusicVolume.toFloat()
+                                            if (inVolumeZone) {
+                                                volumeGestureActive = true
+                                                volumeProgress = initialVolume.toFloat() / maxMusicVolume.toFloat()
+                                            } else {
+                                                brightnessGestureActive = true
+                                                brightnessProgress = initialBrightness
+                                            }
                                         }
                                         movedX > movedY * 1.2f -> break
                                     }
                                 }
                             }
 
-                            if (claimedVolumeGesture) {
+                            if (claimedVolumeGesture && !inVolumeZone) {
+                                if (latestFullscreenInteractionLocked) break
+                                change.consume()
+                                // 亮度最低留 2%，避免划到全黑看不见画面。
+                                val nextBrightness = (initialBrightness - deltaY / dragRangePx)
+                                    .coerceIn(0.02f, 1f)
+                                runCatching {
+                                    brightnessWindow?.let { window ->
+                                        val attributes = window.attributes
+                                        attributes.screenBrightness = nextBrightness
+                                        window.attributes = attributes
+                                        brightnessAdjusted = true
+                                    }
+                                }
+                                brightnessProgress = nextBrightness
+                            } else if (claimedVolumeGesture) {
                                 if (latestFullscreenInteractionLocked) break
                                 change.consume()
                                 val nextVolume = (
@@ -6786,17 +6878,51 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             recordInteraction()
                             // No timeout or fade: the indicator disappears as soon as the finger lifts.
                             volumeGestureActive = false
+                            brightnessGestureActive = false
                         }
                     }
                 }
             }
             .pointerInput(state.key, fullscreenInteractionLocked) {
-                detectTapGestures {
-                    if (latestFullscreenInteractionLocked) return@detectTapGestures
-                    fullscreenCaptionAdjusting = false
-                    recordInteraction()
-                    controlsVisible = if (!latestIsPlaying) true else !latestControlsVisible
-                }
+                detectTapGestures(
+                    // 双击左/右侧各 38% 的区域快退/快进 10 秒；中间区域双击等同单击。
+                    // 注意：注册双击后，单击切换控制栏会等一个双击判定时间（约 0.3 秒）。
+                    onDoubleTap = { offset ->
+                        if (latestFullscreenInteractionLocked) return@detectTapGestures
+                        val width = size.width.toFloat()
+                        val direction = when {
+                            offset.x <= width * 0.38f -> -1
+                            offset.x >= width * 0.62f -> 1
+                            else -> 0
+                        }
+                        if (direction == 0) {
+                            fullscreenCaptionAdjusting = false
+                            recordInteraction()
+                            controlsVisible = if (!latestIsPlaying) true else !latestControlsVisible
+                            return@detectTapGestures
+                        }
+                        val service = PlaybackService.instance
+                        val duration = (service?.duration() ?: 0L)
+                            .takeIf { it > 0L } ?: state.durationMs.coerceAtLeast(0L)
+                        val current = service?.position()?.coerceAtLeast(0L) ?: 0L
+                        val target = (current + direction * 10_000L).coerceAtLeast(0L)
+                            .let { if (duration > 0L) it.coerceAtMost(duration) else it }
+                        service?.seek(target)
+                        if (duration > 0L) pos = target.toFloat() / duration.toFloat()
+                        seekRevision += 1
+                        doubleTapSeekOnRight = direction > 0
+                        doubleTapSeekLabel = if (direction > 0) "+10 秒" else "-10 秒"
+                        doubleTapSeekNonce += 1
+                        // 只重置控制栏自动隐藏计时，不改变控制栏当前是显示还是隐藏。
+                        recordInteraction()
+                    },
+                    onTap = {
+                        if (latestFullscreenInteractionLocked) return@detectTapGestures
+                        fullscreenCaptionAdjusting = false
+                        recordInteraction()
+                        controlsVisible = if (!latestIsPlaying) true else !latestControlsVisible
+                    },
+                )
             },
     )
 
@@ -7681,6 +7807,49 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     )
                 }
             }
+        }
+
+        if (brightnessGestureActive) {
+            Row(
+                modifier = Modifier.align(Alignment.Center),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.BrightnessMedium,
+                    contentDescription = "屏幕亮度",
+                    tint = Color.White,
+                    modifier = Modifier.size(26.dp),
+                )
+                Box(
+                    modifier = Modifier
+                        .width(76.dp)
+                        .height(4.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.30f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(animatedBrightnessProgress)
+                            .clip(CircleShape)
+                            .background(Color(0xFF5890FF)),
+                    )
+                }
+            }
+        }
+        doubleTapSeekLabel?.let { label ->
+            Text(
+                text = label,
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier
+                    .align(if (doubleTapSeekOnRight) Alignment.CenterEnd else Alignment.CenterStart)
+                    .padding(horizontal = 36.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            )
         }
 
         FullscreenInlineMenu(

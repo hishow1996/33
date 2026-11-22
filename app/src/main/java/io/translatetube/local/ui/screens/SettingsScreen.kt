@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -254,8 +255,8 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
 
         // ===== 语音模型（方案 B：软件内下载） =====
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
-        val ttsState by dlManager.tts.collectAsState()
-        val asrState by dlManager.asr.collectAsState()
+        val ttsState by dlManager.tts.collectAsStateWithLifecycle()
+        val asrState by dlManager.asr.collectAsStateWithLifecycle()
         var asrArchiveSizeBytes by remember(localAsrModel) {
             mutableStateOf(dlManager.cachedAsrArchiveSizeBytes(localAsrModel))
         }
@@ -273,8 +274,8 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             }
             asrArchiveSizeLoading = false
         }
-        val playbackState by io.translatetube.local.player.PlaybackService.ui.collectAsState()
-        val piperDownloadCount by io.translatetube.local.tts.PiperModels.activeDownloadCount.collectAsState()
+        val playbackState by io.translatetube.local.player.PlaybackService.ui.collectAsStateWithLifecycle()
+        val piperDownloadCount by io.translatetube.local.tts.PiperModels.activeDownloadCount.collectAsStateWithLifecycle()
         val piperTaskActive = io.translatetube.local.tts.PiperModels.hasActiveDownloads
         val modelDownloadActive = piperTaskActive || piperDownloadCount > 0 ||
             ttsState.status in setOf(io.translatetube.local.data.ModelStatus.DOWNLOADING, io.translatetube.local.data.ModelStatus.EXTRACTING) ||
@@ -333,7 +334,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             else -> if (localAsrModel == "sensevoice") "本地 SenseVoice" else "本地 Whisper"
         }
         val apiProfiles by AppDatabase.get(ctx).apiProfileDao().all()
-            .collectAsState(initial = emptyList())
+            .collectAsStateWithLifecycle(initialValue = emptyList())
         // Built-in/local engine IDs take precedence over saved API profiles so the
         // workbench always shows the actual selected engine, including offline models.
         val builtinTranslationLabel = when (activeApiId) {
@@ -1346,8 +1347,8 @@ private fun PiperModelSection() {
                 ?: "zh_cn_chaowen_medium"
         )
     }
-    val installed by io.translatetube.local.tts.PiperModels.installed.collectAsState()
-    val downloadStates by io.translatetube.local.tts.PiperModels.downloadStates.collectAsState()
+    val installed by io.translatetube.local.tts.PiperModels.installed.collectAsStateWithLifecycle()
+    val downloadStates by io.translatetube.local.tts.PiperModels.downloadStates.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
         if (prefs.getString("piper_model", null) != selected) {
             prefs.edit().putString("piper_model", selected).apply()
@@ -1384,8 +1385,8 @@ private fun PiperModelSection() {
 private fun SherpaSingleModelSection(modelId: String) {
     val ctx = LocalContext.current
     val definition = remember(modelId) { io.translatetube.local.tts.PiperModels.byId(modelId) } ?: return
-    val installed by io.translatetube.local.tts.PiperModels.installed.collectAsState()
-    val downloadStates by io.translatetube.local.tts.PiperModels.downloadStates.collectAsState()
+    val installed by io.translatetube.local.tts.PiperModels.installed.collectAsStateWithLifecycle()
+    val downloadStates by io.translatetube.local.tts.PiperModels.downloadStates.collectAsStateWithLifecycle()
     LaunchedEffect(modelId) {
         io.translatetube.local.tts.PiperModels.refreshInstalled(ctx.applicationContext)
     }
@@ -1510,7 +1511,7 @@ private fun SherpaModelDownloadRow(
 private fun YtDlpUpdateSection() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val state by io.translatetube.local.yt.YtDlpRepo.updateState.collectAsState()
+    val state by io.translatetube.local.yt.YtDlpRepo.updateState.collectAsStateWithLifecycle()
     var updating by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val isUpdating = updating || state.updateRunning

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -97,11 +98,11 @@ fun StorageManagementScreen(
     val scope = rememberCoroutineScope()
     val db = remember { AppDatabase.get(ctx) }
     val manager = remember { (ctx as TranslateTubeApp).modelDownload }
-    val ttsState by manager.tts.collectAsState()
-    val asrState by manager.asr.collectAsState()
-    val player by PlaybackService.ui.collectAsState()
-    val piperDownloads by PiperModels.activeDownloadCount.collectAsState()
-    val activePiperModelIds by PiperModels.activeModelIds.collectAsState()
+    val ttsState by manager.tts.collectAsStateWithLifecycle()
+    val asrState by manager.asr.collectAsStateWithLifecycle()
+    val player by PlaybackService.ui.collectAsStateWithLifecycle()
+    val piperDownloads by PiperModels.activeDownloadCount.collectAsStateWithLifecycle()
+    val activePiperModelIds by PiperModels.activeModelIds.collectAsStateWithLifecycle()
     var data by remember { mutableStateOf<StorageSnapshot?>(null) }
     var scanning by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
@@ -1209,7 +1210,7 @@ private fun StorageHistoryVideoRow(
             IconButton(
                 enabled = favoriteEnabled,
                 onClick = onToggleFavorite,
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(48.dp),
             ) {
                 Icon(
                     Icons.Filled.Star,
@@ -1218,7 +1219,7 @@ private fun StorageHistoryVideoRow(
                     modifier = Modifier.size(20.dp),
                 )
             }
-            IconButton(enabled = enabled, onClick = onDelete, modifier = Modifier.size(40.dp)) {
+            IconButton(enabled = enabled, onClick = onDelete, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.Delete, contentDescription = "删除这条历史和对应缓存", tint = DangerRed)
             }
         }

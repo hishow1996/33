@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForwardIos
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,6 +61,9 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 用户已经粘贴、忽略或提交过的剪贴板链接；进程存活期间不再重复提示同一条。 */
+private var handledClipboardUrl: String? = null
+
 @Composable
 fun HomeScreen(
     onPlay: (PlayRequest) -> Unit,
@@ -69,7 +74,7 @@ fun HomeScreen(
     pendingResumeTaskProgress: String? = null,
     onResumeTask: (String) -> Unit = {},
 ) {
-    val playback by PlaybackService.ui.collectAsState()
+    val playback by PlaybackService.ui.collectAsStateWithLifecycle()
     val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
     var db by remember(ctx) { mutableStateOf<AppDatabase?>(null) }
     var videos by remember { mutableStateOf<List<VideoEntity>>(emptyList()) }
@@ -91,6 +96,33 @@ fun HomeScreen(
     var linkSyncRevision by remember { mutableStateOf(0L) }
     var linkFieldHasFocus by remember { mutableStateOf(false) }
     var linkEditText by remember { mutableStateOf<NativeAddressBarEditText?>(null) }
+
+    // 回到首页时看一眼剪贴板，里面有能处理的视频链接就在地址栏上方提示一键粘贴。
+    var clipboardUrl by remember { mutableStateOf<String?>(null) }
+    val homeLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(homeLifecycleOwner, ctx) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                scope.launch {
+                    // Android 10 以上要等窗口拿到焦点才允许读剪贴板，稍等一下再读。
+                    kotlinx.coroutines.delay(300)
+                    val clipText = runCatching {
+                        val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as? android.content.ClipboardManager
+                        if (clipboard?.primaryClipDescription?.hasMimeType("text/*") == true) {
+                            clipboard.primaryClip?.takeIf { it.itemCount > 0 }
+                                ?.getItemAt(0)?.coerceToText(ctx)?.toString()
+                        } else {
+                            null
+                        }
+                    }.getOrNull()
+                    clipboardUrl = ClipboardLinkPolicy.candidate(clipText, handledClipboardUrl)
+                }
+            }
+        }
+        homeLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { homeLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val addressDensity = LocalDensity.current
     val addressBarHeight = maxOf(56f, 16f * addressDensity.fontScale + 40f).dp
 
@@ -110,6 +142,8 @@ fun HomeScreen(
             ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(input)) input else null
         if (id != null) {
             linkError = false
+            handledClipboardUrl = input
+            clipboardUrl = null
             onPlay(PlayRequest(videoId = id))
             setLink("")
             return
@@ -126,11 +160,15 @@ fun HomeScreen(
         when {
             mediaUrl != null -> {
                 linkError = false
+                handledClipboardUrl = input
+                clipboardUrl = null
                 onPlay(PlayRequest(mediaUrl = mediaUrl))
                 setLink("")
             }
             pageUrl != null -> {
                 linkError = false
+                handledClipboardUrl = input
+                clipboardUrl = null
                 onPlay(PlayRequest(webPageUrl = pageUrl))
                 setLink("")
             }
@@ -185,7 +223,7 @@ fun HomeScreen(
                     Icon(Icons.Filled.Settings, contentDescription = "设置", tint = SubText)
                 }
                 // yt-dlp 检测到新版本解析规则时提示红点；在设置里更新后消失
-                val ytdlpHasUpdate by io.translatetube.local.yt.YtDlpRepo.updateState.collectAsState()
+                val ytdlpHasUpdate by io.translatetube.local.yt.YtDlpRepo.updateState.collectAsStateWithLifecycle()
                 if (ytdlpHasUpdate.hasUpdate) {
                     Box(
                         Modifier
@@ -301,6 +339,53 @@ fun HomeScreen(
                         tint = BrandBright,
                         modifier = Modifier.size(16.dp),
                     )
+                }
+            }
+        }
+
+        val suggestedUrl = clipboardUrl
+        if (suggestedUrl != null && link.isBlank()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                color = Color(0xFFEAF2FF),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 14.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.Link,
+                        contentDescription = null,
+                        tint = BrandBright,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("剪贴板里有视频链接", color = OnBg, style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            ClipboardLinkPolicy.label(suggestedUrl),
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            handledClipboardUrl = suggestedUrl
+                            clipboardUrl = null
+                            setLink(suggestedUrl)
+                        },
+                    ) { Text("粘贴") }
+                    IconButton(
+                        onClick = {
+                            handledClipboardUrl = suggestedUrl
+                            clipboardUrl = null
+                        },
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = "忽略这个链接", tint = SubText)
+                    }
                 }
             }
         }
@@ -446,7 +531,7 @@ fun HomeScreen(
             Spacer(Modifier.weight(1f))
             IconButton(
                 onClick = onHistory,
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(48.dp),
             ) {
                 Icon(Icons.Filled.History, contentDescription = "历史记录", tint = SubText)
             }

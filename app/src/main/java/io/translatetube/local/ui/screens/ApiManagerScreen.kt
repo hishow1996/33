@@ -2212,7 +2212,8 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             Text("选择模型（共 ${list.size} 个）：", color = SubText, style = MaterialTheme.typography.bodySmall)
                             Box(Modifier.height(220.dp).clip(RoundedCornerShape(10.dp)).background(SurfaceHigh)) {
                                 LazyColumn(Modifier.fillMaxSize().padding(6.dp)) {
-                                    items(list) { m ->
+                                    // 接口返回的模型名可能重复；key 要求唯一，所以先去重。
+                                    items(list.distinct(), key = { it }) { m ->
                                         Text(
                                             m,
                                             color = if (m == model) BrandBright else OnBg,

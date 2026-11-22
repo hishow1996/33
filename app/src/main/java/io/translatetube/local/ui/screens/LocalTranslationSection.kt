@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -157,13 +158,13 @@ internal fun LocalTranslationSection(
         sourceLanguageMenuExpanded = false
     }
     var opusJob by remember { mutableStateOf<Job?>(null) }
-    val opusState by OpusMtModelManager.state.collectAsState()
+    val opusState by OpusMtModelManager.state.collectAsStateWithLifecycle()
     var opusExtraJobs by remember { mutableStateOf<Map<String, Job>>(emptyMap()) }
-    val opusExtraStates by OpusMtAdditionalModelManager.states.collectAsState()
+    val opusExtraStates by OpusMtAdditionalModelManager.states.collectAsStateWithLifecycle()
     var small100Job by remember { mutableStateOf<Job?>(null) }
-    val small100State by Small100ModelManager.state.collectAsState()
+    val small100State by Small100ModelManager.state.collectAsStateWithLifecycle()
     var hyMtJob by remember { mutableStateOf<Job?>(null) }
-    val hyMtState by HyMtModelManager.state.collectAsState()
+    val hyMtState by HyMtModelManager.state.collectAsStateWithLifecycle()
     val pairs = remember {
         listOf(
             LocalTranslationPair("南非荷兰语 → 中文", "af"),
