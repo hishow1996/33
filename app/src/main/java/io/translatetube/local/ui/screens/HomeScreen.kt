@@ -362,7 +362,11 @@ fun HomeScreen(
                     )
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("剪贴板里有视频链接", color = OnBg, style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            "剪贴板：${ClipboardLinkPolicy.kind(suggestedUrl).title}",
+                            color = OnBg,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
                         Text(
                             ClipboardLinkPolicy.label(suggestedUrl),
                             color = SubText,

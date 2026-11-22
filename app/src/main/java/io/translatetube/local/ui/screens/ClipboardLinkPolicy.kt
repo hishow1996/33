@@ -28,6 +28,20 @@ internal object ClipboardLinkPolicy {
         return url.takeIf { usable }
     }
 
+    /** 链接的类型，用来在提示条上告诉用户识别成了什么。 */
+    enum class Kind(val title: String) {
+        YOUTUBE("YouTube 视频"),
+        DIRECT_MEDIA("视频直链"),
+        WEB_PAGE("网页视频"),
+    }
+
+    /** 与首页提交时的判断顺序一致：先看 YouTube，再看直链，其余都按网页视频处理。 */
+    fun kind(url: String): Kind = when {
+        YouTubeUrlParser.extractVideoId(url) != null -> Kind.YOUTUBE
+        WebMediaUrlPolicy.normalizeDirectMediaUrl(url) != null -> Kind.DIRECT_MEDIA
+        else -> Kind.WEB_PAGE
+    }
+
     /** 提示条里显示的简短链接：去掉协议和 www.，过长就截断。 */
     fun label(url: String): String {
         val trimmed = url.trim()
